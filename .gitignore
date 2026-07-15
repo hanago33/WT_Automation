@@ -1,0 +1,39 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local runtime state and secrets
+.env
+.env.*
+!.env.example
+launcher_state.json
+flow_editor_startup.signal
+*.local
+
+# Logs and generated reports
+*.log
+logs/
+artifacts/
+.dbg/
+debug_screenshots/
+
+# Backups and temporary files
+backups/
+*.tmp
+*.bak
+~$*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "导入统计数据文件",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "unknown"
+  },
+  "scanMeta": {
+    "scanTime": "2026-07-01T15:17:44",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "导入统计数据文件",
+    "categoryFrameworkId": "unknown",
+    "totalControls": 1,
+    "rawTotalControls": 1
+  },
+  "controlDefinitions": [
+    {
+      "id": "dropdown_item",
+      "name": "湍流强度相对标准偏差",
+      "role": "点击下拉项",
+      "enabled": true,
+      "windowTitle": "导入统计数据文件",
+      "targetMethod": "name,class_name",
+      "targetValue": "StandardDeviationOfTurbulenceIntensity,ListBoxItem",
+      "templateKey": "",
+      "uiPath": "湍流强度相对标准偏差",
+      "notes": "已自动收录到控件库分类：导入统计数据文件 / unknown",
+      "rawInspectText": "Runtime dropdown item: visible candidate expected in Popup after expanding the combo box.",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "FrameworkId=WPF",
+        "ClassName=ListBoxItem"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "",
+        "controlType": "",
+        "localizedControlType": "",
+        "boundingRectangle": "",
+        "isEnabled": "",
+        "isOffscreen": "",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "",
+        "runtimeId": "",
+        "frameworkId": "",
+        "className": "",
+        "automationId": "",
+        "nativeWindowHandle": "",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [],
+        "ancestors": [],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "",
+        "recommendedTargetValue": ""
+      }
+    }
+  ],
+  "lastUpdated": "2026-07-01T15:17:44"
+}

@@ -1,0 +1,64 @@
+[1] Sager P J, Meyer B, Yan P, et al. A comprehensive survey of agents for computer use: Foundations, challenges, and future directions[J]. Journal of Artificial Intelligence Research, 2026, 85.
+GB/T 7714-2015 参考文献格式
+
+一、Windows UI Automation 相关技术文献
+
+[1] 朱方祥. Windows应用程序自动化测试关键技术设计与实现[D]. 合肥：中国科学技术大学，2018.
+
+[2] 熊力.微软UI自动化测试的技术演变(上)[J].程序员,2010,(1)100-103.
+[1]熊力.微软UI自动化技术揭秘下篇UIA技术的内部实现和使用技巧[J].程序员,2010,(2)108-111.
+
+
+
+二、pywinauto 与桌面自动化相关文献
+
+[3] 翁省辉，喻武龙. Pywinauto在Windows Twain Driver自动化测试中的应用研究[J]. 微型机与应用，2012(3)：8-10.
+
+[1]何斌,王敏帅.Pywinauto在软件性能测试中的应用[J].计算机与现代化,2014,(8)135-138.
+
+
+三、Robot Framework 自动化测试与流程调度相关文献
+
+[5] Guo Z Y, Chen S H, Garland A, et al. Facilitating the Merging Process of Pull Requests in Automated-Testing Robot Framework[C]//2025 IEEE 49th Annual Computers, Software, and Applications Conference (COMPSAC). Toronto：IEEE，2025：2313-2318.
+
+[6] 陈柯龙，杨勋，邓晓琴，等. 基于Robot Framework测试框架的机载娱乐系统自动化测试设计[J]. 长江信息通信，2023(8).
+
+[7] Robot框架下软件自动化测试技术研究[J]. 软件，2023(12).
+
+
+四、图像模板匹配与人机交互自动化相关研究
+
+[8] 基于图像模式识别的GUI目标识别技术分析[J]. 现代计算机，2024(16).
+
+[9] 基于图像识别的联锁系统自动测试技术研究[J]. 铁路通信信号工程技术，2022(9).
+
+
+五、RPA、GUI Agent 与复杂桌面软件自动化相关研究
+
+[10] Zhang C Y, Li L Q, He S L, et al. UFO：A UI-Focused Agent for Windows OS Interaction[C]//Proceedings of the 2025 Conference of the North American Chapter of the Association for Computational Linguistics (NAACL 2025). 2025.
+
+[11] UFO2：The Desktop AgentOS[EB/OL]. arXiv preprint.
+
+[12] Chen M, Hu X, Yu Z, et al. AutoRPA: Efficient GUI Automation through LLM-Driven Code Synthesis from Interactions[J]. arXiv preprint arXiv:2605.21082, 2026.
+
+
+信息缺失说明：
+
+[2] 微软UI自动化测试的技术演变(上) —— 缺作者、起止页码（知网可查）
+
+[4] Pywinauto在软件性能测试中的应用 —— 缺作者、起止页码（《计算机与现代化》2014年08期）
+
+[6] 基于Robot Framework测试框架的机载娱乐系统自动化测试设计 —— 缺起止页码（《长江信息通信》2023年08期）
+
+[7] Robot框架下软件自动化测试技术研究 —— 缺作者、起止页码（《软件》2023年12期）
+
+[8] 基于图像模式识别的GUI目标识别技术分析 —— 缺作者、起止页码（《现代计算机》2024年16期）
+
+[9] 基于图像识别的联锁系统自动测试技术研究 —— 缺作者、起止页码（《铁路通信信号工程技术》2022年09期）
+
+[10] UFO: A UI-Focused Agent for Windows OS Interaction —— 缺具体页码（NAACL 2025论文集）
+
+[11] UFO2: The Desktop AgentOS —— 缺arXiv编号、发布日期
+
+[12] AutoRPA —— 缺arXiv编号
+[2] 

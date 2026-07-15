@@ -1,0 +1,855 @@
+{
+  "version": "1.0",
+  "project": "WT_Automation",
+  "description": "Global Mapper 自动化流程链路定义。当前主要用于流程可视化、参数编辑、控件信息记录与步骤增删。",
+  "lastUpdated": "2026-06-22T00:00:00",
+  "runtimeConfig": {
+    "gmExe": "D:\\工作\\软件\\GM22免安装版\\GM22免安装版\\global_mapper.exe",
+    "sourceFilePath": "C:\\Users\\14830\\Desktop\\测试\\20230709 共和测量地形图.dwg",
+    "outputDir": "C:\\Users\\14830\\Desktop\\测试",
+    "projectionFilePath": "C:\\Users\\14830\\Desktop\\测试\\40投影.prj"
+  },
+  "flowPackages": [
+    {
+      "id": "create_coverage_pkg",
+      "name": "创建覆盖区原子步骤包",
+      "description": "将创建覆盖区拆为右键、菜单等待、参数输入与结果确认等原子步骤。",
+      "stepIds": [
+        "right_click_coverage_pane",
+        "wait_context_menu",
+        "click_advanced_feature_options",
+        "wait_advanced_menu",
+        "click_create_coverage",
+        "wait_concave_hull_dialog",
+        "type_smooth_value",
+        "wait_ok_enabled",
+        "click_coverage_ok",
+        "wait_concave_hull_dialog_gone"
+      ]
+    },
+    {
+      "id": "create_grid_pkg",
+      "name": "创建高程网格步骤包",
+      "description": "将创建高程网格拆为菜单入口、图层确认、参数设置与结果确认等步骤。",
+      "stepIds": [
+        "click_analysis_menu",
+        "click_create_grid_menu",
+        "wait_select_layer_dialog",
+        "confirm_select_layer_dialog",
+        "grid_options_ai_fill",
+        "wait_grid_creation_finish"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "launch_gm",
+      "name": "启动 Global Mapper",
+      "stage": "startup",
+      "strategy": "script",
+      "actionType": "script",
+      "enabled": true,
+      "codeSymbol": "automation_process()",
+      "codeReference": "WT_AUT_recorded.py",
+      "description": "启动 GM 程序并等待主窗口稳定。",
+      "successLog": "启动Global Mapper",
+      "windowTitle": "Global Mapper 主窗口",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "Window",
+        "uiPath": "MAIN_WINDOW_UIPATH",
+        "templateKey": ""
+      },
+      "auxChecks": [
+        "GM_EXE 文件存在",
+        "主窗口可激活并最大化"
+      ],
+      "fallbacks": [],
+      "notes": "当前为主流程固定起点。"
+    },
+    {
+      "id": "configure_projection",
+      "name": "配置初始投影",
+      "stage": "projection",
+      "strategy": "script -> image -> ai",
+      "actionType": "script",
+      "enabled": true,
+      "codeSymbol": "_configure_projection()",
+      "codeReference": "WT_AUT_recorded.py",
+      "description": "进入 配置/常规/投影，加载 prj 文件并应用确定。",
+      "successLog": "投影配置完成",
+      "windowTitle": "配置 - 常规 / 配置 - 投影",
+      "inspectHints": {
+        "controlName": "配置 / 常规 / 投影 / 从文件加载 / 应用 / 确定",
+        "className": "Button / TreeItem",
+        "automationId": "",
+        "controlType": "Button,TreeItem",
+        "uiPath": "配置 - 常规||Window / 配置 - 投影||Window",
+        "templateKey": "config_button,general_tree_item,projection_tree_item,load_from_file_button,apply_button,ok_button"
+      },
+      "auxChecks": [
+        "失败时记录 fallback_stage",
+        "图片匹配失败时传递 AI resume_stage",
+        "确认当前已执行到哪一步，避免重复"
+      ],
+      "fallbacks": [
+        "image_projection",
+        "ai_projection"
+      ],
+      "notes": "这是当前最复杂的链路之一，适合后续继续细分成子步骤。"
+    },
+    {
+      "id": "open_source_dwg",
+      "name": "打开源 DWG 文件",
+      "stage": "import",
+      "strategy": "script",
+      "actionType": "script",
+      "enabled": true,
+      "codeSymbol": "_type_path_into_open_dialog()",
+      "codeReference": "WT_AUT_recorded.py",
+      "description": "通过 Ctrl+O 打开文件对话框并输入源数据路径。",
+      "successLog": "等待文件加载...",
+      "windowTitle": "打开 文件对话框",
+      "inspectHints": {
+        "controlName": "文件名(N):",
+        "className": "Edit / ComboBox",
+        "automationId": "",
+        "controlType": "Edit",
+        "uiPath": "打开||Window",
+        "templateKey": ""
+      },
+      "auxChecks": [
+        "SOURCE_FILE_PATH 文件存在",
+        "文件对话框已切到当前前台"
+      ],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "dwg_projection_confirm",
+      "name": "DWG 导入后投影确认",
+      "stage": "import_projection",
+      "strategy": "image -> ai",
+      "actionType": "script",
+      "enabled": true,
+      "codeSymbol": "_handle_dwg_projection_selection()",
+      "codeReference": "WT_AUT_recorded.py",
+      "description": "脚本从文件加载 prj，AI 只负责确认三项投影参数正确。",
+      "successLog": "处理 DWG 导入后的投影选择",
+      "windowTitle": "DWG 投影选择窗口",
+      "inspectHints": {
+        "controlName": "从文件加载 / 文件名 / 打开(O) / 确定",
+        "className": "Button / Edit",
+        "automationId": "",
+        "controlType": "Button,Edit",
+        "uiPath": "投影选择窗口 / 打开||Window",
+        "templateKey": "load_from_file_button,file_name_input"
+      },
+      "auxChecks": [
+        "投影类型=Gauss Krueger (3 degree zones)",
+        "带号=Zone 40",
+        "基准面=WGS84"
+      ],
+      "fallbacks": [
+        "ai_dwg_projection"
+      ],
+      "notes": "AI 应从 confirm_values 阶段续跑，不要重复从文件加载。"
+    },
+    {
+      "id": "split_layers",
+      "name": "按属性拆分图层",
+      "stage": "layers",
+      "strategy": "script",
+      "actionType": "script",
+      "enabled": true,
+      "codeSymbol": "automation_process()",
+      "codeReference": "WT_AUT_recorded.py",
+      "description": "调用 图层 -> 基于属性值拆分为独立图层。",
+      "successLog": "基于属性值拆分为独立图层",
+      "windowTitle": "主窗口",
+      "inspectHints": {
+        "controlName": "图层(Y) / 基于属性值拆分为独立图层... / 确定",
+        "className": "MenuItem / Button",
+        "automationId": "",
+        "controlType": "MenuItem,Button",
+        "uiPath": "MAIN_WINDOW_UIPATH",
+        "templateKey": ""
+      },
+      "auxChecks": [
+        "拆分结果图层树可见"
+      ],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "select_dgx_layer",
+      "name": "展开并右键 DGX 图层",
+      "stage": "layers",
+      "strategy": "template -> script",
+      "actionType": "script",
+      "enabled": true,
+      "codeSymbol": "_try_click_layer_tree_expand_icon() + _right_click_tree_item_by_title_re()",
+      "codeReference": "WT_AUT_recorded.py",
+      "description": "先尝试模板点击展开图标，再右键 DGX 图层。",
+      "successLog": "选择DGX图层",
+      "windowTitle": "主窗口图层树",
+      "inspectHints": {
+        "controlName": "DGX 图层 / 展开图标",
+        "className": "TreeItem",
+        "automationId": "",
+        "controlType": "TreeItem",
+        "uiPath": "图层树",
+        "templateKey": "展开图标.png / 折叠图标.png"
+      },
+      "auxChecks": [
+        "source_basename - DGX [n Features] 正则匹配",
+        "展开图标模板可命中"
+      ],
+      "controls": [
+        {
+          "id": "layer_expand_icon",
+          "name": "图层展开图标",
+          "role": "展开 DGX 图层父节点",
+          "targetMethod": "template",
+          "targetValue": "展开图标",
+          "templateKey": "展开图标.png"
+        },
+        {
+          "id": "dgx_layer_item",
+          "name": "DGX 图层项",
+          "role": "右键 DGX 图层",
+          "targetMethod": "regex",
+          "targetValue": " - DGX \\[\\d+ Features\\]"
+        },
+        {
+          "id": "dgx_select_all_menu",
+          "name": "DGX 图层全选菜单",
+          "role": "选择 DGX 图层中的所有要素",
+          "targetMethod": "name,control_type",
+          "targetValue": "选择 - 使用数字化工具选择所选图层中的所有要素,MenuItem",
+          "windowTitle": "__all__",
+          "inspectData": {
+            "name": "选择 - 使用数字化工具选择所选图层中的所有要素",
+            "controlType": "MenuItem"
+          },
+          "auxChecks": [
+            "IsEnabled=True",
+            "IsOffscreen=False"
+          ]
+        }
+      ],
+      "fallbacks": [],
+      "notes": "这一段已经通过局部测试验证成功，并已并回主流程。"
+    },
+    {
+      "id": "create_coverage",
+      "name": "创建覆盖区",
+      "stage": "coverage",
+      "strategy": "flow_ref -> action",
+      "actionType": "flow_ref",
+      "enabled": true,
+      "packageRef": "create_coverage_pkg",
+      "codeSymbol": "",
+      "codeReference": "flow_definition.json#create_coverage_pkg",
+      "description": "右键 DGX 图层后，通过流程包执行菜单展开、窗口等待、平滑值输入与确定。",
+      "successLog": "创建覆盖区",
+      "windowTitle": "Concave Hull Options",
+      "inspectHints": {
+        "controlName": "为 选定/加载 的要素创建覆盖区 (凹形体)",
+        "className": "MenuItem / Edit / Button",
+        "automationId": "",
+        "controlType": "MenuItem,Edit,Button",
+        "uiPath": "Concave Hull Options||Window",
+        "templateKey": ""
+      },
+      "auxChecks": [
+        "平滑值=10"
+      ],
+      "stepParams": {
+        "smoothValue": 10
+      },
+      "fallbacks": [
+        "ai_coverage_options"
+      ],
+      "notes": "业务层步骤，当前改为 flow_ref，由 create_coverage_pkg 承载具体原子动作。"
+    },
+    {
+      "id": "right_click_coverage_pane",
+      "name": "右击覆盖区窗格",
+      "stage": "coverage_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "将鼠标移动到覆盖区窗格后右击，打开上下文菜单。",
+      "successLog": "已打开覆盖区上下文菜单",
+      "windowTitle": "__all__",
+      "actionConfig": {
+        "action": "right_click",
+        "controlId": "coverage_context_pane",
+        "timeoutSeconds": 3,
+        "waitAfter": 0.3
+      },
+      "controls": [
+        {
+          "id": "coverage_context_pane",
+          "name": "覆盖区右键窗格",
+          "role": "将鼠标移动到窗格后右键打开高级要素创建菜单",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "59648,Pane",
+          "windowTitle": "__all__",
+          "inspectData": {
+            "automationId": "59648",
+            "controlType": "Pane"
+          },
+          "auxChecks": [
+            "IsEnabled=True",
+            "IsOffscreen=False"
+          ]
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "wait_context_menu",
+      "name": "等待上下文菜单出现",
+      "stage": "coverage_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "等待右键菜单中的高级要素创建选项出现。",
+      "windowTitle": "__all__",
+      "actionConfig": {
+        "action": "wait_for_control",
+        "controlId": "advanced_feature_options_menu",
+        "condition": "visible",
+        "timeoutSeconds": 5,
+        "waitAfter": 0.2
+      },
+      "controls": [
+        {
+          "id": "advanced_feature_options_menu",
+          "name": "高级要素创建选项菜单",
+          "role": "打开高级要素创建菜单",
+          "targetMethod": "name,control_type",
+          "targetValue": "高级要素创建选项,MenuItem",
+          "windowTitle": "__all__",
+          "inspectData": {
+            "name": "高级要素创建选项",
+            "controlType": "MenuItem"
+          },
+          "auxChecks": [
+            "IsEnabled=True",
+            "IsOffscreen=False"
+          ]
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "click_advanced_feature_options",
+      "name": "点击高级要素创建选项",
+      "stage": "coverage_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "点击右键菜单中的高级要素创建选项。",
+      "windowTitle": "__all__",
+      "actionConfig": {
+        "action": "click",
+        "controlId": "advanced_feature_options_menu",
+        "timeoutSeconds": 5,
+        "waitAfter": 0.3
+      },
+      "controls": [
+        {
+          "id": "advanced_feature_options_menu",
+          "name": "高级要素创建选项菜单",
+          "role": "打开高级要素创建菜单",
+          "targetMethod": "name,control_type",
+          "targetValue": "高级要素创建选项,MenuItem",
+          "windowTitle": "__all__",
+          "inspectData": {
+            "name": "高级要素创建选项",
+            "controlType": "MenuItem"
+          },
+          "auxChecks": [
+            "IsEnabled=True",
+            "IsOffscreen=False"
+          ]
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "wait_advanced_menu",
+      "name": "等待创建覆盖区菜单出现",
+      "stage": "coverage_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "等待高级要素创建菜单中的创建覆盖区菜单项出现。",
+      "windowTitle": "__all__",
+      "actionConfig": {
+        "action": "wait_for_control",
+        "controlId": "create_coverage_menu",
+        "condition": "visible",
+        "timeoutSeconds": 5,
+        "waitAfter": 0.2
+      },
+      "controls": [
+        {
+          "id": "create_coverage_menu",
+          "name": "创建覆盖区菜单",
+          "role": "从右键菜单进入凹形体覆盖区创建",
+          "targetMethod": "name,control_type",
+          "targetValue": "为 选定/加载 的要素创建覆盖区 (凹形体),MenuItem",
+          "windowTitle": "__all__"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "click_create_coverage",
+      "name": "点击创建覆盖区菜单",
+      "stage": "coverage_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "从高级要素创建菜单进入凹形体覆盖区创建窗口。",
+      "windowTitle": "__all__",
+      "actionConfig": {
+        "action": "click",
+        "controlId": "create_coverage_menu",
+        "timeoutSeconds": 5,
+        "waitAfter": 0.5
+      },
+      "controls": [
+        {
+          "id": "create_coverage_menu",
+          "name": "创建覆盖区菜单",
+          "role": "从右键菜单进入凹形体覆盖区创建",
+          "targetMethod": "name,control_type",
+          "targetValue": "为 选定/加载 的要素创建覆盖区 (凹形体),MenuItem",
+          "windowTitle": "__all__"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "wait_concave_hull_dialog",
+      "name": "等待覆盖区参数窗口出现",
+      "stage": "coverage_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "等待 Concave Hull Options 窗口中的平滑输入框出现。",
+      "windowTitle": "Concave Hull Options",
+      "actionConfig": {
+        "action": "wait_for_control",
+        "controlId": "coverage_smooth_input",
+        "condition": "visible",
+        "timeoutSeconds": 8,
+        "waitAfter": 0.2
+      },
+      "controls": [
+        {
+          "id": "coverage_smooth_input",
+          "name": "平滑输入框",
+          "role": "设置 Concave Hull Options 的平滑值",
+          "targetMethod": "control_type",
+          "targetValue": "Edit",
+          "windowTitle": "Concave Hull Options"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "type_smooth_value",
+      "name": "输入平滑值",
+      "stage": "coverage_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "向 Concave Hull Options 窗口输入平滑值。",
+      "windowTitle": "Concave Hull Options",
+      "actionConfig": {
+        "action": "type_text",
+        "controlId": "coverage_smooth_input",
+        "text": "${flowRefParams.smoothValue}",
+        "timeoutSeconds": 5,
+        "waitAfter": 0.3
+      },
+      "controls": [
+        {
+          "id": "coverage_smooth_input",
+          "name": "平滑输入框",
+          "role": "设置 Concave Hull Options 的平滑值",
+          "targetMethod": "control_type",
+          "targetValue": "Edit",
+          "windowTitle": "Concave Hull Options"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "wait_ok_enabled",
+      "name": "等待确定按钮可用",
+      "stage": "coverage_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "等待 Concave Hull Options 窗口中的确定按钮变为可点击。",
+      "windowTitle": "Concave Hull Options",
+      "actionConfig": {
+        "action": "wait_for_control",
+        "controlId": "coverage_ok_button",
+        "condition": "enabled",
+        "timeoutSeconds": 8,
+        "waitAfter": 0.2
+      },
+      "controls": [
+        {
+          "id": "coverage_ok_button",
+          "name": "覆盖区确定按钮",
+          "role": "确认 Concave Hull Options",
+          "targetMethod": "name,control_type",
+          "targetValue": "确定,Button",
+          "windowTitle": "Concave Hull Options"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "click_coverage_ok",
+      "name": "点击覆盖区确定按钮",
+      "stage": "coverage_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "确认 Concave Hull Options 对话框。",
+      "windowTitle": "Concave Hull Options",
+      "actionConfig": {
+        "action": "click",
+        "controlId": "coverage_ok_button",
+        "timeoutSeconds": 5,
+        "waitAfter": 0.3
+      },
+      "controls": [
+        {
+          "id": "coverage_ok_button",
+          "name": "覆盖区确定按钮",
+          "role": "确认 Concave Hull Options",
+          "targetMethod": "name,control_type",
+          "targetValue": "确定,Button",
+          "windowTitle": "Concave Hull Options"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "wait_concave_hull_dialog_gone",
+      "name": "等待覆盖区参数窗口关闭",
+      "stage": "coverage_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "等待 Concave Hull Options 对话框关闭后再继续后续步骤。",
+      "windowTitle": "Concave Hull Options",
+      "actionConfig": {
+        "action": "wait_for_control",
+        "controlId": "coverage_ok_button",
+        "condition": "gone",
+        "timeoutSeconds": 8,
+        "waitAfter": 0.2
+      },
+      "controls": [
+        {
+          "id": "coverage_ok_button",
+          "name": "覆盖区确定按钮",
+          "role": "确认 Concave Hull Options",
+          "targetMethod": "name,control_type",
+          "targetValue": "确定,Button",
+          "windowTitle": "Concave Hull Options"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "select_coverage_layer",
+      "name": "选择覆盖区图层",
+      "stage": "coverage",
+      "strategy": "script",
+      "actionType": "script",
+      "enabled": true,
+      "codeSymbol": "_right_click_tree_item_by_title_re()",
+      "codeReference": "WT_AUT_recorded.py",
+      "description": "右键 Coverage Areas 图层并选择所有要素。",
+      "successLog": "选择覆盖区图层",
+      "windowTitle": "主窗口图层树",
+      "inspectHints": {
+        "controlName": "DGX Coverage Areas",
+        "className": "TreeItem",
+        "automationId": "",
+        "controlType": "TreeItem",
+        "uiPath": "图层树",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "coverage_layer_item",
+          "name": "Coverage Areas 图层项",
+          "role": "右键 Coverage Areas 图层",
+          "targetMethod": "regex",
+          "targetValue": " - DGX Coverage Areas \\[\\d+ Features\\]"
+        },
+        {
+          "id": "coverage_select_all_menu",
+          "name": "Coverage 图层全选菜单",
+          "role": "选择 Coverage 图层中的所有要素",
+          "targetMethod": "name,control_type",
+          "targetValue": "选择 - 使用数字化工具选择所选图层中的所有要素,MenuItem",
+          "windowTitle": "__all__"
+        }
+      ],
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "create_grid",
+      "name": "创建高程网格",
+      "stage": "grid",
+      "strategy": "flow_ref -> action -> ai",
+      "actionType": "flow_ref",
+      "enabled": true,
+      "packageRef": "create_grid_pkg",
+      "codeSymbol": "",
+      "codeReference": "flow_definition.json#create_grid_pkg",
+      "description": "打开网格创建窗口，通过流程包执行菜单入口、图层确认与参数设置。",
+      "successLog": "创建高程网格",
+      "windowTitle": "网格创建选项",
+      "inspectHints": {
+        "controlName": "分析(A) / 从 3D 矢量/Lidar 数据创建高程网格(D)... / 确定",
+        "className": "MenuItem / Button / Edit",
+        "automationId": "",
+        "controlType": "MenuItem,Button,Edit",
+        "uiPath": "网格创建选项||Window",
+        "templateKey": ""
+      },
+      "auxChecks": [
+        "X-轴=5",
+        "Y轴=5",
+        "裁剪到选定的区要素"
+      ],
+      "stepParams": {
+        "xSpacing": 5,
+        "ySpacing": 5,
+        "clipOptionLabel": "裁剪到选定的区要素"
+      },
+      "fallbacks": [
+        "ai_grid_options"
+      ],
+      "notes": "业务层步骤，当前改为 flow_ref，由 create_grid_pkg 承载具体步骤；网格创建选项窗内参数设置暂仍由包内脚本步骤承接。"
+    },
+    {
+      "id": "click_analysis_menu",
+      "name": "点击分析菜单",
+      "stage": "grid_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "打开主窗口菜单栏中的分析菜单。",
+      "windowTitle": "Global Mapper",
+      "actionConfig": {
+        "action": "click",
+        "controlId": "analysis_menu",
+        "timeoutSeconds": 5,
+        "waitAfter": 0.3
+      },
+      "controls": [
+        {
+          "id": "analysis_menu",
+          "name": "分析菜单",
+          "role": "打开分析菜单",
+          "targetMethod": "name,control_type",
+          "targetValue": "分析(A),MenuItem",
+          "windowTitle": "Global Mapper"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "click_create_grid_menu",
+      "name": "点击创建高程网格菜单",
+      "stage": "grid_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "从分析菜单进入从 3D 矢量/Lidar 数据创建高程网格。",
+      "windowTitle": "Global Mapper",
+      "actionConfig": {
+        "action": "click",
+        "controlId": "create_grid_menu",
+        "timeoutSeconds": 5,
+        "waitAfter": 0.6
+      },
+      "controls": [
+        {
+          "id": "create_grid_menu",
+          "name": "创建高程网格菜单",
+          "role": "打开网格创建流程",
+          "targetMethod": "name,control_type",
+          "targetValue": "从 3D 矢量/Lidar 数据创建高程网格(D)...,MenuItem",
+          "windowTitle": "Global Mapper"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "wait_select_layer_dialog",
+      "name": "等待选择图层对话框",
+      "stage": "grid_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "等待选择图层对话框中的确定按钮出现。",
+      "windowTitle": "选择图层",
+      "actionConfig": {
+        "action": "wait_for_control",
+        "controlId": "select_layer_ok_button",
+        "condition": "visible",
+        "timeoutSeconds": 8,
+        "waitAfter": 0.2
+      },
+      "controls": [
+        {
+          "id": "select_layer_ok_button",
+          "name": "选择图层确定按钮",
+          "role": "确认用于创建网格的图层",
+          "targetMethod": "name,control_type",
+          "targetValue": "确定,Button",
+          "windowTitle": "选择图层"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "confirm_select_layer_dialog",
+      "name": "确认选择图层对话框",
+      "stage": "grid_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "点击选择图层对话框中的确定按钮。",
+      "windowTitle": "选择图层",
+      "actionConfig": {
+        "action": "click",
+        "controlId": "select_layer_ok_button",
+        "timeoutSeconds": 8,
+        "waitAfter": 0.8
+      },
+      "controls": [
+        {
+          "id": "select_layer_ok_button",
+          "name": "选择图层确定按钮",
+          "role": "确认用于创建网格的图层",
+          "targetMethod": "name,control_type",
+          "targetValue": "确定,Button",
+          "windowTitle": "选择图层"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "grid_options_ai_fill",
+      "name": "设置网格创建参数",
+      "stage": "grid_atomic",
+      "strategy": "script -> ai",
+      "actionType": "script",
+      "topLevel": false,
+      "enabled": true,
+      "codeSymbol": "_step_grid_options_ai_fill()",
+      "codeReference": "WT_AUT_recorded.py",
+      "description": "在网格创建选项窗口中设置网格间距与边界裁剪，当前暂由 AI 子步骤承接。",
+      "windowTitle": "网格创建选项",
+      "stepParams": {
+        "xSpacing": "${flowRefParams.xSpacing}",
+        "ySpacing": "${flowRefParams.ySpacing}",
+        "clipOptionLabel": "${flowRefParams.clipOptionLabel}"
+      },
+      "notes": "过渡步骤：业务结构已拆分，但窗口内细粒度控件操作暂未完全 action 化。"
+    },
+    {
+      "id": "wait_grid_creation_finish",
+      "name": "等待网格创建完成",
+      "stage": "grid_atomic",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "description": "等待网格创建选项窗口关闭，表示创建过程已提交完成。",
+      "windowTitle": "网格创建选项",
+      "actionConfig": {
+        "action": "wait_for_control",
+        "controlId": "grid_options_ok_button",
+        "condition": "gone",
+        "timeoutSeconds": 20,
+        "waitAfter": 1.0
+      },
+      "controls": [
+        {
+          "id": "grid_options_ok_button",
+          "name": "网格创建确定按钮",
+          "role": "确认网格创建选项",
+          "targetMethod": "name,control_type",
+          "targetValue": "确定,Button",
+          "windowTitle": "网格创建选项"
+        }
+      ],
+      "notes": ""
+    },
+    {
+      "id": "export_geotiff",
+      "name": "导出 GeoTIFF",
+      "stage": "export",
+      "strategy": "script",
+      "actionType": "script",
+      "enabled": true,
+      "codeSymbol": "automation_process()",
+      "codeReference": "WT_AUT_recorded.py",
+      "description": "右键网格图层，选择导出格式 GeoTIFF 并保存输出。",
+      "successLog": "导出网格",
+      "windowTitle": "选择导出格式 / GeoTIFF 导出选项",
+      "inspectHints": {
+        "controlName": "导出 - 将图层导出到新文件... / 选择导出格式 / 确定",
+        "className": "MenuItem / ComboBox / Button",
+        "automationId": "",
+        "controlType": "MenuItem,ComboBox,Button",
+        "uiPath": "选择导出格式||Window / GeoTIFF 导出选项||Window",
+        "templateKey": ""
+      },
+      "auxChecks": [
+        "导出格式=GeoTIFF",
+        "输出目录存在"
+      ],
+      "fallbacks": [],
+      "notes": ""
+    }
+  ]
+}

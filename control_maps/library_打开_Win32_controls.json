@@ -1,0 +1,76 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "打开",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "Win32"
+  },
+  "scanMeta": {
+    "scanTime": "2026-07-01T17:35:54",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "打开",
+    "categoryFrameworkId": "Win32",
+    "totalControls": 1,
+    "rawTotalControls": 1
+  },
+  "controlDefinitions": [
+    {
+      "id": "1_打开(O)_SplitButton",
+      "name": "打开(O)",
+      "role": "来自控件库扫描：打开",
+      "enabled": true,
+      "windowTitle": "打开",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "1,SplitButton",
+      "templateKey": "",
+      "uiPath": "打开 > 打开(O)",
+      "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位策略稳定 | 已自动收录到控件库分类：打开 / Win32",
+      "rawInspectText": "Name: \t \"打开(O)\"\nControlType: \t SplitButton\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=1604,t=1078,r=1758,b=1124]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27920\nFrameworkId: \t \"Win32\"\nClassName: \t \"Button\"\nAutomationId: \t \"1\"\nNativeWindowHandle: \t 18088484\nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t 打开",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "FrameworkId=Win32",
+        "ClassName=Button"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "打开(O)",
+        "controlType": "SplitButton",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=1604,t=1078,r=1758,b=1124]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "27920",
+        "runtimeId": "[2A,1140224]",
+        "frameworkId": "Win32",
+        "className": "Button",
+        "automationId": "1",
+        "nativeWindowHandle": "18088484",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [
+          "SplitButton |  | SplitButton"
+        ],
+        "ancestors": [
+          "打开"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "automation_id,control_type",
+        "recommendedTargetValue": "1,SplitButton"
+      }
+    }
+  ],
+  "lastUpdated": "2026-07-01T17:35:54"
+}

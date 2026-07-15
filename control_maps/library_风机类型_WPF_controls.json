@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "风机类型",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "WPF"
+  },
+  "scanMeta": {
+    "scanTime": "2026-07-02T17:23:29",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "风机类型",
+    "categoryFrameworkId": "WPF",
+    "totalControls": 1,
+    "rawTotalControls": 1
+  },
+  "controlDefinitions": [
+    {
+      "id": "MUPClimatologyEditView_Button_ImportTimeSeriesFile_MUPClimatology_Edit_Import_Ti",
+      "name": "MUPClimatology Edit Import Time Series File 按钮",
+      "role": "来自控件库扫描：",
+      "enabled": true,
+      "windowTitle": "风机类型",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MUPClimatologyEditView_Button_ImportTimeSeriesFile,Button",
+      "templateKey": "",
+      "uiPath": "Window > MUPClimatologyMainView > MUPClimatologyEditView > MUPClimatologyEditView_ScrollViewer_LeftPanel > MTDTileView_Button_ToggleState > MUPClimatologyEditView_Button_ImportTimeSeriesFile",
+      "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | 已自动收录到控件库分类：风机类型 / WPF",
+      "rawInspectText": "Name: \t \"\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=749,t=1122,r=791,b=1164]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 60856\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"MUPClimatologyEditView_Button_ImportTimeSeriesFile\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPClimatologyMainView\n\t MUPClimatologyEditView\n\t MUPClimatologyEditView_ScrollViewer_LeftPanel\n\t MTDTileView_Button_ToggleState",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "FrameworkId=WPF",
+        "ClassName=Button"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "",
+        "controlType": "Button",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=749,t=1122,r=791,b=1164]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "60856",
+        "runtimeId": "",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MUPClimatologyEditView_Button_ImportTimeSeriesFile",
+        "nativeWindowHandle": "",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [],
+        "ancestors": [
+          "Window",
+          "MUPClimatologyMainView",
+          "MUPClimatologyEditView",
+          "MUPClimatologyEditView_ScrollViewer_LeftPanel",
+          "MTDTileView_Button_ToggleState"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "automation_id",
+        "recommendedTargetValue": "MUPClimatologyEditView_Button_ImportTimeSeriesFile"
+      }
+    }
+  ],
+  "lastUpdated": "2026-07-02T17:23:29"
+}

@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "templateCount": 5,
+    "categoryCount": 1,
+    "lastUpdated": "2026-07-01T14:45:26"
+  },
+  "categories": [
+    {
+      "id": "projection",
+      "count": 5
+    }
+  ],
+  "templates": [
+    {
+      "category": "projection",
+      "file_name": "从时间序列计算风频矩阵",
+      "image_path": "D:/My_RF_Project/WT_Automation/image_templates/Icons\\projection\\从时间序列计算风频矩阵.png",
+      "relative_image_path": "projection\\从时间序列计算风频矩阵.png",
+      "source_screenshot": "D:/My_RF_Project/WT_Automation/image_templates/Icons\\screenshot_20260701_144448.png",
+      "region": {
+        "x": 754,
+        "y": 605,
+        "w": 275,
+        "h": 35
+      },
+      "updatedAt": "2026-07-01T14:45:17"
+    },
+    {
+      "category": "projection",
+      "file_name": "应用",
+      "image_path": "D:/My_RF_Project/WT_Automation/image_templates/Icons\\projection\\应用.png",
+      "relative_image_path": "projection\\应用.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260701_143230.png",
+      "region": {
+        "x": 226,
+        "y": 780,
+        "w": 356,
+        "h": 53
+      },
+      "updatedAt": "2026-07-01T14:33:19"
+    },
+    {
+      "category": "projection",
+      "file_name": "开始检验",
+      "image_path": "D:/My_RF_Project/WT_Automation/image_templates/Icons\\projection\\开始检验.png",
+      "relative_image_path": "projection\\开始检验.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260701_143230.png",
+      "region": {
+        "x": 226,
+        "y": 880,
+        "w": 358,
+        "h": 53
+      },
+      "updatedAt": "2026-07-01T14:33:31"
+    },
+    {
+      "category": "projection",
+      "file_name": "添加到数据",
+      "image_path": "D:/My_RF_Project/WT_Automation/image_templates/Icons\\projection\\添加到数据.png",
+      "relative_image_path": "projection\\添加到数据.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260701_143230.png",
+      "region": {
+        "x": 2153,
+        "y": 1431,
+        "w": 132,
+        "h": 38
+      },
+      "updatedAt": "2026-07-01T14:33:40"
+    },
+    {
+      "category": "projection",
+      "file_name": "确定",
+      "image_path": "D:/My_RF_Project/WT_Automation/image_templates/Icons\\projection\\确定.png",
+      "relative_image_path": "projection\\确定.png",
+      "source_screenshot": "D:/My_RF_Project/WT_Automation/image_templates/Icons\\screenshot_20260701_144448.png",
+      "region": {
+        "x": 1601,
+        "y": 931,
+        "w": 114,
+        "h": 39
+      },
+      "updatedAt": "2026-07-01T14:45:26"
+    }
+  ]
+}

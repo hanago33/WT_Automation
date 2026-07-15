@@ -1,0 +1,103 @@
+Datetime控件信息：
+
+How found:	Selected from tree...
+ChildId:	0
+Interfaces:	IEnumVARIANT IOleWindow
+Impl:	Remote native IAccessible (UIA-to-MSAA bridge)
+Name:	"DateTime"
+Value:	[Error: hr=0x80020003 - 找不到成员。]
+Role:	列表项目 (0x22)
+State:	不可见,屏幕外 (0x18000)
+Location:	[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]
+Selection:	[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]
+Description:	[Error: hr=0x80020003 - 找不到成员。]
+Kbshortcut:	""
+DefAction:	"双击"
+Help:	""
+HelpTopic:	""
+ChildCount:	1
+Window:	0x110E4E
+FirstChild:	[null]
+LastChild:	[null]
+Next:	[null]
+Previous:	[null]
+Left:	[null]
+Up:	[null]
+Right:	[null]
+Down:	[null]
+ControlType:	50007
+LocalizedControlType:	"list item"
+Name:	"DateTime"
+AcceleratorKey:	""
+AccessKey:	""
+HasKeyboardFocus:	false
+IsKeyboardFocusable:	false
+IsEnabled:	true
+AutomationId:	""
+ClassName:	"ListBoxItem"
+HelpText:	""
+IsControlElement:	true
+IsContentElement:	true
+IsPassword:	false
+ItemType:	""
+IsOffscreen:	true
+Orientation:	0
+FrameworkId:	"WPF"
+IsRequiredForForm:	false
+ItemStatus:	""
+Other Props:	Object has no additional properties
+Children:	Container has no children
+Ancestors:	[Error: GetParent: hr=0x80004005 - 未指定的错误]
+
+时间日期控件信息：
+
+How found:	Selected from tree...
+ChildId:	0
+Interfaces:	IEnumVARIANT IOleWindow
+Impl:	Remote native IAccessible (UIA-to-MSAA bridge)
+Name:	"日期时间"
+Value:	[Error: hr=0x80020003 - 找不到成员。]
+Role:	文字 (0x29)
+State:	不可见,屏幕外 (0x18000)
+Location:	[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]
+Selection:	[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]
+Description:	[Error: hr=0x80020003 - 找不到成员。]
+Kbshortcut:	""
+DefAction:	[Error: hr=0x80020003 - 找不到成员。]
+Help:	""
+HelpTopic:	""
+ChildCount:	0
+Window:	0x200750
+FirstChild:	[null]
+LastChild:	[null]
+Next:	[null]
+Previous:	[null]
+Left:	[null]
+Up:	[null]
+Right:	[null]
+Down:	[null]
+ControlType:	50020
+LocalizedControlType:	"text"
+Name:	"日期时间"
+AcceleratorKey:	""
+AccessKey:	""
+HasKeyboardFocus:	false
+IsKeyboardFocusable:	false
+IsEnabled:	true
+AutomationId:	""
+ClassName:	"TextBlock"
+HelpText:	""
+IsControlElement:	true
+IsContentElement:	true
+IsPassword:	false
+ItemType:	""
+IsOffscreen:	true
+Orientation:	0
+FrameworkId:	"WPF"
+IsRequiredForForm:	false
+ItemStatus:	""
+Other Props:	Object has no additional properties
+Children:	Container has no children
+Ancestors:	"DateTime" : 列表项目 : 不可见,屏幕外
+	[Error: GetParent: hr=0x80004005 - 未指定的错误]
+
