@@ -27,6 +27,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
+from . import normalize as nz
+
 DEFAULT_BASE_URL = "http://localhost:9955"
 DEFAULT_TIMEOUT = 6
 
@@ -85,88 +87,34 @@ def bounds_to_rect(bounds):
     return rect_str, box
 
 
-def recommend_locator(node):
-    """简化版 locator 推荐，与 build_control_map_library.build_locator_recommendation 对齐。"""
-    aid = str(node.get("automationId", "")).strip()
-    name = str(node.get("name", "")).strip()
-    cls = str(node.get("className", "")).strip()
-    ctype = str(node.get("controlType", "")).strip()
-    if aid and ctype:
-        return "automation_id,control_type", "{},{}".format(aid, ctype), 100, "automation_id + control_type"
-    if aid and cls:
-        return "automation_id,class_name", "{},{}".format(aid, cls), 96, "automation_id + class_name"
-    if aid:
-        return "automation_id", aid, 92, "automation_id"
-    if name and ctype:
-        return "name,control_type", "{},{}".format(name, ctype), 88, "name + control_type"
-    if name and cls:
-        return "name,class_name", "{},{}".format(name, cls), 84, "name + class_name"
-    if name:
-        return "name", name, 78, "name"
-    if cls and ctype:
-        return "class_name,control_type", "{},{}".format(cls, ctype), 68, "class_name + control_type"
-    if cls:
-        return "class_name", cls, 58, "class_name"
-    if ctype:
-        return "control_type", ctype, 42, "control_type"
-    return "", "", 0, "no_stable_locator"
-
-
-def node_to_control_definition(node, window_title="", framework_id=""):
-    """把 uia-peek chain 节点转成 control_definition（merge_standard_control_library 兼容格式）。"""
-    aid = str(node.get("automationId", "")).strip()
-    name = str(node.get("name", "")).strip()
-    cls = str(node.get("className", "")).strip()
-    ctype = str(node.get("controlType", "")).strip()
-    pid = str(node.get("processId", "")).strip()
-    rect_str, box = bounds_to_rect(node.get("bounds"))
-    method, value, score, reason = recommend_locator(node)
-
-    aux = []
-    if pid:
-        aux.append("ProcessId={}".format(pid))
-    if cls:
-        aux.append("ClassName={}".format(cls))
-    is_top = str(node.get("isTopWindow", "")).strip()
-    if is_top:
-        aux.append("IsTopWindow={}".format(is_top))
-
-    inspect_data = {
-        "name": name,
-        "controlType": ctype,
-        "localizedControlType": "",
-        "boundingRectangle": rect_str,
-        "isEnabled": "",
-        "isVisible": "",
-        "isOffscreen": "",
-        "isKeyboardFocusable": "",
-        "hasKeyboardFocus": "",
-        "processId": pid,
-        "runtimeId": "",
-        "frameworkId": framework_id,
-        "className": cls,
-        "automationId": aid,
-        "nativeWindowHandle": "",
-        "helpText": "",
-        "providerDescription": "",
+def node_to_control_definition(node, window_title="", framework_id="", depth=0, index=0,
+                                ui_path="", parent_path="", is_trigger=False):
+    """把 uia-peek chain 节点转成 control_definition（经 normalize 层统一规整）。
+    与 build_control_map_library 输出同构，可被 merge_standard_control_library 合并。
+    """
+    _rect_str, box = bounds_to_rect(node.get("bounds"))
+    extra = {
         "controlTypeId": str(node.get("controlTypeId", "")).strip(),
-        "isTopWindow": is_top,
-        "source": "uia-peek",
+        "isTopWindow": str(node.get("isTopWindow", "")).strip(),
     }
-    return {
-        "name": name,
-        "windowTitle": window_title,
-        "frameworkId": framework_id,
-        "controlType": ctype,
-        "className": cls,
-        "targetMethod": method,
-        "targetValue": value,
-        "locatorScore": score,
-        "locatorReason": reason,
-        "auxChecks": aux,
-        "inspectData": inspect_data,
-        "boundingBox": box,
-    }
+    return nz.build_control_definition(
+        name=node.get("name", ""),
+        automation_id=node.get("automationId", ""),
+        class_name=node.get("className", ""),
+        control_type=node.get("controlType", ""),
+        framework_id=framework_id,
+        window_title=window_title,
+        process_id=node.get("processId", ""),
+        native_window_handle=node.get("nativeWindowHandle", ""),
+        patterns=None,
+        source="uia-peek",
+        extra=extra,
+        is_trigger=is_trigger,
+        depth=depth,
+        index=index,
+        ui_path=ui_path,
+        parent_path=parent_path,
+    )
 
 
 def chain_to_payload(chain, source_label="uia-peek"):
@@ -204,18 +152,19 @@ def chain_to_payload(chain, source_label="uia-peek"):
     control_defs = []
     tree_children = []
     for idx, node in enumerate(path):
-        cdef = node_to_control_definition(node, window_title=window_title, framework_id=framework_id)
-        cdef["depth"] = idx
-        cdef["index"] = idx + 1
-        cdef["uiPath"] = " > ".join(
-            str(p.get("name", "") or p.get("controlType", "")).strip() or "node"
-            for p in path[: idx + 1]
+        cdef = node_to_control_definition(
+            node, window_title=window_title, framework_id=framework_id,
+            depth=idx, index=idx + 1,
+            ui_path=" > ".join(
+                str(p.get("name", "") or p.get("controlType", "")).strip() or "node"
+                for p in path[: idx + 1]
+            ),
+            parent_path=" > ".join(
+                str(p.get("name", "") or p.get("controlType", "")).strip() or "node"
+                for p in path[:idx]
+            ),
+            is_trigger=node.get("isTriggerElement"),
         )
-        cdef["parentPath"] = " > ".join(
-            str(p.get("name", "") or p.get("controlType", "")).strip() or "node"
-            for p in path[:idx]
-        )
-        cdef["isTriggerElement"] = bool(node.get("isTriggerElement"))
         control_defs.append(cdef)
 
     # controlsTree：根 = top_node，链上其余作为嵌套 children（保持树形外观）
@@ -273,6 +222,7 @@ def chain_to_payload(chain, source_label="uia-peek"):
             "frameworkId": framework_id,
         },
         "controlsTree": controls_tree,
+        "flatControls": nz.definitions_to_flat_controls(control_defs, window_title),
         "controlDefinitions": control_defs,
     }
 

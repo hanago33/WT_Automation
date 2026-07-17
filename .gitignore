@@ -1,7 +1,7 @@
 # Python caches
 __pycache__/
 *.py[cod]
-*$py.class
+*\.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -30,7 +30,7 @@ debug_screenshots/
 backups/
 *.tmp
 *.bak
-~$*
+~\$*
 
 # OS/editor noise
 .DS_Store
@@ -47,6 +47,17 @@ test_signal.txt
 
 # Docs temp folders
 docs/Help/
-docs/���Ϊ����/
-
 docs/另存为副本/
+
+# Vendor / external deps
+vendor/
+
+# Axe Windows output
+AxeWindowsOutputFiles/
+
+# Live detector scripts
+control_live_detector.py
+test_detector.py
+external_capture_config.json
+tools/external_capture/axewindows_bridge/bin/
+tools/external_capture/axewindows_bridge/obj/

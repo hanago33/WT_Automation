@@ -1741,6 +1741,8 @@ class LauncherApp:
                 ("进入模板制作", self.open_template_builder),
                 ("打开控件库", self.open_control_import_standalone),
                 ("进入控件库采集", self.open_control_map_builder),
+                ("实时控件检测", self.open_live_detector),
+                ("外部控件采集(uia-peek/axe)", self.open_external_capture),
                 ("打开模板库目录", self.open_template_root_dir),
                 ("刷新模板库概览", self.refresh_template_library_summary_action),
             ],
@@ -4084,6 +4086,21 @@ class LauncherApp:
         self.status_var.set("状态：控件库采集器启动失败")
         self.current_step_var.set("当前步骤：请检查控件库采集器依赖或启动日志")
 
+    def open_live_detector(self):
+        """打开实时控件检测器 - 鼠标悬停时自动捕获控件并匹配控件库"""
+        try:
+            from control_live_detector import ControlLiveDetectorWindow
+            
+            # 创建检测器窗口
+            detector = ControlLiveDetectorWindow(self.root)
+            detector.window.protocol("WM_DELETE_WINDOW", detector.on_close)
+            self._append_log("已打开实时控件检测器。", tag="system")
+            self.status_var.set("状态：实时控件检测器已启动")
+            self.current_step_var.set("当前步骤：将鼠标移到目标软件上，自动捕获并匹配控件")
+        except ImportError as exc:
+            messagebox.showerror("打开失败", f"缺少实时检测器依赖：\n{exc}", parent=self.root)
+            self._append_log(f"打开实时控件检测器失败：{exc}", tag="error")
+
     def open_flow_editor(self):
         if not os.path.exists(FLOW_EDITOR_SCRIPT):
             messagebox.showerror("打开失败", f"未找到流程链路编辑器：\n{FLOW_EDITOR_SCRIPT}")
@@ -4208,6 +4225,22 @@ class LauncherApp:
             messagebox.showerror("打开失败", f"打开相对区域取点助手失败：\n{exc}")
             self._append_log(f"打开相对区域取点助手失败：{exc}", tag="error")
             self.status_var.set("状态：相对区域取点助手启动失败")
+
+    def open_external_capture(self):
+        """打开外部控件采集对话框（uia-peek / axe-windows，补充现有 pywinauto 采集）。"""
+        try:
+            from tools.external_capture.launcher_panel import ExternalCaptureDialog
+
+            ExternalCaptureDialog(self.root, self.theme, log_callback=self._append_log)
+            self._append_log("已打开外部控件采集对话框（uia-peek / axe-windows）。", tag="system")
+            self.status_var.set("状态：外部控件采集已打开")
+            self.current_step_var.set("当前步骤：可启动 UiaPeek 服务后 peek 控件，或用 axe-windows 扫描 Patterns")
+        except ImportError as exc:
+            messagebox.showerror("打开失败", f"缺少外部采集模块：\n{exc}", parent=self.root)
+            self._append_log(f"打开外部控件采集失败：{exc}", tag="error")
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"打开外部控件采集失败：\n{exc}", parent=self.root)
+            self._append_log(f"打开外部控件采集失败：{exc}", tag="error")
 
     def run_environment_check(self):
         values = self._get_model_config_values()

@@ -292,6 +292,59 @@ def _parse_cli_verbose(stdout):
 
 
 # ---------------------------------------------------------------------------
+# 提权辅助：Axe.Windows 需管理员权限才能跨完整性级别枚举目标进程 UI 树
+# ---------------------------------------------------------------------------
+def _is_admin():
+    """当前进程是否以管理员（高完整性）运行。"""
+    try:
+        import ctypes
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
+def _run_elevated_capture(cmd, timeout=180):
+    """以管理员提权运行 cmd（弹 UAC），并把 stdout/stderr 重定向到临时文件后读取。
+
+    返回 (stdout, stderr)。依赖 PowerShell 的 Start-Process -Verb RunAs。
+    """
+    import tempfile
+    import time as _time
+
+    out = os.path.join(tempfile.gettempdir(), "axebridge_out.txt")
+    err = os.path.join(tempfile.gettempdir(), "axebridge_err.txt")
+    for f in (out, err):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+    args_literal = ", ".join("'{}'".format(a.replace("'", "''")) for a in cmd[1:])
+    ps = (
+        "Start-Process -FilePath '{exe}' -ArgumentList @({args}) "
+        "-Verb RunAs -Wait -WindowStyle Hidden "
+        "-RedirectStandardOutput '{out}' -RedirectStandardError '{err}'"
+    ).format(exe=cmd[0].replace("'", "''"), args=args_literal, out=out, err=err)
+
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                   capture_output=True, text=True, timeout=max(timeout, 30))
+    # UAC/进程可能略晚落盘，给一点余量
+    _time.sleep(0.5)
+    stdout, stderr = "", ""
+    try:
+        with open(out, "r", encoding="utf-8", errors="replace") as fh:
+            stdout = fh.read()
+    except OSError:
+        pass
+    try:
+        with open(err, "r", encoding="utf-8", errors="replace") as fh:
+            stderr = fh.read()
+    except OSError:
+        pass
+    return stdout, stderr
+
+
+# ---------------------------------------------------------------------------
 # Bridge 模式
 # ---------------------------------------------------------------------------
 def scan_via_bridge(pid, bridge_exe=None, hwnd=None, timeout=180):
@@ -299,6 +352,9 @@ def scan_via_bridge(pid, bridge_exe=None, hwnd=None, timeout=180):
 
     bridge 源码在 axewindows_bridge/，需 .NET SDK：``dotnet run --project axewindows_bridge -- <pid>``。
     若 bridge 未编译，本函数会尝试 ``dotnet run`` 自动编译运行（需 dotnet 在 PATH）。
+
+    若当前非管理员，会自动以 runas 提权运行（UIA 跨完整性枚举窗口必须管理员，
+    否则目标进程窗口枚举为空导致扫描失败）。
     """
     bridge_exe = bridge_exe or find_bridge_exe()
     cmd = None
@@ -319,15 +375,33 @@ def scan_via_bridge(pid, bridge_exe=None, hwnd=None, timeout=180):
         if hwnd:
             cmd.append(str(int(hwnd)))
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
-    if proc.returncode != 0:
-        raise RuntimeError("AxeBridge 退出码 {}：{}".format(proc.returncode, (proc.stderr or "")[:1000]))
+    if _is_admin():
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                               encoding="utf-8", errors="replace")
+        stdout, stderr, rc = proc.stdout or "", proc.stderr or "", proc.returncode
+    else:
+        # 非管理员：提权运行（与 UiaPeek 同权限，才能枚举任意进程窗口）
+        stdout, stderr = _run_elevated_capture(cmd, timeout)
+        rc = 1 if not stdout.strip() else 0
+
+    if rc != 0 or not stdout.strip():
+        raise RuntimeError("AxeBridge 失败：{}".format((stderr or "（无输出，UAC 可能被拒绝）")[:1000]))
+
     try:
-        doc = json.loads(proc.stdout)
+        doc = json.loads(stdout)
     except ValueError:
-        raise RuntimeError("AxeBridge 输出非 JSON：{}".format((proc.stdout or "")[:1000]))
+        raise RuntimeError("AxeBridge 输出非 JSON：{}".format((stdout or "")[:1000]))
+
+    # bridge 友好报错：返回 {"error":..., "suggestion":...}
+    if isinstance(doc, dict) and "error" in doc:
+        msg = doc.get("message", doc["error"])
+        sug = doc.get("suggestion", "")
+        raise RuntimeError("AxeBridge 扫描失败（{}）：{}\n建议：{}".format(
+            doc["error"], msg, sug))
+
     payload = bridge_json_to_payload(doc)
-    payload["scanMeta"]["bridgeCmd"] = " ".join(cmd)
+    payload["scanMeta"]["bridgeCmd"] = " ".join(str(c) for c in cmd)
+    payload["scanMeta"]["elevated"] = (not _is_admin())
     return payload
 
 
