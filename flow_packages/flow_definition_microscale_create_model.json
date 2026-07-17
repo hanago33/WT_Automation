@@ -1,0 +1,546 @@
+{
+  "version": "1.0",
+  "project": "WT_Automation",
+  "description": "自动生成流程包（来自蓝图 microscale_create_model）。进入微尺度建模模块，创建新建模，选择投影坐标系，在地图上拖拽计算域矩形，选择地形/粗糙度地理文件并做二维可视化。",
+  "lastUpdated": "2026-07-16T21:47:29",
+  "runtimeConfig": {
+    "gmExe": "",
+    "sourceFilePath": "",
+    "outputDir": "",
+    "projectionFilePath": ""
+  },
+  "flowPackages": [
+    {
+      "id": "microscale_create_model",
+      "name": "微尺度-创建新建模(投影/计算域/地理文件)",
+      "description": "进入微尺度建模模块，创建新建模，选择投影坐标系，在地图上拖拽计算域矩形，选择地形/粗糙度地理文件并做二维可视化。",
+      "sourceManual": "MUP_UserManual_Microscale_zh.pdf",
+      "sourceSections": "第1章 微尺度建模 / 创建新建模",
+      "reconstructedNote": "该蓝图由手册大纲重建（原 PDF 文本为图像/CID 字体，无法自动抽取；待软件实时抓取后校正）。",
+      "preconditions": [
+        "已连接许可证",
+        "已准备地形/粗糙度文件"
+      ],
+      "stepIds": [
+        "step_1",
+        "step_2",
+        "step_3",
+        "step_4",
+        "step_5",
+        "step_6",
+        "step_7"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "step_1",
+      "name": "点击-进入微尺度建模按钮",
+      "stage": "converted",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "进入微尺度建模模块",
+      "successLog": "",
+      "windowTitle": "主页面",
+      "inspectHints": {
+        "controlName": "Open Module 按钮",
+        "className": "Button",
+        "automationId": "MainPage_Button_Microscale",
+        "controlType": "Button",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "MainPage_Button_Microscale_Open_Module_按钮_Button",
+          "name": "Open Module 按钮",
+          "role": "来自标准控件库：",
+          "enabled": true,
+          "windowTitle": "主页面",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MainPage_Button_Microscale,Button",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "由标准控件库合并生成，定位权威度高，可直接用于结构化定位；运行前请验证。",
+          "rawInspectText": "",
+          "auxChecks": [
+            "FrameworkId=WPF",
+            "ClassName=Button",
+            "ControlType=Button"
+          ],
+          "inspectData": {
+            "howFound": "standard_catalog",
+            "name": "",
+            "controlType": "Button",
+            "localizedControlType": "",
+            "boundingRectangle": "",
+            "isEnabled": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "",
+            "runtimeId": "",
+            "frameworkId": "WPF",
+            "className": "Button",
+            "automationId": "MainPage_Button_Microscale",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [],
+            "ancestors": [],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "automation_id",
+            "recommendedTargetValue": "MainPage_Button_Microscale"
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click",
+        "controlId": "MainPage_Button_Microscale_Open_Module_按钮_Button",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.3,
+        "waitAfter": 0.3,
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "已用标准库 automation_id 匹配: MainPage_Button_Microscale。"
+    },
+    {
+      "id": "step_2",
+      "name": "点击-创建新建模按钮",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "创建新的计算建模",
+      "successLog": "点击 创建新建模按钮",
+      "windowTitle": "微尺度",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_2_control_pending",
+          "name": "创建新建模按钮",
+          "role": "占位(待实时抓取)",
+          "enabled": true,
+          "windowTitle": "微尺度",
+          "targetMethod": "",
+          "targetValue": "PENDING_CAPTURE",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "PENDING_CAPTURE: 标准库无匹配标识，需在软件中实时抓取 automation_id/相对区域/模板。",
+          "rawInspectText": "",
+          "auxChecks": [],
+          "inspectData": {
+            "howFound": "pending",
+            "name": "",
+            "controlType": "Button",
+            "automationId": "",
+            "frameworkId": "WPF",
+            "recommendedTargetMethod": "",
+            "recommendedTargetValue": ""
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click_relative_region",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.0,
+        "waitAfter": 0.3,
+        "parentWindow": {
+          "title": "微尺度",
+          "className": "Window",
+          "frameworkId": "WPF"
+        },
+        "relativeRegion": {
+          "x": 0.5,
+          "y": 0.5,
+          "width": 0.1,
+          "height": 0.1,
+          "anchor": "center"
+        },
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "PENDING_CAPTURE: 控件『创建新建模按钮』在标准库无匹配，需软件实时抓取后回填 automation_id / 相对区域 / 模板。"
+    },
+    {
+      "id": "step_3",
+      "name": "选择-投影系下拉",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "选择投影坐标系",
+      "successLog": "选择 投影系下拉",
+      "windowTitle": "微尺度 / 新建模",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_3_control_pending",
+          "name": "投影系下拉",
+          "role": "占位(待实时抓取)",
+          "enabled": true,
+          "windowTitle": "微尺度 / 新建模",
+          "targetMethod": "",
+          "targetValue": "PENDING_CAPTURE",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "PENDING_CAPTURE: 标准库无匹配标识，需在软件中实时抓取 automation_id/相对区域/模板。",
+          "rawInspectText": "",
+          "auxChecks": [],
+          "inspectData": {
+            "howFound": "pending",
+            "name": "",
+            "controlType": "ComboBox",
+            "automationId": "",
+            "frameworkId": "WPF",
+            "recommendedTargetMethod": "",
+            "recommendedTargetValue": ""
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "select_dropdown_item_runtime",
+        "controlId": "step_3_control_pending",
+        "value": "<投影系, 如 UTM / Local>",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 1.0,
+        "waitAfter": 1.0,
+        "retryCount": 1,
+        "retryInterval": 1.0,
+        "onError": "fallback",
+        "fallbackMode": "template_match",
+        "fallbackTemplate": "PENDING_CAPTURE"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "PENDING_CAPTURE: 控件『投影系下拉』在标准库无匹配，需软件实时抓取后回填 automation_id / 相对区域 / 模板。"
+    },
+    {
+      "id": "step_4",
+      "name": "拖拽-计算域矩形",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "在地图上拖拽计算域矩形",
+      "successLog": "拖拽 计算域矩形",
+      "windowTitle": "微尺度 / 地图",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_4_control_pending",
+          "name": "计算域矩形",
+          "role": "占位(待实时抓取)",
+          "enabled": true,
+          "windowTitle": "微尺度 / 地图",
+          "targetMethod": "",
+          "targetValue": "PENDING_CAPTURE",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "PENDING_CAPTURE: 标准库无匹配标识，需在软件中实时抓取 automation_id/相对区域/模板。",
+          "rawInspectText": "",
+          "auxChecks": [],
+          "inspectData": {
+            "howFound": "pending",
+            "name": "",
+            "controlType": "Custom",
+            "automationId": "",
+            "frameworkId": "WPF",
+            "recommendedTargetMethod": "",
+            "recommendedTargetValue": ""
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click_relative_region",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.0,
+        "waitAfter": 0.2,
+        "parentWindow": {
+          "title": "微尺度 / 地图",
+          "className": "Window",
+          "frameworkId": "WPF"
+        },
+        "relativeRegion": {
+          "x": 0.4,
+          "y": 0.4,
+          "width": 0.2,
+          "height": 0.2,
+          "anchor": "center"
+        },
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "PENDING_CAPTURE: 拖拽计算域矩形，需实现 drag 交互或两次点击定位对角点。\nPENDING_CAPTURE: 控件『计算域矩形』在标准库无匹配，需软件实时抓取后回填 automation_id / 相对区域 / 模板。"
+    },
+    {
+      "id": "step_5",
+      "name": "点击-选择地理文件图标",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "选择地形/粗糙度地理文件",
+      "successLog": "点击 选择地理文件图标",
+      "windowTitle": "微尺度 / 新建模",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_5_control_pending",
+          "name": "选择地理文件图标",
+          "role": "占位(待实时抓取)",
+          "enabled": true,
+          "windowTitle": "微尺度 / 新建模",
+          "targetMethod": "",
+          "targetValue": "PENDING_CAPTURE",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "PENDING_CAPTURE: 标准库无匹配标识，需在软件中实时抓取 automation_id/相对区域/模板。",
+          "rawInspectText": "",
+          "auxChecks": [],
+          "inspectData": {
+            "howFound": "pending",
+            "name": "",
+            "controlType": "Button",
+            "automationId": "",
+            "frameworkId": "WPF",
+            "recommendedTargetMethod": "",
+            "recommendedTargetValue": ""
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click_relative_region",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.0,
+        "waitAfter": 0.3,
+        "parentWindow": {
+          "title": "微尺度 / 新建模",
+          "className": "Window",
+          "frameworkId": "WPF"
+        },
+        "relativeRegion": {
+          "x": 0.5,
+          "y": 0.5,
+          "width": 0.1,
+          "height": 0.1,
+          "anchor": "center"
+        },
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "PENDING_CAPTURE: 控件『选择地理文件图标』在标准库无匹配，需软件实时抓取后回填 automation_id / 相对区域 / 模板。"
+    },
+    {
+      "id": "step_6",
+      "name": "选择-地理文件类型指定",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "指定地理文件类型",
+      "successLog": "选择 地理文件类型指定",
+      "windowTitle": "微尺度 / 新建模",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_6_control_pending",
+          "name": "地理文件类型指定",
+          "role": "占位(待实时抓取)",
+          "enabled": true,
+          "windowTitle": "微尺度 / 新建模",
+          "targetMethod": "",
+          "targetValue": "PENDING_CAPTURE",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "PENDING_CAPTURE: 标准库无匹配标识，需在软件中实时抓取 automation_id/相对区域/模板。",
+          "rawInspectText": "",
+          "auxChecks": [],
+          "inspectData": {
+            "howFound": "pending",
+            "name": "",
+            "controlType": "ComboBox",
+            "automationId": "",
+            "frameworkId": "WPF",
+            "recommendedTargetMethod": "",
+            "recommendedTargetValue": ""
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "select_dropdown_item_runtime",
+        "controlId": "step_6_control_pending",
+        "value": "地形|粗糙度",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 1.0,
+        "waitAfter": 1.0,
+        "retryCount": 1,
+        "retryInterval": 1.0,
+        "onError": "fallback",
+        "fallbackMode": "template_match",
+        "fallbackTemplate": "PENDING_CAPTURE"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "PENDING_CAPTURE: 控件『地理文件类型指定』在标准库无匹配，需软件实时抓取后回填 automation_id / 相对区域 / 模板。"
+    },
+    {
+      "id": "step_7",
+      "name": "点击-二维可视化图标",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "生成二维可视化",
+      "successLog": "点击 二维可视化图标",
+      "windowTitle": "微尺度 / 新建模",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_7_control_pending",
+          "name": "二维可视化图标",
+          "role": "占位(待实时抓取)",
+          "enabled": true,
+          "windowTitle": "微尺度 / 新建模",
+          "targetMethod": "",
+          "targetValue": "PENDING_CAPTURE",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "PENDING_CAPTURE: 标准库无匹配标识，需在软件中实时抓取 automation_id/相对区域/模板。",
+          "rawInspectText": "",
+          "auxChecks": [],
+          "inspectData": {
+            "howFound": "pending",
+            "name": "",
+            "controlType": "Button",
+            "automationId": "",
+            "frameworkId": "WPF",
+            "recommendedTargetMethod": "",
+            "recommendedTargetValue": ""
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click_relative_region",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.0,
+        "waitAfter": 0.3,
+        "parentWindow": {
+          "title": "微尺度 / 新建模",
+          "className": "Window",
+          "frameworkId": "WPF"
+        },
+        "relativeRegion": {
+          "x": 0.5,
+          "y": 0.5,
+          "width": 0.1,
+          "height": 0.1,
+          "anchor": "center"
+        },
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "PENDING_CAPTURE: 控件『二维可视化图标』在标准库无匹配，需软件实时抓取后回填 automation_id / 相对区域 / 模板。"
+    }
+  ]
+}

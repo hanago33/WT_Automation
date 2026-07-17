@@ -37,3 +37,16 @@ backups/
 Thumbs.db
 .idea/
 .vscode/
+
+# Temporary dev / IDE output
+.codebuddy/
+.tmp_pdf_extract/
+operation_blueprints/
+test_control_library.signal
+test_signal.txt
+
+# Docs temp folders
+docs/Help/
+docs/���Ϊ����/
+
+docs/另存为副本/

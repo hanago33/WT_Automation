@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "主面板",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "WPF"
+  },
+  "scanMeta": {
+    "scanTime": "2026-07-16T17:26:23",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "主面板",
+    "categoryFrameworkId": "WPF",
+    "totalControls": 1,
+    "rawTotalControls": 1
+  },
+  "controlDefinitions": [
+    {
+      "id": "DashboardView_Button_NewSite_Dashboard_New_Site_按钮_Button",
+      "name": "Dashboard New Site 按钮",
+      "role": "来自控件库扫描：",
+      "enabled": true,
+      "windowTitle": "主面板",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "DashboardView_Button_NewSite,Button",
+      "templateKey": "",
+      "uiPath": "Window > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.Module.MainUI.ViewModels.MUPDashboardViewModel > DashboardView_Control_Main_WT > DashboardView_Button_NewSite",
+      "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | 已自动收录到控件库分类：主面板 / WPF",
+      "rawInspectText": "Name: \t \"\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=535,t=128,r=587,b=180]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"DashboardView_Button_NewSite\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MicroScaleMainView_View_Main\n\t MicroScale_TabControl_Site\n\t MUP.Module.MainUI.ViewModels.MUPDashboardViewModel\n\t DashboardView_Control_Main_WT",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "FrameworkId=WPF",
+        "ClassName=Button"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "",
+        "controlType": "Button",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=535,t=128,r=587,b=180]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "27300",
+        "runtimeId": "",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "DashboardView_Button_NewSite",
+        "nativeWindowHandle": "",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [],
+        "ancestors": [
+          "Window",
+          "MicroScaleMainView_View_Main",
+          "MicroScale_TabControl_Site",
+          "MUP.Module.MainUI.ViewModels.MUPDashboardViewModel",
+          "DashboardView_Control_Main_WT"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "automation_id",
+        "recommendedTargetValue": "DashboardView_Button_NewSite"
+      }
+    }
+  ],
+  "lastUpdated": "2026-07-16T17:26:23"
+}

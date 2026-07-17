@@ -67,6 +67,10 @@ def build_locator_recommendation(parsed):
     handle = str(parsed.get("nativeWindowHandle", "")).strip()
     control_type = normalize_control_type_name(parsed.get("controlType", ""), parsed.get("localizedControlType", ""))
 
+    # 过滤掉 SVG path 几何数据、超长乱码等无效 name
+    if name and (_is_garbage_name(name) or len(name) > 80):
+        name = ""
+
     candidates = [
         ("automation_id,control_type", [automation_id, control_type], 100, "automation_id + control_type"),
         ("automation_id,class_name", [automation_id, class_name], 96, "automation_id + class_name"),
@@ -83,6 +87,20 @@ def build_locator_recommendation(parsed):
         if all(str(item).strip() and str(item).strip() != "[null]" for item in values):
             return method, ",".join(values), score, reason
     return "", "", 0, "no_stable_locator"
+
+
+def _is_garbage_name(name):
+    """判断 name 是否是 SVG path / 几何数据 / 乱码，不可作为可读名称"""
+    if not name:
+        return False
+    name = str(name).strip()
+    # SVG path 数据特征：以 M/L/C/A/H/V/Z 开头并包含大量数字和逗号
+    if re.match(r"^[MLCAHVZmlcahvz][\d.,\s\-]+", name) and name.count(",") >= 3:
+        return True
+    # 纯坐标序列
+    if re.match(r"^[\d.,\s]+$", name) and len(name) > 10:
+        return True
+    return False
 
 
 def build_aux_checks(parsed):
@@ -399,6 +417,13 @@ def _classify_control_quality(flat_control):
     has_name = bool(str(flat_control.get("name", "")).strip())
     depth = int(flat_control.get("depth", 0) or 0)
     child_count = len(((flat_control.get("inspectData", {}) or {}).get("children", []) or []))
+
+    # 非动作控件黑名单：Thumb(列宽手柄)、ScrollBar、Separator、Header 等
+    non_actionable_types = {"thumb", "scrollbar", "separator", "header", "titlebar", "statusbar", "menubar", "tooltip", "tooltip"}
+    if control_type in non_actionable_types:
+        return "建议忽略", f"{control_type} 不是动作控件，无需入库"
+
+    # 顶层窗口
     if control_type in {"window"}:
         return "建议忽略", "顶层窗口通常不作为直接动作控件"
     if control_type in {"custom", "pane", "group"} and (child_count >= 3 or score < 80):
@@ -634,12 +659,16 @@ def _append_wrapper_info(flat_controls, seen_identities, wrapper, target_window,
     return True
 
 
-def _walk_wrapper(wrapper, depth, max_depth, target_window, flat_controls, siblings_index=1, path_segments=None):
+def _walk_wrapper(wrapper, depth, max_depth, target_window, flat_controls, siblings_index=1, path_segments=None, parent_index=-1):
     path_segments = list(path_segments or [])
     info = _extract_wrapper_info(wrapper, depth, len(flat_controls) + 1, path_segments, target_window)
+    info["treeLevel"] = depth
+    info["parentIndex"] = parent_index
+    info["siblingsIndex"] = siblings_index
+    current_index = len(flat_controls)
     node = dict(info)
     node["children"] = []
-    flat_controls.append(dict(info))
+    flat_controls.append(info)
 
     if depth >= max_depth:
         return node
@@ -667,6 +696,7 @@ def _walk_wrapper(wrapper, depth, max_depth, target_window, flat_controls, sibli
                 flat_controls,
                 siblings_index=child_index,
                 path_segments=child_path,
+                parent_index=current_index,
             )
         )
 
@@ -873,6 +903,28 @@ def _prune_low_value_region_controls(region_controls, target_window_title):
     return pruned or region_controls
 
 
+def _filter_noise_controls(controls, exclude_offscreen=True, exclude_unidentified_containers=True):
+    """A+C: 过滤离屏控件和无标识容器，减少无关信息"""
+    if not controls:
+        return controls
+    filtered = []
+    for item in controls:
+        if not isinstance(item, dict):
+            continue
+        # A: 过滤离屏控件（IsOffscreen=True）
+        if exclude_offscreen and str(item.get("isOffscreen", "")).strip().lower() == "true":
+            continue
+        # C: 过滤无 name 且无 automationId 的容器（Custom/Pane/Group）
+        if exclude_unidentified_containers:
+            control_type = str(item.get("controlType", "")).strip().lower()
+            has_name = bool(str(item.get("name", "")).strip())
+            has_automation_id = bool(str(item.get("automationId", "")).strip())
+            if control_type in {"custom", "pane", "group"} and not has_name and not has_automation_id:
+                continue
+        filtered.append(item)
+    return filtered
+
+
 def _merge_flat_controls(*groups):
     merged = []
     seen = set()
@@ -936,6 +988,8 @@ def _scan_single_backend_payload(
     region_rect=None,
     excluded_process_ids=None,
     excluded_titles=None,
+    exclude_offscreen=True,
+    exclude_unidentified_containers=True,
 ):
     backend = str(backend or "uia").strip().lower() or "uia"
     max_depth = max(0, int(max_depth))
@@ -997,6 +1051,12 @@ def _scan_single_backend_payload(
     region_controls = _filter_flat_controls_by_region(flat_controls, region_rect)
     region_controls = _prune_low_value_region_controls(region_controls, target_window.get("title", ""))
     _enrich_flat_controls(region_controls, target_window)
+    # A+C: 过滤离屏控件和无标识容器
+    region_controls = _filter_noise_controls(
+        region_controls,
+        exclude_offscreen=exclude_offscreen,
+        exclude_unidentified_containers=exclude_unidentified_containers,
+    )
     control_definitions = [_build_control_definition_from_flat(item, existing_ids) for item in region_controls]
     by_type = {}
     for item in region_controls:
@@ -1031,6 +1091,8 @@ def build_control_map_payload(
     region_rect=None,
     excluded_process_ids=None,
     excluded_titles=None,
+    exclude_offscreen=True,
+    exclude_unidentified_containers=True,
 ):
     requested_backend = str(backend or DEFAULT_BACKEND).strip().lower() or DEFAULT_BACKEND
     backend_candidates = _expand_backend_candidates(requested_backend)
@@ -1045,6 +1107,8 @@ def build_control_map_payload(
                 region_rect=region_rect,
                 excluded_process_ids=excluded_process_ids,
                 excluded_titles=excluded_titles,
+                exclude_offscreen=exclude_offscreen,
+                exclude_unidentified_containers=exclude_unidentified_containers,
             )
         )
 
@@ -1218,6 +1282,8 @@ class ControlMapBuilderApp:
         self.var_backend = tk.StringVar(value=DEFAULT_BACKEND)
         self.var_max_depth = tk.IntVar(value=DEFAULT_MAX_DEPTH)
         self.var_pick_delay = tk.IntVar(value=DEFAULT_PICK_DELAY_SECONDS)
+        self.var_exclude_offscreen = tk.BooleanVar(value=True)
+        self.var_exclude_unidentified = tk.BooleanVar(value=True)
         self.var_status = tk.StringVar(value="准备就绪：建议先切到目标软件窗口，再点击“扫描并保存”。")
         self.var_summary = tk.StringVar(value="尚未扫描控件树。")
         self.current_payload = None
@@ -1245,6 +1311,12 @@ class ControlMapBuilderApp:
         tk.Label(toolbar, text="画框延迟").grid(row=0, column=8, sticky="e", padx=(10, 4))
         tk.Spinbox(toolbar, from_=1, to=10, textvariable=self.var_pick_delay, width=6).grid(row=0, column=9, sticky="w")
         toolbar.columnconfigure(3, weight=1)
+
+        filter_row = tk.Frame(toolbar)
+        filter_row.grid(row=2, column=0, columnspan=10, sticky="w", pady=(6, 0))
+        tk.Checkbutton(filter_row, text="过滤离屏控件", variable=self.var_exclude_offscreen).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Checkbutton(filter_row, text="过滤无标识容器", variable=self.var_exclude_unidentified).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Label(filter_row, text="(勾选后采集时自动丢弃离屏控件和无 name/automationId 的容器，减少无关信息)", fg="#6b7280").pack(side=tk.LEFT)
 
         button_row = tk.Frame(toolbar)
         button_row.grid(row=1, column=0, columnspan=10, sticky="ew", pady=(10, 0))
@@ -1334,6 +1406,8 @@ class ControlMapBuilderApp:
             "backend": self.var_backend.get().strip() or DEFAULT_BACKEND,
             "use_foreground": self.var_scan_mode.get().strip() == "foreground",
             "max_depth": self.var_max_depth.get(),
+            "exclude_offscreen": bool(self.var_exclude_offscreen.get()),
+            "exclude_unidentified_containers": bool(self.var_exclude_unidentified.get()),
         }
 
     def _rebuild_control_groups(self):

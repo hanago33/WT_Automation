@@ -2,7 +2,7 @@
   "version": "1.0",
   "project": "WT_Automation",
   "description": "WT 自动化流程包注册表。由流程链路编辑器自动同步生成，供总控台读取流程包与步骤。",
-  "sourceDefinitionPath": "D:/My_RF_Project/WT_Automation/flow_definition.json",
+  "sourceDefinitionPath": "D:/My_RF_Project/WT_Automation/flow_packages/flow_definition_创建一个新建模.json",
   "storageDir": "D:\\My_RF_Project\\WT_Automation\\flow_packages",
   "runtimeConfig": {
     "gmExe": "",
@@ -12,63 +12,25 @@
   },
   "flowPackages": [
     {
-      "id": "气象数据录入",
-      "name": "test",
+      "id": "test",
+      "name": "创建一个新建模",
       "description": "",
       "stepIds": [
         "step_1",
         "step_2",
         "step_3",
-        "step_4",
         "step_5",
         "step_6",
         "step_7",
         "step_8",
-        "step_9",
-        "step_10",
-        "step_11",
-        "step_12",
-        "step_13",
-        "step_14",
-        "step_15",
-        "step_16",
-        "step_17",
-        "select_dropdown_item",
-        "step_19",
-        "select_dropdown_item_2",
-        "step_21",
-        "step_22",
-        "select_dropdown_item_3",
-        "step_24",
-        "step_25",
-        "step_26",
-        "step_27",
-        "step_28",
-        "step_29",
-        "step_30",
-        "step_31",
-        "step_32",
-        "step_33",
-        "step_34",
-        "select_dropdown_item_4",
-        "step_36",
-        "step_37",
-        "step_38",
-        "step_39",
-        "step_40",
-        "step_41",
-        "select_dropdown_item_5",
-        "step_43",
-        "step_44",
-        "step_45",
-        "step_46"
+        "step_9"
       ]
     }
   ],
   "steps": [
     {
       "id": "step_1",
-      "name": "点击-风机类型",
+      "name": "点击-WT",
       "stage": "converted",
       "strategy": "action",
       "actionType": "action",
@@ -78,7 +40,7 @@
       "codeReference": "",
       "packageRef": "",
       "description": "",
-      "successLog": "点击 创建一个新的气象对象@(48.46,10.82)",
+      "successLog": "点击 创建一个新建模",
       "windowTitle": "",
       "inspectHints": {
         "controlName": "Wind Turbine Type 按钮",
@@ -94,13 +56,13 @@
           "name": "Wind Turbine Type 按钮",
           "role": "来自控件库扫描：",
           "enabled": true,
-          "windowTitle": "",
+          "windowTitle": "创建一个新建模",
           "targetMethod": "automation_id",
           "targetValue": "MUPMicroscaleInformationViewModel_Button_WindTurbineType",
           "templateKey": "",
-          "uiPath": "",
+          "uiPath": "私有",
           "notes": "由控件库扫描生成，运行日志显示该按钮会因错误窗口标题约束退化到模板兜底；此处改为仅使用稳定的 automation_id，避免顶层无关标题拦截结构化定位。",
-          "rawInspectText": "",
+          "rawInspectText": "How found:\tMouse move (1804,791)\n\thwnd=0x0011111E 64bit class=\"HwndWrapper[MUPSmartClient.exe;;03239e65-46f9-4f56-9565-f065a9f36de7]\" style=0x96000000 ex=0x80800ChildId:\t0\nInterfaces:\tIEnumVARIANT IOleWindow\nImpl:\tRemote native IAccessible (UIA-to-MSAA bridge)\nName:\t\"私有\"\nValue:\t[Error: hr=0x80020003 - 找不到成员。]\nRole:\t文字 (0x29)\nState:\t常规 (0x0)\nLocation:\t{l:1760, t:769, w:555, h:33}\nSelection:\t[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]\nDescription:\t[Error: hr=0x80020003 - 找不到成员。]\nKbshortcut:\t\"\"\nDefAction:\t[Error: hr=0x80020003 - 找不到成员。]\nHelp:\t\"\"\nHelpTopic:\t\"\"\nChildCount:\t0\nWindow:\t0x11111E\nFirstChild:\t[null]\nLastChild:\t[null]\nNext:\t[null]\nPrevious:\t[null]\nLeft:\t[null]\nUp:\t[null]\nRight:\t[null]\nDown:\t[null]\nControlType:\t50020\nLocalizedControlType:\t\"text\"\nName:\t\"私有\"\nAcceleratorKey:\t\"\"\nAccessKey:\t\"\"\nHasKeyboardFocus:\tfalse\nIsKeyboardFocusable:\tfalse\nIsEnabled:\ttrue\nAutomationId:\t\"\"\nClassName:\t\"TextBlock\"\nHelpText:\t\"\"\nIsControlElement:\ttrue\nIsContentElement:\ttrue\nIsPassword:\tfalse\nItemType:\t\"\"\nIsOffscreen:\tfalse\nOrientation:\t0\nFrameworkId:\t\"WPF\"\nIsRequiredForForm:\tfalse\nItemStatus:\t\"\"\nOther Props:\tObject has no additional properties\nChildren:\tContainer has no children\nAncestors:\t\"MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue\" : 列表项目 : 已设定焦点,可设定焦点\n\t\"\" : 窗口 : 可设定焦点\n\t\"\" : 窗口 : 可设定焦点\n\t\"桌面 1\" : 客户端 : 可设定焦点\n\t\"桌面 1\" : 窗口 : 可设定焦点\n\t[ No Parent ]",
           "auxChecks": [
             "IsEnabled=True",
             "IsOffscreen=False",
@@ -108,20 +70,20 @@
             "ClassName=Button"
           ],
           "inspectData": {
-            "howFound": "",
-            "name": "",
-            "controlType": "Button",
-            "localizedControlType": "",
-            "boundingRectangle": "[l=262,t=0,r=314,b=52]",
-            "isEnabled": "True",
-            "isOffscreen": "False",
-            "isKeyboardFocusable": "",
-            "hasKeyboardFocus": "",
-            "processId": "27688",
+            "howFound": "Mouse move (1804,791)",
+            "name": "私有",
+            "controlType": "50020",
+            "localizedControlType": "text",
+            "boundingRectangle": "",
+            "isEnabled": "true",
+            "isOffscreen": "false",
+            "isKeyboardFocusable": "false",
+            "hasKeyboardFocus": "false",
+            "processId": "",
             "runtimeId": "",
             "frameworkId": "WPF",
-            "className": "Button",
-            "automationId": "MUPMicroscaleInformationViewModel_Button_WindTurbineType",
+            "className": "TextBlock",
+            "automationId": "",
             "nativeWindowHandle": "",
             "providerDescription": "",
             "legacyName": "",
@@ -131,14 +93,15 @@
             "lastChild": "",
             "next": "",
             "previous": "",
-            "children": [],
+            "children": [
+              "Container has no children"
+            ],
             "ancestors": [
-              "Window",
-              "MTDTitleBar"
+              "\"MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue\" : 列表项目 : 已设定焦点,可设定焦点"
             ],
             "availablePatterns": [],
-            "recommendedTargetMethod": "automation_id",
-            "recommendedTargetValue": "MUPMicroscaleInformationViewModel_Button_WindTurbineType"
+            "recommendedTargetMethod": "name",
+            "recommendedTargetValue": "私有"
           }
         }
       ],
@@ -151,11 +114,11 @@
         },
         "action": "click",
         "controlId": "MUPMicroscaleInformationViewModel_Button_WindTurbineType",
-        "timeoutSeconds": 3,
+        "timeoutSeconds": 3.0,
         "waitBefore": 0.3,
         "waitAfter": 0.3,
         "retryCount": 0,
-        "retryInterval": 1,
+        "retryInterval": 1.0,
         "onError": "stop"
       },
       "auxChecks": [],
@@ -164,7 +127,7 @@
     },
     {
       "id": "step_2",
-      "name": "点击-WT微尺度模拟",
+      "name": "点击-新建一个建模",
       "stage": "converted",
       "strategy": "action",
       "actionType": "action",
@@ -174,323 +137,29 @@
       "codeReference": "",
       "packageRef": "",
       "description": "",
-      "successLog": "成功点击-WT尺度模拟",
-      "windowTitle": "WT微尺度模拟",
+      "successLog": "点击 新建一个建模",
+      "windowTitle": "主面板",
       "inspectHints": {
-        "controlName": "WT微尺度模拟 按钮",
+        "controlName": "Dashboard New Site 按钮",
         "className": "Button",
-        "automationId": "MUPMicroscaleInformationViewModel_Button_Wt",
+        "automationId": "DashboardView_Button_NewSite",
         "controlType": "Button",
-        "uiPath": "Window > MTDTitleBar > MUPMicroscaleInformationViewModel_Button_Wt",
+        "uiPath": "Window > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.Module.MainUI.ViewModels.MUPDashboardViewModel > DashboardView_Control_Main_WT > DashboardView_Button_NewSite",
         "templateKey": ""
       },
       "controls": [
         {
-          "id": "MUPMicroscaleInformationViewModel_Button_Wt",
-          "name": "WT微尺度模拟 按钮",
+          "id": "DashboardView_Button_NewSite_Dashboard_New_Site_按钮_Button",
+          "name": "Dashboard New Site 按钮",
           "role": "来自控件库扫描：",
           "enabled": true,
-          "windowTitle": "WT微尺度模拟",
+          "windowTitle": "主面板",
           "targetMethod": "automation_id,control_type",
-          "targetValue": "MUPMicroscaleInformationViewModel_Button_Wt,Button",
+          "targetValue": "DashboardView_Button_NewSite,Button",
           "templateKey": "",
-          "uiPath": "",
-          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | 保存名=WT微尺度模拟 按钮",
-          "rawInspectText": "",
-          "auxChecks": [
-            "IsEnabled=True",
-            "IsOffscreen=False",
-            "FrameworkId=WPF",
-            "ClassName=Button"
-          ],
-          "inspectData": {
-            "howFound": "",
-            "name": "",
-            "controlType": "Button",
-            "localizedControlType": "",
-            "boundingRectangle": "[l=104,t=0,r=156,b=52]",
-            "isEnabled": "True",
-            "isOffscreen": "False",
-            "isKeyboardFocusable": "",
-            "hasKeyboardFocus": "",
-            "processId": "27688",
-            "runtimeId": "",
-            "frameworkId": "WPF",
-            "className": "Button",
-            "automationId": "MUPMicroscaleInformationViewModel_Button_Wt",
-            "nativeWindowHandle": "",
-            "providerDescription": "",
-            "legacyName": "",
-            "legacyRole": "",
-            "legacyState": "",
-            "firstChild": "",
-            "lastChild": "",
-            "next": "",
-            "previous": "",
-            "children": [],
-            "ancestors": [
-              "Window",
-              "MTDTitleBar"
-            ],
-            "availablePatterns": [],
-            "recommendedTargetMethod": "automation_id",
-            "recommendedTargetValue": "MUPMicroscaleInformationViewModel_Button_Wt"
-          }
-        }
-      ],
-      "stepParams": {},
-      "actionConfig": {
-        "sourceRecorderLine": 9,
-        "positionOffset": {
-          "x": 48.46,
-          "y": 10.82
-        },
-        "action": "click",
-        "controlId": "MUPMicroscaleInformationViewModel_Button_Wt",
-        "timeoutSeconds": 3,
-        "waitBefore": 0.3,
-        "waitAfter": 0.3,
-        "retryCount": 0,
-        "retryInterval": 1,
-        "onError": "fallback",
-        "fallbackMode": "template_match",
-        "fallbackTemplate": "image_templates\\Icons\\WT微尺度模拟.png"
-      },
-      "auxChecks": [],
-      "fallbacks": [],
-      "notes": ""
-    },
-    {
-      "id": "step_3",
-      "name": "点击-地理信息数据",
-      "stage": "converted",
-      "strategy": "action",
-      "actionType": "action",
-      "topLevel": false,
-      "enabled": true,
-      "codeSymbol": "",
-      "codeReference": "",
-      "packageRef": "",
-      "description": "",
-      "successLog": "成功点击-地理信息数据",
-      "windowTitle": "地理信息数据",
-      "inspectHints": {
-        "controlName": "Geographical Data 按钮",
-        "className": "Button",
-        "automationId": "MUPMicroscaleInformationViewModel_Button_GeographicalData",
-        "controlType": "Button",
-        "uiPath": "Window > MTDTitleBar > MUPMicroscaleInformationViewModel_Button_GeographicalData",
-        "templateKey": ""
-      },
-      "controls": [
-        {
-          "id": "MUPMicroscaleInformationViewModel_Button_GeographicalData_MUPMicroscale_Informat",
-          "name": "Geographical Data 按钮",
-          "role": "来自控件库扫描：",
-          "enabled": true,
-          "windowTitle": "WT微尺度模拟",
-          "targetMethod": "automation_id,control_type",
-          "targetValue": "MUPMicroscaleInformationViewModel_Button_GeographicalData,Button",
-          "templateKey": "",
-          "uiPath": "",
-          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | 保存名=Geographical Data 按钮",
-          "rawInspectText": "",
-          "auxChecks": [
-            "IsEnabled=True",
-            "IsOffscreen=False",
-            "FrameworkId=WPF",
-            "ClassName=Button"
-          ],
-          "inspectData": {
-            "howFound": "",
-            "name": "",
-            "controlType": "Button",
-            "localizedControlType": "",
-            "boundingRectangle": "[l=158,t=0,r=210,b=52]",
-            "isEnabled": "True",
-            "isOffscreen": "False",
-            "isKeyboardFocusable": "",
-            "hasKeyboardFocus": "",
-            "processId": "27688",
-            "runtimeId": "",
-            "frameworkId": "WPF",
-            "className": "Button",
-            "automationId": "MUPMicroscaleInformationViewModel_Button_GeographicalData",
-            "nativeWindowHandle": "",
-            "providerDescription": "",
-            "legacyName": "",
-            "legacyRole": "",
-            "legacyState": "",
-            "firstChild": "",
-            "lastChild": "",
-            "next": "",
-            "previous": "",
-            "children": [],
-            "ancestors": [
-              "Window",
-              "MTDTitleBar"
-            ],
-            "availablePatterns": [],
-            "recommendedTargetMethod": "automation_id",
-            "recommendedTargetValue": "MUPMicroscaleInformationViewModel_Button_GeographicalData"
-          }
-        }
-      ],
-      "stepParams": {},
-      "actionConfig": {
-        "sourceRecorderLine": 9,
-        "positionOffset": {
-          "x": 48.46,
-          "y": 10.82
-        },
-        "action": "click",
-        "controlId": "MUPMicroscaleInformationViewModel_Button_GeographicalData_MUPMicroscale_Informat",
-        "timeoutSeconds": 3,
-        "waitBefore": 0.3,
-        "waitAfter": 0.3,
-        "retryCount": 0,
-        "retryInterval": 1,
-        "onError": "fallback",
-        "fallbackMode": "template_match",
-        "fallbackTemplate": "image_templates\\Icons\\地理信息数据.png"
-      },
-      "auxChecks": [],
-      "fallbacks": [],
-      "notes": ""
-    },
-    {
-      "id": "step_4",
-      "name": "点击-气象对象",
-      "stage": "converted",
-      "strategy": "action",
-      "actionType": "action",
-      "topLevel": false,
-      "enabled": true,
-      "codeSymbol": "",
-      "codeReference": "",
-      "packageRef": "",
-      "description": "",
-      "successLog": "点击 创建一个新的气象对象@(48.46,10.82)",
-      "windowTitle": "气象对象",
-      "inspectHints": {
-        "controlName": "Climatology 按钮",
-        "className": "Button",
-        "automationId": "MUPMicroscaleInformationViewModel_Button_Climatology",
-        "controlType": "Button",
-        "uiPath": "Window > MTDTitleBar > MUPMicroscaleInformationViewModel_Button_Climatology",
-        "templateKey": ""
-      },
-      "controls": [
-        {
-          "id": "MUPMicroscaleInformationViewModel_Button_Climatology",
-          "name": "Climatology 按钮",
-          "role": "来自控件库扫描：",
-          "enabled": true,
-          "windowTitle": "气象对象",
-          "targetMethod": "automation_id,control_type",
-          "targetValue": "MUPMicroscaleInformationViewModel_Button_Climatology,Button",
-          "templateKey": "",
-          "uiPath": "",
-          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | 保存名=Climatology 按钮",
-          "rawInspectText": "",
-          "auxChecks": [
-            "IsEnabled=True",
-            "IsOffscreen=False",
-            "FrameworkId=WPF",
-            "ClassName=Button"
-          ],
-          "inspectData": {
-            "howFound": "",
-            "name": "",
-            "controlType": "Button",
-            "localizedControlType": "",
-            "boundingRectangle": "[l=210,t=0,r=262,b=52]",
-            "isEnabled": "True",
-            "isOffscreen": "False",
-            "isKeyboardFocusable": "",
-            "hasKeyboardFocus": "",
-            "processId": "27688",
-            "runtimeId": "",
-            "frameworkId": "WPF",
-            "className": "Button",
-            "automationId": "MUPMicroscaleInformationViewModel_Button_Climatology",
-            "nativeWindowHandle": "",
-            "providerDescription": "",
-            "legacyName": "",
-            "legacyRole": "",
-            "legacyState": "",
-            "firstChild": "",
-            "lastChild": "",
-            "next": "",
-            "previous": "",
-            "children": [],
-            "ancestors": [
-              "Window",
-              "MTDTitleBar"
-            ],
-            "availablePatterns": [],
-            "recommendedTargetMethod": "automation_id",
-            "recommendedTargetValue": "MUPMicroscaleInformationViewModel_Button_Climatology"
-          }
-        }
-      ],
-      "stepParams": {},
-      "actionConfig": {
-        "sourceRecorderLine": 9,
-        "positionOffset": {
-          "x": 48.46,
-          "y": 10.82
-        },
-        "action": "click",
-        "controlId": "MUPMicroscaleInformationViewModel_Button_Climatology",
-        "timeoutSeconds": 3,
-        "waitBefore": 0.3,
-        "waitAfter": 0.3,
-        "retryCount": 0,
-        "retryInterval": 1,
-        "onError": "fallback",
-        "fallbackMode": "template_match",
-        "fallbackTemplate": "image_templates\\Icons\\气象数据_按钮.png"
-      },
-      "auxChecks": [],
-      "fallbacks": [],
-      "notes": ""
-    },
-    {
-      "id": "step_5",
-      "name": "点击-新建气象对象",
-      "stage": "converted",
-      "strategy": "action",
-      "actionType": "action",
-      "topLevel": false,
-      "enabled": true,
-      "codeSymbol": "",
-      "codeReference": "",
-      "packageRef": "",
-      "description": "",
-      "successLog": "点击 创建一个新的气象对象",
-      "windowTitle": "气象对象",
-      "inspectHints": {
-        "controlName": "Meteo Data Add New 按钮",
-        "className": "Button",
-        "automationId": "MeteoData_Button_AddNew",
-        "controlType": "Button",
-        "uiPath": "Window > MUPClimatologyMainView > MUPClimatologyManagementView > MeteoData_Button_AddNew",
-        "templateKey": ""
-      },
-      "controls": [
-        {
-          "id": "MeteoData_Button_AddNew_Meteo_Data_Add_New_按钮_Button",
-          "name": "Meteo Data Add New 按钮",
-          "role": "来自控件库扫描：",
-          "enabled": true,
-          "windowTitle": "气象对象",
-          "targetMethod": "automation_id,control_type",
-          "targetValue": "MeteoData_Button_AddNew,Button",
-          "templateKey": "",
-          "uiPath": "",
+          "uiPath": "Window > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.Module.MainUI.ViewModels.MUPDashboardViewModel > DashboardView_Control_Main_WT > DashboardView_Button_NewSite",
           "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作",
-          "rawInspectText": "",
+          "rawInspectText": "Name: \t \"\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=535,t=128,r=587,b=180]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"DashboardView_Button_NewSite\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MicroScaleMainView_View_Main\n\t MicroScale_TabControl_Site\n\t MUP.Module.MainUI.ViewModels.MUPDashboardViewModel\n\t DashboardView_Control_Main_WT",
           "auxChecks": [
             "IsEnabled=True",
             "IsOffscreen=False",
@@ -502,16 +171,16 @@
             "name": "",
             "controlType": "Button",
             "localizedControlType": "",
-            "boundingRectangle": "[l=2274,t=131,r=2326,b=183]",
+            "boundingRectangle": "[l=535,t=128,r=587,b=180]",
             "isEnabled": "True",
             "isOffscreen": "False",
             "isKeyboardFocusable": "",
             "hasKeyboardFocus": "",
-            "processId": "29224",
+            "processId": "27300",
             "runtimeId": "",
             "frameworkId": "WPF",
             "className": "Button",
-            "automationId": "MeteoData_Button_AddNew",
+            "automationId": "DashboardView_Button_NewSite",
             "nativeWindowHandle": "",
             "providerDescription": "",
             "legacyName": "",
@@ -524,12 +193,14 @@
             "children": [],
             "ancestors": [
               "Window",
-              "MUPClimatologyMainView",
-              "MUPClimatologyManagementView"
+              "MicroScaleMainView_View_Main",
+              "MicroScale_TabControl_Site",
+              "MUP.Module.MainUI.ViewModels.MUPDashboardViewModel",
+              "DashboardView_Control_Main_WT"
             ],
             "availablePatterns": [],
             "recommendedTargetMethod": "automation_id",
-            "recommendedTargetValue": "MeteoData_Button_AddNew"
+            "recommendedTargetValue": "DashboardView_Button_NewSite"
           }
         }
       ],
@@ -541,12 +212,12 @@
           "y": 10.82
         },
         "action": "click",
-        "controlId": "MeteoData_Button_AddNew_Meteo_Data_Add_New_按钮_Button",
-        "timeoutSeconds": 3,
+        "controlId": "DashboardView_Button_NewSite_Dashboard_New_Site_按钮_Button",
+        "timeoutSeconds": 3.0,
         "waitBefore": 0.3,
         "waitAfter": 0.3,
         "retryCount": 0,
-        "retryInterval": 1,
+        "retryInterval": 1.0,
         "onError": "fallback",
         "fallbackMode": "template_match",
         "fallbackTemplate": "image_templates\\Icons\\新建_按钮.png"
@@ -556,110 +227,10 @@
       "notes": ""
     },
     {
-      "id": "step_6",
-      "name": "键入-测风塔名称",
-      "stage": "",
-      "strategy": "action",
-      "actionType": "action",
-      "topLevel": true,
-      "enabled": true,
-      "codeSymbol": "",
-      "codeReference": "",
-      "packageRef": "",
-      "description": "通过父窗口相对区域点击访问级别下拉框。",
-      "successLog": "",
-      "windowTitle": "创建一个新的气象对象",
-      "inspectHints": {
-        "controlName": "",
-        "className": "",
-        "automationId": "",
-        "controlType": "",
-        "uiPath": "",
-        "templateKey": ""
-      },
-      "controls": [],
-      "stepParams": {},
-      "actionConfig": {
-        "action": "type_text_relative",
-        "text": "CFT01",
-        "timeoutSeconds": 3,
-        "waitBefore": 0,
-        "waitAfter": 0.15,
-        "retryCount": 0,
-        "retryInterval": 1,
-        "onError": "continue",
-        "parentWindow": {
-          "title": "创建一个新的气象对象",
-          "className": "Window",
-          "frameworkId": "WPF"
-        },
-        "relativeRegion": {
-          "x": 0.0938,
-          "y": 0.5263,
-          "width": 0.7995,
-          "height": 0.0579,
-          "anchor": "center"
-        }
-      },
-      "auxChecks": [],
-      "fallbacks": [],
-      "notes": ""
-    },
-    {
-      "id": "step_7",
-      "name": "键入-测风塔海拔",
-      "stage": "",
-      "strategy": "action",
-      "actionType": "action",
-      "topLevel": true,
-      "enabled": true,
-      "codeSymbol": "",
-      "codeReference": "",
-      "packageRef": "",
-      "description": "通过父窗口相对区域点击访问级别下拉框。",
-      "successLog": "",
-      "windowTitle": "创建一个新的气象对象",
-      "inspectHints": {
-        "controlName": "",
-        "className": "",
-        "automationId": "",
-        "controlType": "",
-        "uiPath": "",
-        "templateKey": ""
-      },
-      "controls": [],
-      "stepParams": {},
-      "actionConfig": {
-        "action": "type_text_relative",
-        "text": "99",
-        "timeoutSeconds": 3,
-        "waitBefore": 0,
-        "waitAfter": 0.15,
-        "retryCount": 0,
-        "retryInterval": 1,
-        "onError": "continue",
-        "parentWindow": {
-          "title": "创建一个新的气象对象",
-          "className": "Window",
-          "frameworkId": "WPF"
-        },
-        "relativeRegion": {
-          "x": 0.0925,
-          "y": 0.5895,
-          "width": 0.8003,
-          "height": 0.0474,
-          "anchor": "center"
-        }
-      },
-      "auxChecks": [],
-      "fallbacks": [],
-      "notes": ""
-    },
-    {
-      "id": "step_8",
+      "id": "step_4",
       "name": "点击-访问级别",
       "stage": "",
-      "strategy": "flow_ref",
+      "strategy": "action",
       "actionType": "action",
       "topLevel": true,
       "enabled": true,
@@ -668,7 +239,7 @@
       "packageRef": "",
       "description": "通过父窗口相对区域点击访问级别下拉框。",
       "successLog": "",
-      "windowTitle": "创建一个新的气象对象",
+      "windowTitle": "创建一个新建模",
       "inspectHints": {
         "controlName": "",
         "className": "",
@@ -681,31 +252,81 @@
       "stepParams": {},
       "actionConfig": {
         "action": "click_relative_region",
-        "timeoutSeconds": 3,
-        "waitBefore": 0,
-        "waitAfter": 0.15,
-        "retryCount": 0,
-        "retryInterval": 1,
-        "onError": "continue",
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
         "parentWindow": {
-          "title": "创建一个新的气象对象",
+          "title": "创建一个新建模",
           "className": "Window",
           "frameworkId": "WPF"
         },
         "relativeRegion": {
-          "x": 0.0954,
-          "y": 0.6559,
-          "width": 0.8011,
-          "height": 0.0461,
+          "x": 0.094,
+          "y": 0.332,
+          "width": 0.7727,
+          "height": 0.0777,
           "anchor": "center"
-        }
+        },
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
       },
       "auxChecks": [],
       "fallbacks": [],
       "notes": ""
     },
     {
-      "id": "step_9",
+      "id": "step_3",
+      "name": "键入-项目名称",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "通过父窗口相对区域点击访问级别下拉框。",
+      "successLog": "",
+      "windowTitle": "创建一个新建模",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "type_text_relative",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.0,
+        "waitAfter": 0.15,
+        "parentWindow": {
+          "title": "创建一个新建模",
+          "className": "Window",
+          "frameworkId": "WPF"
+        },
+        "relativeRegion": {
+          "x": 0.0967,
+          "y": 0.2311,
+          "width": 0.7727,
+          "height": 0.0854,
+          "anchor": "center"
+        },
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue",
+        "text": "20260716_Model_Test"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "step_5",
       "name": "选择-私有分组",
       "stage": "",
       "strategy": "action",
@@ -717,53 +338,52 @@
       "packageRef": "",
       "description": "通过列表项父容器控件定位并选择创建气象对象弹窗中的私有分组。",
       "successLog": "选择 私有分组",
-      "windowTitle": "创建一个新的气象对象",
+      "windowTitle": "创建新的风机类型",
       "inspectHints": {
-        "controlName": "私有列表项",
-        "className": "ListBoxItem",
+        "controlName": "私有",
+        "className": "TextBlock",
         "automationId": "",
-        "controlType": "ListItem",
-        "uiPath": "MTDLocalizedEnumValue > 私有",
+        "controlType": "50020",
+        "uiPath": "私有",
         "templateKey": ""
       },
       "controls": [
         {
-          "id": "step_8_control_1",
-          "name": "私有分组",
+          "id": "step_6_control_1",
+          "name": "私有",
           "role": "",
           "enabled": true,
-          "windowTitle": "创建一个新的气象对象",
-          "targetMethod": "class_name",
-          "targetValue": "ListBoxItem",
+          "windowTitle": "创建一个新建模",
+          "targetMethod": "name",
+          "targetValue": "私有",
           "templateKey": "",
-          "uiPath": "",
+          "uiPath": "私有",
           "notes": "",
-          "rawInspectText": "",
+          "rawInspectText": "How found:\tMouse move (1804,791)\n\thwnd=0x0011111E 64bit class=\"HwndWrapper[MUPSmartClient.exe;;03239e65-46f9-4f56-9565-f065a9f36de7]\" style=0x96000000 ex=0x80800ChildId:\t0\nInterfaces:\tIEnumVARIANT IOleWindow\nImpl:\tRemote native IAccessible (UIA-to-MSAA bridge)\nName:\t\"私有\"\nValue:\t[Error: hr=0x80020003 - 找不到成员。]\nRole:\t文字 (0x29)\nState:\t常规 (0x0)\nLocation:\t{l:1760, t:769, w:555, h:33}\nSelection:\t[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]\nDescription:\t[Error: hr=0x80020003 - 找不到成员。]\nKbshortcut:\t\"\"\nDefAction:\t[Error: hr=0x80020003 - 找不到成员。]\nHelp:\t\"\"\nHelpTopic:\t\"\"\nChildCount:\t0\nWindow:\t0x11111E\nFirstChild:\t[null]\nLastChild:\t[null]\nNext:\t[null]\nPrevious:\t[null]\nLeft:\t[null]\nUp:\t[null]\nRight:\t[null]\nDown:\t[null]\nControlType:\t50020\nLocalizedControlType:\t\"text\"\nName:\t\"私有\"\nAcceleratorKey:\t\"\"\nAccessKey:\t\"\"\nHasKeyboardFocus:\tfalse\nIsKeyboardFocusable:\tfalse\nIsEnabled:\ttrue\nAutomationId:\t\"\"\nClassName:\t\"TextBlock\"\nHelpText:\t\"\"\nIsControlElement:\ttrue\nIsContentElement:\ttrue\nIsPassword:\tfalse\nItemType:\t\"\"\nIsOffscreen:\tfalse\nOrientation:\t0\nFrameworkId:\t\"WPF\"\nIsRequiredForForm:\tfalse\nItemStatus:\t\"\"\nOther Props:\tObject has no additional properties\nChildren:\tContainer has no children\nAncestors:\t\"MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue\" : 列表项目 : 已设定焦点,可设定焦点\n\t\"\" : 窗口 : 可设定焦点\n\t\"\" : 窗口 : 可设定焦点\n\t\"桌面 1\" : 客户端 : 可设定焦点\n\t\"桌面 1\" : 窗口 : 可设定焦点\n\t[ No Parent ]",
           "auxChecks": [
             "IsEnabled=true",
             "IsOffscreen=false",
-            "IsKeyboardFocusable=true",
-            "HasKeyboardFocus=true",
+            "IsKeyboardFocusable=false",
+            "HasKeyboardFocus=false",
             "FrameworkId=WPF",
-            "ClassName=ListBoxItem",
-            "LocalizedControlType=list item"
+            "ClassName=TextBlock"
           ],
           "inspectData": {
-            "howFound": "Focus [o:0xC3C,c:0x0]",
-            "name": "MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue",
-            "controlType": "ListItem",
-            "localizedControlType": "list item",
-            "boundingRectangle": "{l:838, t:1000, w:985, h:36}",
+            "howFound": "Mouse move (1804,791)",
+            "name": "私有",
+            "controlType": "50020",
+            "localizedControlType": "text",
+            "boundingRectangle": "",
             "isEnabled": "true",
             "isOffscreen": "false",
-            "isKeyboardFocusable": "true",
-            "hasKeyboardFocus": "true",
+            "isKeyboardFocusable": "false",
+            "hasKeyboardFocus": "false",
             "processId": "",
             "runtimeId": "",
             "frameworkId": "WPF",
-            "className": "ListBoxItem",
+            "className": "TextBlock",
             "automationId": "",
-            "nativeWindowHandle": "0x13152E",
+            "nativeWindowHandle": "",
             "providerDescription": "",
             "legacyName": "",
             "legacyRole": "",
@@ -773,27 +393,314 @@
             "next": "",
             "previous": "",
             "children": [
-              "私有 | TextBlock | Text"
+              "Container has no children"
             ],
-            "ancestors": [],
+            "ancestors": [
+              "\"MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue\" : 列表项目 : 已设定焦点,可设定焦点"
+            ],
             "availablePatterns": [],
-            "recommendedTargetMethod": "class_name",
-            "recommendedTargetValue": "ListBoxItem"
+            "recommendedTargetMethod": "name",
+            "recommendedTargetValue": "私有"
           }
         }
       ],
       "stepParams": {},
       "actionConfig": {
-        "action": "double_click",
-        "controlId": "step_8_control_1",
-        "timeoutSeconds": 3,
-        "waitBefore": 1,
-        "waitAfter": 1,
+        "action": "select_dropdown_item_runtime",
+        "controlId": "step_6_control_1",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 1.0,
+        "waitAfter": 1.0,
         "retryCount": 1,
-        "retryInterval": 1,
+        "retryInterval": 1.0,
         "onError": "fallback",
         "fallbackMode": "template_match",
         "fallbackTemplate": "image_templates\\draw_down\\私有.png"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "step_6",
+      "name": "键入-项目说明",
+      "stage": "",
+      "strategy": "script",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "通过父窗口相对区域点击访问级别下拉框。",
+      "successLog": "",
+      "windowTitle": "创建一个新建模",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "type_text_relative",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.0,
+        "waitAfter": 0.15,
+        "parentWindow": {
+          "title": "创建一个新建模",
+          "className": "Window",
+          "frameworkId": "WPF"
+        },
+        "relativeRegion": {
+          "x": 0.0,
+          "y": 0.5388,
+          "width": 0.8945,
+          "height": 0.2272,
+          "anchor": "center"
+        },
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue",
+        "text": "测试项目"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "step_7",
+      "name": "点击-确认创建新建模",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "通过父窗口相对区域点击目标位置。",
+      "successLog": "",
+      "windowTitle": "创建一个新建模",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click_relative_region",
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "parentWindow": {
+          "title": "创建一个新建模",
+          "className": "Window",
+          "frameworkId": "WPF"
+        },
+        "relativeRegion": {
+          "x": 0.6157,
+          "y": 0.8534,
+          "width": 0.1624,
+          "height": 0.0874,
+          "anchor": "center"
+        },
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "step_8",
+      "name": "点击-开打风机版本管理",
+      "stage": "custom",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "通过流程链路匹配点击目标按钮。优先使用 automation_id + Button，名称仅作为补充。",
+      "successLog": "",
+      "windowTitle": "版本管理",
+      "inspectHints": {
+        "controlName": "WTType Version Manager Edit Open Version 按钮",
+        "className": "Button",
+        "automationId": "WTTypeVersionManagerEditView_Button_OpenVersion",
+        "controlType": "Button",
+        "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPWindTurbineTypeEditorLeftSideView > ScrollViewer > MTDTileView_Button_ToggleState > WTTypeVersionManagerEditView_Button_OpenVersion",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "WTTypeVersionManagerEditView_Button_OpenVersion_WTType_Version_Manager_Edit_Open",
+          "name": "WTType Version Manager Edit Open Version 按钮",
+          "role": "来自控件库扫描：",
+          "enabled": true,
+          "windowTitle": "版本管理",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeVersionManagerEditView_Button_OpenVersion,Button",
+          "templateKey": "",
+          "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPWindTurbineTypeEditorLeftSideView > ScrollViewer > MTDTileView_Button_ToggleState > WTTypeVersionManagerEditView_Button_OpenVersion",
+          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作",
+          "rawInspectText": "Name: \t \"\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=611,t=963,r=653,b=1005]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"WTTypeVersionManagerEditView_Button_OpenVersion\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPWindTurbineTypeMainView\n\t MUPWindTurbineTypeEditorView\n\t MUPWindTurbineTypeEditorLeftSideView\n\t ScrollViewer\n\t MTDTileView_Button_ToggleState",
+          "auxChecks": [
+            "IsEnabled=True",
+            "IsOffscreen=False",
+            "FrameworkId=WPF",
+            "ClassName=Button"
+          ],
+          "inspectData": {
+            "howFound": "",
+            "name": "",
+            "controlType": "Button",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=611,t=963,r=653,b=1005]",
+            "isEnabled": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "27300",
+            "runtimeId": "",
+            "frameworkId": "WPF",
+            "className": "Button",
+            "automationId": "WTTypeVersionManagerEditView_Button_OpenVersion",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [],
+            "ancestors": [
+              "Window",
+              "MUPWindTurbineTypeMainView",
+              "MUPWindTurbineTypeEditorView",
+              "MUPWindTurbineTypeEditorLeftSideView",
+              "ScrollViewer",
+              "MTDTileView_Button_ToggleState"
+            ],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "automation_id",
+            "recommendedTargetValue": "WTTypeVersionManagerEditView_Button_OpenVersion"
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "controlId": "WTTypeVersionManagerEditView_Button_OpenVersion_WTType_Version_Manager_Edit_Open",
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "step_9",
+      "name": "点击-添加性能曲线",
+      "stage": "custom",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "通过流程链路匹配点击目标按钮。优先使用 automation_id + Button，名称仅作为补充。",
+      "successLog": "",
+      "windowTitle": "性能曲线",
+      "inspectHints": {
+        "controlName": "Wind Turbine Type Managers",
+        "className": "RadTabControl",
+        "automationId": "WindTurbineType_TabControl_Managers",
+        "controlType": "Tab",
+        "uiPath": "Window > MUPWindTurbineTypeMainView > WindTurbineType_TabControl_Managers",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "WindTurbineType_TabControl_Managers_Wind_Turbine_Type_Managers_Tab",
+          "name": "Wind Turbine Type Managers",
+          "role": "来自控件库扫描：",
+          "enabled": true,
+          "windowTitle": "性能曲线",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WindTurbineType_TabControl_Managers,Tab",
+          "templateKey": "",
+          "uiPath": "Window > MUPWindTurbineTypeMainView > WindTurbineType_TabControl_Managers",
+          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位策略稳定",
+          "rawInspectText": "Name: \t \"\"\nControlType: \t Tab\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=20,t=122,r=2543,b=1497]\nIsEnabled: \t True\nIsOffscreen: \t True\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"RadTabControl\"\nAutomationId: \t \"WindTurbineType_TabControl_Managers\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPWindTurbineTypeMainView",
+          "auxChecks": [
+            "IsEnabled=True",
+            "IsOffscreen=True",
+            "FrameworkId=WPF",
+            "ClassName=RadTabControl"
+          ],
+          "inspectData": {
+            "howFound": "",
+            "name": "",
+            "controlType": "Tab",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=20,t=122,r=2543,b=1497]",
+            "isEnabled": "True",
+            "isOffscreen": "True",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "27300",
+            "runtimeId": "",
+            "frameworkId": "WPF",
+            "className": "RadTabControl",
+            "automationId": "WindTurbineType_TabControl_Managers",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [],
+            "ancestors": [
+              "Window",
+              "MUPWindTurbineTypeMainView"
+            ],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "automation_id",
+            "recommendedTargetValue": "WindTurbineType_TabControl_Managers"
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "controlId": "WindTurbineType_TabControl_Managers_Wind_Turbine_Type_Managers_Tab",
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
       },
       "auxChecks": [],
       "fallbacks": [],
@@ -901,56 +808,6 @@
       "notes": ""
     },
     {
-      "id": "step_12",
-      "name": "点击-确认创建气象数据",
-      "stage": "",
-      "strategy": "action",
-      "actionType": "action",
-      "topLevel": true,
-      "enabled": true,
-      "codeSymbol": "",
-      "codeReference": "",
-      "packageRef": "",
-      "description": "通过父窗口相对区域点击输入文本。",
-      "successLog": "",
-      "windowTitle": "创建一个新的气象对象",
-      "inspectHints": {
-        "controlName": "",
-        "className": "",
-        "automationId": "",
-        "controlType": "",
-        "uiPath": "",
-        "templateKey": ""
-      },
-      "controls": [],
-      "stepParams": {},
-      "actionConfig": {
-        "action": "click_relative_region",
-        "text": "${runtime.sourceFilePath}",
-        "timeoutSeconds": 3,
-        "waitBefore": 0,
-        "waitAfter": 0.15,
-        "retryCount": 0,
-        "retryInterval": 1,
-        "onError": "continue",
-        "parentWindow": {
-          "title": "创建一个新的气象对象",
-          "className": "Window",
-          "frameworkId": "WPF"
-        },
-        "relativeRegion": {
-          "x": 0.7711,
-          "y": 0.8987,
-          "width": 0.099,
-          "height": 0.0579,
-          "anchor": "center"
-        }
-      },
-      "auxChecks": [],
-      "fallbacks": [],
-      "notes": ""
-    },
-    {
       "id": "step_13",
       "name": "点击-导入时间序列数据",
       "stage": "converted",
@@ -963,7 +820,7 @@
       "packageRef": "",
       "description": "",
       "successLog": "点击 导入时间序列文件",
-      "windowTitle": "",
+      "windowTitle": "导入时间序列文件",
       "inspectHints": {
         "controlName": "MUPClimatology Edit Import Time Series File 按钮 2",
         "className": "Button",
@@ -1273,7 +1130,15 @@
           "y": 0.2174,
           "width": 0.1554,
           "height": 0.0321,
-          "anchor": "center"
+          "anchor": "center",
+          "referenceWindowRect": {
+            "left": 115,
+            "top": 25,
+            "right": 2444,
+            "bottom": 1490,
+            "width": 2329,
+            "height": 1465
+          }
         }
       },
       "auxChecks": [],
@@ -1323,7 +1188,15 @@
           "y": 0.1812,
           "width": 0.0743,
           "height": 0.028,
-          "anchor": "center"
+          "anchor": "center",
+          "referenceWindowRect": {
+            "left": 115,
+            "top": 25,
+            "right": 2444,
+            "bottom": 1490,
+            "width": 2329,
+            "height": 1465
+          }
         }
       },
       "auxChecks": [],
@@ -1466,7 +1339,15 @@
           "y": 0.1809,
           "width": 0.1696,
           "height": 0.0287,
-          "anchor": "center"
+          "anchor": "center",
+          "referenceWindowRect": {
+            "left": 115,
+            "top": 25,
+            "right": 2444,
+            "bottom": 1490,
+            "width": 2329,
+            "height": 1465
+          }
         }
       },
       "auxChecks": [],
@@ -1609,7 +1490,15 @@
           "y": 0.2174,
           "width": 0.1683,
           "height": 0.028,
-          "anchor": "center"
+          "anchor": "center",
+          "referenceWindowRect": {
+            "left": 115,
+            "top": 25,
+            "right": 2444,
+            "bottom": 1490,
+            "width": 2329,
+            "height": 1465
+          }
         },
         "text": "125"
       },
@@ -1660,7 +1549,15 @@
           "y": 0.1775,
           "width": 0.155,
           "height": 0.0314,
-          "anchor": "center"
+          "anchor": "center",
+          "referenceWindowRect": {
+            "left": 115,
+            "top": 25,
+            "right": 2444,
+            "bottom": 1490,
+            "width": 2329,
+            "height": 1465
+          }
         }
       },
       "auxChecks": [],
@@ -1803,7 +1700,15 @@
           "y": 0.2123,
           "width": 0.1559,
           "height": 0.03,
-          "anchor": "center"
+          "anchor": "center",
+          "referenceWindowRect": {
+            "left": 115,
+            "top": 25,
+            "right": 2444,
+            "bottom": 1490,
+            "width": 2329,
+            "height": 1465
+          }
         },
         "text": "125"
       },
@@ -1856,7 +1761,15 @@
           "y": 0.5078,
           "width": 0.155,
           "height": 0.0355,
-          "anchor": "center"
+          "anchor": "center",
+          "referenceWindowRect": {
+            "left": 115,
+            "top": 25,
+            "right": 2444,
+            "bottom": 1490,
+            "width": 2329,
+            "height": 1465
+          }
         }
       },
       "auxChecks": [],
@@ -1908,7 +1821,15 @@
           "y": 0.572,
           "width": 0.1563,
           "height": 0.0369,
-          "anchor": "center"
+          "anchor": "center",
+          "referenceWindowRect": {
+            "left": 115,
+            "top": 25,
+            "right": 2444,
+            "bottom": 1490,
+            "width": 2329,
+            "height": 1465
+          }
         }
       },
       "auxChecks": [],
@@ -1960,7 +1881,15 @@
           "y": 0.9495,
           "width": 0.0588,
           "height": 0.03,
-          "anchor": "center"
+          "anchor": "center",
+          "referenceWindowRect": {
+            "left": 115,
+            "top": 25,
+            "right": 2444,
+            "bottom": 1490,
+            "width": 2329,
+            "height": 1465
+          }
         }
       },
       "auxChecks": [],
@@ -3684,5 +3613,5 @@
       "notes": ""
     }
   ],
-  "lastUpdated": "2026-07-03T18:41:42"
+  "lastUpdated": "2026-07-16T17:27:47"
 }

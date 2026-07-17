@@ -24,6 +24,20 @@ _GET_STEP_DEFINITION = lambda step_id: {}
 _LOG_STEP = lambda message: None
 
 
+# #region debug-point fan-type-create-error:report
+
+def _emit_fan_type_create_debug_event(hypothesis_id, location, msg, data=None):
+    try:
+        debug_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dbg", "trae-debug-log-fan-type-create-error.ndjson")
+        os.makedirs(os.path.dirname(debug_file), exist_ok=True)
+        with open(debug_file, "a", encoding="utf-8") as file_obj:
+            file_obj.write(json.dumps({"sessionId": "fan-type-create-error", "runId": "pre-fix", "hypothesisId": hypothesis_id, "location": location, "msg": "[DEBUG] " + str(msg), "data": data or {}, "ts": int(time.time() * 1000)}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+# #endregion
+
+
 def _emit_debug_event(hypothesis_id, location, msg, data=None):
     try:
         debug_file = os.path.join(
@@ -2406,8 +2420,42 @@ def normalize_relative_region(relative_region):
     return normalized
 
 
+def get_relative_region_reference_window_rect(relative_region):
+    relative_region = relative_region if isinstance(relative_region, dict) else {}
+    for key in ("referenceWindowRect", "recordedWindowRect"):
+        candidate = relative_region.get(key)
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            left = int(candidate.get("left", 0))
+            top = int(candidate.get("top", 0))
+            width = int(candidate.get("width", 0))
+            height = int(candidate.get("height", 0))
+            right = int(candidate.get("right", left + width))
+            bottom = int(candidate.get("bottom", top + height))
+        except Exception:
+            continue
+        if width <= 0 and right > left:
+            width = right - left
+        if height <= 0 and bottom > top:
+            height = bottom - top
+        if width <= 0 or height <= 0:
+            continue
+        return {
+            "left": left,
+            "top": top,
+            "right": left + width,
+            "bottom": top + height,
+            "width": width,
+            "height": height,
+        }
+    return None
+
+
 def resolve_relative_region_absolute_rect(window, relative_region, window_rect=None):
-    window_rect = window_rect or get_wrapper_rectangle(window)
+    reference_window_rect = get_relative_region_reference_window_rect(relative_region)
+    window_rect_source = "referenceWindowRect" if reference_window_rect else "runtime"
+    window_rect = reference_window_rect or window_rect or get_wrapper_rectangle(window)
     if not window_rect or not window_rect.get("width") or not window_rect.get("height"):
         return None
     region = normalize_relative_region(relative_region)
@@ -2424,6 +2472,7 @@ def resolve_relative_region_absolute_rect(window, relative_region, window_rect=N
         "height": height,
         "anchor": region["anchor"],
         "windowRect": window_rect,
+        "windowRectSource": window_rect_source,
     }
 
 
@@ -3080,7 +3129,10 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
             for control_definition in controls:
                 cached_wrapper = get_cached_flow_control(step_id, control_definition, window_title_hint=window_title_hint)
                 if cached_wrapper is not None:
-                    return cached_wrapper
+                    if str(step_id).strip() == "step_2" and get_wrapper_is_offscreen(cached_wrapper) == "True":
+                        cached_wrapper = None
+                    else:
+                        return cached_wrapper
                 foreground_wrapper = _try_get_window_by_handle(get_foreground_window_handle())
                 expected_window_title = normalize_match_text(
                     control_definition.get("windowTitle", "")
@@ -3100,6 +3152,8 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                     for candidate in iter_fast_locator_candidates(window, control_definition):
                         if not wrapper_matches_control_definition(candidate, control_definition):
                             continue
+                        if str(step_id).strip() == "step_2" and get_wrapper_is_offscreen(candidate) == "True":
+                            continue
                         score = score_control_match(candidate, control_definition)
                         if score > best_score:
                             best_score = score
@@ -3113,6 +3167,8 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                                 f"流程控件定位耗时较长: step={step_id}, control={control_id or '(first)'}, "
                                 f"seconds={elapsed:.2f}, score={best_score}, phase=fast"
                             )
+                        if str(step_id).strip() == "step_2":
+                            _emit_fan_type_create_debug_event("B", "wt_flow_locator.py:find_flow_control:fast-hit", "step_2 control matched", {"window": get_wrapper_debug_snapshot(window), "control": get_wrapper_debug_snapshot(best_match), "score": best_score})
                         return best_match
                 for window in windows:
                     candidates = [window]
@@ -3122,6 +3178,8 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                         pass
                     for candidate in candidates:
                         if not wrapper_matches_control_definition(candidate, control_definition):
+                            continue
+                        if str(step_id).strip() == "step_2" and get_wrapper_is_offscreen(candidate) == "True":
                             continue
                         score = score_control_match(candidate, control_definition)
                         if score > best_score:
@@ -3136,6 +3194,8 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                                 f"流程控件定位耗时较长: step={step_id}, control={control_id or '(first)'}, "
                                 f"seconds={elapsed:.2f}, score={best_score}, phase=fallback"
                             )
+                        if str(step_id).strip() == "step_2":
+                            _emit_fan_type_create_debug_event("B", "wt_flow_locator.py:find_flow_control:descendant-hit", "step_2 control matched by descendants", {"window": get_wrapper_debug_snapshot(window), "control": get_wrapper_debug_snapshot(best_match), "score": best_score})
                         return best_match
             if best_match is not None:
                 for control_definition in controls:

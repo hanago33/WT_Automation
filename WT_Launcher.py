@@ -1739,8 +1739,8 @@ class LauncherApp:
             "模板与资源库",
             [
                 ("进入模板制作", self.open_template_builder),
+                ("打开控件库", self.open_control_import_standalone),
                 ("进入控件库采集", self.open_control_map_builder),
-                ("打开控件库目录", self.open_control_map_dir),
                 ("打开模板库目录", self.open_template_root_dir),
                 ("刷新模板库概览", self.refresh_template_library_summary_action),
             ],
@@ -3951,11 +3951,8 @@ class LauncherApp:
             builder_process = subprocess.Popen(
                 [sys.executable, TEMPLATE_BUILDER_SCRIPT],
                 cwd=BASE_DIR,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except Exception as exc:
@@ -3994,7 +3991,59 @@ class LauncherApp:
         self.status_var.set("状态：模板制作器启动失败")
         self.current_step_var.set("当前步骤：请检查模板制作器依赖或启动日志")
 
+    def open_control_import_standalone(self):
+        """直接打开导入控件界面（独立窗口，不加载流程编辑器）"""
+        if not os.path.exists(FLOW_EDITOR_SCRIPT):
+            messagebox.showerror("打开失败", f"未找到流程链路编辑器：\n{FLOW_EDITOR_SCRIPT}")
+            return
+
+        try:
+            if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
+                os.remove(FLOW_EDITOR_STARTUP_SIGNAL)
+        except OSError:
+            pass
+
+        try:
+            editor_process = subprocess.Popen(
+                [sys.executable, FLOW_EDITOR_SCRIPT, "--startup-ping", FLOW_EDITOR_STARTUP_SIGNAL, "--control-library-standalone"],
+                cwd=BASE_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"启动导入控件失败：\n{exc}")
+            self._append_log(f"启动导入控件失败：{exc}", tag="error")
+            return
+
+        self.root.after(1600, lambda: self._check_control_import_standalone_startup(editor_process))
+
+    def _check_control_import_standalone_startup(self, process):
+        if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
+            self._append_log("已打开导入控件。", tag="system")
+            self.status_var.set("状态：导入控件已启动")
+            self.current_step_var.set("当前步骤：可查看/导入控件库中的控件")
+            return
+
+        return_code = process.poll()
+        if return_code is None:
+            self._append_log("导入控件进程已启动，正在等待窗口就绪。", tag="system")
+            self.status_var.set("状态：导入控件启动中")
+            self.current_step_var.set("当前步骤：等待导入控件窗口就绪")
+            self.root.after(500, lambda: self._check_control_import_standalone_startup(process))
+            return
+
+        error_output = ""
+        if not error_output:
+            error_output = f"导入控件已退出，退出码：{return_code}"
+
+        messagebox.showerror("打开失败", f"导入控件未能正常启动：\n{error_output}")
+        self._append_log(f"导入控件启动失败：{error_output}", tag="error")
+        self.status_var.set("状态：导入控件启动失败")
+        self.current_step_var.set("当前步骤：请检查流程编辑器启动日志")
+
     def open_control_map_builder(self):
+        """打开控件库采集器（用于采集新窗口的控件信息）"""
         if not os.path.exists(CONTROL_MAP_BUILDER_SCRIPT):
             messagebox.showerror("打开失败", f"未找到控件库采集器：\n{CONTROL_MAP_BUILDER_SCRIPT}")
             return
@@ -4091,6 +4140,62 @@ class LauncherApp:
         messagebox.showerror("打开失败", f"流程链路编辑器未能正常启动：\n{error_output}")
         self._append_log(f"流程链路编辑器启动失败：{error_output}", tag="error")
         self.status_var.set("状态：流程链路编辑器启动失败")
+        self.current_step_var.set("当前步骤：请检查链路编辑器启动日志")
+
+    def open_control_library(self):
+        """打开流程链路编辑器并自动进入控件库维护对话框"""
+        if not os.path.exists(FLOW_EDITOR_SCRIPT):
+            messagebox.showerror("打开失败", f"未找到流程链路编辑器：\n{FLOW_EDITOR_SCRIPT}")
+            return
+
+        try:
+            self._save_launcher_state()
+        except Exception as exc:
+            self._append_log(f"同步当前链路文件到编辑器失败：{exc}", tag="warning")
+
+        try:
+            if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
+                os.remove(FLOW_EDITOR_STARTUP_SIGNAL)
+        except OSError:
+            pass
+
+        try:
+            editor_process = subprocess.Popen(
+                [sys.executable, FLOW_EDITOR_SCRIPT, "--startup-ping", FLOW_EDITOR_STARTUP_SIGNAL, "--open-control-import"],
+                cwd=BASE_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"启动控件库维护失败：\n{exc}")
+            self._append_log(f"启动控件库维护失败：{exc}", tag="error")
+            return
+
+        self.root.after(1600, lambda: self._check_control_library_startup(editor_process))
+
+    def _check_control_library_startup(self, process):
+        if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
+            self._append_log("已打开控件库维护。", tag="system")
+            self.status_var.set("状态：控件库维护已启动")
+            self.current_step_var.set("当前步骤：可查看/导入/维护控件库中的控件")
+            return
+
+        return_code = process.poll()
+        if return_code is None:
+            self._append_log("控件库维护进程已启动，正在等待窗口就绪。", tag="system")
+            self.status_var.set("状态：控件库维护启动中")
+            self.current_step_var.set("当前步骤：等待控件库维护窗口就绪")
+            self.root.after(500, lambda: self._check_control_library_startup(process))
+            return
+
+        error_output = ""
+        if not error_output:
+            error_output = f"控件库维护已退出，退出码：{return_code}"
+
+        messagebox.showerror("打开失败", f"控件库维护未能正常启动：\n{error_output}")
+        self._append_log(f"控件库维护启动失败：{error_output}", tag="error")
+        self.status_var.set("状态：控件库维护启动失败")
         self.current_step_var.set("当前步骤：请检查链路编辑器启动日志")
 
     def open_relative_region_helper(self):

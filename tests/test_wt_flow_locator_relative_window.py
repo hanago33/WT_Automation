@@ -161,5 +161,41 @@ class RelativeRegionWindowResolutionTests(unittest.TestCase):
         self.assertFalse(should_replace)
 
 
+
+    def test_relative_region_uses_reference_window_rect_when_present(self):
+        runtime_rect = {"left": 128, "top": 76, "right": 2432, "bottom": 1440, "width": 2304, "height": 1364}
+        reference_rect = {"left": 115, "top": 25, "right": 2444, "bottom": 1490, "width": 2329, "height": 1465}
+        relative_region = {
+            "x": 0.3033,
+            "y": 0.1812,
+            "width": 0.0743,
+            "height": 0.028,
+            "anchor": "center",
+            "referenceWindowRect": reference_rect,
+        }
+
+        absolute_rect = wt_flow_locator.resolve_relative_region_absolute_rect(
+            None,
+            relative_region,
+            window_rect=runtime_rect,
+        )
+
+        self.assertEqual(absolute_rect["windowRect"], reference_rect)
+        self.assertEqual(absolute_rect["windowRectSource"], "referenceWindowRect")
+        self.assertEqual(wt_flow_locator.resolve_relative_region_anchor_point(absolute_rect), (907, 310))
+
+    def test_relative_region_keeps_runtime_rect_without_reference(self):
+        runtime_rect = {"left": 128, "top": 76, "right": 2432, "bottom": 1440, "width": 2304, "height": 1364}
+        relative_region = {"x": 0.3033, "y": 0.1812, "width": 0.0743, "height": 0.028, "anchor": "center"}
+
+        absolute_rect = wt_flow_locator.resolve_relative_region_absolute_rect(
+            None,
+            relative_region,
+            window_rect=runtime_rect,
+        )
+
+        self.assertEqual(absolute_rect["windowRect"], runtime_rect)
+        self.assertEqual(absolute_rect["windowRectSource"], "runtime")
+        self.assertEqual(wt_flow_locator.resolve_relative_region_anchor_point(absolute_rect), (911, 342))
 if __name__ == "__main__":
     unittest.main()
