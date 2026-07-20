@@ -1,0 +1,50 @@
+name: Deploy Website to GitHub Pages
+
+# 触发条件：推送到 main/master 分支，或手动触发
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'website/**'  # 只在 website 目录变化时触发
+      - '.github/workflows/deploy-website.yml'
+  workflow_dispatch:  # 允许手动触发
+
+# 权限配置
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 并发控制
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  # 部署阶段
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. 检出代码
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      # 2. 设置 GitHub Pages
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      
+      # 3. 上传 website 目录内容
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # 将 website 目录作为整个站点发布
+          path: './website'
+      
+      # 4. 部署到 GitHub Pages
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
