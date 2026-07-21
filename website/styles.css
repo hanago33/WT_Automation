@@ -775,6 +775,7 @@ body {
 .arch-layer-3 { border-left-color: #06b6d4; }
 .arch-layer-4 { border-left-color: #10b981; }
 .arch-layer-5 { border-left-color: #f59e0b; }
+.arch-layer-6 { border-left-color: #ef4444; }
 
 .layer-label {
     font-size: 0.85rem;
@@ -1412,6 +1413,17 @@ body {
     font-size: 1rem;
     color: rgba(255, 255, 255, 0.8);
     letter-spacing: 4px;
+}
+
+.org-info {
+    text-align: center;
+    color: white;
+}
+
+.org-name {
+    font-size: 1.2rem;
+    font-weight: 600;
+    letter-spacing: 2px;
 }
 
 /* Animations */
