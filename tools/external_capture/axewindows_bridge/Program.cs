@@ -65,13 +65,40 @@ internal static class Program
             {
                 errorCount = w.ErrorCount,
                 outputFile = w.OutputFile.A11yTest,
-                elements = (w.Errors ?? Enumerable.Empty<ScanResult>()).Select(r => new
-                {
-                    rule = r.Rule?.ID.ToString(),
-                    ruleDescription = r.Rule?.Description,
-                    howToFix = r.Rule?.HowToFix,
-                    properties = r.Element?.Properties,
-                    patterns = r.Element?.Patterns
+                elements = (w.Errors ?? Enumerable.Empty<ScanResult>()).Select(r => {
+                    // Axe.Windows.Automation.Data.ElementInfo 包含 Parent 属性，可以用于回溯
+                    var pathNames = new System.Collections.Generic.List<string>();
+                    var current = r.Element;
+                    
+                    while (current != null)
+                    {
+                        string name = "";
+                        if (current.Properties != null)
+                        {
+                            if (current.Properties.TryGetValue("Name", out string nVal) && !string.IsNullOrWhiteSpace(nVal))
+                                name = nVal;
+                            else if (current.Properties.TryGetValue("ControlType", out string cVal) && !string.IsNullOrWhiteSpace(cVal))
+                                name = cVal;
+                        }
+                        if (string.IsNullOrWhiteSpace(name)) name = "node";
+                        
+                        pathNames.Insert(0, name.Trim());
+                        current = current.Parent;
+                    }
+
+                    string uiPath = string.Join(" > ", pathNames);
+                    string parentPath = pathNames.Count > 1 ? string.Join(" > ", pathNames.Take(pathNames.Count - 1)) : "";
+
+                    return new
+                    {
+                        rule = r.Rule?.ID.ToString(),
+                        ruleDescription = r.Rule?.Description,
+                        howToFix = r.Rule?.HowToFix,
+                        properties = r.Element?.Properties,
+                        patterns = r.Element?.Patterns,
+                        uiPath = uiPath,
+                        parentPath = parentPath
+                    };
                 }).ToList()
             }).ToList()
         };

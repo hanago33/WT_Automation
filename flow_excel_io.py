@@ -34,8 +34,8 @@ from wt_action_schema import (
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_FLOW_JSON = os.path.join(BASE_DIR, "flow_definition.json")
-DEFAULT_FLOW_XLSX = os.path.join(BASE_DIR, "flow_steps.xlsx")
+DEFAULT_FLOW_JSON = os.path.join(BASE_DIR, "workspace", "flow_definition.json")
+DEFAULT_FLOW_XLSX = os.path.join(BASE_DIR, "workspace", "flow_steps.xlsx")
 OPTIONS_SHEET_NAME = "_options"
 ACTION_GUIDE_SHEET_NAME = "action_guide"
 EXAMPLES_SHEET_NAME = "examples"
@@ -97,6 +97,7 @@ STEP_COLUMNS = [
     "actionConfigJson",
     "auxChecksJson",
     "fallbacksJson",
+    "fallbackChainJson",
 ]
 
 CONTROL_COLUMNS = [
@@ -654,6 +655,7 @@ def _normalize_payload(payload):
                 "actionConfig": step.get("actionConfig", {}) if isinstance(step.get("actionConfig"), dict) else {},
                 "auxChecks": step.get("auxChecks", []) if isinstance(step.get("auxChecks"), list) else [],
                 "fallbacks": step.get("fallbacks", []) if isinstance(step.get("fallbacks"), list) else [],
+                "fallbackChain": step.get("fallbackChain", []) if isinstance(step.get("fallbackChain"), list) else [],
                 "controls": step.get("controls", []) if isinstance(step.get("controls"), list) else [],
             }
         )
@@ -1081,6 +1083,7 @@ def export_flow_to_excel(flow_json_path=DEFAULT_FLOW_JSON, excel_path=DEFAULT_FL
                 engineering["actionConfigJson"],
                 _json_dumps(step["auxChecks"]),
                 _json_dumps(step["fallbacks"]),
+                _json_dumps(step.get("fallbackChain", [])),
             ]
         )
     _annotate_sheet_headers(steps_sheet, STEP_COLUMN_COMMENTS)
@@ -1328,7 +1331,7 @@ def _cleanup_step_payload(step):
     for key in ["inspectHints", "stepParams", "actionConfig"]:
         if step.get(key) == {}:
             step.pop(key, None)
-    for key in ["auxChecks", "fallbacks", "controls"]:
+    for key in ["auxChecks", "fallbacks", "fallbackChain", "controls"]:
         if step.get(key) == []:
             step.pop(key, None)
     for key in ["notes", "packageRef", "codeSymbol", "codeReference", "description", "successLog", "windowTitle", "stage", "strategy"]:
@@ -1404,6 +1407,7 @@ def load_flow_payload_from_excel(excel_path=DEFAULT_FLOW_XLSX):
                 "actionConfig": _merge_step_action_config(row),
                 "auxChecks": _json_loads(row.get("auxChecksJson"), []),
                 "fallbacks": _json_loads(row.get("fallbacksJson"), []),
+                "fallbackChain": _json_loads(row.get("fallbackChainJson"), []),
                 "notes": _safe_text(row.get("notes")),
             }
             package_ref = _safe_text(row.get("packageRef"))

@@ -1,0 +1,254 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-07-21T03:31:52Z"
+modules:
+    "":
+        dir_name: WT_Automation 总项目根目录
+        title: WT_Automation 总项目根目录
+        scope:
+            - README.md
+            - PROJECT_ARCHITECTURE.md
+            - .gitignore
+            - .gitattributes
+            - requirements-template-builder.txt
+            - ui_tars_runner.js
+            - upload_website.bat
+            - _launch_pywinauto_recorder.cmd
+            - wait_global_mapper_ready.py
+            - editor_state.json
+            - flow_definition.json
+            - WT_Automation.robot
+            - debug-add-data-false-hit.md
+            - debug-cft02-step16-drift.md
+            - debug-click-9-miss.md
+            - debug-default-height-relative-input.md
+            - debug-private-group-click.md
+            - debug-relative-region-offset.md
+            - debug-start-validation-regression.md
+            - debug-step37-add-data-miss.md
+            - debug-time-series-input-regression.md
+            - debug-time-series-path-input.md
+            - wt_dsl_agent.py
+        source_files: []
+        children:
+            - automation_agent
+            - control_maps
+            - core_engine
+            - docs_and_papers
+            - flow_packages
+            - image_templates
+            - samples
+            - tests
+            - tools_and_utilities
+            - top_level_scripts
+        depends_on: []
+        related_to: []
+    automation_agent:
+        dir_name: WT 自动化 Agent 包（自然语言→RPA步骤）
+        title: WT 自动化 Agent 包（自然语言→RPA步骤）
+        scope:
+            - WT_AUTOMATION_Agent/
+        source_files: []
+        children:
+            - automation_agent/cli_and_tools
+            - automation_agent/core_agent
+            - automation_agent/gui
+        depends_on: []
+        related_to: []
+    automation_agent/cli_and_tools:
+        dir_name: CLI 入口、控件索引与参数扫描工具
+        title: CLI 入口、控件索引与参数扫描工具
+        scope:
+            - WT_AUTOMATION_Agent/cli.py
+            - WT_AUTOMATION_Agent/control_index.py
+            - WT_AUTOMATION_Agent/parameter_scan.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    automation_agent/core_agent:
+        dir_name: DSL Agent 核心：自然语言到 RPA 步骤转换器
+        title: DSL Agent 核心：自然语言到 RPA 步骤转换器
+        scope:
+            - WT_AUTOMATION_Agent/agent.py
+            - WT_AUTOMATION_Agent/skill_bridge.py
+            - WT_AUTOMATION_Agent/schemas.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    automation_agent/gui:
+        dir_name: 对话式 Web GUI（本地 HTTP 服务 + 内嵌前端）
+        title: 对话式 Web GUI（本地 HTTP 服务 + 内嵌前端）
+        scope:
+            - WT_AUTOMATION_Agent/gui.py
+            - WT_AUTOMATION_Agent/_gui_config.json
+            - WT_AUTOMATION_Agent/启动WT_AI助手.bat
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    control_maps:
+        dir_name: UIA 控件映射与标准控件目录（数据资产）
+        title: UIA 控件映射与标准控件目录（数据资产）
+        scope:
+            - control_maps/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    core_engine:
+        dir_name: WT 自动化框架核心引擎
+        title: WT 自动化框架核心引擎
+        scope:
+            - wt_flow_executor.py
+            - wt_flow_locator.py
+            - wt_business_steps.py
+            - wt_action_schema.py
+            - wt_action_defaults.py
+            - wt_control_index.py
+            - wt_window_helpers.py
+            - wt_run_reporting.py
+            - wt_projection_helpers.py
+            - wt_flow_validation.py
+            - wt_flow_editor_utils.py
+            - flow_excel_io.py
+            - flow_recorder_converter.py
+        source_files: []
+        children:
+            - core_engine/business_step_catalog
+            - core_engine/flow_execution_runtime
+            - core_engine/reporting_and_io
+            - core_engine/ui_window_helpers
+        depends_on: []
+        related_to: []
+    core_engine/business_step_catalog:
+        dir_name: WT 业务步骤目录与动作元数据
+        title: WT 业务步骤目录与动作元数据
+        scope:
+            - wt_business_steps.py
+            - wt_control_index.py
+            - wt_action_schema.py
+            - wt_action_defaults.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    core_engine/flow_execution_runtime:
+        dir_name: 工作流执行引擎与控件定位器
+        title: 工作流执行引擎与控件定位器
+        scope:
+            - wt_flow_executor.py
+            - wt_flow_locator.py
+            - wt_flow_validation.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    core_engine/reporting_and_io:
+        dir_name: 运行报告与流程 Excel_Recorder 转换
+        title: 运行报告与流程 Excel/Recorder 转换
+        scope:
+            - wt_run_reporting.py
+            - flow_excel_io.py
+            - flow_recorder_converter.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    core_engine/ui_window_helpers:
+        dir_name: UI 窗口与投影流程辅助工具集
+        title: UI 窗口与投影流程辅助工具集
+        scope:
+            - wt_window_helpers.py
+            - wt_flow_editor_utils.py
+            - wt_projection_helpers.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    docs_and_papers:
+        dir_name: 论文与演示材料生成及项目展示网站
+        title: 论文与演示材料生成及项目展示网站
+        scope:
+            - docs/
+            - website/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    flow_packages:
+        dir_name: WT 自动化流程包定义与注册表
+        title: WT 自动化流程包定义与注册表
+        scope:
+            - flow_packages/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    image_templates:
+        dir_name: 图像模板资源库
+        title: 图像模板资源库
+        scope:
+            - image_templates/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    samples:
+        dir_name: Global Mapper 自动化示例与录制脚本集
+        title: Global Mapper 自动化示例与录制脚本集
+        scope:
+            - samples/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    tests:
+        dir_name: UI 自动化流程引擎单元测试套件
+        title: UI 自动化流程引擎单元测试套件
+        scope:
+            - tests/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    tools_and_utilities:
+        dir_name: WT_Automation 工具与构建脚本集
+        title: WT_Automation 工具与构建脚本集
+        scope:
+            - tools/
+            - build_control_map_library.py
+            - build_image_template_library.py
+        source_files: []
+        children:
+            - tools_and_utilities/build_helpers
+        depends_on: []
+        related_to: []
+    tools_and_utilities/build_helpers:
+        dir_name: 控件库与流程包构建工具集
+        title: 控件库与流程包构建工具集
+        scope:
+            - tools/generate_flow_package.py
+            - tools/merge_standard_control_library.py
+            - build_control_map_library.py
+            - build_image_template_library.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    top_level_scripts:
+        dir_name: WT 自动化总控台与流程编辑器
+        title: WT 自动化总控台与流程编辑器
+        scope:
+            - WT_AUT_recorded.py
+            - WT_Flow_Editor.py
+            - WT_Launcher.py
+            - 启动WT自动化总控台.bat
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

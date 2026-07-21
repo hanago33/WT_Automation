@@ -22,7 +22,7 @@ import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BLUEPRINT_DIR = os.path.join(ROOT, "operation_blueprints")
-CATALOG_PATH = os.path.join(ROOT, "control_maps", "standard_control_catalog.json")
+CATALOG_PATH = os.path.join(ROOT, "control_maps", "standard", "standard_control_catalog.json")
 OUT_DIR = os.path.join(ROOT, "flow_packages")
 
 # ---------------------------------------------------------------------------

@@ -146,7 +146,14 @@ def chain_to_payload(chain, source_label="uia-peek"):
                 break
     if top_node is None:
         top_node = path[0]
-    window_title = str(top_node.get("name", "")).strip() or "UiaPeekWindow"
+    
+    # 窗口标题：优先取 top_node 的 name，没有就取 class_name，再没有就取 UiaPeekWindow
+    window_title = str(top_node.get("name", "")).strip()
+    if not window_title:
+        window_title = str(top_node.get("className", "")).strip()
+    if not window_title:
+        window_title = "UiaPeekWindow"
+        
     pid = str(top_node.get("processId", "")).strip()
 
     control_defs = []
@@ -305,10 +312,19 @@ def record_events(duration_seconds=10, base_url=DEFAULT_BASE_URL, on_event=None)
     hub_url = base_url.rstrip("/") + "/hub/v4/g4/peek"
     events = []
 
+    import logging
+    
+    # 彻底解决 signalrcore 内部的 configure_logging 问题。
+    # signalrcore 的某些版本对 configure_logging 传参要求极严。
+    # 这里直接传递 logging.DEBUG 作为字典参数，或者根本不调用 configure_logging。
+    builder = HubConnectionBuilder().with_url(hub_url)
+    try:
+        builder = builder.configure_logging({"level": logging.DEBUG})
+    except Exception:
+        pass  # 忽略日志配置错误
+        
     conn = (
-        HubConnectionBuilder()
-        .with_url(hub_url)
-        .configure_logging(None)
+        builder
         .with_automatic_reconnect({"type": "raw", "keep_alive_interval": 10, "reconnect_interval": 5, "max_attempts": 5})
         .build()
     )
@@ -333,6 +349,72 @@ def record_events(duration_seconds=10, base_url=DEFAULT_BASE_URL, on_event=None)
         except Exception:
             pass
     return events
+
+
+def recording_events_to_payload(events, source_label="uia-peek-recording"):
+    """把录制事件流转成 WT control_map 兼容 payload，打通\"录制→控件库\"链路。
+
+    录制事件是 SignalR 推送的原始数组（可能是 ``[[ev, ...], ...]``），
+    从每个事件中提取 value.chain，去重后生成 controlDefinitions，
+    与 ``capture_focused()`` / ``capture_at()`` 产出的 control_map 格式一致，
+    可被 `flow_recorder_converter._load_control_map_definitions()` 直接消费。
+
+    返回与 ``chain_to_payload()`` 同构的 dict，或 None（无有效 chain）。
+    """
+    if not isinstance(events, list):
+        return None
+    seen_keys = set()
+    all_control_defs = []
+    window_title = ""
+    total_events = 0
+
+    for group in events:
+        evs = group if isinstance(group, list) else [group]
+        total_events += len(evs)
+        for ev in evs:
+            if not isinstance(ev, dict):
+                continue
+            chain = ev.get("value", {}).get("chain") or ev.get("chain")
+            if not isinstance(chain, dict):
+                continue
+            path = chain.get("path") or []
+            if not path:
+                continue
+            # 用 automationId + controlType 路径做去重键
+            key = "|".join(
+                str(p.get("automationId", "") or "~") + "@" + str(p.get("controlType", "") or "~")
+                for p in path
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+
+            payload = chain_to_payload(chain, source_label=source_label)
+            if payload:
+                all_control_defs.extend(payload.get("controlDefinitions", []))
+                if not window_title:
+                    window_title = (payload.get("targetWindow") or {}).get("title", "")
+
+    if not all_control_defs:
+        return None
+
+    return {
+        "schemaVersion": "1.0",
+        "scanMeta": {
+            "scanTime": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            "backend": "uiapeek",
+            "source": source_label,
+            "totalControls": len(all_control_defs),
+            "totalEvents": total_events,
+            "uniqueChains": len(seen_keys),
+        },
+        "targetWindow": {
+            "title": window_title or "UiaPeekRecording",
+            "className": "",
+            "processId": "",
+        },
+        "controlDefinitions": all_control_defs,
+    }
 
 
 # ---------------------------------------------------------------------------

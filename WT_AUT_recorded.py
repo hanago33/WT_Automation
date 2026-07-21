@@ -45,7 +45,7 @@ UI_TARS_RUNNER = os.path.join(os.path.dirname(__file__), "ui_tars_runner.js")
 LOG_FILE = os.path.join(os.path.dirname(__file__), "wt_automation.log")
 FLOW_DEFINITION_FILE = os.environ.get(
 	"WT_FLOW_DEFINITION_FILE",
-	os.path.join(os.path.dirname(__file__), "flow_definition.json"),
+	os.path.join(os.path.dirname(__file__), "workspace", "flow_definition.json"),
 )
 FLOW_PACKAGE_REGISTRY_FILE = os.path.join(os.path.dirname(__file__), "flow_packages", "flow_package_registry.json")
 IMAGE_TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "image_templates", "projection")
@@ -472,6 +472,7 @@ def _get_flow_executor():
 			log_step=log_step,
 			click_flow_control=_click_flow_control,
 			click_relative_region=_click_relative_region,
+		click_relative_anchor=_click_relative_anchor,
 			focus_flow_control=_focus_flow_control,
 			type_text_into_flow_control=_type_text_into_flow_control,
 			type_text_into_relative_region=_type_text_into_relative_region,
@@ -479,6 +480,7 @@ def _get_flow_executor():
 			drag_between_flow_controls=_drag_between_flow_controls,
 			mouse_wheel_on_flow_control=_mouse_wheel_on_flow_control,
 			wait_for_flow_control_condition=_wait_for_flow_control_condition,
+			menu_select_flow=_menu_select_flow,
 			locate_template_center_by_path=_locate_template_center_by_path,
 			report_step_result=_record_step_result,
 			run_ai_intervention_after_failure=_run_ai_intervention_after_failure,
@@ -1077,6 +1079,24 @@ def _click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hin
 	)
 
 
+def _click_relative_anchor(
+    step_id,
+    anchor_control_id,
+    offset,
+    timeout_seconds=3,
+    window_title_hint="",
+    click_kind="single",
+):
+    return _get_flow_locator().click_relative_anchor(
+        step_id,
+        anchor_control_id,
+        offset,
+        timeout_seconds=timeout_seconds,
+        window_title_hint=window_title_hint,
+        click_kind=click_kind,
+    )
+
+
 def _click_relative_region(
 	step_definition,
 	parent_window,
@@ -1146,6 +1166,15 @@ def _select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window
 	return _get_flow_locator().select_dropdown_item_runtime(
 		step_id,
 		control_id,
+		timeout_seconds=timeout_seconds,
+		window_title_hint=window_title_hint,
+	)
+
+
+def _menu_select_flow(step_id, menu_path, timeout_seconds=3, window_title_hint=""):
+	return _get_flow_locator().menu_select_flow(
+		step_id,
+		menu_path,
 		timeout_seconds=timeout_seconds,
 		window_title_hint=window_title_hint,
 	)
@@ -1626,6 +1655,8 @@ def _build_execution_context():
 		"flow_ref_stack": [],
 		"flow_ref_param_stack": [],
 		"run_report": None,
+		"flowDefinitionPath": FLOW_DEFINITION_FILE,
+		"runId": "",
 	}
 
 
@@ -1819,6 +1850,7 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 			steps_to_run,
 			context.get("runtime_config", {}),
 		)
+		context["runId"] = context["run_report"].get("runId", "") if isinstance(context.get("run_report"), dict) else ""
 		execution_plan_map = {item["id"]: item for item in execution_plan}
 		for item in execution_plan:
 			step_id = item["id"]

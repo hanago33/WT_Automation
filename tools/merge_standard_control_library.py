@@ -23,18 +23,17 @@ from datetime import datetime
 BASE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(BASE)
 DEFAULT_INPUT = os.path.join(REPO, "control_maps")
-DEFAULT_OUT = os.path.join(DEFAULT_INPUT, "standard_control_catalog.json")
-DEFAULT_REPORT = os.path.join(DEFAULT_INPUT, "standard_catalog_mismatch_report.json")
+DEFAULT_OUT = os.path.join(DEFAULT_INPUT, "standard", "standard_control_catalog.json")
+DEFAULT_REPORT = os.path.join(DEFAULT_INPUT, "standard", "standard_catalog_mismatch_report.json")
 
 AUTHORITY_RANK = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
 
 
 def load_all(input_dir):
     recs = []
-    patterns = ("*_control_map.json", "library_*.json")
     files = []
-    for pat in patterns:
-        files.extend(sorted(glob.glob(os.path.join(input_dir, pat))))
+    files.extend(sorted(glob.glob(os.path.join(input_dir, "recordings", "*_control_map.json"))))
+    files.extend(sorted(glob.glob(os.path.join(input_dir, "library", "library_*.json"))))
     for fp in files:
         try:
             data = json.load(open(fp, encoding="utf-8"))

@@ -24,6 +24,20 @@ def strip_wrapping_quotes(text):
     return value
 
 
+def slugify_filename(text, fallback="window"):
+    """将任意文本规范化为安全的文件名片段。
+
+    共享实现：原先分散在 build_control_map_library.slugify_filename 与
+    WT_Flow_Editor._slugify_control_library_part 两处（正则逻辑完全一致），
+    现统一到此处。行为保持不变：非法文件名字符→下划线，压缩重复
+    下划线/空白，首尾去除 . 与 _，截断为 80 字符；为空时返回 fallback。
+    """
+    text = re.sub(r"[\\/:*?\"<>|]+", "_", str(text or "").strip())
+    text = re.sub(r"\s+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("._")
+    return text[:80] or fallback
+
+
 def normalize_inspect_scalar(value):
     text = str(value or "").strip()
     if not text:
@@ -168,7 +182,8 @@ def parse_inspect_text(raw_text):
             data["availablePatterns"].append(key)
         index += 1
 
-    locator_method, locator_value = build_locator_recommendation(data)
+    from build_control_map_library import build_locator_recommendation as advanced_build_locator
+    locator_method, locator_value, locator_score, locator_reason = advanced_build_locator(data)
     aux_checks = []
     for check_key, label in [
         ("isEnabled", "IsEnabled"),
@@ -183,6 +198,8 @@ def parse_inspect_text(raw_text):
             aux_checks.append(f"{label}={current_value}")
     data["recommendedTargetMethod"] = locator_method
     data["recommendedTargetValue"] = locator_value
+    data["recommendedTargetScore"] = locator_score
+    data["recommendedTargetReason"] = locator_reason
     data["suggestedAuxChecks"] = aux_checks
     return data
 
@@ -282,7 +299,7 @@ def normalize_step(step, index, default_step_controls_by_id):
     action_config = step.get("actionConfig") if isinstance(step.get("actionConfig"), dict) else {}
     if not raw_controls:
         raw_controls = default_step_controls_by_id.get(str(step.get("id", "")).strip(), [])
-    return {
+    normalized = {
         "id": str(step.get("id", f"step_{index + 1}")).strip() or f"step_{index + 1}",
         "name": str(step.get("name", f"步骤 {index + 1}")).strip() or f"步骤 {index + 1}",
         "stage": str(step.get("stage", "")).strip(),
@@ -311,6 +328,14 @@ def normalize_step(step, index, default_step_controls_by_id):
         "fallbacks": [str(item).strip() for item in step.get("fallbacks", []) if str(item).strip()],
         "notes": str(step.get("notes", "")).strip(),
     }
+    # 保留转换器生成的自适应降级链（字典列表，编辑器不编辑但需原样保留）
+    if isinstance(step.get("fallbackChain"), list):
+        normalized["fallbackChain"] = step["fallbackChain"]
+    # 保留下划线前缀的元数据字段（如 _status / _sourceRecorderLine 等），避免保存时丢失
+    for key, value in step.items():
+        if str(key).startswith("_") and key not in normalized:
+            normalized[key] = value
+    return normalized
 
 
 def normalize_runtime_config(runtime_config):

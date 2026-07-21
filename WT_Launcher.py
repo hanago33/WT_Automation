@@ -33,7 +33,7 @@ AUTOMATION_SCRIPT = os.path.join(BASE_DIR, "WT_AUT_recorded.py")
 TEMPLATE_BUILDER_SCRIPT = os.path.join(BASE_DIR, "build_image_template_library.py")
 CONTROL_MAP_BUILDER_SCRIPT = os.path.join(BASE_DIR, "build_control_map_library.py")
 FLOW_EDITOR_SCRIPT = os.path.join(BASE_DIR, "WT_Flow_Editor.py")
-FLOW_DEFINITION_FILE = os.path.join(BASE_DIR, "flow_definition.json")
+FLOW_DEFINITION_FILE = os.path.join(BASE_DIR, "workspace", "flow_definition.json")
 FLOW_PACKAGE_STORE_DIR = os.path.join(BASE_DIR, "flow_packages")
 FLOW_PACKAGE_REGISTRY_FILE = os.path.join(FLOW_PACKAGE_STORE_DIR, "flow_package_registry.json")
 FLOW_EDITOR_STARTUP_SIGNAL = os.path.join(BASE_DIR, "flow_editor_startup.signal")
@@ -4102,6 +4102,10 @@ class LauncherApp:
             self._append_log(f"打开实时控件检测器失败：{exc}", tag="error")
 
     def open_flow_editor(self):
+        if getattr(self, "_editor_process", None) is not None and self._editor_process.poll() is None:
+            self._append_log("流程链路编辑器已经在运行中，请勿重复打开。", tag="warning")
+            return
+
         if not os.path.exists(FLOW_EDITOR_SCRIPT):
             messagebox.showerror("打开失败", f"未找到流程链路编辑器：\n{FLOW_EDITOR_SCRIPT}")
             return
@@ -4118,7 +4122,7 @@ class LauncherApp:
             pass
 
         try:
-            editor_process = subprocess.Popen(
+            self._editor_process = subprocess.Popen(
                 [sys.executable, FLOW_EDITOR_SCRIPT, "--startup-ping", FLOW_EDITOR_STARTUP_SIGNAL],
                 cwd=BASE_DIR,
                 stdout=subprocess.PIPE,
@@ -4133,7 +4137,7 @@ class LauncherApp:
             self._append_log(f"启动流程链路编辑器失败：{exc}", tag="error")
             return
 
-        self.root.after(1600, lambda: self._check_flow_editor_startup(editor_process))
+        self.root.after(1600, lambda: self._check_flow_editor_startup(self._editor_process))
 
     def _check_flow_editor_startup(self, process):
         if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
@@ -4161,6 +4165,10 @@ class LauncherApp:
 
     def open_control_library(self):
         """打开流程链路编辑器并自动进入控件库维护对话框"""
+        if getattr(self, "_editor_process", None) is not None and self._editor_process.poll() is None:
+            self._append_log("流程链路编辑器/控件库已经在运行中，请勿重复打开。", tag="warning")
+            return
+
         if not os.path.exists(FLOW_EDITOR_SCRIPT):
             messagebox.showerror("打开失败", f"未找到流程链路编辑器：\n{FLOW_EDITOR_SCRIPT}")
             return
@@ -4177,7 +4185,7 @@ class LauncherApp:
             pass
 
         try:
-            editor_process = subprocess.Popen(
+            self._editor_process = subprocess.Popen(
                 [sys.executable, FLOW_EDITOR_SCRIPT, "--startup-ping", FLOW_EDITOR_STARTUP_SIGNAL, "--open-control-import"],
                 cwd=BASE_DIR,
                 stdout=subprocess.DEVNULL,
@@ -4189,7 +4197,7 @@ class LauncherApp:
             self._append_log(f"启动控件库维护失败：{exc}", tag="error")
             return
 
-        self.root.after(1600, lambda: self._check_control_library_startup(editor_process))
+        self.root.after(1600, lambda: self._check_control_library_startup(self._editor_process))
 
     def _check_control_library_startup(self, process):
         if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
@@ -4227,14 +4235,14 @@ class LauncherApp:
             self.status_var.set("状态：相对区域取点助手启动失败")
 
     def open_external_capture(self):
-        """打开外部控件采集对话框（uia-peek / axe-windows，补充现有 pywinauto 采集）。"""
+        """打开外部控件采集对话框（实验性功能）。"""
         try:
             from tools.external_capture.launcher_panel import ExternalCaptureDialog
 
             ExternalCaptureDialog(self.root, self.theme, log_callback=self._append_log)
-            self._append_log("已打开外部控件采集对话框（uia-peek / axe-windows）。", tag="system")
-            self.status_var.set("状态：外部控件采集已打开")
-            self.current_step_var.set("当前步骤：可启动 UiaPeek 服务后 peek 控件，或用 axe-windows 扫描 Patterns")
+            self._append_log("已打开外部控件采集对话框（实验性功能：uia-peek / axe-windows）。", tag="system")
+            self.status_var.set("状态：外部控件采集已打开 (实验性)")
+            self.current_step_var.set("当前步骤：实验性功能，建议优先使用原生控件采集和实时监测")
         except ImportError as exc:
             messagebox.showerror("打开失败", f"缺少外部采集模块：\n{exc}", parent=self.root)
             self._append_log(f"打开外部控件采集失败：{exc}", tag="error")
@@ -4444,20 +4452,37 @@ class LauncherApp:
         if not output_path:
             return
         try:
-            payload = convert_recorder_script_to_flow(script_path, output_path)
+            # 自动检测截图目录：脚本同目录下的 screenshots 子目录
+            screenshot_dir = None
+            script_dir = os.path.dirname(script_path)
+            candidate_screenshot_dirs = [
+                os.path.join(script_dir, "screenshots"),
+                os.path.join(script_dir, "screens"),
+                os.path.join(BASE_DIR, "debug_screenshots"),
+            ]
+            for cand in candidate_screenshot_dirs:
+                if os.path.isdir(cand):
+                    screenshot_dir = cand
+                    break
+            payload = convert_recorder_script_to_flow(script_path, output_path, screenshot_dir=screenshot_dir)
         except Exception as exc:
             messagebox.showerror("转换失败", f"Recorder 脚本转换失败：\n{exc}")
             self._append_log(f"Recorder 脚本转换失败：{exc}", tag="error")
             return
         meta = payload.get("conversionMeta", {})
-        self._append_log(
+        log_msg = (
             "已完成 Recorder 转换："
             f"steps={meta.get('totalSteps', 0)}, "
             f"action={meta.get('actionSteps', 0)}, "
-            f"placeholder={meta.get('placeholderSteps', 0)}, "
-            f"output={output_path}",
-            tag="success",
+            f"placeholder={meta.get('placeholderSteps', 0)}"
         )
+        screenshot_count = meta.get("screenshotLinkedCount", 0)
+        if screenshot_count:
+            log_msg += f", screenshots={screenshot_count}"
+        elif screenshot_dir:
+            log_msg += ", screenshots=0"
+        log_msg += f", output={output_path}"
+        self._append_log(log_msg, tag="success")
         self.status_var.set("状态：Recorder 转换完成")
         self.current_step_var.set("当前步骤：已生成 action 流程骨架")
         if os.path.exists(output_path):

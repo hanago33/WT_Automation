@@ -1,0 +1,1284 @@
+[
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[5]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_Climatology']/Image[1]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[5]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_Climatology']/Image[1]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 7,
+              "siblingIndexOfSameControlType": 5,
+              "className": "MTDTitleBar",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 6,
+              "siblingIndexOfSameControlType": 5,
+              "automationId": "MUPMicroscaleInformationViewModel_Button_Climatology",
+              "className": "Button",
+              "controlTypeId": 50000,
+              "controlType": "Button",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 1,
+              "siblingIndexOfSameControlType": 1,
+              "bounds": {
+                "height": 30,
+                "X": 120,
+                "Y": 0,
+                "width": 30
+              },
+              "controlTypeId": 50006,
+              "controlType": "Image",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                62140748
+              ]
+            }
+          ],
+          "point": {
+            "X": 125,
+            "Y": 21
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Down",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527950948,
+        "type": "Mouse",
+        "value": {
+          "x": 125,
+          "y": 21
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[5]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_Climatology']/Image[1]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[5]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_Climatology']/Image[1]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 7,
+              "siblingIndexOfSameControlType": 5,
+              "className": "MTDTitleBar",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 6,
+              "siblingIndexOfSameControlType": 5,
+              "automationId": "MUPMicroscaleInformationViewModel_Button_Climatology",
+              "className": "Button",
+              "controlTypeId": 50000,
+              "controlType": "Button",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 1,
+              "siblingIndexOfSameControlType": 1,
+              "bounds": {
+                "height": 30,
+                "X": 120,
+                "Y": 0,
+                "width": 30
+              },
+              "controlTypeId": 50006,
+              "controlType": "Image",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                62140748
+              ]
+            }
+          ],
+          "point": {
+            "X": 125,
+            "Y": 21
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Up",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527951064,
+        "type": "Mouse",
+        "value": {
+          "x": 125,
+          "y": 21
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[5]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_WindTurbineType']/Image[1]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[5]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_WindTurbineType']/Image[1]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 7,
+              "siblingIndexOfSameControlType": 5,
+              "className": "MTDTitleBar",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 7,
+              "siblingIndexOfSameControlType": 6,
+              "automationId": "MUPMicroscaleInformationViewModel_Button_WindTurbineType",
+              "className": "Button",
+              "controlTypeId": 50000,
+              "controlType": "Button",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 1,
+              "siblingIndexOfSameControlType": 1,
+              "bounds": {
+                "height": 30,
+                "X": 150,
+                "Y": 0,
+                "width": 30
+              },
+              "controlTypeId": 50006,
+              "controlType": "Image",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                22395825
+              ]
+            }
+          ],
+          "point": {
+            "X": 174,
+            "Y": 25
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Down",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527952336,
+        "type": "Mouse",
+        "value": {
+          "x": 174,
+          "y": 25
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[6]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_WindTurbineType']/Image[1]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[6]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_WindTurbineType']/Image[1]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 8,
+              "siblingIndexOfSameControlType": 6,
+              "className": "MTDTitleBar",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 7,
+              "siblingIndexOfSameControlType": 6,
+              "automationId": "MUPMicroscaleInformationViewModel_Button_WindTurbineType",
+              "className": "Button",
+              "controlTypeId": 50000,
+              "controlType": "Button",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 1,
+              "siblingIndexOfSameControlType": 1,
+              "bounds": {
+                "height": 30,
+                "X": 150,
+                "Y": 0,
+                "width": 30
+              },
+              "controlTypeId": 50006,
+              "controlType": "Image",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                22395825
+              ]
+            }
+          ],
+          "point": {
+            "X": 174,
+            "Y": 25
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Up",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527952456,
+        "type": "Mouse",
+        "value": {
+          "x": 174,
+          "y": 25
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[6]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[6]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 8,
+              "siblingIndexOfSameControlType": 6,
+              "bounds": {
+                "height": 30,
+                "X": 0,
+                "Y": 0,
+                "width": 1463
+              },
+              "className": "MTDTitleBar",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                43789187
+              ]
+            }
+          ],
+          "point": {
+            "X": 240,
+            "Y": 29
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Down",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527953384,
+        "type": "Mouse",
+        "value": {
+          "x": 240,
+          "y": 29
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[7]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[7]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 9,
+              "siblingIndexOfSameControlType": 7,
+              "bounds": {
+                "height": 30,
+                "X": 0,
+                "Y": 0,
+                "width": 1463
+              },
+              "className": "MTDTitleBar",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                43789187
+              ]
+            }
+          ],
+          "point": {
+            "X": 240,
+            "Y": 29
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Up",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527953492,
+        "type": "Mouse",
+        "value": {
+          "x": 240,
+          "y": 29
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[6]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[6]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 6,
+              "siblingIndexOfSameControlType": 6,
+              "bounds": {
+                "height": 837,
+                "X": 0,
+                "Y": 30,
+                "width": 1463
+              },
+              "className": "MUPTaskMainView",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                14973148
+              ]
+            }
+          ],
+          "point": {
+            "X": 296,
+            "Y": 32
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Down",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527954528,
+        "type": "Mouse",
+        "value": {
+          "x": 296,
+          "y": 32
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[7]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[7]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 7,
+              "siblingIndexOfSameControlType": 7,
+              "bounds": {
+                "height": 837,
+                "X": 0,
+                "Y": 30,
+                "width": 1463
+              },
+              "className": "MUPTaskMainView",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                14973148
+              ]
+            }
+          ],
+          "point": {
+            "X": 296,
+            "Y": 32
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Up",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527954660,
+        "type": "Mouse",
+        "value": {
+          "x": 296,
+          "y": 32
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[7]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[7]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 7,
+              "siblingIndexOfSameControlType": 7,
+              "bounds": {
+                "height": 837,
+                "X": 0,
+                "Y": 30,
+                "width": 1463
+              },
+              "className": "MUPTaskMainView",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                14973148
+              ]
+            }
+          ],
+          "point": {
+            "X": 325,
+            "Y": 40
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Down",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527955824,
+        "type": "Mouse",
+        "value": {
+          "x": 325,
+          "y": 40
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[8]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[8]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 8,
+              "siblingIndexOfSameControlType": 8,
+              "bounds": {
+                "height": 837,
+                "X": 0,
+                "Y": 30,
+                "width": 1463
+              },
+              "className": "MUPTaskMainView",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                14973148
+              ]
+            }
+          ],
+          "point": {
+            "X": 325,
+            "Y": 40
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Up",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527955904,
+        "type": "Mouse",
+        "value": {
+          "x": 325,
+          "y": 40
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[9]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[9]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 11,
+              "siblingIndexOfSameControlType": 9,
+              "bounds": {
+                "height": 30,
+                "X": 0,
+                "Y": 0,
+                "width": 1463
+              },
+              "className": "MTDTitleBar",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                43789187
+              ]
+            }
+          ],
+          "point": {
+            "X": 262,
+            "Y": 28
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Down",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527957016,
+        "type": "Mouse",
+        "value": {
+          "x": 262,
+          "y": 28
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[9]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[9]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 11,
+              "siblingIndexOfSameControlType": 9,
+              "bounds": {
+                "height": 30,
+                "X": 0,
+                "Y": 0,
+                "width": 1463
+              },
+              "className": "MTDTitleBar",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                43789187
+              ]
+            }
+          ],
+          "point": {
+            "X": 262,
+            "Y": 28
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Up",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527957100,
+        "type": "Mouse",
+        "value": {
+          "x": 262,
+          "y": 28
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[9]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_Climatology']/Image[1]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[9]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_Climatology']/Image[1]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 11,
+              "siblingIndexOfSameControlType": 9,
+              "className": "MTDTitleBar",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 6,
+              "siblingIndexOfSameControlType": 5,
+              "automationId": "MUPMicroscaleInformationViewModel_Button_Climatology",
+              "className": "Button",
+              "controlTypeId": 50000,
+              "controlType": "Button",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 1,
+              "siblingIndexOfSameControlType": 1,
+              "bounds": {
+                "height": 30,
+                "X": 120,
+                "Y": 0,
+                "width": 30
+              },
+              "controlTypeId": 50006,
+              "controlType": "Image",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                62140748
+              ]
+            }
+          ],
+          "point": {
+            "X": 135,
+            "Y": 20
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Down",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527958180,
+        "type": "Mouse",
+        "value": {
+          "x": 135,
+          "y": 20
+        }
+      }
+    }
+  ],
+  [
+    {
+      "value": {
+        "chain": {
+          "fallbackLocator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[9]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_Climatology']/Image[1]",
+          "locator": "/Desktop/Window[@AutomationId='Window_Main']/Custom[9]/Button[@AutomationId='MUPMicroscaleInformationViewModel_Button_Climatology']/Image[1]",
+          "path": [
+            {
+              "siblingIndex": 10,
+              "siblingIndexOfSameControlType": 1,
+              "automationId": "Window_Main",
+              "className": "Window",
+              "controlTypeId": 50032,
+              "controlType": "Window",
+              "isTopWindow": true,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 11,
+              "siblingIndexOfSameControlType": 9,
+              "className": "MTDTitleBar",
+              "controlTypeId": 50025,
+              "controlType": "Custom",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 6,
+              "siblingIndexOfSameControlType": 5,
+              "automationId": "MUPMicroscaleInformationViewModel_Button_Climatology",
+              "className": "Button",
+              "controlTypeId": 50000,
+              "controlType": "Button",
+              "isTopWindow": false,
+              "isTriggerElement": false,
+              "processId": 15476
+            },
+            {
+              "siblingIndex": 1,
+              "siblingIndexOfSameControlType": 1,
+              "bounds": {
+                "height": 30,
+                "X": 120,
+                "Y": 0,
+                "width": 30
+              },
+              "controlTypeId": 50006,
+              "controlType": "Image",
+              "frameworkId": "WPF",
+              "isTopWindow": false,
+              "isTriggerElement": true,
+              "machine": {
+                "name": "WM-MP2NR26Q",
+                "publicAddress": "10.101.127.36"
+              },
+              "patterns": [
+                {
+                  "id": 10018,
+                  "name": "LegacyIAccessible"
+                },
+                {
+                  "id": 10021,
+                  "name": "SynchronizedInput"
+                }
+              ],
+              "processId": 15476,
+              "runtimeId": [
+                7,
+                15476,
+                62140748
+              ]
+            }
+          ],
+          "point": {
+            "X": 135,
+            "Y": 20
+          },
+          "topWindow": {
+            "siblingIndex": 10,
+            "siblingIndexOfSameControlType": 1,
+            "automationId": "Window_Main",
+            "className": "Window",
+            "controlTypeId": 50032,
+            "controlType": "Window",
+            "isTopWindow": true,
+            "isTriggerElement": false,
+            "processId": 15476
+          },
+          "trigger": "Hover"
+        },
+        "event": "Left Up",
+        "machineName": "WM-MP2NR26Q",
+        "timestamp": 1784527958292,
+        "type": "Mouse",
+        "value": {
+          "x": 135,
+          "y": 20
+        }
+      }
+    }
+  ]
+]

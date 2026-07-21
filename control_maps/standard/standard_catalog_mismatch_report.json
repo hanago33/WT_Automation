@@ -1,0 +1,115 @@
+{
+  "generatedAt": "2026-07-21T15:13:39",
+  "issues": [
+    {
+      "windowTitle": "AxeWindowsScan",
+      "frameworkId": "WPF",
+      "name": "Unnamed",
+      "authority": "low",
+      "occurrences": 4,
+      "sources": [
+        "20260720_152457_pid15476_axewindows_control_map.json"
+      ],
+      "issue": "无 automation_id，定位靠 name，易与软件按钮对不上，建议用 build_control_map_library.py 实时抓取权威快照后重新合并"
+    },
+    {
+      "windowTitle": "AxeWindowsScan",
+      "frameworkId": "WPF",
+      "name": "",
+      "authority": "unknown",
+      "occurrences": 1,
+      "sources": [
+        "20260720_153354_pid15476_axewindows_control_map.json"
+      ],
+      "issue": "无 automation_id，定位靠 name，易与软件按钮对不上，建议用 build_control_map_library.py 实时抓取权威快照后重新合并"
+    },
+    {
+      "windowTitle": "AxeWindowsScan",
+      "frameworkId": "WPF",
+      "name": "",
+      "authority": "unknown",
+      "occurrences": 1,
+      "sources": [
+        "20260720_153354_pid15476_axewindows_control_map.json"
+      ],
+      "issue": "无 automation_id，定位靠 name，易与软件按钮对不上，建议用 build_control_map_library.py 实时抓取权威快照后重新合并"
+    },
+    {
+      "windowTitle": "AxeWindowsScan",
+      "frameworkId": "WPF",
+      "name": "",
+      "authority": "unknown",
+      "occurrences": 1,
+      "sources": [
+        "20260720_153354_pid15476_axewindows_control_map.json"
+      ],
+      "issue": "无 automation_id，定位靠 name，易与软件按钮对不上，建议用 build_control_map_library.py 实时抓取权威快照后重新合并"
+    },
+    {
+      "windowTitle": "AxeWindowsScan",
+      "frameworkId": "WPF",
+      "name": "",
+      "authority": "unknown",
+      "occurrences": 1,
+      "sources": [
+        "20260720_153354_pid15476_axewindows_control_map.json"
+      ],
+      "issue": "无 automation_id，定位靠 name，易与软件按钮对不上，建议用 build_control_map_library.py 实时抓取权威快照后重新合并"
+    },
+    {
+      "windowTitle": "AxeWindowsScan",
+      "frameworkId": "WPF",
+      "name": "",
+      "authority": "unknown",
+      "occurrences": 1,
+      "sources": [
+        "20260720_153354_pid15476_axewindows_control_map.json"
+      ],
+      "issue": "无 automation_id，定位靠 name，易与软件按钮对不上，建议用 build_control_map_library.py 实时抓取权威快照后重新合并"
+    },
+    {
+      "windowTitle": "Window",
+      "frameworkId": "",
+      "name": "",
+      "authority": "unknown",
+      "occurrences": 1,
+      "sources": [
+        "20260720_153042_recording_uiapeek_control_map.json"
+      ],
+      "issue": "无 automation_id，定位靠 name，易与软件按钮对不上，建议用 build_control_map_library.py 实时抓取权威快照后重新合并"
+    },
+    {
+      "windowTitle": "导入统计数据文件",
+      "frameworkId": "unknown",
+      "name": "湍流强度相对标准偏差",
+      "authority": "low",
+      "occurrences": 1,
+      "sources": [
+        "library_导入统计数据文件_unknown_controls.json"
+      ],
+      "issue": "无 automation_id，定位靠 name，易与软件按钮对不上，建议用 build_control_map_library.py 实时抓取权威快照后重新合并"
+    },
+    {
+      "windowTitle": "文件名(N):",
+      "frameworkId": "unknown",
+      "name": "键入-文件名",
+      "authority": "low",
+      "occurrences": 1,
+      "sources": [
+        "library_文件名(N)_unknown_controls.json"
+      ],
+      "issue": "无 automation_id，定位靠 name，易与软件按钮对不上，建议用 build_control_map_library.py 实时抓取权威快照后重新合并"
+    },
+    {
+      "windowTitle": "请补充窗口标题",
+      "frameworkId": "unknown",
+      "name": "输入框",
+      "authority": "low",
+      "occurrences": 1,
+      "sources": [
+        "library_请补充窗口标题_unknown_controls.json"
+      ],
+      "issue": "无 automation_id，定位靠 name，易与软件按钮对不上，建议用 build_control_map_library.py 实时抓取权威快照后重新合并"
+    }
+  ]
+}

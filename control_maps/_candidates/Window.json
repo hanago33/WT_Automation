@@ -1,0 +1,36 @@
+{
+  "_candidateMeta": {
+    "sourceScript": "d:\\My_RF_Project\\WT_Automation\\samples\\recorder_scripts\\气象数据录入_20260625.py",
+    "sourceLine": 10,
+    "discoveredAt": "2026-07-21T11:44:07",
+    "status": "pending_review",
+    "uipath": "||Window",
+    "windowTitle": "",
+    "leafName": "",
+    "leafControlType": "Window"
+  },
+  "controlDefinition": {
+    "id": "Window",
+    "name": "Window",
+    "role": "来自 recorder 自动转换的目标控件",
+    "targetMethod": "control_type",
+    "targetValue": "Window",
+    "windowTitle": "",
+    "uiPath": "||Window",
+    "templateKey": "",
+    "notes": "由 pywinauto_recorder 录制脚本自动转换生成（含 a11y 富化）；若控件库未命中，可继续补充 Inspect/Accessibility 信息。",
+    "inspectData": {
+      "name": "",
+      "controlType": "Window",
+      "localizedControlType": "",
+      "automationId": "",
+      "className": "",
+      "frameworkId": "",
+      "ancestors": [],
+      "recommendedTargetMethod": "control_type",
+      "recommendedTargetValue": "Window"
+    },
+    "auxChecks": [],
+    "source": "recorder"
+  }
+}

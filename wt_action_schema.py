@@ -2,8 +2,41 @@
 
 ALLOWED_CONTINUE_WHEN_CONDITIONS = ("exists", "present", "visible", "enabled", "gone")
 ALLOWED_RELATIVE_REGION_ANCHORS = ("center", "left_center", "right_center")
-ALLOWED_ON_ERROR_MODES = ("continue", "retry", "stop", "fallback")
+ALLOWED_ON_ERROR_MODES = ("continue", "retry", "stop", "fallback", "ask")
 ALLOWED_PARENT_WINDOW_FRAMEWORK_IDS = ("WPF", "Win32", "uia", "WinForm")
+
+# 步骤级执行策略（stepPolicy）—— 统一 onError/retry/continueWhen 的收敛方式。
+# 旧字段 onError / retryCount / retryInterval / continueWhen 仍完全支持，
+# stepPolicy 作为可选新字段存在，优先级更高，运行时由 _resolve_step_policy 归一化。
+STEP_POLICY_ON_FAIL_MODES = ("skip", "retry", "fallback", "abort", "ask")
+_POLICY_ON_FAIL_TO_LEGACY = {
+    "skip": "continue",
+    "retry": "retry",
+    "fallback": "fallback",
+    "abort": "stop",
+    "ask": "ask",
+}
+_LEGACY_TO_POLICY_ON_FAIL = {
+    "continue": "skip",
+    "retry": "retry",
+    "stop": "abort",
+    "fallback": "fallback",
+    "ask": "ask",
+}
+
+
+def step_policy_on_fail_to_legacy(on_fail_value):
+    """将 stepPolicy.onFail 枚举转为旧 onError 字段值。"""
+    return _POLICY_ON_FAIL_TO_LEGACY.get(
+        str(on_fail_value or "").strip().lower(), "stop"
+    )
+
+
+def step_policy_from_legacy_on_error(on_error_value):
+    """从旧 onError 值反推 stepPolicy.onFail 枚举。"""
+    return _LEGACY_TO_POLICY_ON_FAIL.get(
+        str(on_error_value or "").strip().lower(), "abort"
+    )
 
 ACTION_SCHEMAS = {
     "click": {
@@ -71,6 +104,16 @@ ACTION_SCHEMAS = {
         "show_timeout": True,
         "suggested_columns": ("parentWindowTitle/className/frameworkId", "regionX/Y/Width/Height"),
     },
+    "click_relative_anchor": {
+        "label": "锚点相对点击",
+        "description": "先定位锚点控件(controlId)，再以其可见矩形中心为基准、按像素偏移 (offsetX, offsetY) 点击。比固定区域更抗布局/缩放漂移，适合附近有稳定锚点控件、但目标点本身拿不到的情形。",
+        "target_required": True,
+        "input_required": False,
+        "input_key": "",
+        "input_label": "输入/参数",
+        "show_timeout": True,
+        "suggested_columns": ("controlId(锚点)", "offsetX", "offsetY", "clickKind"),
+    },
     "select_dropdown_item_runtime": {
         "label": "运行时下拉选择",
         "description": "先展开下拉框，再在运行时枚举 Popup 中的可见 ListBoxItem/MenuItem 并点击，适合 WPF 下拉项。",
@@ -106,6 +149,24 @@ ACTION_SCHEMAS = {
         "input_key": "seconds",
         "input_label": "等待秒数 *",
         "show_timeout": False,
+    },
+    "menu_select": {
+        "label": "菜单选择",
+        "description": "按路径依次点击菜单项，如 File->Open。解析自 recorder 的 menu_click。",
+        "target_required": False,
+        "input_required": True,
+        "input_key": "menuPath",
+        "input_label": "菜单路径 *",
+        "show_timeout": True,
+    },
+    "set_combobox": {
+        "label": "设置下拉框",
+        "description": "设置下拉框(ComboBox)的选中值。解析自 recorder 的 set_combobox。",
+        "target_required": True,
+        "input_required": True,
+        "input_key": "value",
+        "input_label": "选中值 *",
+        "show_timeout": True,
     },
 }
 

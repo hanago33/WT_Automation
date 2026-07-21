@@ -15,12 +15,6 @@
     <nav class="nav">
         <div class="container nav-content">
             <div class="logo">
-                <div class="logo-icon">
-                    <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M14 2L4 7.5V20.5L14 26L24 20.5V7.5L14 2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
-                        <path d="M14 12L4 7.5M14 12V26M14 12L24 7.5" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
-                    </svg>
-                </div>
                 <span class="logo-text">WT Automation</span>
             </div>
             <div class="nav-links">
@@ -32,10 +26,8 @@
                 <a href="#quickstart">快速开始</a>
                 <a href="#contact">联系我们</a>
             </div>
-            <div class="nav-brand-crrc">
-                <span class="crrc-small">CRRC</span>
-                <span class="crrc-divider">|</span>
-                <span class="crrc-name">中车株洲所</span>
+            <div class="nav-brand-info">
+                <span class="nav-brand-unit">风电事业部 · 风资源技术中心</span>
             </div>
         </div>
     </nav>
@@ -58,13 +50,13 @@
                 </p>
                 <div class="hero-stats">
                     <div class="stat-item">
-                        <span class="stat-number">46</span>
+                        <span class="stat-number">46+</span>
                         <span class="stat-label">完整流程步骤</span>
                     </div>
                     <div class="stat-divider"></div>
                     <div class="stat-item">
-                        <span class="stat-number">5×</span>
-                        <span class="stat-label">完整运行成功</span>
+                        <span class="stat-number">4</span>
+                        <span class="stat-label">业务流程蓝图</span>
                     </div>
                     <div class="stat-divider"></div>
                     <div class="stat-item">
@@ -145,8 +137,8 @@
                             <path d="M12 1v6m0 10v6m11-11h-6M7 12H1m15.5-7.5l-4.2 4.2m-8.6 8.6l-4.2 4.2m17-0l-4.2-4.2m-8.6-8.6l-4.2-4.2"/>
                         </svg>
                     </div>
-                    <h3>AI 辅助兜底</h3>
-                    <p>复杂场景使用相对区域和模板补偿，真正无法恢复时才由 AI 介入处理当前步骤。</p>
+                    <h3>AI 自然语言 → RPA</h3>
+                    <p>WT_AUTOMATION_Agent 模块支持自然语言描述转换为 RPA 步骤，实现对话式自动化构建。</p>
                 </div>
 
                 <div class="card feature-card">
@@ -154,6 +146,17 @@
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M9 11l3 3L22 4"/>
                             <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                        </svg>
+                    </div>
+                    <h3>业务流程蓝图</h3>
+                    <p>基于软件用户手册建立的操作蓝图库，将专业文档转化为可执行自动化流程。</p>
+                </div>
+
+                <div class="card feature-card">
+                    <div class="feature-icon icon-orange">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2"/>
+                            <path d="M9 9h6v6H9z"/>
                         </svg>
                     </div>
                     <h3>可视化工具链</h3>
@@ -378,6 +381,32 @@
                 </div>
 
                 <div class="arch-layer arch-layer-3">
+                    <div class="layer-label">AI 智能层</div>
+                    <div class="arch-modules">
+                        <div class="module-card">
+                            <span class="module-badge">Agent</span>
+                            <h4>WT_AUTOMATION_Agent</h4>
+                            <p>自然语言 → RPA 步骤转换</p>
+                        </div>
+                        <div class="module-card">
+                            <span class="module-badge">Agent</span>
+                            <h4>DSL Agent</h4>
+                            <p>对话式流程构建</p>
+                        </div>
+                        <div class="module-card">
+                            <span class="module-badge">Agent</span>
+                            <h4>Control Index</h4>
+                            <p>控件索引与上下文构建</p>
+                        </div>
+                        <div class="module-card">
+                            <span class="module-badge">Agent</span>
+                            <h4>Skill Bridge</h4>
+                            <p>技能系统与知识库</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="arch-layer arch-layer-4">
                     <div class="layer-label">定义与编辑层</div>
                     <div class="arch-modules">
                         <div class="module-card">
@@ -403,13 +432,18 @@
                     </div>
                 </div>
 
-                <div class="arch-layer arch-layer-4">
+                <div class="arch-layer arch-layer-5">
                     <div class="layer-label">资产与配置层</div>
                     <div class="arch-modules">
                         <div class="module-card">
                             <span class="module-badge">.json</span>
                             <h4>control_maps/</h4>
                             <p>窗口控件库定义</p>
+                        </div>
+                        <div class="module-card">
+                            <span class="module-badge">.json</span>
+                            <h4>operation_blueprints/</h4>
+                            <p>业务流程蓝图库</p>
                         </div>
                         <div class="module-card">
                             <span class="module-badge">.png</span>
@@ -421,15 +455,10 @@
                             <h4>flow_packages/</h4>
                             <p>流程包与注册表</p>
                         </div>
-                        <div class="module-card">
-                            <span class="module-badge">工具</span>
-                            <h4>build_*_library</h4>
-                            <p>资产库构建脚本</p>
-                        </div>
                     </div>
                 </div>
 
-                <div class="arch-layer arch-layer-5">
+                <div class="arch-layer arch-layer-6">
                     <div class="layer-label">报告与维护层</div>
                     <div class="arch-modules">
                         <div class="module-card">
@@ -555,6 +584,50 @@ report = {
     <span class="string">"failedSteps"</span>: 0,
     <span class="string">"fallbackUsed"</span>: 0,
     <span class="string">"duration"</span>: <span class="string">"119.597s"</span>
+}</code>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="module-detail-card">
+                    <div class="module-detail-icon">
+                        <svg width="36" height="36" viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 18h12M18 12v12"/>
+                            <circle cx="18" cy="18" r="14"/>
+                            <path d="M8 18h4M24 18h4M18 8v4M18 24v4"/>
+                        </svg>
+                    </div>
+                    <div class="module-detail-content">
+                        <span class="module-tag">AI 智能</span>
+                        <h3>WT_AUTOMATION_Agent</h3>
+                        <p>自然语言 RPA 流程构建 Agent，支持对话式自动化生成。可独立运行，连接大模型 API 将自然语言描述转换为可执行 RPA 步骤。</p>
+                        <div class="code-snippet">
+                            <code><span class="comment"># 快速开始</span>
+<span class="keyword">from</span> WT_AUTOMATION_Agent <span class="keyword">import</span> DslAgent
+agent = DslAgent(config)
+steps = agent.<span class="function">nl_to_sequence</span>(<span class="string">"点击确认按钮"</span>, context)</code>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="module-detail-card">
+                    <div class="module-detail-icon">
+                        <svg width="36" height="36" viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="4" y="4" width="28" height="28" rx="2"/>
+                            <path d="M12 12h12M12 18h12M12 24h8"/>
+                        </svg>
+                    </div>
+                    <div class="module-detail-content">
+                        <span class="module-tag">业务流程蓝图</span>
+                        <h3>operation_blueprints/</h3>
+                        <p>基于软件用户手册建立的操作蓝图库，将专业文档转化为结构化流程定义。已建立气象数据、微尺度模型、风机类型等多个业务场景蓝图。</p>
+                        <div class="code-snippet">
+                            <code><span class="comment"># 蓝图示例</span>
+{
+    <span class="string">"schemaVersion"</span>: <span class="string">"blueprint-1.0"</span>,
+    <span class="string">"id"</span>: <span class="string">"turbine_type_create"</span>,
+    <span class="string">"name"</span>: <span class="string">"风机类型-创建并添加功率曲线"</span>,
+    <span class="string">"steps"</span>: [...]
 }</code>
                         </div>
                     </div>
@@ -724,16 +797,19 @@ text = <span class="function">ocr_extract</span>(screenshot, location)</code>
                 <div class="step-card">
                     <div class="step-number">02</div>
                     <h3>启动平台</h3>
-                    <p>使用启动器进入主控制台，或直接运行可视化编辑器。</p>
+                    <p>使用启动器进入主控制台，或直接运行可视化编辑器。AI 助手支持 Web GUI 和命令行两种模式。</p>
                     <div class="terminal-window">
                         <div class="terminal-header">
                             <span class="terminal-title">PowerShell</span>
                         </div>
                         <div class="terminal-content">
-                            <code><span class="terminal-prompt">$</span> python WT_Launcher.py
-<span class="terminal-comment"># 或</span>
-<span class="terminal-prompt">$</span> python WT_Flow_Editor.py
-<span class="terminal-comment"># 或双击 bat</span></code>
+                            <code><span class="terminal-comment"># 传统自动化平台</span>
+<span class="terminal-prompt">$</span> python WT_Launcher.py  <span class="terminal-comment"># 启动器</span>
+<span class="terminal-prompt">$</span> python WT_Flow_Editor.py  <span class="terminal-comment"># 流程编辑器</span>
+
+<span class="terminal-comment"># AI 对话式助手</span>
+<span class="terminal-prompt">$</span> python -m WT_AUTOMATION_Agent.gui  <span class="terminal-comment"># Web GUI</span>
+<span class="terminal-prompt">$</span> python -m WT_AUTOMATION_Agent.cli  <span class="terminal-comment"># 命令行</span></code>
                         </div>
                     </div>
                 </div>
@@ -760,14 +836,14 @@ text = <span class="function">ocr_extract</span>(screenshot, location)</code>
                 <div class="stat-block">
                     <span class="stat-icon">📁</span>
                     <div>
-                        <strong>12+</strong>
+                        <strong>15+</strong>
                         <span>核心 Python 模块</span>
                     </div>
                 </div>
                 <div class="stat-block">
                     <span class="stat-icon">🎯</span>
                     <div>
-                        <strong>20+</strong>
+                        <strong>30+</strong>
                         <span>控件库 JSON 文件</span>
                     </div>
                 </div>
@@ -776,6 +852,20 @@ text = <span class="function">ocr_extract</span>(screenshot, location)</code>
                     <div>
                         <strong>30+</strong>
                         <span>图像模板资产</span>
+                    </div>
+                </div>
+                <div class="stat-block">
+                    <span class="stat-icon">🤖</span>
+                    <div>
+                        <strong>8+</strong>
+                        <span>AI Agent 模块</span>
+                    </div>
+                </div>
+                <div class="stat-block">
+                    <span class="stat-icon">📋</span>
+                    <div>
+                        <strong>4</strong>
+                        <span>业务流程蓝图</span>
                     </div>
                 </div>
                 <div class="stat-block">
@@ -852,11 +942,12 @@ text = <span class="function">ocr_extract</span>(screenshot, location)</code>
             </div>
 
             <div class="contact-footer">
-                <div class="crrc-brand">
-                    <div class="crrc-logo">CRRC</div>
-                    <div class="crrc-text">
-                        <strong>中国中车 · 株洲所</strong>
-                        <span>连接世界 造福人类</span>
+                <div class="org-info">
+                    <div class="org-name">
+                        <strong>中车株洲电力机车研究所有限公司</strong>
+                    </div>
+                    <div class="org-sub">
+                        <span>风电事业部 · 风资源技术中心</span>
                     </div>
                 </div>
             </div>
@@ -869,12 +960,6 @@ text = <span class="function">ocr_extract</span>(screenshot, location)</code>
             <div class="footer-content">
                 <div class="footer-brand">
                     <div class="logo">
-                        <div class="logo-icon">
-                            <svg width="24" height="24" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <path d="M14 2L4 7.5V20.5L14 26L24 20.5V7.5L14 2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
-                                <path d="M14 12L4 7.5M14 12V26M14 12L24 7.5" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
-                            </svg>
-                        </div>
                         <span class="logo-text">WT Automation</span>
                     </div>
                     <p>面向 WT 风资源仿真软件的桌面自动化平台，提供从控件信息采集到流程执行的完整解决方案。</p>

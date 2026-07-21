@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: automation_agent/core_agent
+title: DSL Agent 核心：自然语言到 RPA 步骤转换器
+scope:
+    - WT_AUTOMATION_Agent/agent.py
+    - WT_AUTOMATION_Agent/skill_bridge.py
+    - WT_AUTOMATION_Agent/schemas.py
+source_files: []
+depends_on: []
+related_to: []

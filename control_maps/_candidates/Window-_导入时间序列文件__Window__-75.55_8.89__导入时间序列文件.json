@@ -1,0 +1,38 @@
+{
+  "_candidateMeta": {
+    "sourceScript": "d:\\My_RF_Project\\WT_Automation\\samples\\recorder_scripts\\气象数据录入_20260625.py",
+    "sourceLine": 50,
+    "discoveredAt": "2026-07-21T11:44:07",
+    "status": "pending_review",
+    "uipath": "||Window->导入时间序列文件||Window%(-75.55,8.89)",
+    "windowTitle": "导入时间序列文件",
+    "leafName": "导入时间序列文件",
+    "leafControlType": "Window"
+  },
+  "controlDefinition": {
+    "id": "target_control",
+    "name": "导入时间序列文件",
+    "role": "来自 recorder 自动转换的目标控件",
+    "targetMethod": "name,control_type",
+    "targetValue": "导入时间序列文件,Window",
+    "windowTitle": "导入时间序列文件",
+    "uiPath": "||Window->导入时间序列文件||Window%(-75.55,8.89)",
+    "templateKey": "",
+    "notes": "由 pywinauto_recorder 录制脚本自动转换生成（含 a11y 富化）；若控件库未命中，可继续补充 Inspect/Accessibility 信息。 点击偏移=@(-75.55,8.89)。",
+    "inspectData": {
+      "name": "导入时间序列文件",
+      "controlType": "Window",
+      "localizedControlType": "",
+      "automationId": "",
+      "className": "",
+      "frameworkId": "",
+      "ancestors": [
+        "Window"
+      ],
+      "recommendedTargetMethod": "ui_path",
+      "recommendedTargetValue": "||Window->导入时间序列文件||Window%(-75.55,8.89)"
+    },
+    "auxChecks": [],
+    "source": "recorder"
+  }
+}

@@ -1,10 +1,14 @@
 # encoding: utf-8
 
+import json
 import os
 import time
+from datetime import datetime
 
 import pyautogui
 from pywinauto_recorder.player import send_keys
+
+from wt_action_schema import step_policy_on_fail_to_legacy
 
 
 _GET_STEP_DEFINITION = lambda step_id: {}
@@ -14,6 +18,7 @@ _RESOLVE_DYNAMIC_VALUE = lambda value, step_id, context: value
 _LOG_STEP = lambda message: None
 _CLICK_FLOW_CONTROL = lambda *args, **kwargs: False
 _CLICK_RELATIVE_REGION = lambda *args, **kwargs: (False, {})
+_CLICK_RELATIVE_ANCHOR = lambda *args, **kwargs: (False, {})
 _FOCUS_FLOW_CONTROL = lambda *args, **kwargs: False
 _TYPE_TEXT_INTO_FLOW_CONTROL = lambda *args, **kwargs: False
 _TYPE_TEXT_INTO_RELATIVE_REGION = lambda *args, **kwargs: (False, {})
@@ -21,9 +26,52 @@ _SELECT_DROPDOWN_ITEM_RUNTIME = lambda *args, **kwargs: (False, {})
 _DRAG_BETWEEN_FLOW_CONTROLS = lambda *args, **kwargs: False
 _MOUSE_WHEEL_ON_FLOW_CONTROL = lambda *args, **kwargs: False
 _WAIT_FOR_FLOW_CONTROL_CONDITION = lambda *args, **kwargs: False
+_MENU_SELECT_FLOW = lambda *args, **kwargs: False
 _LOCATE_TEMPLATE_CENTER_BY_PATH = lambda *args, **kwargs: None
 _REPORT_STEP_RESULT = lambda *args, **kwargs: None
 _RUN_AI_INTERVENTION_AFTER_FAILURE = lambda *args, **kwargs: None
+
+
+def _write_feedback_to_flow(context, step_id, feedback_data):
+    """运行时反馈闭环：将步骤执行反馈回写到 flow_definition.json。
+
+    在 context["flowDefinitionPath"] 存在时，向 flow_definition 的
+    feedbackHistory 数组追加一条反馈记录。用于积累多次运行的稳定性数据。
+    """
+    flow_path = context.get("flowDefinitionPath", "")
+    if not flow_path or not os.path.isfile(flow_path):
+        return
+    try:
+        with open(flow_path, "r", encoding="utf-8") as f:
+            flow_def = json.load(f)
+    except Exception as e:
+        _LOG_STEP(context, f"Warning: Failed to load flow definition for feedback: {e}", step_id)
+        return
+
+    if not isinstance(flow_def, dict):
+        return
+
+    entry = {
+        "stepId": step_id,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "runId": context.get("runId", ""),
+    }
+    entry.update(feedback_data)
+
+    history = flow_def.get("feedbackHistory")
+    if not isinstance(history, list):
+        flow_def["feedbackHistory"] = [entry]
+    else:
+        history.append(entry)
+        # 限制历史条目数，防止文件过大
+        if len(history) > 500:
+            flow_def["feedbackHistory"] = history[-500:]
+
+    try:
+        with open(flow_path, "w", encoding="utf-8") as f:
+            json.dump(flow_def, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        _LOG_STEP(context, f"Warning: Failed to save flow definition for feedback: {e}", step_id)
 
 
 def configure_flow_executor(
@@ -34,6 +82,7 @@ def configure_flow_executor(
     log_step=None,
     click_flow_control=None,
     click_relative_region=None,
+    click_relative_anchor=None,
     focus_flow_control=None,
     type_text_into_flow_control=None,
     type_text_into_relative_region=None,
@@ -41,16 +90,19 @@ def configure_flow_executor(
     drag_between_flow_controls=None,
     mouse_wheel_on_flow_control=None,
     wait_for_flow_control_condition=None,
+    menu_select_flow=None,
     locate_template_center_by_path=None,
     report_step_result=None,
     run_ai_intervention_after_failure=None,
 ):
     global _GET_STEP_DEFINITION, _GET_FLOW_PACKAGE, _GET_STEP_PARAMS
     global _RESOLVE_DYNAMIC_VALUE, _LOG_STEP, _CLICK_FLOW_CONTROL, _CLICK_RELATIVE_REGION
+    global _CLICK_RELATIVE_ANCHOR
     global _FOCUS_FLOW_CONTROL, _TYPE_TEXT_INTO_FLOW_CONTROL, _TYPE_TEXT_INTO_RELATIVE_REGION
     global _SELECT_DROPDOWN_ITEM_RUNTIME
     global _DRAG_BETWEEN_FLOW_CONTROLS, _MOUSE_WHEEL_ON_FLOW_CONTROL
-    global _WAIT_FOR_FLOW_CONTROL_CONDITION, _LOCATE_TEMPLATE_CENTER_BY_PATH, _REPORT_STEP_RESULT
+    global _WAIT_FOR_FLOW_CONTROL_CONDITION, _MENU_SELECT_FLOW
+    global _LOCATE_TEMPLATE_CENTER_BY_PATH, _REPORT_STEP_RESULT
     global _RUN_AI_INTERVENTION_AFTER_FAILURE
 
     if callable(get_step_definition):
@@ -67,6 +119,8 @@ def configure_flow_executor(
         _CLICK_FLOW_CONTROL = click_flow_control
     if callable(click_relative_region):
         _CLICK_RELATIVE_REGION = click_relative_region
+    if callable(click_relative_anchor):
+        _CLICK_RELATIVE_ANCHOR = click_relative_anchor
     if callable(focus_flow_control):
         _FOCUS_FLOW_CONTROL = focus_flow_control
     if callable(type_text_into_flow_control):
@@ -81,6 +135,8 @@ def configure_flow_executor(
         _MOUSE_WHEEL_ON_FLOW_CONTROL = mouse_wheel_on_flow_control
     if callable(wait_for_flow_control_condition):
         _WAIT_FOR_FLOW_CONTROL_CONDITION = wait_for_flow_control_condition
+    if callable(menu_select_flow):
+        _MENU_SELECT_FLOW = menu_select_flow
     if callable(locate_template_center_by_path):
         _LOCATE_TEMPLATE_CENTER_BY_PATH = locate_template_center_by_path
     if callable(report_step_result):
@@ -168,6 +224,35 @@ def resolve_fallback_template_path(template_path):
     return os.path.normpath(os.path.join(os.path.dirname(__file__), normalized_path))
 
 
+def _coerce_int(value, default=0):
+    """Safely coerce a value to an integer."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+def _resolve_step_policy(action_config):
+    """归一化 stepPolicy 到旧字段，保证后续所有代码无感知。
+
+    优先读取 actionConfig.stepPolicy（新格式），
+    不存在时保持旧字段 onError/retryCount/retryInterval/continueWhen 原样——零副作用。
+    """
+    action_config = action_config if isinstance(action_config, dict) else {}
+    sp = action_config.get("stepPolicy")
+    if not isinstance(sp, dict):
+        return  # 无 stepPolicy，旧字段保持不变，现有逻辑完全不动
+    # 写入旧字段
+    action_config["onError"] = step_policy_on_fail_to_legacy(sp.get("onFail"))
+    action_config["retryCount"] = max(0, _coerce_int(sp.get("maxRetries", 0), 0))
+    action_config["retryInterval"] = sleep_seconds(sp.get("retryInterval", 1.0), 1.0)
+    sp_continue_when = sp.get("continueWhen")
+    if isinstance(sp_continue_when, dict):
+        action_config["continueWhen"] = sp_continue_when
+    elif "continueWhen" in action_config:
+        # stepPolicy 不含 continueWhen，则抹掉旧字段里的 continueWhen 以免误用
+        action_config.pop("continueWhen", None)
+
+
 def _resolve_retry_policy(action_config):
     action_config = action_config if isinstance(action_config, dict) else {}
     on_error = str(action_config.get("onError", "")).strip().lower()
@@ -206,7 +291,181 @@ def _run_action_step_with_retry(step_id, context, action_config, step_extra):
             )
             if retry_interval > 0:
                 time.sleep(retry_interval)
+
+    # 所有重试耗尽后，尝试 fallback 链
+    fallback_result = _try_fallback_chain(step_id, context, last_error)
+    if fallback_result is not None:
+        _LOG_STEP(f"Fallback 链执行成功: step={step_id}")
+        step_extra["fallbackUsed"] = True
+        step_extra["fallbackLevel"] = fallback_result.get("_fallback_level", 0)
+        # P3: 反馈闭环 — 记录降级恢复
+        _write_feedback_to_flow(context, step_id, {
+            "type": "fallback_recovery",
+            "fallbackLevel": fallback_result.get("_fallback_level", 0),
+            "originalError": str(last_error),
+        })
+        return fallback_result
+
     raise last_error
+
+
+def _try_fallback_chain(step_id, context, original_error):
+    """遍历步骤的 fallbackChain 降级链，逐个尝试备用定位策略。
+
+    返回执行结果 dict（含 _fallback_level 标记）或 None（全部失败）。
+    """
+    step_definition = _GET_STEP_DEFINITION(step_id)
+    fallback_chain = step_definition.get("fallbackChain", [])
+    if not isinstance(fallback_chain, list) or not fallback_chain:
+        return None
+
+    action_config = step_definition.get("actionConfig", {})
+    if not isinstance(action_config, dict):
+        action_config = {}
+    action_config = _RESOLVE_DYNAMIC_VALUE(action_config, step_id, context)
+
+    action_name = str(action_config.get("action", "")).strip().lower()
+    text = str(action_config.get("text", action_config.get("value", ""))).strip()
+    wait_after = sleep_seconds(action_config.get("waitAfter", 0.3), 0.3)
+    timeout_seconds = sleep_seconds(action_config.get("timeoutSeconds", 3), 3)
+    save_as = str(action_config.get("saveAs", "output")).strip() or "output"
+
+    for level, fb in enumerate(fallback_chain, start=1):
+        if not isinstance(fb, dict):
+            continue
+        fb_method = str(fb.get("method", "")).strip().lower()
+        fb_type = str(fb.get("type", "")).strip().lower()
+
+        _LOG_STEP(
+            f"Fallback 链 L{level} 尝试: step={step_id}, method={fb_method}, "
+            f"type={fb_type}, confidence={fb.get('confidence', 0)}"
+        )
+
+        try:
+            center = None
+            if fb_type == "template":
+                template_path = resolve_fallback_template_path(fb.get("value", ""))
+                if template_path and os.path.isfile(template_path):
+                    center = _LOCATE_TEMPLATE_CENTER_BY_PATH(template_path, timeout_seconds=timeout_seconds)
+            elif fb_type == "coordinate":
+                coords = fb.get("value", {})
+                if isinstance(coords, dict):
+                    center = (int(float(coords.get("x", 0))), int(float(coords.get("y", 0))))
+            elif fb_type == "ui_path_search":
+                center = _locate_by_uipath_fallback(fb.get("value", ""), timeout_seconds)
+
+            if center:
+                center = apply_position_offset(center, action_config)
+                result = _execute_fallback_action(action_name, center, text)
+                context.setdefault("step_outputs", {}).setdefault(step_id, {})[save_as] = result
+                context["step_outputs"][step_id]["output"] = result
+                result["_fallback_level"] = level
+                if wait_after > 0:
+                    time.sleep(wait_after)
+                return result
+        except Exception as exc:
+            _LOG_STEP(f"Fallback 链 L{level} 失败: step={step_id}, error={exc}")
+            continue
+
+    return None
+
+
+def _locate_by_uipath_fallback(uipath, timeout_seconds=3):
+    """通过 UIPath 完整路径在窗口树中搜索控件，返回中心坐标（fallback 用）。
+
+    使用 UIA backend 的 pywinauto Desktop 按祖先链逐级导航，
+    匹配叶子控件后返回其 bounding rectangle 中心。
+    """
+    if not uipath:
+        return None
+    try:
+        from pywinauto import Desktop
+    except ImportError:
+        return None
+
+    segments = [s.strip() for s in str(uipath).split("->") if s.strip()]
+    if not segments:
+        return None
+
+    deadline = time.time() + max(0.5, float(timeout_seconds or 2))
+    while time.time() < deadline:
+        try:
+            desktop = Desktop(backend="uia")
+            # 从根窗口开始搜索
+            current = desktop
+            for seg in segments:
+                name_type = seg.split("||") if "||" in seg else [seg, ""]
+                name = name_type[0].strip()
+                ctype = name_type[1].strip() if len(name_type) > 1 else ""
+                # 在当前层级下查找匹配的子控件
+                found = None
+                for child in current.descendants():
+                    try:
+                        child_name = str(child.window_text()).strip()
+                        child_ct = str(child.element_info.control_type).strip() if hasattr(child, 'element_info') else ""
+                    except Exception:
+                        continue
+                    if name and name.lower() in child_name.lower():
+                        found = child
+                        break
+                    if ctype and ctype.lower() == child_ct.lower():
+                        found = child
+                        break
+                if found:
+                    current = found
+                else:
+                    current = None
+                    break
+
+            if current:
+                try:
+                    rect = current.rectangle()
+                    cx = (rect.left + rect.right) // 2
+                    cy = (rect.top + rect.bottom) // 2
+                    if cx > 0 and cy > 0:
+                        return (cx, cy)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        time.sleep(0.3)
+
+    return None
+
+
+def _execute_fallback_action(action_name, center, text=""):
+    """在指定屏幕坐标执行 fallback 动作，返回 result 值。"""
+    import pyautogui
+    if action_name in {"click", "wait_for_control"}:
+        pyautogui.click(center[0], center[1])
+        return f"fallback_coord_{center[0]}_{center[1]}"
+    elif action_name == "double_click":
+        pyautogui.doubleClick(center[0], center[1])
+        return f"fallback_coord_{center[0]}_{center[1]}"
+    elif action_name == "right_click":
+        pyautogui.click(center[0], center[1], button="right")
+        return f"fallback_coord_{center[0]}_{center[1]}"
+    elif action_name == "double_right_click":
+        pyautogui.click(center[0], center[1], button="right")
+        time.sleep(0.2)
+        pyautogui.click(center[0], center[1], button="right")
+        return f"fallback_coord_{center[0]}_{center[1]}"
+    elif action_name in {"type_text", "send_keys"}:
+        pyautogui.click(center[0], center[1])
+        time.sleep(0.2)
+        if text:
+            send_keys(text)
+        return text
+    elif action_name == "mouse_wheel":
+        pyautogui.moveTo(center[0], center[1])
+        return f"fallback_coord_{center[0]}_{center[1]}"
+    elif action_name == "select_dropdown_item_runtime":
+        pyautogui.click(center[0], center[1])
+        return f"fallback_coord_{center[0]}_{center[1]}"
+    else:
+        # 默认：尝试点击
+        pyautogui.click(center[0], center[1])
+        return f"fallback_coord_{center[0]}_{center[1]}"
 
 
 def apply_position_offset(center_point, action_config):
@@ -270,6 +529,27 @@ def run_action_step(step_id, context):
             raise RuntimeError(f"action click_relative_region 未命中父窗口相对区域: {step_id}")
         action_extra["relativeRegion"] = region_meta
         result = region_meta.get("clickPoint", {})
+    elif action_name == "click_relative_anchor":
+        if not control_id:
+            raise ValueError(f"action click_relative_anchor 缺少 controlId(锚点控件): {step_id}")
+        try:
+            offset_x = int(float(action_config.get("offsetX", 0) or 0))
+            offset_y = int(float(action_config.get("offsetY", 0) or 0))
+        except Exception:
+            raise ValueError(f"action click_relative_anchor 的 offsetX/offsetY 必须为数字: {step_id}")
+        click_kind = "double" if str(action_config.get("clickKind", "")).strip().lower() == "double" else "single"
+        ok, anchor_meta = _CLICK_RELATIVE_ANCHOR(
+            step_id,
+            control_id,
+            (offset_x, offset_y),
+            timeout_seconds=timeout_seconds,
+            window_title_hint=window_title_hint,
+            click_kind=click_kind,
+        )
+        if not ok:
+            raise RuntimeError(f"action click_relative_anchor 未命中锚点控件: {step_id}")
+        action_extra["anchorMeta"] = anchor_meta
+        result = anchor_meta.get("clickPoint", {})
     elif action_name == "double_click":
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
@@ -434,6 +714,19 @@ def run_action_step(step_id, context):
             raise RuntimeError(f"action wait_for_control 超时: step={step_id}, control={control_id}, condition={condition}")
         _LOG_STEP(f"已执行 action wait_for_control: step={step_id}, control={control_id}, condition={condition}")
         result = f"{control_id}:{condition}"
+    elif action_name == "menu_select":
+        menu_path = str(action_config.get("menuPath", text)).strip()
+        if not menu_path:
+            raise ValueError(f"action menu_select 缺少 menuPath: {step_id}")
+        if not _MENU_SELECT_FLOW(
+            step_id,
+            menu_path,
+            timeout_seconds=timeout_seconds,
+            window_title_hint=window_title_hint,
+        ):
+            raise RuntimeError(f"action menu_select 失败: step={step_id}, menuPath={menu_path}")
+        _LOG_STEP(f"已执行 action menu_select: step={step_id}, menuPath={menu_path}")
+        result = menu_path
     elif action_name == "sleep":
         seconds = sleep_seconds(action_config.get("seconds", text or 1), 1)
         _LOG_STEP(f"已执行 action sleep: step={step_id}, seconds={seconds}")
@@ -625,6 +918,7 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
             action_config = step_definition.get("actionConfig", {})
             if not isinstance(action_config, dict):
                 action_config = {}
+            _resolve_step_policy(action_config)  # stepPolicy → 旧字段归一化（无 stepPolicy 时零副作用）
             on_error = str(action_config.get("onError", "")).strip().lower() or "stop"
             fallback_template = str(action_config.get("fallbackTemplate", "")).strip()
             try:
@@ -637,6 +931,12 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
                         step_extra["fallbackTemplateUsed"] = fallback_template
                         step_extra["fallbackReason"] = str(exc)
                         step_extra.update(_wait_for_continue_when(step_id, action_config, phase="template_fallback") or {})
+                        # P3: 反馈闭环 — 记录模板降级恢复
+                        _write_feedback_to_flow(context, step_id, {
+                            "type": "fallback_template_recovery",
+                            "fallbackTemplate": fallback_template,
+                            "originalError": str(exc),
+                        })
                         return
                     except Exception as current_fallback_exc:
                         fallback_exc = current_fallback_exc
@@ -663,6 +963,17 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
                     step_extra["onErrorHandled"] = "continue"
                     _LOG_STEP(f"步骤执行失败但按 continue 继续后续流程: step={step_id}, error={exc}")
                     return
+                if on_error == "ask":
+                    # ask 模式：失败时直接触发 AI/人工干预
+                    ai_extra = _maybe_run_ai_intervention_after_failure(
+                        step_id, context, original_error=exc
+                    )
+                    if ai_extra:
+                        step_extra.update(ai_extra)
+                        step_extra["onErrorHandled"] = "ask"
+                        step_extra.update(_wait_for_continue_when(step_id, action_config, phase="ai_intervention") or {})
+                        return
+                    raise
                 raise
             return
         if action_type == "flow_ref":
@@ -679,6 +990,12 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
     except Exception as exc:
         step_status = "failed"
         step_error = str(exc)
+        # P3: 反馈闭环 — 记录步骤失败
+        _write_feedback_to_flow(context, step_id, {
+            "type": "step_failure",
+            "error": str(exc),
+            "actionType": action_type,
+        })
         raise
     finally:
         elapsed = time.time() - step_started

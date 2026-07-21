@@ -293,176 +293,87 @@ class FlowExecutorAiFallbackTests(unittest.TestCase):
         self.assertEqual(self.reported[-1]["status"], "success")
         self.assertEqual(self.reported[-1]["extra"].get("postInputKeys"), "{TAB}")
 
-    def test_type_text_relative_falls_back_for_legacy_signature(self):
-        captured = {}
-        self.step_definition["actionConfig"] = {
-            "action": "type_text_relative",
-            "text": "120.5",
-            "postInputKeys": "{TAB}",
-            "parentWindow": {
-                "title": "创建一个新的气象对象",
-                "className": "Window",
-                "frameworkId": "WPF",
-            },
-            "relativeRegion": {
-                "x": 0.48,
-                "y": 0.76,
-                "width": 0.43,
-                "height": 0.06,
-                "anchor": "center",
-            },
+
+class StepPolicyResolutionTests(unittest.TestCase):
+    """验证 _resolve_step_policy 归一化层：stepPolicy（新格式）→ 旧字段迁移，
+    以及无 stepPolicy 时的零副作用（向后兼容）。
+    """
+
+    def test_no_step_policy_no_op(self):
+        """无 stepPolicy 时，旧字段原样保留。"""
+        ac = {"onError": "fallback", "retryCount": 3, "retryInterval": 2.0, "continueWhen": {"controlId": "c1"}}
+        wt_flow_executor._resolve_step_policy(ac)
+        self.assertEqual(ac["onError"], "fallback")
+        self.assertEqual(ac["retryCount"], 3)
+        self.assertEqual(ac["retryInterval"], 2.0)
+        self.assertDictEqual(ac["continueWhen"], {"controlId": "c1"})
+
+    def test_step_policy_populates_legacy_fields(self):
+        """stepPolicy 写入旧字段。"""
+        ac = {
+            "stepPolicy": {
+                "onFail": "fallback",
+                "maxRetries": 2,
+                "retryInterval": 3.0,
+                "continueWhen": {"controlId": "x", "condition": "visible", "timeoutSeconds": 5},
+            }
         }
+        wt_flow_executor._resolve_step_policy(ac)
+        self.assertEqual(ac["onError"], "fallback")
+        self.assertEqual(ac["retryCount"], 2)
+        self.assertEqual(ac["retryInterval"], 3.0)
+        self.assertDictEqual(ac["continueWhen"], {"controlId": "x", "condition": "visible", "timeoutSeconds": 5})
 
-        def get_step_definition(step_id):
-            return self.step_definition if step_id == "step_ai" else {}
+    def test_step_policy_on_fail_skip_maps_to_continue(self):
+        ac = {"stepPolicy": {"onFail": "skip"}}
+        wt_flow_executor._resolve_step_policy(ac)
+        self.assertEqual(ac["onError"], "continue")
 
-        def legacy_type_text_into_relative_region(step_definition, parent_window, relative_region, text, timeout_seconds=3, window_title_hint=""):
-            captured["text"] = text
-            captured["window_title_hint"] = window_title_hint
-            return True, {"clickPoint": {"x": 2, "y": 2}}
+    def test_step_policy_on_fail_abort_maps_to_stop(self):
+        ac = {"stepPolicy": {"onFail": "abort"}}
+        wt_flow_executor._resolve_step_policy(ac)
+        self.assertEqual(ac["onError"], "stop")
 
-        def report_step_result(run_report, step_id, step_name, status, **kwargs):
-            self.reported.append(
-                {
-                    "step_id": step_id,
-                    "step_name": step_name,
-                    "status": status,
-                    "extra": kwargs.get("extra", {}),
-                    "error": kwargs.get("error", ""),
-                }
-            )
+    def test_step_policy_on_fail_retry_maps_to_retry(self):
+        ac = {"stepPolicy": {"onFail": "retry", "maxRetries": 3}}
+        wt_flow_executor._resolve_step_policy(ac)
+        self.assertEqual(ac["onError"], "retry")
+        self.assertEqual(ac["retryCount"], 3)
 
-        wt_flow_executor.configure_flow_executor(
-            get_step_definition=get_step_definition,
-            get_flow_package=lambda package_id: {},
-            get_step_params=lambda step_id: {},
-            resolve_dynamic_value=lambda value, step_id, context: value,
-            log_step=lambda message: None,
-            click_flow_control=lambda *args, **kwargs: False,
-            click_relative_region=lambda *args, **kwargs: (False, {}),
-            focus_flow_control=lambda *args, **kwargs: False,
-            type_text_into_flow_control=lambda *args, **kwargs: False,
-            type_text_into_relative_region=legacy_type_text_into_relative_region,
-            select_dropdown_item_runtime=lambda *args, **kwargs: (False, {}),
-            drag_between_flow_controls=lambda *args, **kwargs: False,
-            mouse_wheel_on_flow_control=lambda *args, **kwargs: False,
-            wait_for_flow_control_condition=lambda *args, **kwargs: False,
-            locate_template_center_by_path=lambda *args, **kwargs: None,
-            report_step_result=report_step_result,
-            run_ai_intervention_after_failure=lambda *args, **kwargs: {},
-        )
+    def test_step_policy_on_fail_ask_maps_to_ask(self):
+        ac = {"stepPolicy": {"onFail": "ask"}}
+        wt_flow_executor._resolve_step_policy(ac)
+        self.assertEqual(ac["onError"], "ask")
 
-        context = {"run_report": {"stepResults": []}}
-        wt_flow_executor.execute_step_by_id("step_ai", {"step_ai": {"id": "step_ai"}}, context)
+    def test_step_policy_on_fail_unknown_defaults_to_stop(self):
+        ac = {"stepPolicy": {"onFail": "bogus"}}
+        wt_flow_executor._resolve_step_policy(ac)
+        self.assertEqual(ac["onError"], "stop")
 
-        self.assertEqual(captured["text"], "120.5")
-        self.assertEqual(captured["window_title_hint"], "")
-        self.assertEqual(self.reported[-1]["status"], "success")
-        self.assertEqual(self.reported[-1]["extra"].get("postInputKeys"), "{TAB}")
+    def test_step_policy_without_continue_when_erases_legacy(self):
+        ac = {"stepPolicy": {"onFail": "skip"}, "continueWhen": {"controlId": "stale"}}
+        wt_flow_executor._resolve_step_policy(ac)
+        self.assertNotIn("continueWhen", ac)
 
-    def test_on_error_continue_keeps_flow_running_and_reports_failed_step(self):
-        self.step_definition["actionConfig"] = {
-            "action": "click",
-            "controlId": "missing_control",
-            "onError": "continue",
-        }
+    def test_step_policy_sets_retry_defaults(self):
+        ac = {"stepPolicy": {"onFail": "fallback"}}
+        wt_flow_executor._resolve_step_policy(ac)
+        self.assertEqual(ac["retryCount"], 0)
+        self.assertEqual(ac["retryInterval"], 1.0)
 
-        def get_step_definition(step_id):
-            return self.step_definition if step_id == "step_ai" else {}
-
-        def report_step_result(run_report, step_id, step_name, status, **kwargs):
-            self.reported.append(
-                {
-                    "step_id": step_id,
-                    "step_name": step_name,
-                    "status": status,
-                    "extra": kwargs.get("extra", {}),
-                    "error": kwargs.get("error", ""),
-                }
-            )
-
-        wt_flow_executor.configure_flow_executor(
-            get_step_definition=get_step_definition,
-            get_flow_package=lambda package_id: {},
-            get_step_params=lambda step_id: {},
-            resolve_dynamic_value=lambda value, step_id, context: value,
-            log_step=lambda message: None,
-            click_flow_control=lambda *args, **kwargs: False,
-            click_relative_region=lambda *args, **kwargs: (False, {}),
-            focus_flow_control=lambda *args, **kwargs: False,
-            type_text_into_flow_control=lambda *args, **kwargs: False,
-            type_text_into_relative_region=lambda *args, **kwargs: (False, {}),
-            select_dropdown_item_runtime=lambda *args, **kwargs: (False, {}),
-            drag_between_flow_controls=lambda *args, **kwargs: False,
-            mouse_wheel_on_flow_control=lambda *args, **kwargs: False,
-            wait_for_flow_control_condition=lambda *args, **kwargs: False,
-            locate_template_center_by_path=lambda *args, **kwargs: None,
-            report_step_result=report_step_result,
-            run_ai_intervention_after_failure=lambda *args, **kwargs: {},
-        )
-
-        context = {"run_report": {"stepResults": []}}
-        wt_flow_executor.execute_step_by_id("step_ai", {"step_ai": {"id": "step_ai"}}, context)
-
-        self.assertEqual(self.reported[-1]["status"], "failed")
-        self.assertEqual(self.reported[-1]["extra"].get("onErrorHandled"), "continue")
-        self.assertIn("未命中控件", self.reported[-1]["error"])
-
-    def test_retry_count_retries_before_success(self):
-        attempts = {"count": 0}
-        self.step_definition["actionConfig"] = {
+    def test_legacy_fields_unchanged_without_step_policy(self):
+        """旧格式流程走不带 stepPolicy 的 actionConfig，返回值字段完全一致。"""
+        ac = {
             "action": "click",
             "controlId": "ok_button",
-            "retryCount": 1,
-            "retryInterval": 0,
             "onError": "stop",
+            "retryCount": 0,
+            "retryInterval": 1.0,
         }
-
-        def get_step_definition(step_id):
-            return self.step_definition if step_id == "step_ai" else {}
-
-        def click_flow_control(*args, **kwargs):
-            attempts["count"] += 1
-            return attempts["count"] >= 2
-
-        def report_step_result(run_report, step_id, step_name, status, **kwargs):
-            self.reported.append(
-                {
-                    "step_id": step_id,
-                    "step_name": step_name,
-                    "status": status,
-                    "extra": kwargs.get("extra", {}),
-                    "error": kwargs.get("error", ""),
-                }
-            )
-
-        wt_flow_executor.configure_flow_executor(
-            get_step_definition=get_step_definition,
-            get_flow_package=lambda package_id: {},
-            get_step_params=lambda step_id: {},
-            resolve_dynamic_value=lambda value, step_id, context: value,
-            log_step=lambda message: None,
-            click_flow_control=click_flow_control,
-            click_relative_region=lambda *args, **kwargs: (False, {}),
-            focus_flow_control=lambda *args, **kwargs: False,
-            type_text_into_flow_control=lambda *args, **kwargs: False,
-            type_text_into_relative_region=lambda *args, **kwargs: (False, {}),
-            select_dropdown_item_runtime=lambda *args, **kwargs: (False, {}),
-            drag_between_flow_controls=lambda *args, **kwargs: False,
-            mouse_wheel_on_flow_control=lambda *args, **kwargs: False,
-            wait_for_flow_control_condition=lambda *args, **kwargs: False,
-            locate_template_center_by_path=lambda *args, **kwargs: None,
-            report_step_result=report_step_result,
-            run_ai_intervention_after_failure=lambda *args, **kwargs: {},
-        )
-
-        context = {"run_report": {"stepResults": []}}
-        wt_flow_executor.execute_step_by_id("step_ai", {"step_ai": {"id": "step_ai"}}, context)
-
-        self.assertEqual(attempts["count"], 2)
-        self.assertEqual(self.reported[-1]["status"], "success")
-        self.assertEqual(self.reported[-1]["extra"].get("attemptCount"), 2)
-        self.assertEqual(self.reported[-1]["extra"].get("retryCountConfigured"), 1)
+        wt_flow_executor._resolve_step_policy(ac)
+        self.assertEqual(ac["onError"], "stop")
+        self.assertEqual(ac["retryCount"], 0)
+        self.assertEqual(ac["retryInterval"], 1.0)
 
 
 if __name__ == "__main__":

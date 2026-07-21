@@ -158,6 +158,23 @@ def build_aux_checks(inspect):
 # ---------------------------------------------------------------------------
 # 统一 control_definition 构造
 # ---------------------------------------------------------------------------
+def generate_control_id(automation_id="", class_name="", control_type="", index=0):
+    """生成控件唯一 id：优先 automationId，fallback 到 className+index。
+
+    规则与 _sanitize_control_id 对齐，确保控件库消费方去重可用。
+    """
+    if automation_id:
+        return automation_id
+    base = str(class_name or "").strip()
+    if not base:
+        base = str(control_type or "").strip()
+    if not base:
+        base = "Control"
+    if index:
+        return "{}_{}".format(base, index)
+    return base
+
+
 def build_control_definition(
     name="", automation_id="", class_name="", control_type="",
     localized_control_type="", framework_id="", window_title="",
@@ -206,12 +223,33 @@ def build_control_definition(
         "providerDescription": str(provider_description or "").strip(),
         "source": source,
     }
+    # 补充 UIA Patterns 衍生的动作能力标识
     if patterns:
         inspect["patterns"] = patterns
+        # 深度规整: 将 UIA Patterns 转换为动作标识，辅助 executor 决定执行策略
+        is_clickable = False
+        is_editable = False
+        for p in patterns:
+            p_lower = p.lower()
+            if p_lower in ("invoke", "toggle", "selectionitem", "expandcollapse"):
+                is_clickable = True
+            if p_lower in ("value", "text", "rangevalue"):
+                is_editable = True
+        
+        extra_flags = {}
+        if is_clickable:
+            extra_flags["isClickable"] = True
+        if is_editable:
+            extra_flags["isEditable"] = True
+            
+        if extra_flags:
+            inspect.update(extra_flags)
+
     if extra:
         inspect.update(extra)
 
     return {
+        "id": generate_control_id(automation_id, class_name, control_type, index),
         "name": name,
         "displayName": display_name,
         "windowTitle": str(window_title or "").strip(),

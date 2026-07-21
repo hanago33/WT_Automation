@@ -1,0 +1,2417 @@
+{
+  "schemaVersion": "1.0",
+  "scanMeta": {
+    "scanTime": "2026-07-20T15:33:54",
+    "backend": "axewindows",
+    "source": "axe-windows-bridge",
+    "processId": "15476",
+    "totalControls": 50,
+    "ruleResults": 50,
+    "a11ytestFiles": [
+      "D:\\My_RF_Project\\WT_Automation\\AxeWindowsOutputFiles\\AxeWindows_26-07-20_15-33-52.7269690.a11ytest"
+    ],
+    "note": "bridge 模式：元素来自 axe-windows 规则扫描的违规元素集合，含 Patterns。",
+    "bridgeCmd": "D:\\My_RF_Project\\WT_Automation\\tools\\external_capture\\axewindows_bridge\\bin\\Debug\\net8.0\\AxeBridge.exe 15476",
+    "isAdmin": true
+  },
+  "targetWindow": {
+    "title": "AxeWindowsScan",
+    "processId": "15476",
+    "frameworkId": ""
+  },
+  "controlDefinitions": [
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Window(50032)",
+      "className": "Window",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "Window_Main,Window(50032)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Window",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Window(50032)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=0,t=0,r=2560,b=1516]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[2A,60954]",
+        "frameworkId": "WPF",
+        "className": "Window",
+        "automationId": "Window_Main",
+        "nativeWindowHandle": "395604",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "Transform",
+          "Window"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 0,
+        "top": 0,
+        "right": 2560,
+        "bottom": 1516
+      },
+      "uiPath": "Window(50032)",
+      "parentPath": ""
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Custom(50025)",
+      "className": "MUPMapLegendView",
+      "targetMethod": "",
+      "targetValue": "",
+      "locatorScore": 0,
+      "locatorReason": "no_stable_locator",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=MUPMapLegendView",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Custom(50025)",
+        "localizedControlType": "",
+        "boundingRectangle": "",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,35A7E53]",
+        "frameworkId": "WPF",
+        "className": "MUPMapLegendView",
+        "automationId": "",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "BoundingRectangleNotNull"
+      },
+      "boundingBox": {},
+      "uiPath": "Window(50032) > Custom(50025) > Custom(50025)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MapMainView_Button_SetMapBestView,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2236,t=1445,r=2280,b=1489]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,1106A02]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MapMainView_Button_SetMapBestView",
+        "nativeWindowHandle": "0",
+        "helpText": "适应视图",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2236,
+        "top": 1445,
+        "right": 2280,
+        "bottom": 1489
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "",
+      "targetValue": "",
+      "locatorScore": 0,
+      "locatorReason": "no_stable_locator",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2289,t=1441,r=2341,b=1493]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,2318AB6]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "Toggle"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2289,
+        "top": 1441,
+        "right": 2341,
+        "bottom": 1493
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Text(50020)",
+      "className": "TextBlock",
+      "targetMethod": "",
+      "targetValue": "",
+      "locatorScore": 0,
+      "locatorReason": "no_stable_locator",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=TextBlock",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Text(50020)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2310,t=1498,r=2551,b=1515]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,132E406]",
+        "frameworkId": "WPF",
+        "className": "TextBlock",
+        "automationId": "",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotWhiteSpace"
+      },
+      "boundingBox": {
+        "left": 2310,
+        "top": 1498,
+        "right": 2551,
+        "bottom": 1515
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Text(50020)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Image(50006)",
+      "className": "",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MapExplorer_Domain.General,Image(50006)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Image(50006)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=1983,t=140,r=2035,b=192]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,2695EBE]",
+        "frameworkId": "WPF",
+        "className": "",
+        "automationId": "MapExplorer_Domain.General",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 1983,
+        "top": 140,
+        "right": 2035,
+        "bottom": 192
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Image(50006)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Image(50006)",
+      "className": "",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MapExplorer_Domain.Pins,Image(50006)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Image(50006)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2035,t=140,r=2087,b=192]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,1B454B3]",
+        "frameworkId": "WPF",
+        "className": "",
+        "automationId": "MapExplorer_Domain.Pins",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2035,
+        "top": 140,
+        "right": 2087,
+        "bottom": 192
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Image(50006)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Image(50006)",
+      "className": "",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MapExplorer_GeoData.Domain.Orography,Image(50006)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Image(50006)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2087,t=140,r=2139,b=192]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,3BA6D6C]",
+        "frameworkId": "WPF",
+        "className": "",
+        "automationId": "MapExplorer_GeoData.Domain.Orography",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2087,
+        "top": 140,
+        "right": 2139,
+        "bottom": 192
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Image(50006)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Image(50006)",
+      "className": "",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MapExplorer_GeoData.Domain.Roughness,Image(50006)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Image(50006)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2139,t=140,r=2191,b=192]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,18DD8D3]",
+        "frameworkId": "WPF",
+        "className": "",
+        "automationId": "MapExplorer_GeoData.Domain.Roughness",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2139,
+        "top": 140,
+        "right": 2191,
+        "bottom": 192
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Image(50006)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "ComboBox(50003)",
+      "className": "RadComboBox",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MBAMapBackgroundGroup_Combobox_Layers_MBACoreModel:Translations:MBAMapConfiguration_LayersBackground,ComboBox(50003)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=RadComboBox",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "ComboBox(50003)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2012,t=284,r=2479,b=322]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,2AEC53B]",
+        "frameworkId": "WPF",
+        "className": "RadComboBox",
+        "automationId": "MBAMapBackgroundGroup_Combobox_Layers_MBACoreModel:Translations:MBAMapConfiguration_LayersBackground",
+        "nativeWindowHandle": "0",
+        "helpText": "RadComboBox",
+        "providerDescription": "",
+        "patterns": [
+          "ExpandCollapse",
+          "Selection",
+          "SynchronizedInput",
+          "Value",
+          "temContainer"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2012,
+        "top": 284,
+        "right": 2479,
+        "bottom": 322
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Pane(50033) > ComboBox(50003)",
+      "parentPath": "Window(50032) > Custom(50025) > Pane(50033)"
+    },
+    {
+      "name": "全部选择",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "ListItem(50007)",
+      "className": "RadComboBoxItem",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MTDGroupComboBoxMultiSelection_ComboBoxItem,ListItem(50007)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=RadComboBoxItem",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "全部选择",
+        "controlType": "ListItem(50007)",
+        "localizedControlType": "",
+        "boundingRectangle": "",
+        "isEnabled": "False",
+        "isVisible": "",
+        "isOffscreen": "True",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,14C67AD]",
+        "frameworkId": "WPF",
+        "className": "RadComboBoxItem",
+        "automationId": "MTDGroupComboBoxMultiSelection_ComboBoxItem",
+        "nativeWindowHandle": "0",
+        "helpText": "RadComboBoxItem",
+        "providerDescription": "",
+        "patterns": [
+          "ScrollItem",
+          "SelectionItem",
+          "VirtualizedItem"
+        ],
+        "source": "axe-windows",
+        "axeRule": "ControlShouldSupportSetInfoWPF"
+      },
+      "boundingBox": {},
+      "uiPath": "Window(50032) > Custom(50025) > Pane(50033) > ComboBox(50003) > 全部选择",
+      "parentPath": "Window(50032) > Custom(50025) > Pane(50033) > ComboBox(50003)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MapExplorer_ToggleButton_IsExpanded,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2456,t=140,r=2508,b=192]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,376C10D]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MapExplorer_ToggleButton_IsExpanded",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "Toggle"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2456,
+        "top": 140,
+        "right": 2508,
+        "bottom": 192
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MeteoEditView_Button_GoBack,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=0,t=61,r=52,b=113]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "True",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,F6305A]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MeteoEditView_Button_GoBack",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameReasonableLength"
+      },
+      "boundingBox": {
+        "left": 0,
+        "top": 61,
+        "right": 52,
+        "bottom": 113
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Custom(50025) > M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "parentPath": "Window(50032) > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "LeftSidePanel_Button_PinButton,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=875,t=113,r=927,b=165]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "True",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,15D97E0]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "LeftSidePanel_Button_PinButton",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameReasonableLength"
+      },
+      "boundingBox": {
+        "left": 875,
+        "top": 113,
+        "right": 927,
+        "bottom": 165
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Custom(50025) > M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "parentPath": "Window(50032) > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "GeoData_Button_Refresh,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=762,t=128,r=814,b=180]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,8400BA]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "GeoData_Button_Refresh",
+        "nativeWindowHandle": "0",
+        "helpText": "刷新地理信息数据",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 762,
+        "top": 128,
+        "right": 814,
+        "bottom": 180
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Image(50006)",
+      "className": "",
+      "targetMethod": "",
+      "targetValue": "",
+      "locatorScore": 0,
+      "locatorReason": "no_stable_locator",
+      "auxChecks": [
+        "ProcessId=15476",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Image(50006)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=814,t=128,r=866,b=180]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,1C43ADA]",
+        "frameworkId": "WPF",
+        "className": "",
+        "automationId": "",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 814,
+        "top": 128,
+        "right": 866,
+        "bottom": 180
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Image(50006)",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Custom(50025)",
+      "className": "",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "AllData,Custom(50025)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Custom(50025)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=18,t=190,r=858,b=1430]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,3E611AB]",
+        "frameworkId": "WPF",
+        "className": "",
+        "automationId": "AllData",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 18,
+        "top": 190,
+        "right": 858,
+        "bottom": 1430
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Custom(50025)",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Custom(50025)",
+      "className": "",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "AllData,Custom(50025)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Custom(50025)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=18,t=190,r=858,b=1430]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,3E611AB]",
+        "frameworkId": "WPF",
+        "className": "",
+        "automationId": "AllData",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "ParentChildShouldNotHaveSameNameAndLocalizedControlType"
+      },
+      "boundingBox": {
+        "left": 18,
+        "top": 190,
+        "right": 858,
+        "bottom": 1430
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Custom(50025)",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025)"
+    },
+    {
+      "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "PART_DropDownButton,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=209,t=255,r=261,b=307]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,1619BA6]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "PART_DropDownButton",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "SiblingUniqueAndFocusable"
+      },
+      "boundingBox": {
+        "left": 209,
+        "top": 255,
+        "right": 261,
+        "bottom": 307
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Custom(50025) > M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "PART_DropDownButton,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=567,t=255,r=619,b=307]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,29622A8]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "PART_DropDownButton",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "SiblingUniqueAndFocusable"
+      },
+      "boundingBox": {
+        "left": 567,
+        "top": 255,
+        "right": 619,
+        "bottom": 307
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Custom(50025) > M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "PART_DropDownButton,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=686,t=255,r=738,b=307]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,1CE44EC]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "PART_DropDownButton",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "SiblingUniqueAndFocusable"
+      },
+      "boundingBox": {
+        "left": 686,
+        "top": 255,
+        "right": 738,
+        "bottom": 307
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Custom(50025) > M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "PART_DropDownButton,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=806,t=255,r=858,b=307]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,3747DB3]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "PART_DropDownButton",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "SiblingUniqueAndFocusable"
+      },
+      "boundingBox": {
+        "left": 806,
+        "top": 255,
+        "right": 858,
+        "bottom": 307
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Custom(50025) > M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "LeftSidePanel_Button_PinButton,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=875,t=110,r=927,b=162]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,3069837]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "LeftSidePanel_Button_PinButton",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameReasonableLength"
+      },
+      "boundingBox": {
+        "left": 875,
+        "top": 110,
+        "right": 927,
+        "bottom": 162
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025) > M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.GeoData.ViewModels.MUPGeographicalDataViewModel > Custom(50025)"
+    },
+    {
+      "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "RepeatButton",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "LeftScrollButtonElement,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=RepeatButton",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "",
+        "isEnabled": "False",
+        "isVisible": "",
+        "isOffscreen": "True",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,14859BA]",
+        "frameworkId": "WPF",
+        "className": "RepeatButton",
+        "automationId": "LeftScrollButtonElement",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameReasonableLength"
+      },
+      "boundingBox": {},
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018)"
+    },
+    {
+      "name": "M21206.869,1958.5723C21213.302,1958.6643,21219.359,1961.1241,21224.156,1965.3419A9.0141097,9.0141097,0,0,1,21225.484,1966.4356L21711.217,2452.17C21711.217,2452.17,21711.217,2452.17,21711.217,2452.18L21711.378,2452.3382C21716.431,2457.3945 21719.245,2464.1913 21719.245,2471.3382 21719.245,2478.4852 21716.431,2485.282 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3482L21234.708,2967.0201C21229.653,2972.0742 21222.857,2974.8923 21215.708,2974.8931 21208.557,2974.8939 21201.76,2972.0782 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024L21193.391,2963.7115 21193.391,2963.7115C21193.391,2963.7113,21193.391,2963.7118,21193.391,2963.7115A9.0141097,9.0141097,0,0,1,21192.297,2962.3776C21187.992,2957.4814 21185.523,2951.278 21185.521,2944.7135 21185.521,2937.5663 21188.333,2930.7687 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116L21193.389,2925.7116 21647.743,2471.3581 21184.163,2007.78A9.0141097,9.0141097,0,0,1,21183.052,2006.4285C21178.757,2001.5356 21176.293,1995.3388 21176.292,1988.782 21176.292,1981.6354 21179.101,1974.839 21184.153,1969.782L21184.173,1969.765 21187.466,1966.4681C21192.617,1961.3155,21199.574,1958.4924,21206.86,1958.597z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "RepeatButton",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "RightScrollButtonElement,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=RepeatButton",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M21206.869,1958.5723C21213.302,1958.6643,21219.359,1961.1241,21224.156,1965.3419A9.0141097,9.0141097,0,0,1,21225.484,1966.4356L21711.217,2452.17C21711.217,2452.17,21711.217,2452.17,21711.217,2452.18L21711.378,2452.3382C21716.431,2457.3945 21719.245,2464.1913 21719.245,2471.3382 21719.245,2478.4852 21716.431,2485.282 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3482L21234.708,2967.0201C21229.653,2972.0742 21222.857,2974.8923 21215.708,2974.8931 21208.557,2974.8939 21201.76,2972.0782 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024L21193.391,2963.7115 21193.391,2963.7115C21193.391,2963.7113,21193.391,2963.7118,21193.391,2963.7115A9.0141097,9.0141097,0,0,1,21192.297,2962.3776C21187.992,2957.4814 21185.523,2951.278 21185.521,2944.7135 21185.521,2937.5663 21188.333,2930.7687 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116L21193.389,2925.7116 21647.743,2471.3581 21184.163,2007.78A9.0141097,9.0141097,0,0,1,21183.052,2006.4285C21178.757,2001.5356 21176.293,1995.3388 21176.292,1988.782 21176.292,1981.6354 21179.101,1974.839 21184.153,1969.782L21184.173,1969.765 21187.466,1966.4681C21192.617,1961.3155,21199.574,1958.4924,21206.86,1958.597z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "True",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,38B2790]",
+        "frameworkId": "WPF",
+        "className": "RepeatButton",
+        "automationId": "RightScrollButtonElement",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameReasonableLength"
+      },
+      "boundingBox": {},
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > M21206.869,1958.5723C21213.302,1958.6643,21219.359,1961.1241,21224.156,1965.3419A9.0141097,9.0141097,0,0,1,21225.484,1966.4356L21711.217,2452.17C21711.217,2452.17,21711.217,2452.17,21711.217,2452.18L21711.378,2452.3382C21716.431,2457.3945 21719.245,2464.1913 21719.245,2471.3382 21719.245,2478.4852 21716.431,2485.282 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3482L21234.708,2967.0201C21229.653,2972.0742 21222.857,2974.8923 21215.708,2974.8931 21208.557,2974.8939 21201.76,2972.0782 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024L21193.391,2963.7115 21193.391,2963.7115C21193.391,2963.7113,21193.391,2963.7118,21193.391,2963.7115A9.0141097,9.0141097,0,0,1,21192.297,2962.3776C21187.992,2957.4814 21185.523,2951.278 21185.521,2944.7135 21185.521,2937.5663 21188.333,2930.7687 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116L21193.389,2925.7116 21647.743,2471.3581 21184.163,2007.78A9.0141097,9.0141097,0,0,1,21183.052,2006.4285C21178.757,2001.5356 21176.293,1995.3388 21176.292,1988.782 21176.292,1981.6354 21179.101,1974.839 21184.153,1969.782L21184.173,1969.765 21187.466,1966.4681C21192.617,1961.3155,21199.574,1958.4924,21206.86,1958.597z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018)"
+    },
+    {
+      "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "LeftSidePanel_Button_PinButton,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=875,t=110,r=927,b=162]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "True",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,27DD2B1]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "LeftSidePanel_Button_PinButton",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameReasonableLength"
+      },
+      "boundingBox": {
+        "left": 875,
+        "top": 110,
+        "right": 927,
+        "bottom": 162
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.MainUI.ViewModels.MUPDashboardViewModel > Custom(50025) > M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018) > MUP.Module.MainUI.ViewModels.MUPDashboardViewModel > Custom(50025)"
+    },
+    {
+      "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "RepeatButton",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "LeftScrollButtonElement,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=RepeatButton",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "",
+        "isEnabled": "False",
+        "isVisible": "",
+        "isOffscreen": "True",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,1A01EC8]",
+        "frameworkId": "WPF",
+        "className": "RepeatButton",
+        "automationId": "LeftScrollButtonElement",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameReasonableLength"
+      },
+      "boundingBox": {},
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018)"
+    },
+    {
+      "name": "M21206.869,1958.5723C21213.302,1958.6643,21219.359,1961.1241,21224.156,1965.3419A9.0141097,9.0141097,0,0,1,21225.484,1966.4356L21711.217,2452.17C21711.217,2452.17,21711.217,2452.17,21711.217,2452.18L21711.378,2452.3382C21716.431,2457.3945 21719.245,2464.1913 21719.245,2471.3382 21719.245,2478.4852 21716.431,2485.282 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3482L21234.708,2967.0201C21229.653,2972.0742 21222.857,2974.8923 21215.708,2974.8931 21208.557,2974.8939 21201.76,2972.0782 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024L21193.391,2963.7115 21193.391,2963.7115C21193.391,2963.7113,21193.391,2963.7118,21193.391,2963.7115A9.0141097,9.0141097,0,0,1,21192.297,2962.3776C21187.992,2957.4814 21185.523,2951.278 21185.521,2944.7135 21185.521,2937.5663 21188.333,2930.7687 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116L21193.389,2925.7116 21647.743,2471.3581 21184.163,2007.78A9.0141097,9.0141097,0,0,1,21183.052,2006.4285C21178.757,2001.5356 21176.293,1995.3388 21176.292,1988.782 21176.292,1981.6354 21179.101,1974.839 21184.153,1969.782L21184.173,1969.765 21187.466,1966.4681C21192.617,1961.3155,21199.574,1958.4924,21206.86,1958.597z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "RepeatButton",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "RightScrollButtonElement,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=RepeatButton",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M21206.869,1958.5723C21213.302,1958.6643,21219.359,1961.1241,21224.156,1965.3419A9.0141097,9.0141097,0,0,1,21225.484,1966.4356L21711.217,2452.17C21711.217,2452.17,21711.217,2452.17,21711.217,2452.18L21711.378,2452.3382C21716.431,2457.3945 21719.245,2464.1913 21719.245,2471.3382 21719.245,2478.4852 21716.431,2485.282 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3482L21234.708,2967.0201C21229.653,2972.0742 21222.857,2974.8923 21215.708,2974.8931 21208.557,2974.8939 21201.76,2972.0782 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024L21193.391,2963.7115 21193.391,2963.7115C21193.391,2963.7113,21193.391,2963.7118,21193.391,2963.7115A9.0141097,9.0141097,0,0,1,21192.297,2962.3776C21187.992,2957.4814 21185.523,2951.278 21185.521,2944.7135 21185.521,2937.5663 21188.333,2930.7687 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116L21193.389,2925.7116 21647.743,2471.3581 21184.163,2007.78A9.0141097,9.0141097,0,0,1,21183.052,2006.4285C21178.757,2001.5356 21176.293,1995.3388 21176.292,1988.782 21176.292,1981.6354 21179.101,1974.839 21184.153,1969.782L21184.173,1969.765 21187.466,1966.4681C21192.617,1961.3155,21199.574,1958.4924,21206.86,1958.597z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "True",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,B4ECA4]",
+        "frameworkId": "WPF",
+        "className": "RepeatButton",
+        "automationId": "RightScrollButtonElement",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameReasonableLength"
+      },
+      "boundingBox": {},
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > M21206.869,1958.5723C21213.302,1958.6643,21219.359,1961.1241,21224.156,1965.3419A9.0141097,9.0141097,0,0,1,21225.484,1966.4356L21711.217,2452.17C21711.217,2452.17,21711.217,2452.17,21711.217,2452.18L21711.378,2452.3382C21716.431,2457.3945 21719.245,2464.1913 21719.245,2471.3382 21719.245,2478.4852 21716.431,2485.282 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3482L21234.708,2967.0201C21229.653,2972.0742 21222.857,2974.8923 21215.708,2974.8931 21208.557,2974.8939 21201.76,2972.0782 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024L21193.391,2963.7115 21193.391,2963.7115C21193.391,2963.7113,21193.391,2963.7118,21193.391,2963.7115A9.0141097,9.0141097,0,0,1,21192.297,2962.3776C21187.992,2957.4814 21185.523,2951.278 21185.521,2944.7135 21185.521,2937.5663 21188.333,2930.7687 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116L21193.389,2925.7116 21647.743,2471.3581 21184.163,2007.78A9.0141097,9.0141097,0,0,1,21183.052,2006.4285C21178.757,2001.5356 21176.293,1995.3388 21176.292,1988.782 21176.292,1981.6354 21179.101,1974.839 21184.153,1969.782L21184.173,1969.765 21187.466,1966.4681C21192.617,1961.3155,21199.574,1958.4924,21206.86,1958.597z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018)"
+    },
+    {
+      "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "RepeatButton",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "LeftScrollButtonElement,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=RepeatButton",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "",
+        "isEnabled": "False",
+        "isVisible": "",
+        "isOffscreen": "True",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,36B6FC2]",
+        "frameworkId": "WPF",
+        "className": "RepeatButton",
+        "automationId": "LeftScrollButtonElement",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameReasonableLength"
+      },
+      "boundingBox": {},
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018)"
+    },
+    {
+      "name": "M21206.869,1958.5723C21213.302,1958.6643,21219.359,1961.1241,21224.156,1965.3419A9.0141097,9.0141097,0,0,1,21225.484,1966.4356L21711.217,2452.17C21711.217,2452.17,21711.217,2452.17,21711.217,2452.18L21711.378,2452.3382C21716.431,2457.3945 21719.245,2464.1913 21719.245,2471.3382 21719.245,2478.4852 21716.431,2485.282 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3482L21234.708,2967.0201C21229.653,2972.0742 21222.857,2974.8923 21215.708,2974.8931 21208.557,2974.8939 21201.76,2972.0782 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024L21193.391,2963.7115 21193.391,2963.7115C21193.391,2963.7113,21193.391,2963.7118,21193.391,2963.7115A9.0141097,9.0141097,0,0,1,21192.297,2962.3776C21187.992,2957.4814 21185.523,2951.278 21185.521,2944.7135 21185.521,2937.5663 21188.333,2930.7687 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116L21193.389,2925.7116 21647.743,2471.3581 21184.163,2007.78A9.0141097,9.0141097,0,0,1,21183.052,2006.4285C21178.757,2001.5356 21176.293,1995.3388 21176.292,1988.782 21176.292,1981.6354 21179.101,1974.839 21184.153,1969.782L21184.173,1969.765 21187.466,1966.4681C21192.617,1961.3155,21199.574,1958.4924,21206.86,1958.597z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "RepeatButton",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "RightScrollButtonElement,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=RepeatButton",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M21206.869,1958.5723C21213.302,1958.6643,21219.359,1961.1241,21224.156,1965.3419A9.0141097,9.0141097,0,0,1,21225.484,1966.4356L21711.217,2452.17C21711.217,2452.17,21711.217,2452.17,21711.217,2452.18L21711.378,2452.3382C21716.431,2457.3945 21719.245,2464.1913 21719.245,2471.3382 21719.245,2478.4852 21716.431,2485.282 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3482L21234.708,2967.0201C21229.653,2972.0742 21222.857,2974.8923 21215.708,2974.8931 21208.557,2974.8939 21201.76,2972.0782 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024L21193.391,2963.7115 21193.391,2963.7115C21193.391,2963.7113,21193.391,2963.7118,21193.391,2963.7115A9.0141097,9.0141097,0,0,1,21192.297,2962.3776C21187.992,2957.4814 21185.523,2951.278 21185.521,2944.7135 21185.521,2937.5663 21188.333,2930.7687 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116L21193.389,2925.7116 21647.743,2471.3581 21184.163,2007.78A9.0141097,9.0141097,0,0,1,21183.052,2006.4285C21178.757,2001.5356 21176.293,1995.3388 21176.292,1988.782 21176.292,1981.6354 21179.101,1974.839 21184.153,1969.782L21184.173,1969.765 21187.466,1966.4681C21192.617,1961.3155,21199.574,1958.4924,21206.86,1958.597z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "True",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,2C6EDD6]",
+        "frameworkId": "WPF",
+        "className": "RepeatButton",
+        "automationId": "RightScrollButtonElement",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameReasonableLength"
+      },
+      "boundingBox": {},
+      "uiPath": "Window(50032) > Custom(50025) > Tab(50018) > M21206.869,1958.5723C21213.302,1958.6643,21219.359,1961.1241,21224.156,1965.3419A9.0141097,9.0141097,0,0,1,21225.484,1966.4356L21711.217,2452.17C21711.217,2452.17,21711.217,2452.17,21711.217,2452.18L21711.378,2452.3382C21716.431,2457.3945 21719.245,2464.1913 21719.245,2471.3382 21719.245,2478.4852 21716.431,2485.282 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3482L21234.708,2967.0201C21229.653,2972.0742 21222.857,2974.8923 21215.708,2974.8931 21208.557,2974.8939 21201.76,2972.0782 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024L21193.391,2963.7115 21193.391,2963.7115C21193.391,2963.7113,21193.391,2963.7118,21193.391,2963.7115A9.0141097,9.0141097,0,0,1,21192.297,2962.3776C21187.992,2957.4814 21185.523,2951.278 21185.521,2944.7135 21185.521,2937.5663 21188.333,2930.7687 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116L21193.389,2925.7116 21647.743,2471.3581 21184.163,2007.78A9.0141097,9.0141097,0,0,1,21183.052,2006.4285C21178.757,2001.5356 21176.293,1995.3388 21176.292,1988.782 21176.292,1981.6354 21179.101,1974.839 21184.153,1969.782L21184.173,1969.765 21187.466,1966.4681C21192.617,1961.3155,21199.574,1958.4924,21206.86,1958.597z",
+      "parentPath": "Window(50032) > Custom(50025) > Tab(50018)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Custom(50025)",
+      "className": "",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MUPLidarConverterView_GridView_SitesWithLidar,Custom(50025)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Custom(50025)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=53,t=166,r=993,b=1464]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,2CE1940]",
+        "frameworkId": "WPF",
+        "className": "",
+        "automationId": "MUPLidarConverterView_GridView_SitesWithLidar",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 53,
+        "top": 166,
+        "right": 993,
+        "bottom": 1464
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Custom(50025) > Custom(50025)",
+      "parentPath": "Window(50032) > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Custom(50025)",
+      "className": "",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MUPLidarConverterView_GridView_SitesWithLidar,Custom(50025)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Custom(50025)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=53,t=166,r=993,b=1464]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,2CE1940]",
+        "frameworkId": "WPF",
+        "className": "",
+        "automationId": "MUPLidarConverterView_GridView_SitesWithLidar",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "ParentChildShouldNotHaveSameNameAndLocalizedControlType"
+      },
+      "boundingBox": {
+        "left": 53,
+        "top": 166,
+        "right": 993,
+        "bottom": 1464
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Custom(50025) > Custom(50025)",
+      "parentPath": "Window(50032) > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "PART_DropDownButton,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=355,t=231,r=407,b=283]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,1CF4752]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "PART_DropDownButton",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "SiblingUniqueAndFocusable"
+      },
+      "boundingBox": {
+        "left": 355,
+        "top": 231,
+        "right": 407,
+        "bottom": 283
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Custom(50025) > Custom(50025) > M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "parentPath": "Window(50032) > Custom(50025) > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "PART_DropDownButton,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=705,t=231,r=757,b=283]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,4981EA]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "PART_DropDownButton",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "SiblingUniqueAndFocusable"
+      },
+      "boundingBox": {
+        "left": 705,
+        "top": 231,
+        "right": 757,
+        "bottom": 283
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Custom(50025) > Custom(50025) > M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "parentPath": "Window(50032) > Custom(50025) > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "PART_DropDownButton,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=1055,t=231,r=1107,b=283]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,295913B]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "PART_DropDownButton",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "SiblingUniqueAndFocusable"
+      },
+      "boundingBox": {
+        "left": 1055,
+        "top": 231,
+        "right": 1107,
+        "bottom": 283
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Custom(50025) > Custom(50025) > M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+      "parentPath": "Window(50032) > Custom(50025) > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "WindowTitle_Button_Home,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=0,t=0,r=52,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,37D879E]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "WindowTitle_Button_Home",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 0,
+        "top": 0,
+        "right": 52,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "WindowTitle_Button_ShowTasklist,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=52,t=0,r=104,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,2B7E934]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "WindowTitle_Button_ShowTasklist",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 52,
+        "top": 0,
+        "right": 104,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MUPMicroscaleInformationViewModel_Button_Wt,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=104,t=0,r=156,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,1B716BA]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MUPMicroscaleInformationViewModel_Button_Wt",
+        "nativeWindowHandle": "0",
+        "helpText": "WT微尺度模拟",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 104,
+        "top": 0,
+        "right": 156,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MUPMicroscaleInformationViewModel_Button_GeographicalData,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=158,t=0,r=210,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,36FCC91]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MUPMicroscaleInformationViewModel_Button_GeographicalData",
+        "nativeWindowHandle": "0",
+        "helpText": "地理信息数据",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 158,
+        "top": 0,
+        "right": 210,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MUPMicroscaleInformationViewModel_Button_Climatology,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=210,t=0,r=262,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,2EE3121]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MUPMicroscaleInformationViewModel_Button_Climatology",
+        "nativeWindowHandle": "0",
+        "helpText": "气象数据",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 210,
+        "top": 0,
+        "right": 262,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MUPMicroscaleInformationViewModel_Button_WindTurbineType,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=262,t=0,r=314,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,25FBA29]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MUPMicroscaleInformationViewModel_Button_WindTurbineType",
+        "nativeWindowHandle": "0",
+        "helpText": "风机类型",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 262,
+        "top": 0,
+        "right": 314,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MUPMicroscaleInformationViewModel_Button_LidarConverter,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=314,t=0,r=366,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,15D8B73]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MUPMicroscaleInformationViewModel_Button_LidarConverter",
+        "nativeWindowHandle": "0",
+        "helpText": "Lidar数据校正",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 314,
+        "top": 0,
+        "right": 366,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "ComputationManager_Button_OpenModule,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=366,t=0,r=418,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,49E711]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "ComputationManager_Button_OpenModule",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 366,
+        "top": 0,
+        "right": 418,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MUPLicenseInformationViewModel_Button_Information,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=1937,t=0,r=1989,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,17AFBBB]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MUPLicenseInformationViewModel_Button_Information",
+        "nativeWindowHandle": "0",
+        "helpText": "许可证",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 1937,
+        "top": 0,
+        "right": 1989,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Image(50006)",
+      "className": "",
+      "targetMethod": "",
+      "targetValue": "",
+      "locatorScore": 0,
+      "locatorReason": "no_stable_locator",
+      "auxChecks": [
+        "ProcessId=15476",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Image(50006)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=1989,t=0,r=2041,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,3E9A675]",
+        "frameworkId": "WPF",
+        "className": "",
+        "automationId": "",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 1989,
+        "top": 0,
+        "right": 2041,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Image(50006)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MainView_Button_AdminPanel,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2281,t=0,r=2333,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,332C656]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MainView_Button_AdminPanel",
+        "nativeWindowHandle": "0",
+        "helpText": "MUP 设置",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2281,
+        "top": 0,
+        "right": 2333,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MainView_Button_UserLogout,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2333,t=0,r=2385,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,310C162]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MainView_Button_UserLogout",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2333,
+        "top": 0,
+        "right": 2385,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MTDTitleBar_Button_BtnMinimized,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2404,t=0,r=2456,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,2B6B15D]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MTDTitleBar_Button_BtnMinimized",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2404,
+        "top": 0,
+        "right": 2456,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MTDTitleBar_Button_BtnRestore,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2456,t=0,r=2508,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,37B3C2]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MTDTitleBar_Button_BtnRestore",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2456,
+        "top": 0,
+        "right": 2508,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    },
+    {
+      "name": "",
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlType": "Button(50000)",
+      "className": "Button",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MTDTitleBar_Button_BtnClose,Button(50000)",
+      "locatorScore": 100,
+      "locatorReason": "automation_id + control_type",
+      "auxChecks": [
+        "ProcessId=15476",
+        "ClassName=Button",
+        "FrameworkId=WPF"
+      ],
+      "inspectData": {
+        "name": "",
+        "controlType": "Button(50000)",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=2508,t=0,r=2560,b=52]",
+        "isEnabled": "True",
+        "isVisible": "",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "15476",
+        "runtimeId": "[7,3C74,19FE08F]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MTDTitleBar_Button_BtnClose",
+        "nativeWindowHandle": "0",
+        "helpText": "",
+        "providerDescription": "",
+        "patterns": [
+          "SynchronizedInput",
+          "nvoke"
+        ],
+        "source": "axe-windows",
+        "axeRule": "NameNotNull"
+      },
+      "boundingBox": {
+        "left": 2508,
+        "top": 0,
+        "right": 2560,
+        "bottom": 52
+      },
+      "uiPath": "Window(50032) > Custom(50025) > Button(50000)",
+      "parentPath": "Window(50032) > Custom(50025)"
+    }
+  ]
+}

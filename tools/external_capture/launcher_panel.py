@@ -14,6 +14,7 @@ WT_Launcher.py 只需：
 """
 import json
 import os
+import csv
 import subprocess
 import ctypes
 import threading
@@ -44,6 +45,47 @@ def _start_elevated(exe, cwd):
         return rc > 32
     except Exception:
         return False
+
+
+def _find_wt_processes():
+    """用 tasklist 扫描常见 WT 进程名，返回 [(pid, name), ...] 列表（去重）。
+
+    WT 主程序进程名通常为 wt.exe；同时兼容若干常见变体。
+    无需 psutil，纯标准库 + tasklist。
+    """
+    candidates = ["wt.exe", "meteodynwt.exe", "meteodyn.exe", "wtgui.exe", "wtlauncher.exe",
+                  "mupsmartclient.exe", "mupsmartclient"]
+    found = []
+    seen = set()
+    for name in candidates:
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq " + name, "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ).stdout or ""
+        except Exception:
+            out = ""
+        for line in out.strip().splitlines():
+            line = line.strip()
+            if not line or line.upper().startswith("INFO:"):
+                continue
+            try:
+                parts = next(csv.reader([line]))
+            except Exception:
+                continue
+            if len(parts) < 2:
+                continue
+            pname = parts[0].strip('"')
+            try:
+                pid = int(parts[1].strip('"'))
+            except ValueError:
+                continue
+            if pid in seen:
+                continue
+            seen.add(pid)
+            found.append((pid, pname))
+    return found
 
 
 def _kill_uiapeek():
@@ -171,13 +213,19 @@ class ExternalCaptureDialog:
         arow.pack(fill=tk.X)
         tk.Label(arow, text="目标进程 PID：", bg=card).pack(side=tk.LEFT)
         tk.Entry(arow, textvariable=self.var_pid, width=10).pack(side=tk.LEFT, padx=(6, 0))
-        tk.Button(arow, text="CLI 扫描", command=self.axe_scan_cli).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Button(arow, text="自动探测 WT", command=self.axe_detect_wt).pack(side=tk.LEFT, padx=(6, 0))
+        tk.Button(arow, text="CLI 扫描", command=self.axe_scan_cli).pack(side=tk.LEFT, padx=(6, 0))
         tk.Button(arow, text="Bridge 扫描(含 Patterns)", command=self.axe_scan_bridge).pack(side=tk.LEFT, padx=(6, 0))
         tk.Button(arow, text="查找 CLI", command=self.axe_find_cli).pack(side=tk.LEFT, padx=(6, 0))
 
         crow = tk.Frame(axe, bg=card)
         crow.pack(fill=tk.X, pady=(6, 0))
-        tk.Label(crow, text="AxeWindowsCLI.exe 路径（可选）：", bg=card).pack(side=tk.LEFT)
+        admin_txt = "管理员权限：是 ✓（AxeBridge 可正常枚举任何进程）" if _is_admin() \
+            else "管理员权限：否（AxeBridge 可能无法枚举 WT 窗口，建议右键 bat 以管理员运行）"
+        tk.Label(crow, text=admin_txt, bg=card, fg=("#1a7f37" if _is_admin() else "#b35900")).pack(side=tk.LEFT)
+        crow2 = tk.Frame(axe, bg=card)
+        crow2.pack(fill=tk.X, pady=(2, 0))
+        tk.Label(crow2, text="AxeWindowsCLI.exe 路径（可选）：", bg=card).pack(side=tk.LEFT)
         tk.Entry(crow, textvariable=self.var_axe_cli_exe).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
         tk.Button(crow, text="浏览…", command=self._browse_axe_cli_exe).pack(side=tk.LEFT)
 
@@ -433,10 +481,32 @@ class ExternalCaptureDialog:
                 self._on_error("录制", result)
                 return
             evs, fp = result
-            self._set_result_text("收到 {} 个事件。\n{}".format(
-                len(evs), "已保存: {}".format(fp) if fp else "未保存"))
+            lines = ["收到 {} 个事件。".format(len(evs))]
+            if fp:
+                lines.append("已保存录制: {}".format(fp))
+
+            # 自动从录制事件中提取控件链，生成配套的 *_control_map.json（打通录制→控件库链路）
+            try:
+                control_payload = up.recording_events_to_payload(evs)
+            except Exception:
+                control_payload = None
+            cp_fp = None
+            if control_payload:
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                cp_fp = os.path.join(up.CONTROL_MAP_DIR,
+                                     "{}_recording_uiapeek_control_map.json".format(ts))
+                os.makedirs(up.CONTROL_MAP_DIR, exist_ok=True)
+                with open(cp_fp, "w", encoding="utf-8") as fh:
+                    json.dump(control_payload, fh, ensure_ascii=False, indent=2)
+                lines.append("已生成控件库: {}（{} 个唯一控件链）".format(
+                    cp_fp, control_payload.get("scanMeta", {}).get("uniqueChains", 0)))
+                self._log("UiaPeek 录制完成：{} 个事件 → {} 个控件链已入控件库。".format(
+                    len(evs), control_payload.get("scanMeta", {}).get("uniqueChains", 0)), "success")
+            else:
+                self._log("UiaPeek 录制完成：{} 个事件（无有效控件链可提取）。".format(len(evs)), "success")
+
+            self._set_result_text("\n".join(lines))
             self.var_result.set("录制 {} 个事件".format(len(evs)))
-            self._log("UiaPeek 录制完成：{} 个事件。".format(len(evs)), "success")
 
         self.var_result.set("录制中…")
         self._set_result_text("录制中（{} 秒）：请在 WT 软件中操作鼠标/键盘，结束后自动汇总。".format(seconds))
@@ -449,6 +519,47 @@ class ExternalCaptureDialog:
         except ValueError:
             messagebox.showerror("错误", "请输入有效的进程 PID（整数）", parent=self.window)
             return None
+
+    def axe_detect_wt(self):
+        """自动探测 WT 进程，弹窗让用户选择后填入 PID。"""
+        try:
+            procs = _find_wt_processes()
+        except Exception as exc:
+            messagebox.showerror("探测失败", str(exc), parent=self.window)
+            return
+        if not procs:
+            messagebox.showinfo(
+                "未找到 WT 进程",
+                "未检测到 wt.exe / MeteodynWT 等进程。\n"
+                "请确认：①WT 软件已启动；②进程名非上述之一"
+                "（可在任务管理器“详细信息”查看实际进程名，告诉我我再补充到候选列表）。",
+                parent=self.window)
+            return
+
+        pick = tk.Toplevel(self.window)
+        pick.title("选择 WT 进程")
+        pick.transient(self.window)
+        pick.grab_set()
+        tk.Label(pick, text="检测到以下 WT 候选进程，选择其一以填入 PID：").pack(padx=12, pady=8)
+        lb = tk.Listbox(pick, width=46, height=min(8, len(procs)))
+        lb.pack(padx=12, pady=(0, 8))
+        for pid, name in procs:
+            lb.insert(tk.END, "{}   -   {}".format(pid, name))
+        lb.selection_set(0)
+
+        def choose():
+            sel = lb.curselection()
+            if not sel:
+                return
+            pid = procs[sel[0]][0]
+            self.var_pid.set(str(pid))
+            self._log("已自动填入 WT 进程 PID：{}".format(pid), "success")
+            pick.destroy()
+
+        btn_row = tk.Frame(pick)
+        btn_row.pack(pady=(0, 10))
+        tk.Button(btn_row, text="确定", command=choose, width=12).pack(side=tk.LEFT, padx=12)
+        tk.Button(btn_row, text="取消", command=pick.destroy, width=12).pack(side=tk.LEFT, padx=12)
 
     def axe_find_cli(self):
         cli = aw.find_cli_exe()

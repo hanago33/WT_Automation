@@ -107,6 +107,52 @@ def _normalize_patterns(patterns):
     return sorted(set(out))
 
 
+# UIA ControlType 程序化 ID 取值范围（50000~50040，新版可能略增）。
+# 仅当括号里的数字是该范围内的控件类型 ID 时才剥离，避免误伤控件名里
+# 恰好带括号数字的情况（例如名为 "Edit(2)" 的控件会被错误规整为 "Edit"）。
+_UIA_CONTROL_TYPE_ID_MIN = 50000
+_UIA_CONTROL_TYPE_ID_MAX = 50199
+
+
+def _looks_like_control_type_id(num_text):
+    try:
+        num = int(str(num_text).strip())
+    except (TypeError, ValueError):
+        return False
+    return _UIA_CONTROL_TYPE_ID_MIN <= num <= _UIA_CONTROL_TYPE_ID_MAX
+
+
+def _strip_control_type_id(ctype):
+    """把 Axe.Windows 的 'Button(50000)' 规整为 'Button'。
+
+    axe-windows 的 ControlType 是 'Name(数字ID)' 形式（UIA 程序化名），
+    而运行时 pywinauto UIA 后端返回干净名 'Button'，带 ID 会导致
+    ``wrapper_matches_locator`` 的 control_type 匹配直接失败。必须剥离。
+    但只剥离真正的控件类型 ID（数字落在 UIA ControlType ID 区间内）。
+    """
+    if not ctype:
+        return ctype
+    text = str(ctype).strip()
+    m = re.match(r"^(.*?)\s*\(\s*(\d+)\s*\)$", text)
+    if m and _looks_like_control_type_id(m.group(2)):
+        return m.group(1).strip() or text
+    return text
+
+
+def _strip_control_type_in_path(path):
+    """把 uiPath/parentPath 中每段 'X(数字ID)' 规整为 'X'（仅限控件类型 ID）。"""
+    if not path:
+        return path
+
+    def _repl(match):
+        name, num = match.group(1), match.group(2)
+        if _looks_like_control_type_id(num):
+            return name
+        return match.group(0)
+
+    return re.sub(r"(\w+)\s*\(\s*(\d+)\s*\)", _repl, str(path))
+
+
 def bridge_element_to_control_definition(elem, window_title="", framework_id=""):
     """把 bridge 输出的单个元素转成 control_definition（含 patterns）。"""
     props = elem.get("properties") or elem.get("Properties") or {}
@@ -114,12 +160,15 @@ def bridge_element_to_control_definition(elem, window_title="", framework_id="")
         props = {}
     name = str(props.get("Name", props.get("name", "")) or "").strip()
     aid = str(props.get("AutomationId", props.get("automationId", "")) or "").strip()
-    ctype = str(props.get("ControlType", props.get("controlType", "")) or "").strip()
+    ctype = _strip_control_type_id(props.get("ControlType", props.get("controlType", "")))
     cls = str(props.get("ClassName", props.get("className", "")) or "").strip()
     pid = str(props.get("ProcessId", props.get("processId", "")) or "").strip()
     fw = str(props.get("FrameworkId", props.get("frameworkId", "")) or framework_id).strip()
     rect_str, box = _rect_from_props(props)
     patterns = _normalize_patterns(elem.get("patterns") or elem.get("Patterns"))
+    lct = str(props.get("LocalizedControlType", props.get("localizedControlType", "")) or "").strip()
+    ikf = str(props.get("IsKeyboardFocusable", props.get("isKeyboardFocusable", "")) or "").strip()
+    hkf = str(props.get("HasKeyboardFocus", props.get("hasKeyboardFocus", "")) or "").strip()
 
     # locator 推荐（与 uiapeek_client 对齐）
     method, value, score, reason = "", "", 0, "no_stable_locator"
@@ -138,23 +187,50 @@ def bridge_element_to_control_definition(elem, window_title="", framework_id="")
     if fw:
         aux.append("FrameworkId={}".format(fw))
 
+    ui_path = _strip_control_type_in_path(elem.get("uiPath", ""))
+    parent_path = _strip_control_type_in_path(elem.get("parentPath", ""))
+
     inspect_data = {
-        "name": name, "controlType": ctype, "localizedControlType": "",
+        "name": name, "controlType": ctype, "localizedControlType": lct,
         "boundingRectangle": rect_str, "isEnabled": str(props.get("IsEnabled", "")),
         "isVisible": str(props.get("IsVisible", "")), "isOffscreen": str(props.get("IsOffscreen", "")),
-        "isKeyboardFocusable": "", "hasKeyboardFocus": "",
+        "isKeyboardFocusable": ikf, "hasKeyboardFocus": hkf,
         "processId": pid, "runtimeId": str(props.get("RuntimeId", "")),
         "frameworkId": fw, "className": cls, "automationId": aid,
         "nativeWindowHandle": str(props.get("NativeWindowHandle", props.get("HWND", ""))),
         "helpText": str(props.get("HelpText", "")), "providerDescription": "",
         "patterns": patterns, "source": "axe-windows",
     }
+    # 生成唯一 id：自动化流程的定位 key，控件库消费方通过它去重。
+    # 兜底策略（对齐 normalize.generate_control_id）：aid 为空时按
+    #   className(+controlType) 组合，避免自定义 WPF 控件（常共用空/相同
+    #   className 如 "Control"）仅靠 className 产生大量撞名 id。
+    if aid:
+        ctl_id = aid
+    elif cls and ctype:
+        ctl_id = "{}_{}".format(cls, ctype)
+    elif cls:
+        ctl_id = cls
+    elif ctype:
+        ctl_id = ctype
+    else:
+        ctl_id = "Control"
+    # 生成可读名称：优先 automationId 拆分，fallback 到 className
+    if aid:
+        ctl_name = aid
+    elif name:
+        ctl_name = name
+    else:
+        ctl_name = cls or "Unnamed"
+
     return {
-        "name": name, "windowTitle": window_title, "frameworkId": fw,
+        "id": ctl_id,
+        "name": ctl_name, "windowTitle": window_title, "frameworkId": fw,
         "controlType": ctype, "className": cls,
         "targetMethod": method, "targetValue": value,
         "locatorScore": score, "locatorReason": reason,
         "auxChecks": aux, "inspectData": inspect_data, "boundingBox": box,
+        "uiPath": ui_path, "parentPath": parent_path
     }
 
 
@@ -182,6 +258,20 @@ def bridge_json_to_payload(doc):
                     cdef["inspectData"]["axeRule"] = rule
                     rule_count += 1
                 control_defs.append(cdef)
+
+    # 去重：同一 automationId 可能在不同容器下重复出现；
+    # 给重复 id 追加 _N 后缀，确保每个控件唯一。
+    seen_ids = set()
+    for i, cd in enumerate(control_defs):
+        raw_id = cd.get("id", "")
+        uid = raw_id
+        n = 2
+        while uid in seen_ids:
+            uid = "{}_{}".format(raw_id, n)
+            n += 1
+        seen_ids.add(uid)
+        if uid != raw_id:
+            cd["id"] = uid
 
     return {
         "schemaVersion": "1.0",
@@ -292,7 +382,7 @@ def _parse_cli_verbose(stdout):
 
 
 # ---------------------------------------------------------------------------
-# 提权辅助：Axe.Windows 需管理员权限才能跨完整性级别枚举目标进程 UI 树
+# Bridge 模式
 # ---------------------------------------------------------------------------
 def _is_admin():
     """当前进程是否以管理员（高完整性）运行。"""
@@ -344,17 +434,14 @@ def _run_elevated_capture(cmd, timeout=180):
     return stdout, stderr
 
 
-# ---------------------------------------------------------------------------
-# Bridge 模式
-# ---------------------------------------------------------------------------
 def scan_via_bridge(pid, bridge_exe=None, hwnd=None, timeout=180):
     """调用 C# bridge（输出 JSON），返回 control_map 兼容 payload（含 Patterns）。
 
     bridge 源码在 axewindows_bridge/，需 .NET SDK：``dotnet run --project axewindows_bridge -- <pid>``。
     若 bridge 未编译，本函数会尝试 ``dotnet run`` 自动编译运行（需 dotnet 在 PATH）。
 
-    若当前非管理员，会自动以 runas 提权运行（UIA 跨完整性枚举窗口必须管理员，
-    否则目标进程窗口枚举为空导致扫描失败）。
+    注意：Axe.Windows 跨完整性枚举 UI 树可能需要管理员权限。    若当前非管理员，会自动以 runas 提权运行（弹 UAC），UIA 跨完整性枚举窗口
+    必须管理员，否则目标进程窗口枚举为空导致扫描失败。
     """
     bridge_exe = bridge_exe or find_bridge_exe()
     cmd = None
@@ -380,17 +467,32 @@ def scan_via_bridge(pid, bridge_exe=None, hwnd=None, timeout=180):
                                encoding="utf-8", errors="replace")
         stdout, stderr, rc = proc.stdout or "", proc.stderr or "", proc.returncode
     else:
-        # 非管理员：提权运行（与 UiaPeek 同权限，才能枚举任意进程窗口）
+        # 非管理员：自动以 runas 提权运行（UIA 跨完整性枚举窗口必须管理员，
+        # 否则目标进程窗口枚举为空导致扫描失败）。
         stdout, stderr = _run_elevated_capture(cmd, timeout)
         rc = 1 if not stdout.strip() else 0
 
     if rc != 0 or not stdout.strip():
-        raise RuntimeError("AxeBridge 失败：{}".format((stderr or "（无输出，UAC 可能被拒绝）")[:1000]))
+        # 尝试从 stdout/stderr 解析 bridge 的友好 JSON 报错
+        detail = stderr.strip()[:1500]
+        try:
+            err_doc = json.loads(stdout.strip() or stderr.strip())
+            if isinstance(err_doc, dict) and "error" in err_doc:
+                detail = "{}: {}\n{}".format(
+                    err_doc.get("error", ""),
+                    err_doc.get("message", ""),
+                    err_doc.get("suggestion", ""),
+                )
+        except (ValueError, AttributeError):
+            pass
+        if not _is_admin():
+            detail += "\n\n（已尝试自动提权，但当前仍非管理员——UAC 可能被拒绝。请手动以管理员身份运行总控台，或允许 UAC 提权。）"
+        raise RuntimeError("AxeBridge 扫描失败（退出码 {}）：{}".format(rc, detail))
 
     try:
         doc = json.loads(stdout)
     except ValueError:
-        raise RuntimeError("AxeBridge 输出非 JSON：{}".format((stdout or "")[:1000]))
+        raise RuntimeError("AxeBridge 输出非 JSON：{}".format(stdout[:1000]))
 
     # bridge 友好报错：返回 {"error":..., "suggestion":...}
     if isinstance(doc, dict) and "error" in doc:
@@ -401,6 +503,7 @@ def scan_via_bridge(pid, bridge_exe=None, hwnd=None, timeout=180):
 
     payload = bridge_json_to_payload(doc)
     payload["scanMeta"]["bridgeCmd"] = " ".join(str(c) for c in cmd)
+    payload["scanMeta"]["isAdmin"] = _is_admin()
     payload["scanMeta"]["elevated"] = (not _is_admin())
     return payload
 

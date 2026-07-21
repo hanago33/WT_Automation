@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: automation_agent/cli_and_tools
+title: CLI 入口、控件索引与参数扫描工具
+scope:
+    - WT_AUTOMATION_Agent/cli.py
+    - WT_AUTOMATION_Agent/control_index.py
+    - WT_AUTOMATION_Agent/parameter_scan.py
+source_files: []
+depends_on: []
+related_to: []

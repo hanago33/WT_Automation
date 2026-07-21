@@ -1,0 +1,3000 @@
+{
+  "schemaVersion": "standard-catalog-1.0",
+  "generatedAt": "2026-07-21T15:13:39",
+  "sourceDir": "D:\\My_RF_Project\\WT_Automation\\control_maps",
+  "summary": {
+    "groups": 26,
+    "totalControls": 179,
+    "high": 130,
+    "medium": 39,
+    "lowOrUnknown": 10,
+    "needsReview": 10
+  },
+  "groups": [
+    {
+      "windowTitle": "",
+      "frameworkId": "WPF",
+      "controlCount": 102,
+      "highCount": 78,
+      "mediumCount": 24,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "MTDTile Button Toggle State 面板",
+          "controlType": "Pane",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MTDTileView_Button_ToggleState,Pane",
+          "authority": "high",
+          "occurrences": 12,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Micro Scale Site",
+          "controlType": "Tab",
+          "className": "RadTabControl",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MicroScale_TabControl_Site,Tab",
+          "authority": "high",
+          "occurrences": 7,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Micro Scale 区域",
+          "controlType": "Custom",
+          "className": "MUPMicroScaleMainView",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MicroScaleMainView_View_Main,Custom",
+          "authority": "high",
+          "occurrences": 7,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Wind Turbine Type Managers",
+          "controlType": "Tab",
+          "className": "RadTabControl",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WindTurbineType_TabControl_Managers,Tab",
+          "authority": "high",
+          "occurrences": 7,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Climatology Grid Global List 区域",
+          "controlType": "Custom",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "Climatology_GridView_GlobalList,Custom",
+          "authority": "high",
+          "occurrences": 6,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPClimatology Edit Scroll Viewer Left 面板",
+          "controlType": "Pane",
+          "className": "ScrollViewer",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPClimatologyEditView_ScrollViewer_LeftPanel,Pane",
+          "authority": "high",
+          "occurrences": 6,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Dashboard Grid Sites List 区域",
+          "controlType": "Custom",
+          "className": "MUPSitesExplorerView",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "DashboardView_GridView_SitesList,Custom",
+          "authority": "high",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Dashboard 区域",
+          "controlType": "Custom",
+          "className": "MUPDashboardView",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "DashboardView_Control_Main_WT,Custom",
+          "authority": "high",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M16,1L4,1C2.9,1,2,1.9,2,3L2,17 4,17 4,3 16,3 16,1z M19,5L8,5C6.9,5,6,5.9,6,7L6,21C6,22.1,6.9,23,8,23L19,23C20.1,23,21,22.1,21,21L21,7C21,5.9,20.1,5,19,5z M19,21L8,21 8,7 19,7 19,21z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Duplicate,Button",
+          "authority": "high",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button",
+          "authority": "high",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M6,19C6,20.1,6.9,21,8,21L16,21C17.1,21,18,20.1,18,19L18,7 6,7 6,19z M19,4L15.5,4 14.5,3 9.5,3 8.5,4 5,4 5,6 19,6 19,4z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Delete,Button",
+          "authority": "high",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "PART Left Header Gripper",
+          "controlType": "Thumb",
+          "className": "Thumb",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "PART_LeftHeaderGripper,Thumb",
+          "authority": "high",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "PART Right Header Gripper",
+          "controlType": "Thumb",
+          "className": "Thumb",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "PART_RightHeaderGripper,Thumb",
+          "authority": "high",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Sites Explorer Grid Sites List 区域",
+          "controlType": "Custom",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "SitesExplorerView_GridView_SitesList,Custom",
+          "authority": "high",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M19,13L13,13 13,19 11,19 11,13 5,13 5,11 11,11 11,5 13,5 13,11 19,11 19,13z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_AddNew,Button",
+          "authority": "high",
+          "occurrences": 4,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "PART_DropDownButton,Button",
+          "authority": "high",
+          "occurrences": 4,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUP.Module.WindTurbineType.ViewModels.Manufacturers.MUPWTTManufacturersManagerViewModel",
+          "controlType": "TabItem",
+          "className": "RadTabItem",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "TabItem_Container,TabItem",
+          "authority": "high",
+          "occurrences": 4,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPHub Heights Summary Edit MTDButton Open Documents 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPHubHeightsSummaryEditControl_MTDButton_OpenDocuments,Button",
+          "authority": "high",
+          "occurrences": 4,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "WT6250 D220 CRRC 输入框",
+          "controlType": "Edit",
+          "className": "TextBox",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeEditView_TextBox_Name,Edit",
+          "authority": "high",
+          "occurrences": 4,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "WTType Version Manager Edit Open Version 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeVersionManagerEditView_Button_OpenVersion,Button",
+          "authority": "high",
+          "occurrences": 4,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "风机制造商",
+          "controlType": "Text",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTMainView_TabControl_ManufacturersManager,Text",
+          "authority": "high",
+          "occurrences": 4,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Climatology Edit 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "Climatology_Button_Edit,Button",
+          "authority": "high",
+          "occurrences": 3,
+          "sources": [
+            "20260626_新建气象对象_window_control_map.json",
+            "20260715_152042_window_control_map.json",
+            "20260715_152815_风机类型_window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Climatology Refresh 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "Climatology_Button_Refresh,Button",
+          "authority": "high",
+          "occurrences": 3,
+          "sources": [
+            "20260626_新建气象对象_window_control_map.json",
+            "20260715_152042_window_control_map.json",
+            "20260715_152815_风机类型_window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Dashboard New Site 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "DashboardView_Button_NewSite,Button",
+          "authority": "high",
+          "occurrences": 3,
+          "sources": [
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M19,13L13,13 13,19 11,19 11,13 5,13 5,11 11,11 11,5 13,5 13,11 19,11 19,13z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeNoisesCurveVersionManagerEditView_Button_AddNew,Button",
+          "authority": "high",
+          "occurrences": 3,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Meteo Data Add New 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MeteoData_Button_AddNew,Button",
+          "authority": "high",
+          "occurrences": 3,
+          "sources": [
+            "20260626_新建气象对象_window_control_map.json",
+            "20260715_152042_window_control_map.json",
+            "20260715_152815_风机类型_window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Meteo Data Delete 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MeteoData_Button_Delete,Button",
+          "authority": "high",
+          "occurrences": 3,
+          "sources": [
+            "20260626_新建气象对象_window_control_map.json",
+            "20260715_152042_window_control_map.json",
+            "20260715_152815_风机类型_window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Page Down 按钮",
+          "controlType": "Button",
+          "className": "RepeatButton",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "PageDown,Button",
+          "authority": "high",
+          "occurrences": 3,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Page SPA 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MainPage_Button_SPA,Button",
+          "authority": "high",
+          "occurrences": 3,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_创建一个新建模3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Vertical",
+          "controlType": "ScrollBar",
+          "className": "ScrollBar",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "VerticalScrollBar,ScrollBar",
+          "authority": "high",
+          "occurrences": 3,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "textbox 输入框",
+          "controlType": "Edit",
+          "className": "TextBox",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "textbox,Edit",
+          "authority": "high",
+          "occurrences": 3,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Climatology 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_Climatology,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260626_144350_window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Geographical Data 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_GeographicalData,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260626_144350_window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Left Side Grid Splitter",
+          "controlType": "Thumb",
+          "className": "GridSplitter",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "LeftSidePanel_GridSplitter,Thumb",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Lidar Converter 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_LidarConverter,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260626_144350_window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Line Down 按钮",
+          "controlType": "Button",
+          "className": "RepeatButton",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "LineDown,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPManufacturers Summary Edit MTDButton Assign Factory 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPManufacturersSummaryEditControl_MTDButton_AssignFactory,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPManufacturers Summary Edit MTDButton Un Assign Factory 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPManufacturersSummaryEditControl_MTDButton_UnAssignFactory,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Open Module 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MainPage_Button_Central,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Open Module 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MainPage_Button_Microscale,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Open Module 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MainPage_Button_PLO,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Page MEAS 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MainPage_Button_MEAS,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Page MESO 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MainPage_Button_MESO,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Show Services Info 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "ShowServicesInfo,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Up 按钮",
+          "controlType": "Button",
+          "className": "RepeatButton",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "LineUp,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "WT6250 D220 输入框",
+          "controlType": "Edit",
+          "className": "TextBox",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeSummaryEditView_TextBox_TurbineModel,Edit",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "WTType Summary Text Box Country 输入框",
+          "controlType": "Edit",
+          "className": "TextBox",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeSummaryEditView_TextBox_Country,Edit",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Wind Turbine Type 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_WindTurbineType,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260626_144350_window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "描述",
+          "controlType": "Text",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeSummaryEditView_TextBox_Description,Text",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "风机类型",
+          "controlType": "Text",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTMainView_TabControl_WindTurbineTypesManager,Text",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Computation Manager Open Module 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "ComputationManager_Button_OpenModule,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Dashboard Site Info Open Site 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "DashboardSiteInfoControl_Button_OpenSite,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "LeftSidePanel_Button_PinButton,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MeteoEditView_Button_GoBack,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeEditView_Button_GoBack,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M219.76711,609.1864L218.51466,610.43701 235.76137,627.68188 218.51466,644.92859 219.76711,646.1792 237.01198,628.93433 254.25685,646.1792 255.50929,644.92859 238.26259,627.68188 255.50929,610.43701 254.25685,609.1864 237.01198,626.43128z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MainView_TabControl_CloseSite,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPClimatology Edit Compute From Time Series 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPClimatologyEditView_Button_ComputeFromTimeSeries,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260701_143721_window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPHub Heights Summary Edit MTDButton Add Document 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPHubHeightsSummaryEditControl_MTDButton_AddDocument,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPHub Heights Summary Edit MTDButton Document 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPHubHeightsSummaryEditControl_MTDButton_ViewDocument,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPHub Heights Summary Edit MTDButton Manage All Hub Height 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPHubHeightsSummaryEditControl_MTDButton_ManageAllHubHeight,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPHub Heights Summary Edit MTDButton Remove Document 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPHubHeightsSummaryEditControl_MTDButton_RemoveDocument,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPHub Heights Summary Edit MTDButton Un Document 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPHubHeightsSummaryEditControl_MTDButton_UnViewDocument,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPMicroscale Information Wt 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_Wt,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPWTTFactories Editor MTDButton Download Document 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPWTTFactoriesEditorView_MTDButton_DownloadDocument,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPWTTFactories Editor MTDButton Edit Category Document 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPWTTFactoriesEditorView_MTDButton_EditCategoryDocument,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Map Explorer Toggle Is Expanded 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MapExplorer_ToggleButton_IsExpanded,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260626_新建气象对象_window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Micro Scale Editing Site",
+          "controlType": "Tab",
+          "className": "RadTabControl",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MicroScale_TabControl_EditingSite,Tab",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Sites Explorer Toggle Switch Case Type 按钮",
+          "controlType": "Button",
+          "className": "MTDSwitchButtonControl",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "SitesExplorerView_Toggle_SwitchCaseType,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Title Home 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WindowTitle_Button_Home,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Title Show Tasklist 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WindowTitle_Button_ShowTasklist,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "WTType Explorer New 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeExplorer_Button_New,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_212832_window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "close 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "PART_CloseButton,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "主面板",
+          "controlType": "Text",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MainView_TabControl_DashboardSites_WT,Text",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "保存",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MeteoData_Button_Save,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260701_152138_window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "保存",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeEditView_Button_Save,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "正在计算中",
+          "controlType": "CheckBox",
+          "className": "CheckBox",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPComputationManager_CheckBox_InProgress,CheckBox",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "计算完成",
+          "controlType": "CheckBox",
+          "className": "CheckBox",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPComputationManager_CheckBox_Finished,CheckBox",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "限功率规则",
+          "controlType": "Text",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTMainView_TabControl_CurtailmentRulesManager,Text",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPHome Page 区域",
+          "controlType": "Custom",
+          "className": "MUPHomePageMainView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPHomePageMainView,Custom",
+          "authority": "medium",
+          "occurrences": 6,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPMap 区域",
+          "controlType": "Custom",
+          "className": "MUPMapMainView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPMapMainView,Custom",
+          "authority": "medium",
+          "occurrences": 6,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPTask 区域",
+          "controlType": "Custom",
+          "className": "MUPTaskMainView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPTaskMainView,Custom",
+          "authority": "medium",
+          "occurrences": 6,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPWind Turbine Type Editor Left Side 区域",
+          "controlType": "Custom",
+          "className": "MUPWindTurbineTypeEditorLeftSideView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPWindTurbineTypeEditorLeftSideView,Custom",
+          "authority": "medium",
+          "occurrences": 6,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPWind Turbine Type Editor 区域",
+          "controlType": "Custom",
+          "className": "MUPWindTurbineTypeEditorView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPWindTurbineTypeEditorView,Custom",
+          "authority": "medium",
+          "occurrences": 6,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPWind Turbine Type 区域",
+          "controlType": "Custom",
+          "className": "MUPWindTurbineTypeMainView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPWindTurbineTypeMainView,Custom",
+          "authority": "medium",
+          "occurrences": 6,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Scroll Viewer 面板",
+          "controlType": "Pane",
+          "className": "ScrollViewer",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "ScrollViewer,Pane",
+          "authority": "medium",
+          "occurrences": 6,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPClimatology Edit 区域",
+          "controlType": "Custom",
+          "className": "MUPClimatologyEditView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPClimatologyEditView,Custom",
+          "authority": "medium",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPClimatology Management 区域",
+          "controlType": "Custom",
+          "className": "MUPClimatologyManagementView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPClimatologyManagementView,Custom",
+          "authority": "medium",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPClimatology 区域",
+          "controlType": "Custom",
+          "className": "MUPClimatologyMainView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPClimatologyMainView,Custom",
+          "authority": "medium",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPWind Turbine Type Explorer 区域",
+          "controlType": "Custom",
+          "className": "MUPWindTurbineTypeExplorerView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPWindTurbineTypeExplorerView,Custom",
+          "authority": "medium",
+          "occurrences": 5,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPComputation Manager 区域",
+          "controlType": "Custom",
+          "className": "MUPComputationManagerMainView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPComputationManagerMainView,Custom",
+          "authority": "medium",
+          "occurrences": 3,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPComputation Manager 区域",
+          "controlType": "Custom",
+          "className": "MUPComputationManagerView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPComputationManagerView,Custom",
+          "authority": "medium",
+          "occurrences": 3,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPGeneral Summary Edit 区域",
+          "controlType": "Custom",
+          "className": "MUPGeneralSummaryEditControl",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPGeneralSummaryEditControl,Custom",
+          "authority": "medium",
+          "occurrences": 3,
+          "sources": [
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MTDComputation Manager 区域",
+          "controlType": "Custom",
+          "className": "MTDComputationManagerView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MTDComputationManagerView,Custom",
+          "authority": "medium",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPDesign Summary Edit 区域",
+          "controlType": "Custom",
+          "className": "MUPDesignSummaryEditControl",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPDesignSummaryEditControl,Custom",
+          "authority": "medium",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPDocuments Properties Edit 区域",
+          "controlType": "Custom",
+          "className": "MUPDocumentsPropertiesEditControl",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPDocumentsPropertiesEditControl,Custom",
+          "authority": "medium",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json",
+            "20260715_214310_创建一个新建模2window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPHub Heights Summary Edit 区域",
+          "controlType": "Custom",
+          "className": "MUPHubHeightsSummaryEditControl",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPHubHeightsSummaryEditControl,Custom",
+          "authority": "medium",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_功率曲线版本管理1window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPVersions Manager Edit 区域",
+          "controlType": "Custom",
+          "className": "MUPVersionsManagerEditControl",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPVersionsManagerEditControl,Custom",
+          "authority": "medium",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_功率曲线版本管理2window_control_map.json",
+            "20260715_214310_功率曲线版本管理4window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "按风机制造商分组",
+          "controlType": "CheckBox",
+          "className": "CheckBox",
+          "frameworkId": "WPF",
+          "targetMethod": "name,control_type",
+          "targetValue": "按风机制造商分组,CheckBox",
+          "authority": "medium",
+          "occurrences": 2,
+          "sources": [
+            "20260715_214310_创建一个新建模3window_control_map.json",
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MTDTitle Bar 区域",
+          "controlType": "Custom",
+          "className": "MTDTitleBar",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MTDTitleBar,Custom",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPManufacturers Summary Edit 区域",
+          "controlType": "Custom",
+          "className": "MUPManufacturersSummaryEditControl",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPManufacturersSummaryEditControl,Custom",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPWind Turbine Type Editor Bread Crumb 区域",
+          "controlType": "Custom",
+          "className": "MUPWindTurbineTypeEditorBreadCrumbView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPWindTurbineTypeEditorBreadCrumbView,Custom",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_功率曲线版本管理3window_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPWind Turbine Type Performance Curve Editor 区域",
+          "controlType": "Custom",
+          "className": "MUPWindTurbineTypePerformanceCurveEditorView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPWindTurbineTypePerformanceCurveEditorView,Custom",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模1window_control_map.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "",
+      "frameworkId": "XAML",
+      "controlCount": 1,
+      "highCount": 0,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "Windows Input Input Site Class 面板",
+          "controlType": "Pane",
+          "className": "Windows.UI.Input.InputSite.WindowClass",
+          "frameworkId": "XAML",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "Windows.UI.Input.InputSite.WindowClass,Pane",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "20260715_214310_创建一个新建模2window_control_map.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "????????",
+      "frameworkId": "WPF",
+      "controlCount": 1,
+      "highCount": 0,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "风向",
+          "controlType": "50007",
+          "className": "ListBoxItem",
+          "frameworkId": "WPF",
+          "targetMethod": "name",
+          "targetValue": "ListBoxItem",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "library_window_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "AxeWindowsScan",
+      "frameworkId": "WPF",
+      "controlCount": 41,
+      "highCount": 32,
+      "mediumCount": 3,
+      "lowCount": 6,
+      "controls": [
+        {
+          "name": "M216.29465,739.97381L253.125,739.97381 253.125,742.192 238.85324,756.33821 238.85324,771.61444 231.1942,771.61444 231.1942,757.13341 216.37835,742.192z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "PART_DropDownButton,Button",
+          "authority": "high",
+          "occurrences": 23,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "LeftSidePanel_Button_PinButton,Button",
+          "authority": "high",
+          "occurrences": 6,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+          "controlType": "Button",
+          "className": "RepeatButton",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "LeftScrollButtonElement,Button",
+          "authority": "high",
+          "occurrences": 6,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M21206.869,1958.5723C21213.302,1958.6643,21219.359,1961.1241,21224.156,1965.3419A9.0141097,9.0141097,0,0,1,21225.484,1966.4356L21711.217,2452.17C21711.217,2452.17,21711.217,2452.17,21711.217,2452.18L21711.378,2452.3382C21716.431,2457.3945 21719.245,2464.1913 21719.245,2471.3382 21719.245,2478.4852 21716.431,2485.282 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3382 21711.378,2490.3482L21234.708,2967.0201C21229.653,2972.0742 21222.857,2974.8923 21215.708,2974.8931 21208.557,2974.8939 21201.76,2972.0782 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024 21196.704,2967.024L21193.391,2963.7115 21193.391,2963.7115C21193.391,2963.7113,21193.391,2963.7118,21193.391,2963.7115A9.0141097,9.0141097,0,0,1,21192.297,2962.3776C21187.992,2957.4814 21185.523,2951.278 21185.521,2944.7135 21185.521,2937.5663 21188.333,2930.7687 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116 21193.389,2925.7116L21193.389,2925.7116 21647.743,2471.3581 21184.163,2007.78A9.0141097,9.0141097,0,0,1,21183.052,2006.4285C21178.757,2001.5356 21176.293,1995.3388 21176.292,1988.782 21176.292,1981.6354 21179.101,1974.839 21184.153,1969.782L21184.173,1969.765 21187.466,1966.4681C21192.617,1961.3155,21199.574,1958.4924,21206.86,1958.597z",
+          "controlType": "Button",
+          "className": "RepeatButton",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "RightScrollButtonElement,Button",
+          "authority": "high",
+          "occurrences": 6,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "AllData",
+          "controlType": "Custom",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "AllData,Custom",
+          "authority": "high",
+          "occurrences": 4,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "",
+          "controlType": "Custom(50025)",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPLidarConverterView_GridView_SitesWithLidar,Custom(50025)",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "ComputationManager_Button_OpenModule",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "ComputationManager_Button_OpenModule,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "GeoData_Button_Refresh",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "GeoData_Button_Refresh,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "M21032.418,1987.8691C21025.985,1987.9611,21019.928,1990.4209,21015.131,1994.6387A9.0141097,9.0141097,0,0,0,21013.803,1995.7324A9.0141097,9.0141097,0,0,0,21013.803,1995.7324L20528.07,2481.4668C20528.07,2481.4668,20528.07,2481.4668,20528.07,2481.4768L20527.909,2481.635A9.0141097,9.0141097,0,0,0,20527.909,2481.635C20522.856,2486.6913 20520.042,2493.4881 20520.042,2500.635 20520.042,2507.782 20522.856,2514.5788 20527.909,2519.635 20527.909,2519.635 20527.909,2519.635 20527.909,2519.645L21004.579,2996.3169C21009.634,3001.371 21016.43,3004.1891 21023.579,3004.1899 21030.73,3004.1907 21037.527,3001.375 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208 21042.583,2996.3208L21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21045.896,2993.0083L21045.896,2993.0083C21045.896,2993.0081,21045.896,2993.0086,21045.896,2993.0083A9.0141097,9.0141097,0,0,0,21046.99,2991.6744C21051.295,2986.7782,21053.764,2980.5748,21053.766,2974.0103A9.0141097,9.0141097,0,0,0,21053.766,2974.0103C21053.766,2966.8631 21050.954,2960.0655 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084 21045.898,2955.0084L21045.898,2955.0084 20591.544,2500.6549 21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21055.124,2037.0768A9.0141097,9.0141097,0,0,0,21056.235,2035.7253C21060.53,2030.8324 21062.994,2024.6356 21062.995,2018.0788 21062.995,2010.9322 21060.186,2004.1358 21055.134,1999.0788A9.0141097,9.0141097,0,0,0,21055.134,1999.0788L21055.114,1999.0618 21051.821,1995.7649A9.0141097,9.0141097,0,0,0,21051.821,1995.7649C21046.67,1990.6123,21039.713,1987.7892,21032.427,1987.8938z",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MeteoEditView_Button_GoBack,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MBAMapBackgroundGroup_Combobox_Layers_MBACoreModel:Translations:MBAMapConfiguration_LayersBackground",
+          "controlType": "ComboBox",
+          "className": "RadComboBox",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MBAMapBackgroundGroup_Combobox_Layers_MBACoreModel:Translations:MBAMapConfiguration_LayersBackground,ComboBox",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MTDTitleBar_Button_BtnClose",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MTDTitleBar_Button_BtnClose,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MTDTitleBar_Button_BtnMinimized",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MTDTitleBar_Button_BtnMinimized,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPLicenseInformationViewModel_Button_Information",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPLicenseInformationViewModel_Button_Information,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPMicroscaleInformationViewModel_Button_Climatology",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_Climatology,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPMicroscaleInformationViewModel_Button_GeographicalData",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_GeographicalData,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPMicroscaleInformationViewModel_Button_LidarConverter",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_LidarConverter,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPMicroscaleInformationViewModel_Button_WindTurbineType",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_WindTurbineType,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPMicroscaleInformationViewModel_Button_Wt",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_Wt,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MainView_Button_AdminPanel",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MainView_Button_AdminPanel,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MainView_Button_UserLogout",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MainView_Button_UserLogout,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MapExplorer_Domain.General",
+          "controlType": "Image",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MapExplorer_Domain.General,Image",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MapExplorer_Domain.Pins",
+          "controlType": "Image",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MapExplorer_Domain.Pins,Image",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MapExplorer_GeoData.Domain.Orography",
+          "controlType": "Image",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MapExplorer_GeoData.Domain.Orography,Image",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MapExplorer_GeoData.Domain.Roughness",
+          "controlType": "Image",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MapExplorer_GeoData.Domain.Roughness,Image",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MapExplorer_ToggleButton_IsExpanded",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MapExplorer_ToggleButton_IsExpanded,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MapMainView_Button_SetMapBestView",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MapMainView_Button_SetMapBestView,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "WindowTitle_Button_Home",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WindowTitle_Button_Home,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "WindowTitle_Button_ShowTasklist",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WindowTitle_Button_ShowTasklist,Button",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Window_Main",
+          "controlType": "Window",
+          "className": "Window",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "Window_Main,Window",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "全部选择",
+          "controlType": "ListItem",
+          "className": "RadComboBoxItem",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MTDGroupComboBoxMultiSelection_ComboBoxItem,ListItem",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json",
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "",
+          "controlType": "Button(50000)",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MTDTitleBar_Button_BtnRestore,Button(50000)",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "WTTypeExplorer_Button_Refresh",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeExplorer_Button_Refresh,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Button",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "",
+          "targetValue": "",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPMapLegendView",
+          "controlType": "Custom",
+          "className": "MUPMapLegendView",
+          "frameworkId": "WPF",
+          "targetMethod": "",
+          "targetValue": "",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "TextBlock",
+          "controlType": "Text",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "",
+          "targetValue": "",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Unnamed",
+          "controlType": "Image",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "",
+          "targetValue": "",
+          "authority": "low",
+          "occurrences": 4,
+          "sources": [
+            "20260720_152457_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": true
+        },
+        {
+          "name": "",
+          "controlType": "Custom(50025)",
+          "className": "MUPMapLegendView",
+          "frameworkId": "WPF",
+          "targetMethod": "",
+          "targetValue": "",
+          "authority": "unknown",
+          "occurrences": 1,
+          "sources": [
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": true
+        },
+        {
+          "name": "",
+          "controlType": "Button(50000)",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "",
+          "targetValue": "",
+          "authority": "unknown",
+          "occurrences": 1,
+          "sources": [
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": true
+        },
+        {
+          "name": "",
+          "controlType": "Text(50020)",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "",
+          "targetValue": "",
+          "authority": "unknown",
+          "occurrences": 1,
+          "sources": [
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": true
+        },
+        {
+          "name": "",
+          "controlType": "Image(50006)",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "",
+          "targetValue": "",
+          "authority": "unknown",
+          "occurrences": 1,
+          "sources": [
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": true
+        },
+        {
+          "name": "",
+          "controlType": "Image(50006)",
+          "className": "",
+          "frameworkId": "WPF",
+          "targetMethod": "",
+          "targetValue": "",
+          "authority": "unknown",
+          "occurrences": 1,
+          "sources": [
+            "20260720_153354_pid15476_axewindows_control_map.json"
+          ],
+          "needsReview": true
+        }
+      ]
+    },
+    {
+      "windowTitle": "Window",
+      "frameworkId": "",
+      "controlCount": 2,
+      "highCount": 1,
+      "mediumCount": 0,
+      "lowCount": 1,
+      "controls": [
+        {
+          "name": "",
+          "controlType": "window",
+          "className": "Window",
+          "frameworkId": "",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "Window_Main,window",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "20260720_153042_recording_uiapeek_control_map.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "",
+          "controlType": "custom",
+          "className": "MUPTaskMainView",
+          "frameworkId": "",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPTaskMainView,custom",
+          "authority": "unknown",
+          "occurrences": 1,
+          "sources": [
+            "20260720_153042_recording_uiapeek_control_map.json"
+          ],
+          "needsReview": true
+        }
+      ]
+    },
+    {
+      "windowTitle": "主面板",
+      "frameworkId": "WPF",
+      "controlCount": 1,
+      "highCount": 1,
+      "mediumCount": 0,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "Dashboard New Site 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "DashboardView_Button_NewSite,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_主面板_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "保存",
+      "frameworkId": "WPF",
+      "controlCount": 1,
+      "highCount": 1,
+      "mediumCount": 0,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "保存",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MeteoData_Button_Save,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_保存_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "创建一个新建模",
+      "frameworkId": "WPF",
+      "controlCount": 2,
+      "highCount": 1,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "Wind Turbine Type 按钮",
+          "controlType": "50020",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_WindTurbineType",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_创建一个新建模_WPF_controls.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "私有",
+          "controlType": "50020",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "name",
+          "targetValue": "私有",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "library_创建一个新建模_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "创建一个新的气象对象",
+      "frameworkId": "WPF",
+      "controlCount": 1,
+      "highCount": 0,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "创建一个新的气象对象",
+          "controlType": "Window",
+          "className": "Window",
+          "frameworkId": "WPF",
+          "targetMethod": "name,control_type",
+          "targetValue": "创建一个新的气象对象,Window",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "20260626_100229_创建一个新的气象对象_control_map.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "创建新的风机类型",
+      "frameworkId": "WPF",
+      "controlCount": 1,
+      "highCount": 0,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "私有",
+          "controlType": "50020",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "name",
+          "targetValue": "私有",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "library_创建新的风机类型_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "导入时间序列文件",
+      "frameworkId": "WPF",
+      "controlCount": 1,
+      "highCount": 0,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "日期时间",
+          "controlType": "50007",
+          "className": "ListBoxItem",
+          "frameworkId": "WPF",
+          "targetMethod": "name,class_name",
+          "targetValue": "ListBoxItem",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "library_导入时间序列文件_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "导入统计数据文件",
+      "frameworkId": "unknown",
+      "controlCount": 1,
+      "highCount": 0,
+      "mediumCount": 0,
+      "lowCount": 1,
+      "controls": [
+        {
+          "name": "湍流强度相对标准偏差",
+          "controlType": "",
+          "className": "",
+          "frameworkId": "unknown",
+          "targetMethod": "name,class_name",
+          "targetValue": "StandardDeviationOfTurbulenceIntensity,ListBoxItem",
+          "authority": "low",
+          "occurrences": 1,
+          "sources": [
+            "library_导入统计数据文件_unknown_controls.json"
+          ],
+          "needsReview": true
+        }
+      ]
+    },
+    {
+      "windowTitle": "性能曲线",
+      "frameworkId": "WPF",
+      "controlCount": 4,
+      "highCount": 4,
+      "mediumCount": 0,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "Computation Manager Open Module 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "ComputationManager_Button_OpenModule,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_性能曲线_WPF_controls.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPHub Heights Summary Edit MTDButton Open Documents 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPHubHeightsSummaryEditControl_MTDButton_OpenDocuments,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_性能曲线_WPF_controls.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Wind Turbine Type Managers",
+          "controlType": "Tab",
+          "className": "RadTabControl",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WindTurbineType_TabControl_Managers,Tab",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_性能曲线_WPF_controls.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "风机类型",
+          "controlType": "Text",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTMainView_TabControl_WindTurbineTypesManager,Text",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_性能曲线_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "打开",
+      "frameworkId": "Win32",
+      "controlCount": 1,
+      "highCount": 1,
+      "mediumCount": 0,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "打开(O)",
+          "controlType": "SplitButton",
+          "className": "Button",
+          "frameworkId": "Win32",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "1,SplitButton",
+          "authority": "high",
+          "occurrences": 2,
+          "sources": [
+            "20260701_173449_打开_control_map.json",
+            "library_打开_Win32_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "打开(O)",
+      "frameworkId": "Win32",
+      "controlCount": 1,
+      "highCount": 1,
+      "mediumCount": 0,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "打开按钮",
+          "controlType": "SplitButton(50031)",
+          "className": "Button",
+          "frameworkId": "Win32",
+          "targetMethod": "automation_id",
+          "targetValue": "1",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_打开(O)_Win32_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "文件名(N):",
+      "frameworkId": "unknown",
+      "controlCount": 1,
+      "highCount": 0,
+      "mediumCount": 0,
+      "lowCount": 1,
+      "controls": [
+        {
+          "name": "键入-文件名",
+          "controlType": "",
+          "className": "",
+          "frameworkId": "unknown",
+          "targetMethod": "name",
+          "targetValue": "文件名(N):",
+          "authority": "low",
+          "occurrences": 1,
+          "sources": [
+            "library_文件名(N)_unknown_controls.json"
+          ],
+          "needsReview": true
+        }
+      ]
+    },
+    {
+      "windowTitle": "日期时间",
+      "frameworkId": "WPF",
+      "controlCount": 1,
+      "highCount": 0,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "日期时间",
+          "controlType": "Text(50020)",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "name",
+          "targetValue": "日期时间",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "library_日期时间_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "未分类窗口",
+      "frameworkId": "WPF",
+      "controlCount": 3,
+      "highCount": 2,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "MUPClimatology Edit Compute From Time Series 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPClimatologyEditView_Button_ComputeFromTimeSeries,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_未分类窗口_WPF_controls.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPClimatology Edit Import Statistical File 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPClimatologyEditView_Button_ImportStatisticalFile,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_未分类窗口_WPF_controls.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "TaskMainView",
+          "controlType": "50025",
+          "className": "MUPTaskMainView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name",
+          "targetValue": "MUPTaskMainView",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "library_未分类窗口_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "桌面 1",
+      "frameworkId": "",
+      "controlCount": 1,
+      "highCount": 0,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "桌面 1",
+          "controlType": "pane",
+          "className": "#32769",
+          "frameworkId": "",
+          "targetMethod": "name,control_type",
+          "targetValue": "桌面 1,pane",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "20260720_153042_recording_uiapeek_control_map.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "气象对象",
+      "frameworkId": "WPF",
+      "controlCount": 1,
+      "highCount": 1,
+      "mediumCount": 0,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "Meteo Data Add New 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MeteoData_Button_AddNew,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_气象对象_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "版本管理",
+      "frameworkId": "WPF",
+      "controlCount": 3,
+      "highCount": 2,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "WTType Version Manager Edit Open Version 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeVersionManagerEditView_Button_OpenVersion,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_版本管理_WPF_controls.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Wind Turbine Type Managers",
+          "controlType": "Tab",
+          "className": "RadTabControl",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WindTurbineType_TabControl_Managers,Tab",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_版本管理_WPF_controls.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "MUPWind Turbine Type Explorer 区域",
+          "controlType": "Custom",
+          "className": "MUPWindTurbineTypeExplorerView",
+          "frameworkId": "WPF",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPWindTurbineTypeExplorerView,Custom",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "library_版本管理_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "私有",
+      "frameworkId": "WPF",
+      "controlCount": 1,
+      "highCount": 0,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "控件 1",
+          "controlType": "50020",
+          "className": "TextBlock",
+          "frameworkId": "WPF",
+          "targetMethod": "name",
+          "targetValue": "私有",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "library_私有_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "行",
+      "frameworkId": "WPF",
+      "controlCount": 1,
+      "highCount": 1,
+      "mediumCount": 0,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "WTType Version Manager Edit Open Version 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeVersionManagerEditView_Button_OpenVersion,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_行_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "请补充窗口标题",
+      "frameworkId": "WPF",
+      "controlCount": 3,
+      "highCount": 2,
+      "mediumCount": 1,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "WTType Version Manager Edit Open Version 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeVersionManagerEditView_Button_OpenVersion,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_请补充窗口标题_WPF_controls.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "Wind Turbine Type Managers",
+          "controlType": "Tab",
+          "className": "RadTabControl",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WindTurbineType_TabControl_Managers,Tab",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_请补充窗口标题_WPF_controls.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "平均风速",
+          "controlType": "50007",
+          "className": "ListBoxItem",
+          "frameworkId": "WPF",
+          "targetMethod": "name",
+          "targetValue": "ListBoxItem",
+          "authority": "medium",
+          "occurrences": 1,
+          "sources": [
+            "library_请补充窗口标题_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    },
+    {
+      "windowTitle": "请补充窗口标题",
+      "frameworkId": "unknown",
+      "controlCount": 1,
+      "highCount": 0,
+      "mediumCount": 0,
+      "lowCount": 1,
+      "controls": [
+        {
+          "name": "输入框",
+          "controlType": "",
+          "className": "",
+          "frameworkId": "unknown",
+          "targetMethod": "name,class_name",
+          "targetValue": "请补充标签名称,Edit",
+          "authority": "low",
+          "occurrences": 1,
+          "sources": [
+            "library_请补充窗口标题_unknown_controls.json"
+          ],
+          "needsReview": true
+        }
+      ]
+    },
+    {
+      "windowTitle": "风机类型",
+      "frameworkId": "WPF",
+      "controlCount": 2,
+      "highCount": 2,
+      "mediumCount": 0,
+      "lowCount": 0,
+      "controls": [
+        {
+          "name": "MUPClimatology Edit Import Time Series File 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPClimatologyEditView_Button_ImportTimeSeriesFile,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_风机类型_WPF_controls.json"
+          ],
+          "needsReview": false
+        },
+        {
+          "name": "WTType Explorer New 按钮",
+          "controlType": "Button",
+          "className": "Button",
+          "frameworkId": "WPF",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypeExplorer_Button_New,Button",
+          "authority": "high",
+          "occurrences": 1,
+          "sources": [
+            "library_风机类型_WPF_controls.json"
+          ],
+          "needsReview": false
+        }
+      ]
+    }
+  ]
+}

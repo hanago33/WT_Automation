@@ -224,27 +224,93 @@ def locate_template_center(template_key, timeout_seconds=8, confidence=0.8):
     return locate_template_center_by_path(template_path, timeout_seconds=timeout_seconds, confidence=confidence)
 
 
-def locate_template_center_by_path(template_path, timeout_seconds=8, confidence=0.8):
+def locate_template_center_by_path(template_path, timeout_seconds=8, confidence=0.8, region=None, scales=None):
+    """定位模板中心并返回 pyautogui.Point。
+
+    在原 pyautogui 精确匹配基础上增加：
+      - region(ROI)：缩小搜索范围，提速并减少误命中；
+      - 多尺度兜底：原匹配失败时，用 cv2.matchTemplate 在多个缩放下重试，
+        缓解高分屏 / DPI / 缩放导致的模板漂移漏命中（见 debug-relative-region-offset.md 等）。
+
+    签名向后兼容：region/scales 均有默认值，region=None 时主路径行为与旧版一致，
+    仅在精确匹配失败时才进入多尺度兜底，因此对已有流程无回归风险。
+    """
     if not os.path.exists(template_path):
         raise FileNotFoundError(f"缺少图片模板: {template_path}")
+
+    if scales is None:
+        scales = [1.0, 1.1, 0.9, 1.2, 0.8, 1.35, 0.7]
 
     deadline = time.time() + timeout_seconds
     last_error = None
     while time.time() < deadline:
+        # 1) 精确匹配（与旧行为一致，仅额外支持传入 ROI 缩小搜索范围）
         try:
             with Image.open(template_path) as template_image:
                 try:
-                    center = pyautogui.locateCenterOnScreen(template_image, confidence=confidence)
-                except Exception as confidence_error:
-                    last_error = confidence_error
-                    center = pyautogui.locateCenterOnScreen(template_image)
+                    center = pyautogui.locateCenterOnScreen(template_image, confidence=confidence, region=region)
+                except Exception:
+                    center = pyautogui.locateCenterOnScreen(template_image, region=region)
             if center:
                 return center
         except Exception as exc:
             last_error = exc
+
+        # 2) 多尺度兜底：原匹配失败时，缩放模板以对抗 DPI/缩放漂移
+        try:
+            ms = _match_template_multiscale(template_path, confidence, region, scales)
+            if ms is not None:
+                return ms
+        except Exception as exc:
+            last_error = exc
+
         time.sleep(0.4)
 
     raise RuntimeError(f"模板未匹配到: path={template_path}; last_error={last_error}")
+
+
+def _match_template_multiscale(template_path, confidence, region, scales):
+    """使用 cv2.matchTemplate 在多个缩放下寻找模板最佳匹配。
+
+    返回 pyautogui.Point（命中且满足置信度）或 None。region 给定时，
+    匹配坐标会叠加 region 左上偏移还原为绝对屏幕坐标。
+    """
+    import cv2
+    import numpy as np
+
+    screenshot = pyautogui.screenshot(region=region)
+    screen_gray = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2GRAY)
+
+    template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+    if template is None:
+        raise RuntimeError(f"无法读取模板图片: {template_path}")
+    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+
+    sh, sw = screen_gray.shape[:2]
+    th, tw = template_gray.shape[:2]
+
+    offset_x = region[0] if region else 0
+    offset_y = region[1] if region else 0
+
+    best_score = -1.0
+    best_center = None
+    for scale in scales:
+        w = int(round(tw * scale))
+        h = int(round(th * scale))
+        if w < 2 or h < 2 or w > sw or h > sh:
+            continue
+        resized = cv2.resize(template_gray, (w, h), interpolation=cv2.INTER_AREA)
+        if resized.shape[0] > sh or resized.shape[1] > sw:
+            continue
+        result = cv2.matchTemplate(screen_gray, resized, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        if max_val > best_score:
+            best_score = max_val
+            best_center = (int(max_loc[0] + w / 2 + offset_x), int(max_loc[1] + h / 2 + offset_y))
+
+    if best_center is not None and best_score >= confidence:
+        return pyautogui.Point(best_center[0], best_center[1])
+    return None
 
 
 def capture_debug_screenshot(tag):

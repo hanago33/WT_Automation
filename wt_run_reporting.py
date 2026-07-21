@@ -73,8 +73,13 @@ def report_step_result(run_report, step_id, step_name, status, action_type="", s
         summary["failedCount"] = int(summary.get("failedCount", 0)) + 1
     else:
         summary["skippedCount"] = int(summary.get("skippedCount", 0)) + 1
-    if extra.get("fallbackTemplateUsed"):
+    if extra.get("fallbackTemplateUsed") or extra.get("fallbackUsed"):
         summary["fallbackCount"] = int(summary.get("fallbackCount", 0)) + 1
+        fb_level = extra.get("fallbackLevel")
+        if fb_level:
+            level_counts = summary.setdefault("fallbackLevelCounts", {})
+            level_key = str(fb_level)
+            level_counts[level_key] = int(level_counts.get(level_key, 0)) + 1
 
 
 def _resolve_final_status(run_report, requested_status):

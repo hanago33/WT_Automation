@@ -250,6 +250,147 @@ def configure_flow_locator(get_step_definition=None, log_step=None):
         _LOG_STEP = log_step
 
 
+# #region self-healing selector (#4)
+# 自愈式选择器：当控件主定位器（如 automationId）在当前界面失效时，自动降级到
+# 次级候选（name / class_name 等）命中，并把"实际生效的定位器"持久化学习下来，
+# 后续运行直接将其作为首选，避免反复走弱匹配。同时记录自愈事件便于回查修正控件库。
+
+SELF_HEAL_ENABLED = True
+SELF_HEAL_STORE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "control_maps", "self_heal_store.json"
+)
+_self_heal_overrides = {}  # key "step_id|control_id" -> {"method","value","score"}
+_self_heal_session_hits = []  # 本次运行的全部自愈事件
+
+
+def configure_self_heal(enabled=None, store_path=None):
+    """配置自愈：enabled 开关，store_path 改存储路径（同时重载已学习覆盖）。"""
+    global SELF_HEAL_ENABLED, SELF_HEAL_STORE_PATH, _self_heal_overrides
+    if enabled is not None:
+        SELF_HEAL_ENABLED = bool(enabled)
+    if store_path:
+        SELF_HEAL_STORE_PATH = store_path
+        _self_heal_overrides = _load_self_heal_store()
+
+
+def _self_heal_key(step_id, control_id):
+    return f"{step_id}|{control_id or ''}"
+
+
+def _load_self_heal_store():
+    try:
+        with open(SELF_HEAL_STORE_PATH, "r", encoding="utf-8") as file_obj:
+            data = json.load(file_obj)
+        if isinstance(data, dict) and isinstance(data.get("overrides"), dict):
+            return data["overrides"]
+    except Exception:
+        pass
+    return {}
+
+
+def save_self_heal_store():
+    try:
+        parent_dir = os.path.dirname(SELF_HEAL_STORE_PATH) or "."
+        os.makedirs(parent_dir, exist_ok=True)
+        with open(SELF_HEAL_STORE_PATH, "w", encoding="utf-8") as file_obj:
+            json.dump(
+                {"overrides": _self_heal_overrides, "updatedAt": int(time.time())},
+                file_obj,
+                ensure_ascii=False,
+                indent=2,
+            )
+    except Exception:
+        pass
+
+
+def get_self_heal_override(step_id, control_id):
+    return _self_heal_overrides.get(_self_heal_key(step_id, control_id))
+
+
+def record_self_heal(step_id, control_id, method, value, score=None):
+    """把实际生效的定位器记录下来（覆盖式学习）。"""
+    if not SELF_HEAL_ENABLED:
+        return
+    _self_heal_overrides[_self_heal_key(step_id, control_id)] = {
+        "method": method,
+        "value": value,
+        "score": score,
+    }
+    save_self_heal_store()
+
+
+def get_self_heal_report():
+    """返回本次运行捕获到的全部自愈事件（供编辑器/总控台回显）。"""
+    return list(_self_heal_session_hits)
+
+
+def self_heal_summary():
+    return {
+        "enabled": SELF_HEAL_ENABLED,
+        "storePath": SELF_HEAL_STORE_PATH,
+        "learnedCount": len(_self_heal_overrides),
+        "sessionHits": list(_self_heal_session_hits),
+    }
+
+
+def detect_healed_locator(wrapper, control_definition):
+    """找出 wrapper 实际命中的、优先级最高的候选定位器。
+
+    返回 {"method","value","priority"} 或 None（完全不命中）。
+    priority==0 表示命中主定位器（非自愈）；priority>0 表示降级自愈命中。
+    """
+    if wrapper is None:
+        return None
+    candidates = build_common_locator_candidates(control_definition)
+    for priority, (method, value) in enumerate(candidates):
+        if wrapper_matches_locator(wrapper, method, value):
+            return {"method": method, "value": value, "priority": priority}
+    return None
+
+
+def _apply_self_heal_override(step_id, control_id, control_definition):
+    """若存在已学习的覆盖，把其定位器写入 control_definition 的 targetMethod/targetValue，
+    使 build_common_locator_candidates 将其排在 priority 0，作为首选定位器。"""
+    if not SELF_HEAL_ENABLED:
+        return control_definition
+    override = get_self_heal_override(step_id, control_id)
+    if not override:
+        return control_definition
+    method = override.get("method", "")
+    value = override.get("value", "")
+    if not method or not value:
+        return control_definition
+    cloned = dict(control_definition) if isinstance(control_definition, dict) else {}
+    cloned["targetMethod"] = method
+    cloned["targetValue"] = value
+    return cloned
+
+
+def _maybe_report_self_heal(step_id, control_id, wrapper, controls):
+    """当命中属于降级自愈（priority>0）时，记录学习覆盖 + 写日志 + 记入本次会话。"""
+    if not SELF_HEAL_ENABLED or wrapper is None or not controls:
+        return
+    healed = detect_healed_locator(wrapper, controls[0])
+    if healed is None or healed.get("priority", 0) <= 0:
+        return
+    record_self_heal(step_id, control_id, healed["method"], healed["value"])
+    event = {
+        "stepId": step_id,
+        "controlId": control_id or "(first)",
+        "method": healed["method"],
+        "value": healed["value"],
+        "priority": healed["priority"],
+    }
+    _self_heal_session_hits.append(event)
+    _LOG_STEP(
+        f"[自愈] 控件定位已降级自愈: step={step_id}, control={control_id or '(first)'}, "
+        f"通过候选={healed['method']}={healed['value']}"
+    )
+
+
+# #endregion self-healing selector (#4)
+
+
 def _safe_get_value(getter, default=""):
     try:
         value = getter()
@@ -450,6 +591,58 @@ def get_wrapper_parent_signatures(wrapper, depth=6):
         if signature:
             signatures.append(signature)
     return signatures
+
+
+def _is_same_wrapper(left, right):
+    """判断两个 wrapper 是否指向同一控件：优先对象同一，其次 runtime_id / 矩形。"""
+    if left is right:
+        return True
+    if left is None or right is None:
+        return False
+    left_rt = _safe_get_value(lambda: getattr(left.element_info, "runtime_id", ""), "")
+    right_rt = _safe_get_value(lambda: getattr(right.element_info, "runtime_id", ""), "")
+    if left_rt and right_rt and left_rt == right_rt:
+        return True
+    left_rect = get_wrapper_rectangle(left)
+    right_rect = get_wrapper_rectangle(right)
+    if left_rect and right_rect and left_rect == right_rect:
+        return True
+    return False
+
+
+def get_wrapper_found_index(wrapper, scope_method="", scope_value=""):
+    """返回 wrapper 在其父容器直接子节点中、与指定属性同类的兄弟里的 0 基序号；未知返回 -1。
+
+    这是"父链引导"定位的核心：先由父容器界定范围，再按同级第 N 个消歧。
+    scope_method 取 control_type/class_name/name（默认 control_type）；
+    scope_value 为空时按 wrapper 自身对应属性归类。
+    """
+    if wrapper is None:
+        return -1
+    parent = _safe_get_value(lambda: wrapper.parent(), None)
+    if parent is None:
+        return -1
+    siblings = _safe_get_value(lambda: parent.children(), []) or []
+    if not siblings:
+        return -1
+
+    def scope_of(node):
+        if scope_method == "class_name":
+            return get_wrapper_class_name(node)
+        if scope_method == "name":
+            return get_wrapper_text(node)
+        return get_wrapper_control_type(node)
+
+    target_scope = normalize_match_text(scope_value) or scope_of(wrapper)
+    position = 0
+    for node in siblings:
+        node_scope = scope_of(node)
+        if target_scope and not value_matches(node_scope, target_scope):
+            continue
+        if _is_same_wrapper(node, wrapper):
+            return position
+        position += 1
+    return -1
 
 
 def get_wrapper_debug_snapshot(wrapper):
@@ -825,6 +1018,55 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
     return False, {"targetTexts": target_texts}
 
 
+def menu_select_flow(step_id, menu_path, timeout_seconds=3, window_title_hint=""):
+    """通过 pywinauto 选择菜单路径（如 'File->Open'）。
+    
+    优先按 window_title_hint 定位目标窗口；回退到前台窗口。
+    """
+    menu_path = str(menu_path or "").strip()
+    if not menu_path:
+        _LOG_STEP(f"菜单选择失败: menuPath 为空 step={step_id}")
+        return False
+    try:
+        deadline = time.time() + max(0.2, float(timeout_seconds or 0))
+        while time.time() < deadline:
+            try:
+                if window_title_hint:
+                    try:
+                        escaped = re.escape(str(window_title_hint).strip())
+                        dlg = Desktop(backend="uia").window(title_re=".*" + escaped + ".*")
+                        if dlg.exists(timeout=0.3):
+                            dlg.menu_select(menu_path)
+                            _LOG_STEP(
+                                "菜单选择成功: path={menu_path}, window={title}".format(
+                                    menu_path=menu_path,
+                                    title=get_wrapper_text(dlg),
+                                )
+                            )
+                            return True
+                    except Exception:
+                        pass
+                # 回退：前台窗口
+                fore_wrapper = _try_get_window_by_handle(get_foreground_window_handle())
+                if fore_wrapper is not None:
+                    fore_wrapper.menu_select(menu_path)
+                    _LOG_STEP(
+                        "菜单选择成功 (前台窗口): path={menu_path}, title={title}".format(
+                            menu_path=menu_path,
+                            title=get_wrapper_text(fore_wrapper),
+                        )
+                    )
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.2)
+    except Exception as exc:
+        _LOG_STEP("菜单选择异常: path={menu_path}, error={error}".format(
+            menu_path=menu_path, error=exc
+        ))
+    return False
+
+
 def value_matches(actual, expected, regex=False):
     actual_text = normalize_match_text(actual)
     expected_text = normalize_match_text(expected)
@@ -845,6 +1087,12 @@ def wrapper_matches_locator(wrapper, target_method, target_value):
         return True
     if len(methods) != len(values):
         return False
+    # found_index 依赖同一 locator 中的类型/类名/名称限定其兄弟范围（父链引导）
+    scope_method, scope_value = "", ""
+    for scope_candidate_method, scope_candidate_value in zip(methods, values):
+        if scope_candidate_method.strip() in {"control_type", "class_name", "name"}:
+            scope_method, scope_value = scope_candidate_method.strip(), scope_candidate_value
+            break
     for method, expected in zip(methods, values):
         method = method.strip()
         if method == "automation_id":
@@ -871,11 +1119,33 @@ def wrapper_matches_locator(wrapper, target_method, target_value):
         elif method == "help_text":
             if not value_matches(get_wrapper_help_text(wrapper), expected):
                 return False
+        elif method == "ui_path":
+            recorded = _parse_recorded_uipath(expected)
+            if not recorded:
+                return False
+            actual = _build_wrapper_path_signature(wrapper, depth=max(len(recorded) + 1, 8))
+            if len(recorded) > len(actual):
+                return False
+            # recorded 为根->叶顺序，actual 为叶->根顺序；对两者取"叶对齐"的尾部比对
+            for rec_seg, act_seg in zip(reversed(recorded), actual):
+                rec_name, rec_type = rec_seg
+                act_name, act_type = act_seg
+                if rec_name and act_name and rec_name != act_name:
+                    return False
+                if rec_type and act_type and rec_type != act_type:
+                    return False
         elif method == "process_id":
             if not value_matches(get_wrapper_process_id(wrapper), expected):
                 return False
         elif method == "regex":
             if not value_matches(get_wrapper_text(wrapper), expected, regex=True):
+                return False
+        elif method == "found_index":
+            try:
+                expected_index = int(str(expected).strip())
+            except (TypeError, ValueError):
+                return False
+            if get_wrapper_found_index(wrapper, scope_method, scope_value) != expected_index:
                 return False
         elif method == "template":
             return False
@@ -913,7 +1183,15 @@ def build_common_locator_candidates(control_definition):
     add_candidate("automation_id,control_type", [automation_id, control_type])
     add_candidate("automation_id", [automation_id])
 
-    if not automation_id:
+    # 完整 UIA 路径作为唯一选择器（#7）：路径深度足够时按父链硬匹配，
+    # 比仅靠 name 更稳定，可唯一确定界面上的控件（优先级高于 name 回退）。
+    ui_path = normalize_match_text(control_definition.get("uiPath", ""))
+    if ui_path and len(_parse_recorded_uipath(ui_path)) >= 2:
+        add_candidate("ui_path", [ui_path])
+
+    # name 候选始终作为低优先级自愈回退：即便控件已记录 automationId，
+    # 当其失效（如版本升级改名/改 id）时仍可借稳定的 name 找回控件。
+    if name:
         add_candidate("name,control_type", [name, control_type])
         add_candidate("name", [name])
 
@@ -921,6 +1199,18 @@ def build_common_locator_candidates(control_definition):
         add_candidate("class_name,control_type", [class_name, control_type])
         add_candidate("class_name", [class_name])
         add_candidate("framework_id,class_name,control_type", [framework_id, class_name, control_type])
+
+    # 父容器内同级序号：最低优先级回退，仅当 id/name 全部失效时才用来消歧
+    # "一排同类控件"（如列表项版本升级后 automationId 从 _5 变 _6、name 通用）。
+    try:
+        found_index_int = int(str(inspect_data.get("foundIndex", inspect_data.get("found_index", ""))).strip())
+    except (TypeError, ValueError):
+        found_index_int = -1
+    if found_index_int >= 0:
+        if control_type:
+            add_candidate("control_type,found_index", [control_type, str(found_index_int)])
+        elif allow_class_name_fallback:
+            add_candidate("class_name,found_index", [class_name, str(found_index_int)])
     return candidates
 
 
@@ -989,6 +1279,24 @@ def get_control_definition_match_score(wrapper, control_definition):
         )
         if ancestor_matched:
             score += 6
+
+    # 父容器内同级序号消歧：在 name/type 完全相同的兄弟中，只有序号命中者获加分，
+    # 使"第 N 个"从并列中胜出（弥补 ui_path/name 无法区分同类同名控件的缺口）。
+    try:
+        found_index_expected = int(str(inspect_data.get("foundIndex", inspect_data.get("found_index", ""))).strip())
+    except (TypeError, ValueError):
+        found_index_expected = -1
+    if found_index_expected >= 0:
+        control_type_scope = normalize_control_type_name(
+            inspect_data.get("controlType", ""), inspect_data.get("localizedControlType", "")
+        )
+        if control_type_scope:
+            found_scope_method, found_scope_value = "control_type", control_type_scope
+        else:
+            found_scope_method, found_scope_value = "class_name", normalize_match_text(inspect_data.get("className", ""))
+        actual_found_index = get_wrapper_found_index(wrapper, found_scope_method, found_scope_value)
+        if actual_found_index >= 0 and actual_found_index == found_index_expected:
+            score += 12
 
     expected_children = inspect_data.get("children", []) if isinstance(inspect_data.get("children", []), list) else []
     if expected_children:
@@ -1385,6 +1693,63 @@ def get_parent_hint_candidates(control_definition):
         if normalized and normalized not in candidates:
             candidates.append(normalized)
     return candidates
+
+
+# #region ui_path unique selector (#7)
+# pywinauto_recorder 录制出的完整 UIA 路径（从根到叶）本身即是一个"不依赖坐标的唯一选择器"。
+# 这里把它做成定位器里的一种硬匹配方法：沿控件父链重建实际路径，与录制路径做尾部（叶子->根）比对，
+# 命中即唯一确定控件，避免仅靠 name 在界面上命中错控件。
+
+def _strip_uipath_coords(segment_text):
+    """去掉录制路径段末尾的坐标后缀，如 '%(-12,-34)'。"""
+    text = str(segment_text or "").strip()
+    match = re.search(r'%\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)$', text)
+    if not match:
+        return text
+    return text[: match.start()].strip()
+
+
+def _split_uipath_segments_any(path_text):
+    """兼容 pywinauto_recorder 的 '->'、定位器内部的 '>' 以及 '/' 三种路径分隔符。"""
+    raw = str(path_text or "")
+    for sep in ("->", ">", "/"):
+        if sep in raw:
+            return [item.strip() for item in raw.split(sep) if item.strip()]
+    return [raw.strip()] if raw.strip() else []
+
+
+def _parse_recorded_uipath(uipath):
+    """把录制路径解析为 [(name, control_type), ...] 列表（叶子在前）。"""
+    segments = []
+    for part in _split_uipath_segments_any(uipath):
+        part = _strip_uipath_coords(part)
+        if not part:
+            continue
+        if "||" in part:
+            name, control_type = part.rsplit("||", 1)
+        else:
+            name, control_type = part, ""
+        name = normalize_match_text(name)
+        control_type = normalize_match_text(control_type)
+        segments.append((name, control_type))
+    return segments
+
+
+def _build_wrapper_path_signature(wrapper, depth=8):
+    """从叶子控件向上重建实际 UIA 路径签名 [(name, control_type), ...]（叶子在前）。"""
+    segments = []
+    current = wrapper
+    for _ in range(depth):
+        if current is None:
+            break
+        name = get_wrapper_text(current)
+        control_type = get_wrapper_control_type(current)
+        segments.append((normalize_match_text(name), normalize_match_text(control_type)))
+        current = _safe_get_value(lambda: current.parent(), None)
+    return segments
+
+
+# #endregion ui_path unique selector (#7)
 
 
 def cache_parent_wrapper(window, parent_wrapper):
@@ -3126,7 +3491,8 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
             best_match = None
             best_score = -1
             windows = []
-            for control_definition in controls:
+            for raw_control_definition in controls:
+                control_definition = _apply_self_heal_override(step_id, control_id, raw_control_definition)
                 cached_wrapper = get_cached_flow_control(step_id, control_definition, window_title_hint=window_title_hint)
                 if cached_wrapper is not None:
                     if str(step_id).strip() == "step_2" and get_wrapper_is_offscreen(cached_wrapper) == "True":
@@ -3200,6 +3566,7 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
             if best_match is not None:
                 for control_definition in controls:
                     cache_flow_control(step_id, control_definition, best_match, window_title_hint=window_title_hint)
+                _maybe_report_self_heal(step_id, control_id, best_match, controls)
                 elapsed = time.time() - search_started
                 if elapsed >= 0.8:
                     _LOG_STEP(
@@ -3260,6 +3627,58 @@ def wait_for_flow_control_condition(
             raise ValueError(f"不支持的 wait_for_control condition: {condition}")
         time.sleep(max(0.1, float(poll_interval_seconds)))
     return False
+
+
+def click_relative_anchor(
+    step_id,
+    anchor_control_id,
+    offset=(0, 0),
+    timeout_seconds=3,
+    window_title_hint="",
+    click_kind="single",
+):
+    """锚点相对点击：先定位锚点控件(anchor_control_id)，再以其可见矩形中心为基准，
+    按像素偏移 offset=(offset_x, offset_y) 点击。
+
+    相比 click_relative_region（锚定到父窗口固定区域），本动作锚定到真实控件中心，
+    对窗口布局/分辨率缩放漂移更鲁棒；适合目标点本身拿不到控件、但附近有稳定锚点控件的场景。
+    """
+    offset_x = int(round(float(offset[0]) if len(offset) > 0 else 0))
+    offset_y = int(round(float(offset[1]) if len(offset) > 1 else 0))
+
+    anchor = find_flow_control(
+        step_id,
+        control_id=anchor_control_id,
+        timeout_seconds=timeout_seconds,
+        window_title_hint=window_title_hint,
+    )
+    if anchor is None:
+        _LOG_STEP(f"锚点相对点击未命中锚点控件: step={step_id}, anchor={anchor_control_id}")
+        return False, {"reason": "anchor_not_found", "anchorControlId": anchor_control_id}
+
+    rect = anchor.rectangle()
+    cx = int((rect.left + rect.right) // 2)
+    cy = int((rect.top + rect.bottom) // 2)
+    px = cx + offset_x
+    py = cy + offset_y
+
+    click_kind = str(click_kind or "single").strip().lower()
+    if click_kind == "double":
+        pyautogui.doubleClick(px, py)
+    else:
+        pyautogui.click(px, py)
+
+    _LOG_STEP(
+        f"已通过锚点相对点击: anchor={anchor_control_id}, center=({cx},{cy}), "
+        f"offset=({offset_x},{offset_y}), click=({px},{py}), kind={click_kind}"
+    )
+    return True, {
+        "anchorControlId": anchor_control_id,
+        "anchorCenter": {"x": cx, "y": cy},
+        "offset": {"x": offset_x, "y": offset_y},
+        "clickPoint": {"x": px, "y": py},
+        "clickKind": click_kind,
+    }
 
 
 def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint="", click_kind="left"):

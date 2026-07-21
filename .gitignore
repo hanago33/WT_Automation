@@ -18,6 +18,10 @@ env/
 launcher_state.json
 flow_editor_startup.signal
 *.local
+workspace/
+
+# Agent 会话历史
+WT_AUTOMATION_Agent/history/
 
 # Logs and generated reports
 *.log

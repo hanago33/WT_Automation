@@ -12,6 +12,8 @@ ACTION_DEFAULT_CONFIGS = {
     "mouse_wheel": {"timeoutSeconds": 2.0, "waitBefore": 0.0, "waitAfter": 0.12},
     "wait_for_control": {"timeoutSeconds": 8.0, "waitBefore": 0.0, "waitAfter": 0.0},
     "sleep": {"timeoutSeconds": 0.0, "waitBefore": 0.0, "waitAfter": 0.0},
+    "menu_select": {"timeoutSeconds": 3.0, "waitBefore": 0.1, "waitAfter": 0.18},
+    "set_combobox": {"timeoutSeconds": 3.0, "waitBefore": 0.1, "waitAfter": 0.18},
 }
 
 

@@ -8,20 +8,30 @@ import re
 import sys
 import tkinter as tk
 import time
+
+# 强制 COM 初始化为 MTA 模式 (Multi-Threaded Apartment)
+# 这是 pywinauto 社区推荐的 UIA 后端核心性能优化，能大幅提升跨进程 COM 调用的速度。
+# 必须在导入 pywinauto 或 comtypes 之前设置。
+sys.coinit_flags = 0
+
 from ctypes import wintypes
 from datetime import datetime
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
+import wt_flow_editor_utils
+
 try:
     from pywinauto import Desktop
+    import pywinauto
 except Exception:
     Desktop = None
+    pywinauto = None
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONTROL_MAP_DIR = os.path.join(BASE_DIR, "control_maps")
 DEFAULT_BACKEND = "smart"
-DEFAULT_MAX_DEPTH = 6
+DEFAULT_MAX_DEPTH = 10
 DEFAULT_PICK_DELAY_SECONDS = 3
 BACKEND_OPTIONS = ["smart", "uia", "win32"]
 
@@ -41,13 +51,7 @@ def ensure_directory(path):
 
 
 def slugify_filename(text, fallback="window"):
-    text = str(text or "").strip()
-    if not text:
-        return fallback
-    text = re.sub(r"[\\/:*?\"<>|]+", "_", text)
-    text = re.sub(r"\s+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("._")
-    return text[:80] or fallback
+    return wt_flow_editor_utils.slugify_filename(text, fallback)
 
 
 def normalize_control_type_name(control_type, localized_control_type=""):
@@ -60,12 +64,15 @@ def normalize_control_type_name(control_type, localized_control_type=""):
     return control_type or str(localized_control_type or "").strip()
 
 
-def build_locator_recommendation(parsed):
+def build_locator_recommendation(parsed, index=-1, ui_path=None):
     automation_id = str(parsed.get("automationId", "")).strip()
     name = str(parsed.get("name", "")).strip()
     class_name = str(parsed.get("className", "")).strip()
     handle = str(parsed.get("nativeWindowHandle", "")).strip()
     control_type = normalize_control_type_name(parsed.get("controlType", ""), parsed.get("localizedControlType", ""))
+
+    # 尝试将 Value/ToggleState 作为补充定位特征（如果存在的话）
+    value = str(parsed.get("value", "")).strip()
 
     # 过滤掉 SVG path 几何数据、超长乱码等无效 name
     if name and (_is_garbage_name(name) or len(name) > 80):
@@ -83,9 +90,20 @@ def build_locator_recommendation(parsed):
         ("control_type", [control_type], 42, "control_type"),
         ("handle", [handle], 24, "handle"),
     ]
+    
     for method, values, score, reason in candidates:
         if all(str(item).strip() and str(item).strip() != "[null]" for item in values):
             return method, ",".join(values), score, reason
+            
+    # 结构化兜底：优先用层级 uiPath（运行时已支持，比 found_index 更稳），
+    # 其次才退回 found_index；都没有则放弃（标记为 no_stable_locator）。
+    if ui_path:
+        return "ui_path", ui_path, 12, "结构化兜底: ui_path"
+    if control_type and index >= 0:
+        return "control_type,found_index", f"{control_type},{index}", 10, "结构化兜底: control_type + found_index"
+    if class_name and index >= 0:
+        return "class_name,found_index", f"{class_name},{index}", 8, "结构化兜底: class_name + found_index"
+
     return "", "", 0, "no_stable_locator"
 
 
@@ -94,11 +112,17 @@ def _is_garbage_name(name):
     if not name:
         return False
     name = str(name).strip()
+    # 纯特殊字符
+    if re.match(r"^[^a-zA-Z0-9\u4e00-\u9fa5]+$", name):
+        return True
     # SVG path 数据特征：以 M/L/C/A/H/V/Z 开头并包含大量数字和逗号
     if re.match(r"^[MLCAHVZmlcahvz][\d.,\s\-]+", name) and name.count(",") >= 3:
         return True
     # 纯坐标序列
-    if re.match(r"^[\d.,\s]+$", name) and len(name) > 10:
+    if re.match(r"^[\d.,\s\-]+$", name) and len(name) > 10:
+        return True
+    # Base64 编码特征
+    if len(name) > 40 and re.match(r"^[A-Za-z0-9+/=]+$", name):
         return True
     return False
 
@@ -545,6 +569,8 @@ def _build_path_segments_from_wrapper(wrapper, root_handle=""):
 
 def _extract_wrapper_info(wrapper, depth, index, path_segments, target_window):
     element_info = _safe_get_value(lambda: wrapper.element_info, None)
+    if element_info is not None:
+        _safe_get_value(lambda: element_info.set_cache_strategy("basic"), None)
     name = str(_safe_get_value(lambda: wrapper.window_text(), "")).strip()
     if element_info is not None and not name:
         name = str(_safe_get_value(lambda: getattr(element_info, "name", ""), "")).strip()
@@ -570,12 +596,25 @@ def _extract_wrapper_info(wrapper, depth, index, path_segments, target_window):
         is_offscreen = str(not bool(is_visible))
     keyboard_focusable = _safe_get_value(lambda: getattr(element_info, "keyboard_focusable", ""), "")
     has_keyboard_focus = _safe_get_value(lambda: getattr(element_info, "has_keyboard_focus", ""), "")
+    
+    # 尝试获取 ValuePattern (对于没有 name 但有内容的文本框极其重要)
+    value_pattern_value = ""
+    if hasattr(wrapper, "get_value"):
+        value_pattern_value = str(_safe_get_value(lambda: wrapper.get_value(), "")).strip()
+    
+    # 尝试获取 TogglePattern (对于复选框/单选框的状态采集)
+    toggle_state = ""
+    if hasattr(wrapper, "get_toggle_state"):
+        toggle_state = str(_safe_get_value(lambda: wrapper.get_toggle_state(), "")).strip()
+
     legacy_name = str(_safe_get_value(lambda: getattr(element_info, "legacy_name", ""), "")).strip()
     legacy_role = str(_safe_get_value(lambda: getattr(element_info, "legacy_role", ""), "")).strip()
     legacy_state = str(_safe_get_value(lambda: getattr(element_info, "legacy_state", ""), "")).strip()
 
     inspect_data = {
         "name": name,
+        "value": value_pattern_value,
+        "toggleState": toggle_state,
         "controlType": control_type,
         "localizedControlType": localized_control_type,
         "boundingRectangle": bounding_rectangle,
@@ -598,7 +637,9 @@ def _extract_wrapper_info(wrapper, depth, index, path_segments, target_window):
         "ancestors": list(path_segments[:-1]),
         "children": [],
     }
-    locator_method, locator_value, locator_score, locator_reason = build_locator_recommendation(inspect_data)
+    full_ui_path = " > ".join(item for item in path_segments if item)
+    locator_method, locator_value, locator_score, locator_reason = build_locator_recommendation(
+        inspect_data, index=index, ui_path=full_ui_path)
     inspect_data["recommendedTargetMethod"] = locator_method
     inspect_data["recommendedTargetValue"] = locator_value
 
@@ -621,6 +662,8 @@ def _extract_wrapper_info(wrapper, depth, index, path_segments, target_window):
         "automationId": automation_id,
         "frameworkId": framework_id,
         "runtimeId": runtime_id,
+        "value": value_pattern_value,
+        "toggleState": toggle_state,
         "boundingRectangle": bounding_rectangle,
         "boundingBox": _rect_to_dict(rect),
         "isEnabled": bool(is_enabled) if str(is_enabled) != "" else None,
@@ -659,7 +702,27 @@ def _append_wrapper_info(flat_controls, seen_identities, wrapper, target_window,
     return True
 
 
-def _walk_wrapper(wrapper, depth, max_depth, target_window, flat_controls, siblings_index=1, path_segments=None, parent_index=-1):
+def _walk_wrapper(
+    wrapper,
+    depth,
+    max_depth,
+    target_window,
+    flat_controls,
+    siblings_index=1,
+    path_segments=None,
+    parent_index=-1,
+    start_time=None,
+    scan_timeout_seconds=30,
+    status_callback=None,
+):
+    if start_time is None:
+        start_time = time.time()
+
+    if time.time() - start_time > scan_timeout_seconds:
+        if status_callback:
+            status_callback("扫描超时，已停止遍历。", len(flat_controls))
+        return None
+
     path_segments = list(path_segments or [])
     info = _extract_wrapper_info(wrapper, depth, len(flat_controls) + 1, path_segments, target_window)
     info["treeLevel"] = depth
@@ -670,11 +733,19 @@ def _walk_wrapper(wrapper, depth, max_depth, target_window, flat_controls, sibli
     node["children"] = []
     flat_controls.append(info)
 
+    if status_callback and len(flat_controls) % 20 == 0:
+        status_callback(f"已收集 {len(flat_controls)} 个控件...", len(flat_controls))
+
     if depth >= max_depth:
         return node
 
     children = _safe_get_value(lambda: wrapper.children(), [])
     for child_index, child in enumerate(children, start=1):
+        if time.time() - start_time > scan_timeout_seconds:
+            if status_callback:
+                status_callback("扫描超时，已停止遍历。", len(flat_controls))
+            break
+
         child_display_name = _build_display_name(
             {
                 "name": str(_safe_get_value(lambda: child.window_text(), "")).strip(),
@@ -687,19 +758,21 @@ def _walk_wrapper(wrapper, depth, max_depth, target_window, flat_controls, sibli
             child_index,
         )
         child_path = path_segments + [child_display_name]
-        node["children"].append(
-            _walk_wrapper(
-                child,
-                depth + 1,
-                max_depth,
-                target_window,
-                flat_controls,
-                siblings_index=child_index,
-                path_segments=child_path,
-                parent_index=current_index,
-            )
+        child_node = _walk_wrapper(
+            child,
+            depth + 1,
+            max_depth,
+            target_window,
+            flat_controls,
+            siblings_index=child_index,
+            path_segments=child_path,
+            parent_index=current_index,
+            start_time=start_time,
+            scan_timeout_seconds=scan_timeout_seconds,
+            status_callback=status_callback,
         )
-
+        if child_node is not None:
+            node["children"].append(child_node)
     node["inspectData"]["children"] = [
         f"{child.get('displayName', '')} | {child.get('className', '')} | {child.get('controlType', '')}".strip(" |")
         for child in node["children"][:12]
@@ -707,17 +780,7 @@ def _walk_wrapper(wrapper, depth, max_depth, target_window, flat_controls, sibli
     return node
 
 
-def _collect_descendant_wrappers(wrapper, target_window, flat_controls, seen_identities, root_handle="", max_depth=DEFAULT_MAX_DEPTH):
-    descendants = _safe_get_value(lambda: wrapper.descendants(), [])
-    for candidate in descendants:
-        _append_wrapper_info(
-            flat_controls,
-            seen_identities,
-            candidate,
-            target_window,
-            root_handle=root_handle,
-            max_depth=max_depth,
-        )
+
 
 
 def _generate_probe_points(region_rect):
@@ -990,8 +1053,25 @@ def _scan_single_backend_payload(
     excluded_titles=None,
     exclude_offscreen=True,
     exclude_unidentified_containers=True,
+    scan_timeout_seconds=30,
+    status_callback=None,
 ):
+    start_time = time.time()
+    if status_callback:
+        status_callback("开始扫描...", 0)
+    
     backend = str(backend or "uia").strip().lower() or "uia"
+
+    # UIA 性能优化：启用 RawViewWalker。
+    # 默认的 ControlViewWalker 会在底层过滤掉很多非控件元素，这需要额外的 COM 计算时间。
+    # 启用 RawViewWalker 会获取所有元素（速度极快），然后我们依赖后期的 _filter_noise_controls 在 Python 内存中过滤。
+    if backend == "uia" and pywinauto:
+        try:
+            import pywinauto.windows.uia_element_info as uia_info
+            uia_info.UIAElementInfo.use_raw_view_walker = True
+        except Exception:
+            pass
+
     max_depth = max(0, int(max_depth))
     if use_foreground:
         target_window_wrapper = _get_foreground_wrapper(
@@ -1026,16 +1106,11 @@ def _scan_single_backend_payload(
         target_window=target_window,
         flat_controls=flat_controls,
         path_segments=[root_display_name],
+        start_time=start_time,
+        scan_timeout_seconds=scan_timeout_seconds,
+        status_callback=status_callback,
     )
     seen_identities = {_build_flat_control_identity(item) for item in flat_controls}
-    _collect_descendant_wrappers(
-        target_window_wrapper,
-        target_window,
-        flat_controls,
-        seen_identities,
-        root_handle=root_handle,
-        max_depth=max_depth,
-    )
     _collect_region_probe_wrappers(
         backend,
         region_rect,
@@ -1063,6 +1138,9 @@ def _scan_single_backend_payload(
         control_type = str(item.get("controlType", "")).strip() or "Unknown"
         by_type[control_type] = by_type.get(control_type, 0) + 1
 
+    if status_callback:
+        status_callback("扫描完成。", len(flat_controls))
+
     return {
         "schemaVersion": "1.0",
         "scanMeta": {
@@ -1071,6 +1149,7 @@ def _scan_single_backend_payload(
             "mode": "foreground" if use_foreground else "keyword",
             "windowKeyword": str(window_keyword or "").strip(),
             "maxDepth": max_depth,
+            "scanTimeoutSeconds": scan_timeout_seconds,
             "totalControls": len(region_controls),
             "rawTotalControls": len(flat_controls),
             "regionRect": _normalize_rect_dict(region_rect),
@@ -1093,6 +1172,8 @@ def build_control_map_payload(
     excluded_titles=None,
     exclude_offscreen=True,
     exclude_unidentified_containers=True,
+    scan_timeout_seconds=30,
+    status_callback=None,
 ):
     requested_backend = str(backend or DEFAULT_BACKEND).strip().lower() or DEFAULT_BACKEND
     backend_candidates = _expand_backend_candidates(requested_backend)
@@ -1109,6 +1190,8 @@ def build_control_map_payload(
                 excluded_titles=excluded_titles,
                 exclude_offscreen=exclude_offscreen,
                 exclude_unidentified_containers=exclude_unidentified_containers,
+                scan_timeout_seconds=scan_timeout_seconds,
+                status_callback=status_callback,
             )
         )
 
@@ -1131,6 +1214,8 @@ def build_control_map_payload(
                         region_rect=region_rect,
                         excluded_process_ids=excluded_process_ids,
                         excluded_titles=excluded_titles,
+                        scan_timeout_seconds=scan_timeout_seconds,
+                        status_callback=status_callback,
                     )
                 )
             except Exception:
@@ -1185,11 +1270,12 @@ def build_control_map_payload(
 
 
 def save_control_map_payload(payload, output_path=""):
-    ensure_directory(CONTROL_MAP_DIR)
+    recordings_dir = os.path.join(CONTROL_MAP_DIR, "recordings")
+    ensure_directory(recordings_dir)
     if not output_path:
         title = ((payload.get("targetWindow", {}) or {}).get("title", "") or "window").strip()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = os.path.join(CONTROL_MAP_DIR, f"{timestamp}_{slugify_filename(title)}_control_map.json")
+        output_path = os.path.join(recordings_dir, f"{timestamp}_{slugify_filename(title)}_control_map.json")
     with open(output_path, "w", encoding="utf-8") as file_obj:
         json.dump(payload, file_obj, ensure_ascii=False, indent=2)
     return output_path
@@ -1284,7 +1370,7 @@ class ControlMapBuilderApp:
         self.var_pick_delay = tk.IntVar(value=DEFAULT_PICK_DELAY_SECONDS)
         self.var_exclude_offscreen = tk.BooleanVar(value=True)
         self.var_exclude_unidentified = tk.BooleanVar(value=True)
-        self.var_status = tk.StringVar(value="准备就绪：建议先切到目标软件窗口，再点击“扫描并保存”。")
+        self.var_status = tk.StringVar(value="准备就绪：建议先切到目标软件窗口，再点击“一键整树采集并保存”。")
         self.var_summary = tk.StringVar(value="尚未扫描控件树。")
         self.current_payload = None
         self.current_output_path = ""
@@ -1293,6 +1379,7 @@ class ControlMapBuilderApp:
         self.control_groups = []
         self.var_saved_control_name = tk.StringVar(value="")
         self.var_saved_control_id = tk.StringVar(value="")
+        self.var_scan_progress = tk.StringVar(value="")
 
         self._build_ui()
 
@@ -1320,8 +1407,8 @@ class ControlMapBuilderApp:
 
         button_row = tk.Frame(toolbar)
         button_row.grid(row=1, column=0, columnspan=10, sticky="ew", pady=(10, 0))
-        tk.Button(button_row, text="扫描并保存", command=self.cmd_scan_and_save, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="仅扫描预览", command=self.cmd_scan_preview).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row, text="一键整树采集并保存", command=self.cmd_scan_and_save, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row, text="整树采集预览", command=self.cmd_scan_preview).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row, text="画框区域采集并保存", command=self.cmd_region_scan_and_save, bg="#bfdbfe").pack(side=tk.LEFT, padx=3)
         tk.Button(button_row, text="画框区域预览", command=self.cmd_region_scan_preview, bg="#bfdbfe").pack(side=tk.LEFT, padx=3)
         tk.Button(button_row, text="智能勾选", command=self.cmd_smart_check_results).pack(side=tk.LEFT, padx=3)
@@ -1331,6 +1418,7 @@ class ControlMapBuilderApp:
         tk.Button(button_row, text="打开控件库目录", command=self.cmd_open_control_map_dir).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row, text="复制所选定位", command=self.cmd_copy_selected_locator).pack(side=tk.LEFT, padx=3)
         tk.Label(button_row, textvariable=self.var_status, fg="#555555").pack(side=tk.RIGHT)
+        tk.Label(button_row, textvariable=self.var_scan_progress, fg="#22c55e").pack(side=tk.RIGHT, padx=(10, 0))
 
         summary = tk.LabelFrame(self.root, text="扫描概览", padx=10, pady=10)
         summary.pack(fill=tk.X, padx=10)
@@ -1489,6 +1577,7 @@ class ControlMapBuilderApp:
         args = self._resolve_scan_args()
         args.update(self._get_excluded_scan_context())
         args["region_rect"] = region_rect
+        args["status_callback"] = self._update_scan_progress
         try:
             payload = build_control_map_payload(**args)
         except Exception as exc:
@@ -1766,11 +1855,16 @@ class ControlMapBuilderApp:
             self.root.focus_force()
             self.var_status.set("已取消区域采集。")
             return
+        self._update_scan_progress("开始区域扫描", 0)
         time.sleep(0.2)
         self._run_scan(auto_save=auto_save, region_rect=rect)
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
+
+    def _update_scan_progress(self, message, count):
+        self.var_scan_progress.set(f"{message} (已采集 {count} 个)")
+        self.root.update_idletasks()
 
     def cmd_region_scan_and_save(self):
         self._start_region_pick(auto_save=True)
@@ -1892,7 +1986,7 @@ class ControlMapBuilderApp:
         if not isinstance(self.current_payload, dict):
             messagebox.showinfo("提示", "请先完成一次扫描。")
             return
-        initial_dir = CONTROL_MAP_DIR if os.path.exists(CONTROL_MAP_DIR) else BASE_DIR
+        initial_dir = os.path.join(CONTROL_MAP_DIR, "recordings") if os.path.exists(os.path.join(CONTROL_MAP_DIR, "recordings")) else BASE_DIR
         target_window = self.current_payload.get("targetWindow", {}) or {}
         default_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{slugify_filename(target_window.get('title', 'window'))}_control_map.json"
         output_path = filedialog.asksaveasfilename(
