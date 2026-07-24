@@ -893,6 +893,22 @@ def iter_dropdown_runtime_candidates():
         windows = Desktop(backend="uia").windows()
     except Exception:
         windows = []
+    # 补上 Desktop.windows() 默认过滤漏掉的 WPF Popup 等未过滤顶层窗口。
+    try:
+        desktop = Desktop(backend="uia")
+        raw_children = desktop.element_info.children() if hasattr(desktop.element_info, "children") else []
+        for child_info in raw_children or []:
+            try:
+                from pywinauto.controls.uiawrapper import UIAWrapper
+                win = UIAWrapper(child_info)
+                handle = get_wrapper_handle(win)
+                if handle and any(get_wrapper_handle(w) == handle for w in windows):
+                    continue
+                windows.append(win)
+            except Exception:
+                pass
+    except Exception:
+        pass
     seen = set()
     for window in windows:
         if is_automation_window(window):
@@ -927,7 +943,7 @@ def click_dropdown_runtime_candidate(wrapper):
     return False, {}
 
 
-def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_title_hint=""):
+def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_title_hint="", target_option=""):
     step_definition = _GET_STEP_DEFINITION(step_id)
     control_definition = get_flow_control_definition(step_id, control_id)
     if not control_definition:
@@ -936,6 +952,12 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
     foreground_before = _try_get_window_by_handle(get_foreground_window_handle())
     expected_process_id = get_wrapper_process_id(foreground_before)
     target_texts = get_dropdown_runtime_target_texts(control_definition)
+    # 如果调用方指定了目标选项文本（如 "组"），优先使用，并补充到候选文本中。
+    explicit_target = str(target_option or "").strip()
+    if explicit_target:
+        normalized = normalize_match_text(explicit_target)
+        if normalized and normalized not in target_texts:
+            target_texts = [normalized] + target_texts
     expected_window_titles = get_dropdown_runtime_expected_window_titles(
         step_definition,
         control_definition,
@@ -947,10 +969,26 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
             expected_window_titles = [foreground_title]
     deadline = time.time() + max(0.2, float(timeout_seconds or 0))
 
+    # 提前检测 optionValues：若控件定义已包含可选项列表（如 MTD PART_DropDownButton），
+    # 说明选项依赖 WPF 虚拟化渲染，UIA 弹窗枚举几乎不可能命中。此时将弹窗搜索
+    # 预算缩短到 1.5 秒（做一次快速确认），尽快进入键盘导航兜底。
+    pre_option_values = []
+    inspect_data = control_definition.get("inspectData", {}) or {}
+    if isinstance(inspect_data, dict):
+        pre_option_values = [str(v).strip() for v in (inspect_data.get("optionValues", []) or []) if str(v).strip()]
+    if not pre_option_values and isinstance(control_definition, dict):
+        pre_option_values = [str(v).strip() for v in (control_definition.get("optionValues", []) or []) if str(v).strip()]
+    if pre_option_values:
+        deadline = min(deadline, time.time() + 1.5)
+
     last_ranked_candidates = []
     while time.time() < deadline:
         ranked_candidates = []
         for candidate in iter_dropdown_runtime_candidates():
+            # 内层超时退出：枚举所有桌面窗口及其 UIA 子树可能很慢（>3 秒），
+            # 若已过截止时间则提前中断，不浪费在 WPF 虚拟化选项不可能命中的遍历上。
+            if time.time() > deadline:
+                break
             score = score_dropdown_runtime_candidate(
                 candidate,
                 target_texts,
@@ -983,6 +1021,60 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                     "bestCandidate": best_candidate_snapshot,
                 }
         time.sleep(0.15)
+
+    # ---- 键盘导航兜底 ----
+    # 虚拟化下拉列表（如 MTD PART_DropDownButton）的选项在弹出窗口枚举和
+    # 子树遍历中均不可见，仅当鼠标悬停时才实体化。若枚举阶段未命中，尝试用
+    # 键盘方向键导航定位目标选项。
+    option_values = []
+    inspect_data = control_definition.get("inspectData", {}) or {}
+    if isinstance(inspect_data, dict):
+        option_values = [str(v).strip() for v in (inspect_data.get("optionValues", []) or []) if str(v).strip()]
+    if not option_values and isinstance(control_definition, dict):
+        option_values = [str(v).strip() for v in (control_definition.get("optionValues", []) or []) if str(v).strip()]
+    if option_values:
+        # 在 optionValues 中查找目标文本的索引（精确或包含匹配）。
+        target_index = -1
+        search_texts = [explicit_target] if explicit_target else target_texts
+        for search in search_texts:
+            if not search:
+                continue
+            normalized_search = normalize_match_text(search).lower()
+            for idx, opt in enumerate(option_values):
+                if normalize_match_text(opt).lower() == normalized_search:
+                    target_index = idx
+                    break
+            if target_index < 0:
+                for idx, opt in enumerate(option_values):
+                    if normalized_search in normalize_match_text(opt).lower():
+                        target_index = idx
+                        break
+            if target_index >= 0:
+                break
+        if target_index >= 0:
+            for _ in range(target_index):
+                send_keys("{DOWN}")
+                time.sleep(0.06)
+            send_keys("{ENTER}")
+            time.sleep(0.15)
+            _LOG_STEP(
+                "键盘导航选中下拉项: step={step_id}, control={control_id}, option={option}, index={idx}, totalOptions={total}".format(
+                    step_id=step_id,
+                    control_id=control_id,
+                    option=option_values[target_index],
+                    idx=target_index,
+                    total=len(option_values),
+                )
+            )
+            return True, {
+                "method": "keyboard_navigate",
+                "targetIndex": target_index,
+                "targetOption": option_values[target_index],
+                "optionValues": option_values,
+                "targetTexts": target_texts,
+            }
+    # ---- 键盘导航兜底结束 ----
+
     if last_ranked_candidates:
         candidate_text = "; ".join(
             "#{index} score={score} title={title} class={class_name} control={control_type} rect={rect}".format(
@@ -3920,8 +4012,82 @@ def focus_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
             return False
 
 
+_EDITABLE_CONTROL_TYPES = {"edit", "combobox", "spinner", "document"}
+
+
+def _is_editable_control_type(control_type):
+    return str(control_type or "").strip().lower() in _EDITABLE_CONTROL_TYPES
+
+
+def _find_editable_descendant(wrapper, max_depth=4):
+    """在 wrapper 后代中广度优先查找第一个可输入控件（Edit/ComboBox 等）。"""
+    frontier = _safe_get_value(lambda: wrapper.children(), []) or []
+    depth = 0
+    while frontier and depth < max_depth:
+        next_frontier = []
+        for node in frontier:
+            if _is_editable_control_type(get_wrapper_control_type(node)):
+                return node
+            next_frontier.extend(_safe_get_value(lambda: node.children(), []) or [])
+        frontier = next_frontier
+        depth += 1
+    return None
+
+
+def _find_editable_sibling(wrapper):
+    """当 wrapper 是标签时，在其父容器的兄弟里查找同行、位于右侧且最近的可输入控件。"""
+    parent = _safe_get_value(lambda: wrapper.parent(), None)
+    if parent is None:
+        return None
+    base_rect = get_wrapper_rectangle(wrapper)
+    if not base_rect:
+        return None
+    siblings = _safe_get_value(lambda: parent.children(), []) or []
+    candidates = []
+    for sib in siblings:
+        if _is_same_wrapper(sib, wrapper):
+            continue
+        if not _is_editable_control_type(get_wrapper_control_type(sib)):
+            continue
+        sib_rect = get_wrapper_rectangle(sib)
+        if not sib_rect:
+            continue
+        # 垂直方向需有重叠（视为同一行）
+        if sib_rect["bottom"] <= base_rect["top"] or sib_rect["top"] >= base_rect["bottom"]:
+            continue
+        # 允许输入框在标签右侧，或与标签基本对齐（容忍 30px 抖动）
+        if sib_rect["left"] < base_rect["left"] - 30:
+            continue
+        distance = sib_rect["left"] - base_rect["right"]
+        candidates.append((abs(distance), sib))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda pair: pair[0])
+    return candidates[0][1]
+
+
+def _resolve_editable_target(control):
+    """将命中的非输入控件（常见为标签 Text）解析到真正可输入的控件。
+
+    先向下钻取后代中的可输入控件，再回退到同行相邻的可输入兄弟；
+    找不到时返回 None，由调用方保持原控件不变（不影响既有正常路径）。
+    """
+    if control is None:
+        return None
+    descendant = _find_editable_descendant(control)
+    if descendant is not None:
+        return descendant
+    return _find_editable_sibling(control)
+
+
 def type_text_into_wrapper(control, text):
     text = str(text or "")
+    # 命中的若是标签等非输入控件，先尝试解析到真正可输入的邻近控件（执行侧兜底）；
+    # 若控件本身已是 Edit/ComboBox 等可输入类型，则保持原行为，不做任何额外遍历。
+    if not _is_editable_control_type(get_wrapper_control_type(control)):
+        editable = _resolve_editable_target(control)
+        if editable is not None:
+            control = editable
     input_method = ""
     try:
         control.click_input()

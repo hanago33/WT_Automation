@@ -49,6 +49,14 @@ def load_all(input_dir):
     return recs
 
 
+def _is_non_empty_dict(d):
+    return isinstance(d, dict) and len(d) > 0
+
+
+def _is_non_empty_list(lst):
+    return isinstance(lst, list) and len(lst) > 0
+
+
 def normalize_control(c, fwin, ffw, src):
     ins = c.get("inspectData", {}) or {}
     name = str(c.get("name", "") or ins.get("name", "")).strip()
@@ -63,6 +71,15 @@ def normalize_control(c, fwin, ffw, src):
     class_name = str(ins.get("className", "") or c.get("className", "")).strip()
     target_method = str(c.get("targetMethod", "")).strip()
     target_value = str(c.get("targetValue", "")).strip()
+    # 保留 inspectData（含 optionValues / dropdownValueText 等运行时依赖字段）
+    inspect_data = dict(ins) if _is_non_empty_dict(ins) else {}
+    # 保留来自采集端的丰富元数据
+    suggested_control_name = str(c.get("suggestedControlName", "")).strip()
+    display_name = str(c.get("displayName", "")).strip()
+    related_label_name = str(c.get("relatedLabelName", "")).strip()
+    # 顶层 optionValues（采集器放在 control 级别，不在 inspectData 里）
+    option_values = list(c.get("optionValues", []) or [])
+    dropdown_value_text = str(c.get("dropdownValueText", "")).strip()
     return {
         "name": name,
         "automationId": automation_id,
@@ -72,6 +89,12 @@ def normalize_control(c, fwin, ffw, src):
         "className": class_name,
         "targetMethod": target_method,
         "targetValue": target_value,
+        "inspectData": inspect_data,
+        "suggestedControlName": suggested_control_name,
+        "displayName": display_name,
+        "relatedLabelName": related_label_name,
+        "optionValues": option_values,
+        "dropdownValueText": dropdown_value_text,
         "source": src,
     }
 
@@ -117,6 +140,12 @@ def merge(input_dir):
                 "frameworkId": rec["frameworkId"],
                 "targetMethod": rec["targetMethod"],
                 "targetValue": rec["targetValue"],
+                "inspectData": rec.get("inspectData", {}),
+                "displayName": rec.get("displayName", ""),
+                "suggestedControlName": rec.get("suggestedControlName", ""),
+                "relatedLabelName": rec.get("relatedLabelName", ""),
+                "optionValues": rec.get("optionValues", []),
+                "dropdownValueText": rec.get("dropdownValueText", ""),
                 "authority": auth,
                 "occurrences": 0,
                 "sources": set(),
@@ -134,6 +163,33 @@ def merge(input_dir):
             item["targetValue"] = rec["targetValue"]
             item["name"] = rec["name"] or item["name"]
             item["needsReview"] = auth in ("low", "unknown")
+            # 高权威来源的 inspectData 等元数据优先
+            if _is_non_empty_dict(rec.get("inspectData", {})):
+                item["inspectData"] = rec["inspectData"]
+            if rec.get("displayName", "").strip():
+                item["displayName"] = rec["displayName"]
+            if rec.get("suggestedControlName", "").strip():
+                item["suggestedControlName"] = rec["suggestedControlName"]
+            if rec.get("relatedLabelName", "").strip():
+                item["relatedLabelName"] = rec["relatedLabelName"]
+            if _is_non_empty_list(rec.get("optionValues", [])):
+                item["optionValues"] = rec["optionValues"]
+            if rec.get("dropdownValueText", "").strip():
+                item["dropdownValueText"] = rec["dropdownValueText"]
+        # 即使权威度不高，optionValues/displayName 等信息也应保留（不会覆盖已有的非空值）
+        else:
+            if _is_non_empty_dict(rec.get("inspectData", {})) and not _is_non_empty_dict(item.get("inspectData", {})):
+                item["inspectData"] = rec["inspectData"]
+            if rec.get("displayName", "").strip() and not item.get("displayName", "").strip():
+                item["displayName"] = rec["displayName"]
+            if rec.get("suggestedControlName", "").strip() and not item.get("suggestedControlName", "").strip():
+                item["suggestedControlName"] = rec["suggestedControlName"]
+            if rec.get("relatedLabelName", "").strip() and not item.get("relatedLabelName", "").strip():
+                item["relatedLabelName"] = rec["relatedLabelName"]
+            if _is_non_empty_list(rec.get("optionValues", [])) and not _is_non_empty_list(item.get("optionValues", [])):
+                item["optionValues"] = rec["optionValues"]
+            if rec.get("dropdownValueText", "").strip() and not item.get("dropdownValueText", "").strip():
+                item["dropdownValueText"] = rec["dropdownValueText"]
     return groups
 
 
@@ -142,7 +198,7 @@ def build_catalog(groups):
     for (window_title, framework_id), grp in sorted(groups.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
         controls = []
         for key, item in grp["controls"].items():
-            controls.append({
+            entry = {
                 "name": item["name"],
                 "controlType": item["controlType"],
                 "className": item["className"],
@@ -153,7 +209,21 @@ def build_catalog(groups):
                 "occurrences": item["occurrences"],
                 "sources": sorted(item["sources"]),
                 "needsReview": item["needsReview"],
-            })
+            }
+            # 保留运行时依赖的 inspectData / optionValues 等字段（非空才输出）
+            if _is_non_empty_dict(item.get("inspectData", {})):
+                entry["inspectData"] = item["inspectData"]
+            if item.get("displayName", "").strip():
+                entry["displayName"] = item["displayName"]
+            if item.get("suggestedControlName", "").strip():
+                entry["suggestedControlName"] = item["suggestedControlName"]
+            if item.get("relatedLabelName", "").strip():
+                entry["relatedLabelName"] = item["relatedLabelName"]
+            if _is_non_empty_list(item.get("optionValues", [])):
+                entry["optionValues"] = item["optionValues"]
+            if item.get("dropdownValueText", "").strip():
+                entry["dropdownValueText"] = item["dropdownValueText"]
+            controls.append(entry)
         controls.sort(key=lambda c: (-AUTHORITY_RANK[c["authority"]], -c["occurrences"], str(c["name"])))
         catalog_groups.append({
             "windowTitle": window_title,

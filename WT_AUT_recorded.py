@@ -19,6 +19,7 @@ from pywinauto import Desktop
 from pywinauto_recorder.player import *
 import wt_business_steps
 import wt_window_helpers
+import wt_dpi
 import wt_flow_executor
 import wt_flow_locator
 import wt_projection_helpers
@@ -85,7 +86,9 @@ StageExecutionError = wt_projection_helpers.StageExecutionError
 
 class MonitorWindow:
 	def __init__(self):
+		wt_dpi.enable_process_dpi_awareness()
 		self.root = tk.Tk()
+		wt_dpi.compute_scale(self.root)
 		self.root.title("WT自动化流程监视器")
 		# 把窗口设为较小尺寸，并动态放在屏幕右下角，尽量不挡住 WT 目标窗口
 		window_width = 320
@@ -93,9 +96,12 @@ class MonitorWindow:
 		margin = 24
 		screen_width = self.root.winfo_screenwidth()
 		screen_height = self.root.winfo_screenheight()
-		pos_x = max(0, screen_width - window_width - margin)
-		pos_y = max(0, screen_height - window_height - 80)
-		self.root.geometry(f"{window_width}x{window_height}+{pos_x}+{pos_y}")
+		# 尺寸按 DPI 缩放，并用缩放后的尺寸计算右下角位置，避免窗口跑出屏幕右侧
+		sw = wt_dpi.scale(window_width)
+		sh = wt_dpi.scale(window_height)
+		pos_x = max(0, screen_width - sw - margin)
+		pos_y = max(0, screen_height - sh - 80)
+		wt_dpi.raw_geometry(self.root, f"{sw}x{sh}+{pos_x}+{pos_y}")
 		
 		# 默认不置顶，避免遮挡目标父窗口；仅在流程结束需要提示结果时再抬到最前。
 		self._set_topmost(False)
@@ -1162,12 +1168,13 @@ def _type_text_into_relative_region(
 	)
 
 
-def _select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_title_hint=""):
+def _select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_title_hint="", target_option=""):
 	return _get_flow_locator().select_dropdown_item_runtime(
 		step_id,
 		control_id,
 		timeout_seconds=timeout_seconds,
 		window_title_hint=window_title_hint,
+		target_option=target_option,
 	)
 
 

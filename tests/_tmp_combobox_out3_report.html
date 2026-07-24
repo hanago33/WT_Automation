@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>转换质量报告 — _tmp_combobox_sample</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:#f5f7fa; color:#333; line-height:1.6; }
+.header { background: linear-gradient(135deg,#1a237e,#283593); color:#fff; padding:24px 32px; }
+.header h1 { font-size:22px; font-weight:600; }
+.header .sub { font-size:13px; opacity:.75; margin-top:4px; }
+.dashboard { display:grid; grid-template-columns: repeat(auto-fit, minmax(180px,1fr)); gap:16px; padding:24px 32px; }
+.card { background:#fff; border-radius:8px; padding:18px 20px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+.card .label { font-size:12px; color:#888; text-transform:uppercase; letter-spacing:.5px; }
+.card .value { font-size:28px; font-weight:700; margin-top:4px; }
+.card .sub-value { font-size:12px; color:#666; margin-top:2px; }
+.bar-section { padding:0 32px 24px; }
+.bar-section h2 { font-size:15px; margin-bottom:12px; color:#555; }
+.bar-row { display:flex; height:28px; border-radius:6px; overflow:hidden; margin-bottom:8px; }
+.bar-row .seg { display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; color:#fff; }
+.bar-row .seg.high { background:#4CAF50; }
+.bar-row .seg.medium { background:#FF9800; }
+.bar-row .seg.low { background:#F44336; }
+.bar-row .seg.none { background:#BDBDBD; }
+.legend { display:flex; gap:20px; font-size:12px; color:#666; margin-top:4px; }
+.legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:middle; }
+.legend .high::before { background:#4CAF50; }
+.legend .medium::before { background:#FF9800; }
+.legend .low::before { background:#F44336; }
+.legend .none::before { background:#BDBDBD; }
+.table-wrap { padding:0 32px 24px; overflow-x:auto; }
+.table-wrap h2 { font-size:15px; margin-bottom:12px; color:#555; }
+table { width:100%; border-collapse:collapse; background:#fff; border-radius:8px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+th { background:#f0f2f5; text-align:left; padding:10px 14px; font-size:12px; font-weight:600; color:#666; border-bottom:2px solid #e0e0e0; }
+td { padding:9px 14px; font-size:13px; border-bottom:1px solid #f0f0f0; }
+tr:hover { background:#f8f9ff; }
+tr.disabled { opacity:.45; }
+tr.conf-high { border-left:4px solid #4CAF50; }
+tr.conf-medium { border-left:4px solid #FF9800; }
+tr.conf-low { border-left:4px solid #F44336; }
+tr.conf-none { border-left:4px solid #BDBDBD; }
+.badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; margin-left:6px; }
+.badge.warn { background:#FFF3E0; color:#E65100; }
+.badge-merged { background:#E8F5E9; color:#2E7D32; }
+.badge-new { background:#E3F2FD; color:#1565C0; }
+.badge-removed { background:#FFEBEE; color:#C62828; text-decoration:line-through; }
+.review-section { padding:0 32px 24px; }
+.review-section h2 { font-size:15px; margin-bottom:12px; color:#555; }
+.review-item { background:#fff; border-radius:6px; padding:10px 16px; margin-bottom:6px; font-size:13px; box-shadow:0 1px 2px rgba(0,0,0,.05); border-left:3px solid #FF9800; }
+.stable-ok { color:#9E9E9E; font-size:11px; }
+.stable-bad { color:#C62828; font-weight:600; font-size:11px; }
+.stable-warn { color:#E65100; font-size:11px; }
+.feedback-card { background:#FFF8E1; border:1px solid #FFE082; }
+.hot-step { background:#fff; border-radius:6px; padding:8px 14px; margin-bottom:4px; font-size:13px; display:flex; justify-content:space-between; align-items:center; }
+.hot-step .step-name { font-weight:600; }
+.hot-step .stats { font-size:11px; color:#888; }
+.footer { text-align:center; padding:16px; font-size:11px; color:#aaa; border-top:1px solid #eee; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>📊 转换质量报告</h1>
+  <div class="sub">tests\_tmp_combobox_sample.py · 2026-07-22T19:13:07</div>
+</div>
+
+<div class="dashboard">
+  <div class="card">
+    <div class="label">原始步骤</div>
+    <div class="value">4</div>
+    <div class="sub-value">recorder 录制行</div>
+  </div>
+  <div class="card">
+    <div class="label">最终步骤</div>
+    <div class="value">3</div>
+    <div class="sub-value">action: 3 · placeholder: 0</div>
+  </div>
+  <div class="card">
+    <div class="label">控件命中率</div>
+    <div class="value">100.0%</div>
+    <div class="sub-value">3/3 匹配</div>
+  </div>
+  <div class="card">
+    <div class="label">去重/合并</div>
+    <div class="value">0</div>
+    <div class="sub-value">去重:0 · 噪声:0 · 合并:2</div>
+  </div>
+  <div class="card">
+    <div class="label">截图关联</div>
+    <div class="value">0</div>
+    <div class="sub-value">候选控件: 0</div>
+  </div>
+  <div class="card">
+    <div class="label">增量转换</div>
+    <div class="value">0</div>
+    <div class="sub-value">保留修正 · 新增:0 · 移除:0</div>
+  </div>
+</div>
+
+<div class="bar-section">
+  <h2>置信度分布</h2>
+  <div class="bar-row">
+    <div class="seg high" style="width:0.0%">0.0% 高</div>
+    <div class="seg medium" style="width:33.3%">33.3% 中</div>
+    <div class="seg low" style="width:0.0%">0.0% 低</div>
+    <div class="seg none" style="width:66.7%">66.7% 无</div>
+  </div>
+  <div class="legend">
+    <span class="high">高置信度 (≥0.95) — automation_id 精确命中</span>
+    <span class="medium">中置信度 (≥0.7) — name+type+parent 匹配</span>
+    <span class="low">低置信度 (≥0.6) — type+proximity 匹配</span>
+    <span class="none">未匹配 — 需人工校验</span>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <h2>步骤详情 (3)</h2>
+  <table>
+    <thead><tr><th>#</th><th>录制行</th><th>ID</th><th>名称</th><th>类型</th><th>动作</th><th>控件/备注</th><th>稳定性</th></tr></thead>
+    <tbody><tr class="conf-none "><td>1</td><td>5</td><td>step_1</td><td>设置 文件类型 为 所有文件</td><td>action</td><td>select_dropdown_item_runtime</td><td>name,control_type</td><td><span class="stable-ok">—</span></td></tr><tr class="conf-medium "><td>2</td><td>6</td><td>n</td><td>点击 文件名(N):</td><td>action</td><td>click</td><td>name,class_name</td><td><span class="stable-ok">—</span></td></tr><tr class="conf-low "><td>3</td><td>7</td><td>o_runtime_sourcefilepath</td><td>在 打开 &gt; 打开(O) 输入: ${runtime.sourceFilePath}</td><td>action</td><td>type_text</td><td>automation_id,control_type</td><td><span class="stable-ok">—</span></td></tr></tbody>
+  </table>
+</div>
+<div class="footer">WT_Automation flow_recorder_converter · 自动生成于 2026-07-22T19:13:07</div>
+</body>
+</html>

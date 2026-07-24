@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -45,6 +46,11 @@ from WT_AUTOMATION_Agent.history_store import (
     rename_conversation,
     save_conversation,
 )
+from WT_AUTOMATION_Agent import memory
+from WT_AUTOMATION_Agent import knowledge_base
+from WT_AUTOMATION_Agent import control_search
+from WT_AUTOMATION_Agent import flow_ops
+from WT_AUTOMATION_Agent import log_diagnosis
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +347,36 @@ def _build_tools_definition() -> list[dict]:
                 "strict": True,
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "find_control",
+                "description": (
+                    "在控件库（control_maps）里按自然语言描述检索真实存在的控件，"
+                    "返回候选控件及其 control_id（targetValue）。"
+                    "当你不确定某一步的 control_id，或想确认某个控件是否真实存在时，先调用本工具，"
+                    "再把返回的 targetValue 填入 add_step / add_sequence 的 control_id 字段，"
+                    "可显著减少'点击了不存在的控件'这类失败。"
+                    "例如 find_control('风机类型下拉框') 或 find_control('GeographicalData')。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "控件描述，可含中文（如'风机类型下拉框'）或英文标识片段（如'GeographicalData'）。",
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "description": "返回的候选控件数量，默认 5。",
+                        },
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            },
+        },
     ]
 
 
@@ -541,6 +577,27 @@ def _parse_tool_calls(response: dict[str, Any]) -> list[dict[str, Any]]:
     return raw_steps
 
 
+def _extract_json_array(text: str | None) -> list | None:
+    """从 LLM 回复中提取 JSON 数组（兼容代码块包裹 / 前后多余文字）。"""
+    if not text:
+        return None
+    try:
+        obj = json.loads(text.strip())
+        if isinstance(obj, list):
+            return obj
+    except (json.JSONDecodeError, ValueError):
+        pass
+    m = re.search(r"\[.*\]", text, re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            if isinstance(obj, list):
+                return obj
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 步骤生成
 # ---------------------------------------------------------------------------
@@ -652,9 +709,10 @@ class DslAgent:
     支持多轮对话，可通过 conversation_id 保持上下文。
     """
 
-    def __init__(self, config: DslAgentConfig):
+    def __init__(self, config: DslAgentConfig, max_tool_iterations: int = 4):
         self.config = config
         self._tools = _TOOLS
+        self._max_tool_iterations = max_tool_iterations
 
     def _ensure_ready(self):
         if not self.config.is_ready():
@@ -702,6 +760,8 @@ class DslAgent:
         nl_text: str,
         context: DslContext | None = None,
         conversation_id: str | None = None,
+        *,
+        compress: bool = True,
     ) -> list[dict]:
         """自然语言指令 → 一个或多个步骤。
 
@@ -714,11 +774,9 @@ class DslAgent:
         system_prompt = build_system_prompt(context)
 
         if conversation_id:
-            # 多轮对话：从历史加载消息
-            history = get_messages_for_llm(conversation_id)
-            messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(history)
-            messages.append({"role": "user", "content": f"请将以下指令转换为自动化步骤：\n\n{nl_text}\n\n使用 add_step 或 add_sequence。"})
+            # 多轮对话：从历史加载消息（可压缩）
+            history = self._history_messages(system_prompt, conversation_id, compress)
+            messages = history + [{"role": "user", "content": f"请将以下指令转换为自动化步骤：\n\n{nl_text}\n\n使用 add_step 或 add_sequence。"}]
         else:
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -741,6 +799,8 @@ class DslAgent:
         nl_text: str,
         context: DslContext | None = None,
         conversation_id: str | None = None,
+        *,
+        compress: bool = True,
     ) -> list[dict]:
         """自然语言流程 → 步骤序列。
 
@@ -753,10 +813,8 @@ class DslAgent:
         system_prompt = build_system_prompt(context)
 
         if conversation_id:
-            history = get_messages_for_llm(conversation_id)
-            messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(history)
-            messages.append({"role": "user", "content": f"请将以下流程转换为自动化步骤序列：\n\n{nl_text}\n\n使用 add_sequence 一次性输出。"})
+            history = self._history_messages(system_prompt, conversation_id, compress)
+            messages = history + [{"role": "user", "content": f"请将以下流程转换为自动化步骤序列：\n\n{nl_text}\n\n使用 add_sequence 一次性输出。"}]
         else:
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -774,16 +832,64 @@ class DslAgent:
         return steps
 
     def _run(self, messages: list[dict]) -> list[dict]:
-        response = _call_llm(self.config, messages, self._tools)
-        raw = _parse_tool_calls(response)
-        steps = []
-        for r in raw:
-            step = _raw_to_full_step(r)
-            errs = validate_step(step)
-            if errs:
-                logger.warning("步骤校验警告: %s; step=%s", "; ".join(errs), step.get("name", ""))
-            steps.append(step)
+        """调用 LLM 并解析工具调用。
+
+        支持工具循环：若模型先调用 find_control（检索控件库），则把检索结果
+        作为 tool 消息回灌，再让模型基于真实控件 ID 发出 add_step / add_sequence。
+        """
+        steps: list[dict] = []
+        for _ in range(getattr(self, "_max_tool_iterations", 4)):
+            response = _call_llm(self.config, messages, self._tools)
+            message = response.get("choices", [{}])[0].get("message", {})
+            tool_calls = message.get("tool_calls") or []
+            if not tool_calls:
+                logger.warning("LLM 未返回 tool_calls，返回空步骤")
+                break
+            messages.append({
+                "role": "assistant",
+                "content": message.get("content") or "",
+                "tool_calls": tool_calls,
+            })
+            lookup_calls = [
+                tc for tc in tool_calls
+                if tc.get("function", {}).get("name") == "find_control"
+            ]
+            if lookup_calls:
+                for tc in lookup_calls:
+                    try:
+                        args = json.loads(tc.get("function", {}).get("arguments", "{}") or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = self._exec_find_control(args)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id"),
+                        "name": "find_control",
+                        "content": result,
+                    })
+                continue
+            raw = _parse_tool_calls(response)
+            for r in raw:
+                step = _raw_to_full_step(r)
+                errs = validate_step(step)
+                if errs:
+                    logger.warning("步骤校验警告: %s; step=%s", "; ".join(errs), step.get("name", ""))
+                steps.append(step)
+            break
         return steps
+
+    def _exec_find_control(self, args: dict) -> str:
+        """执行 find_control 工具：在控件库检索真实控件，返回给 LLM 的文本结果。"""
+        if control_search is None:
+            return "控件检索模块不可用。"
+        query = str(args.get("query") or args.get("name") or args.get("control") or "").strip()
+        try:
+            top_k = int(args.get("top_k") or 5)
+        except (TypeError, ValueError):
+            top_k = 5
+        if not query:
+            return "查询为空，请提供控件描述（例如 '风机类型下拉框'）。"
+        return control_search.search_text(query, top_k=top_k)
 
     def test_connection(self) -> bool:
         """测试 API 连接。"""
@@ -796,21 +902,59 @@ class DslAgent:
         except Exception:
             return False
 
+    # -------------------------------------------------------------------------
+    # 记忆压缩 / 知识库 辅助
+    # -------------------------------------------------------------------------
+
+    def _summarize(self, text: str) -> str:
+        """用 LLM 把一段对话历史压缩为摘要。"""
+        try:
+            resp = _call_llm(self.config, [
+                {"role": "system", "content": memory.SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ])
+            return resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except Exception as exc:
+            logger.warning("对话摘要生成失败: %s", exc)
+            return ""
+
+    def _kb_context(self, query: str) -> str:
+        """检索项目知识库，返回可注入 system prompt 的上下文文本。"""
+        try:
+            return knowledge_base.get_knowledge_base().build_context(query)
+        except Exception as exc:
+            logger.warning("知识库检索失败: %s", exc)
+            return ""
+
+    def _history_messages(self, system_prompt: str, conversation_id: str | None, compress: bool) -> list[dict]:
+        """构造带压缩历史的 LLM 消息列表。"""
+        return memory.prepare_messages(
+            system_prompt, conversation_id or "",
+            summarizer=self._summarize if compress else None,
+            compress=compress,
+        )
+
     def chat(
         self,
         user_message: str,
         context: DslContext | None = None,
         conversation_id: str | None = None,
+        *,
+        kb_enabled: bool = True,
+        compress: bool = True,
     ) -> str:
         """通用对话接口，不强制 Function Calling，返回文本。
 
         适合让 LLM 回答关于流程的问题、做分析等。
         支持多轮对话（传入 conversation_id）。
+        可通过 kb_enabled 注入项目知识库上下文，通过 compress 启用长对话记忆压缩。
 
         Args:
             user_message: 用户消息
             context: 工程上下文
             conversation_id: 会话 ID（用于多轮对话上下文保留）
+            kb_enabled: 是否注入项目知识库检索结果
+            compress: 是否对早期对话进行记忆压缩
 
         Returns:
             LLM 响应文本
@@ -818,11 +962,19 @@ class DslAgent:
         self._ensure_ready()
         system_prompt = build_system_prompt(context)
 
+        if kb_enabled:
+            kb_ctx = self._kb_context(user_message)
+            if kb_ctx:
+                system_prompt = (
+                    system_prompt
+                    + "\n\n## 项目知识库参考\n下面是项目自有知识库中与用户问题可能相关的内容，"
+                    "仅作为背景参考；若与用户问题无关或相互矛盾，以你自己的判断为准：\n"
+                    + kb_ctx
+                )
+
         if conversation_id:
-            history = get_messages_for_llm(conversation_id)
-            messages = [{"role": "system", "content": system_prompt}]
-            messages.extend(history)
-            messages.append({"role": "user", "content": user_message})
+            history = self._history_messages(system_prompt, conversation_id, compress)
+            messages = history + [{"role": "user", "content": user_message}]
         else:
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -841,3 +993,90 @@ class DslAgent:
             add_message(conversation_id, "assistant", reply)
 
         return reply
+
+    # ------------------------------------------------------------------
+    # 流程维护能力：解释 / 编辑 / 比对
+    # ------------------------------------------------------------------
+
+    def explain_flow(self, flow: dict[str, Any], question: str = "") -> str:
+        """解释一份已有流程定义（flow_definition.json）。"""
+        self._ensure_ready()
+        text = flow_ops.flow_to_text(flow)
+        prompt = (
+            "你是一名 WT（Meteodyn WT）桌面自动化流程工程师。下面是一份自动化流程定义，"
+            "请基于它回答用户的问题。\n\n"
+            f"【流程定义】\n{text}\n\n"
+            f"【问题】{question or '请概述这个流程在做什么、每一步的作用，以及潜在脆弱点和失败风险。'}"
+        )
+        return self.chat(prompt, kb_enabled=True, compress=False)
+
+    def edit_flow(self, flow: dict[str, Any], instruction: str, write_back: bool = False) -> dict[str, Any]:
+        """按自然语言指令修改一份流程的步骤，返回 {ok, steps, raw}。
+
+        若 write_back=True 且解析成功，则直接写回传入的 flow 字典（由调用方负责落盘）。
+        """
+        self._ensure_ready()
+        steps = flow.get("steps", [])
+        prompt = (
+            "你是一名 WT 自动化流程工程师。下面是当前流程的步骤列表（JSON 数组）。"
+            "请根据用户指令修改，并只输出修改后的完整步骤 JSON 数组，"
+            "不要包含任何解释文字、也不要使用代码块标记。\n\n"
+            f"【当前步骤】\n{json.dumps(steps, ensure_ascii=False, indent=2)}\n\n"
+            f"【修改指令】{instruction}\n\n"
+            "要求：保持每个步骤原有字段结构；新增步骤请补全字段；"
+            "control_id 必须使用控件库中真实存在的标识（如 MUPMicroscaleInformationViewModel_Button_...）。"
+        )
+        reply = self.chat(prompt, kb_enabled=False, compress=False)
+        new_steps = _extract_json_array(reply)
+        result: dict[str, Any] = {
+            "instruction": instruction,
+            "ok": bool(new_steps),
+            "steps": new_steps if new_steps else steps,
+            "raw": reply,
+        }
+        if new_steps and write_back:
+            flow["steps"] = new_steps
+        return result
+
+    def diff_flows(self, flow_a: dict[str, Any], flow_b: dict[str, Any]) -> str:
+        """对比两份流程定义，返回带风险说明的差异分析。"""
+        self._ensure_ready()
+        struct = flow_ops.diff_flows_structural(flow_a, flow_b)
+        prompt = (
+            "你是一名 WT 自动化流程工程师。请基于以下两份流程的结构化差异，"
+            "用简洁中文说明步骤的增/删/改、参数变化与潜在风险。\n\n"
+            f"【结构化差异】\n{struct}\n"
+        )
+        return self.chat(prompt, kb_enabled=False, compress=False)
+
+    # ------------------------------------------------------------------
+    # 执行日志 / 运行报告诊断
+    # ------------------------------------------------------------------
+
+    def diagnose_log(self, log_input: str, flow_steps: list[dict[str, Any]] | None = None) -> str:
+        """诊断一段执行日志或运行报告，定位失败步骤并给出修复建议。
+
+        Args:
+            log_input: 日志文本、JSON 报告文本，或本地日志/报告文件路径。
+            flow_steps: 可选，相关流程的步骤列表（用于对照定位）。
+        """
+        self._ensure_ready()
+        log_text: str | None = None
+        p = (log_input or "").strip()
+        if p and (p.startswith("{") or p.startswith("[")) and len(p) > 50:
+            log_text = p
+        elif p and os.path.exists(p):
+            if p.lower().endswith(".json"):
+                report = log_diagnosis.load_run_report(p)
+                if report:
+                    log_text = json.dumps(report, ensure_ascii=False, indent=2)
+                    if not flow_steps:
+                        flow_steps = [
+                            s for s in report.get("steps", []) if isinstance(s, dict)
+                        ]
+            else:
+                log_text = log_diagnosis.parse_run_log_file(p)
+        if log_text is None:
+            log_text = p
+        prompt = log_diagnosis.build_diagnosis_prompt(log_text, flow_steps)
+        return self.chat(prompt, kb_enabled=True, compress=False)

@@ -664,6 +664,7 @@ def run_action_step(step_id, context):
             control_id,
             timeout_seconds=timeout_seconds,
             window_title_hint=window_title_hint,
+            target_option=text,
         )
         if not ok:
             raise RuntimeError(

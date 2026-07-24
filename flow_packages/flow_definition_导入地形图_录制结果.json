@@ -1,0 +1,569 @@
+{
+  "version": "1.1",
+  "project": "recorded Wed Jul 22 20_10_01 2026",
+  "description": "由 pywinauto_recorder 录制脚本智能转换生成的 action 流程骨架（已语义分析 + a11y 富化优化）。",
+  "lastUpdated": "2026-07-23T09:35:24",
+  "feedbackHistory": [],
+  "runtimeConfig": {
+    "gmExe": "",
+    "sourceFilePath": "",
+    "outputDir": "",
+    "projectionFilePath": ""
+  },
+  "flowPackages": [],
+  "steps": [
+    {
+      "id": "step_19",
+      "name": "点击-控件19",
+      "stage": "captured",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "伴随拾取生成：控件19",
+      "successLog": "",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "控件19",
+        "className": "MUPTaskMainView",
+        "automationId": "",
+        "controlType": "Custom",
+        "uiPath": "",
+        "templateKey": "recorder_captures/step_19_控件19.png"
+      },
+      "controls": [
+        {
+          "id": "captured_control_19",
+          "name": "控件19",
+          "role": "伴随拾取",
+          "enabled": true,
+          "windowTitle": "",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPTaskMainView,Custom",
+          "templateKey": "recorder_captures/step_19_控件19.png",
+          "uiPath": "",
+          "notes": "由伴随拾取模式自动生成（未匹配，依赖实时定位）",
+          "rawInspectText": "Name: \t \"\"\nControlType: \t Custom\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=0,t=52,r=2560,b=1516]\nIsEnabled: \t True\nIsOffscreen: \t False\nFrameworkId: \t \"WPF\"\nClassName: \t \"MUPTaskMainView\"\nAutomationId: \t \"\"\nNativeWindowHandle: \t \nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nChildren: \t M219.76711,609.1864L218.51466,610.43701 235.76137,627.68188 218.51466,644.92859 219.76711,646.1792 237.01198,628.93433 254.25685,646.1792 255.50929,644.92859 238.26259,627.68188 255.50929,610.43701 254.25685,609.1864 237.01198,626.43128z | Button | Button\n\t MBATaskWatcher | Custom\n\t Button | Button\nAncestors: \t Window | Window\n\t 桌面 1 | #32769 | Pane",
+          "auxChecks": [
+            "FrameworkId=WPF",
+            "ClassName=MUPTaskMainView",
+            "ControlType=Custom",
+            "IsEnabled=True",
+            "IsOffscreen=False"
+          ],
+          "inspectData": {
+            "howFound": "",
+            "name": "",
+            "controlType": "Custom",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=0,t=52,r=2560,b=1516]",
+            "isEnabled": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "",
+            "runtimeId": "",
+            "frameworkId": "WPF",
+            "className": "MUPTaskMainView",
+            "automationId": "",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [
+              "M219.76711,609.1864L218.51466,610.43701 235.76137,627.68188 218.51466,644.92859 219.76711,646.1792 237.01198,628.93433 254.25685,646.1792 255.50929,644.92859 238.26259,627.68188 255.50929,610.43701 254.25685,609.1864 237.01198,626.43128z | Button | Button",
+              "MBATaskWatcher | Custom",
+              "Button | Button"
+            ],
+            "ancestors": [
+              "Window | Window",
+              "桌面 1 | #32769 | Pane"
+            ],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "class_name,control_type",
+            "recommendedTargetValue": "MUPTaskMainView,Custom"
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click",
+        "controlId": "captured_control_19",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.3,
+        "waitAfter": 0.3,
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "step_18",
+      "name": "点击-控件18",
+      "stage": "captured",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "伴随拾取生成：控件18",
+      "successLog": "",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "控件18",
+        "className": "",
+        "automationId": "",
+        "controlType": "Image",
+        "uiPath": "",
+        "templateKey": "recorder_captures/step_18_控件18.png"
+      },
+      "controls": [
+        {
+          "id": "captured_control_18",
+          "name": "控件18",
+          "role": "伴随拾取",
+          "enabled": true,
+          "windowTitle": "",
+          "targetMethod": "control_type",
+          "targetValue": "Image",
+          "templateKey": "recorder_captures/step_18_控件18.png",
+          "uiPath": "",
+          "notes": "由伴随拾取模式自动生成（未匹配，依赖实时定位）",
+          "rawInspectText": "Name: \t \"\"\nControlType: \t Image\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=158,t=0,r=210,b=52]\nIsEnabled: \t True\nIsOffscreen: \t False\nFrameworkId: \t \"WPF\"\nClassName: \t \"\"\nAutomationId: \t \"\"\nNativeWindowHandle: \t \nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Button | Button\n\t MTDTitleBar | Custom\n\t Window | Window\n\t 桌面 1 | #32769 | Pane",
+          "auxChecks": [
+            "FrameworkId=WPF",
+            "ControlType=Image",
+            "IsEnabled=True",
+            "IsOffscreen=False"
+          ],
+          "inspectData": {
+            "howFound": "",
+            "name": "",
+            "controlType": "Image",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=158,t=0,r=210,b=52]",
+            "isEnabled": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "",
+            "runtimeId": "",
+            "frameworkId": "WPF",
+            "className": "",
+            "automationId": "",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [],
+            "ancestors": [
+              "Button | Button",
+              "MTDTitleBar | Custom",
+              "Window | Window",
+              "桌面 1 | #32769 | Pane"
+            ],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "control_type",
+            "recommendedTargetValue": "Image"
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click",
+        "controlId": "captured_control_18",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.3,
+        "waitAfter": 0.3,
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "step_20",
+      "name": "点击-控件20",
+      "stage": "captured",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "伴随拾取生成：控件20",
+      "successLog": "",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "控件20",
+        "className": "MUPTaskMainView",
+        "automationId": "",
+        "controlType": "Custom",
+        "uiPath": "",
+        "templateKey": "recorder_captures/step_20_控件20.png"
+      },
+      "controls": [
+        {
+          "id": "captured_control_20",
+          "name": "控件20",
+          "role": "伴随拾取",
+          "enabled": true,
+          "windowTitle": "",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPTaskMainView,Custom",
+          "templateKey": "recorder_captures/step_20_控件20.png",
+          "uiPath": "",
+          "notes": "由伴随拾取模式自动生成（未匹配，依赖实时定位）",
+          "rawInspectText": "Name: \t \"\"\nControlType: \t Custom\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=0,t=52,r=2560,b=1516]\nIsEnabled: \t True\nIsOffscreen: \t False\nFrameworkId: \t \"WPF\"\nClassName: \t \"MUPTaskMainView\"\nAutomationId: \t \"\"\nNativeWindowHandle: \t \nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nChildren: \t M219.76711,609.1864L218.51466,610.43701 235.76137,627.68188 218.51466,644.92859 219.76711,646.1792 237.01198,628.93433 254.25685,646.1792 255.50929,644.92859 238.26259,627.68188 255.50929,610.43701 254.25685,609.1864 237.01198,626.43128z | Button | Button\n\t MBATaskWatcher | Custom\n\t Button | Button\nAncestors: \t Window | Window\n\t 桌面 1 | #32769 | Pane",
+          "auxChecks": [
+            "FrameworkId=WPF",
+            "ClassName=MUPTaskMainView",
+            "ControlType=Custom",
+            "IsEnabled=True",
+            "IsOffscreen=False"
+          ],
+          "inspectData": {
+            "howFound": "",
+            "name": "",
+            "controlType": "Custom",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=0,t=52,r=2560,b=1516]",
+            "isEnabled": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "",
+            "runtimeId": "",
+            "frameworkId": "WPF",
+            "className": "MUPTaskMainView",
+            "automationId": "",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [
+              "M219.76711,609.1864L218.51466,610.43701 235.76137,627.68188 218.51466,644.92859 219.76711,646.1792 237.01198,628.93433 254.25685,646.1792 255.50929,644.92859 238.26259,627.68188 255.50929,610.43701 254.25685,609.1864 237.01198,626.43128z | Button | Button",
+              "MBATaskWatcher | Custom",
+              "Button | Button"
+            ],
+            "ancestors": [
+              "Window | Window",
+              "桌面 1 | #32769 | Pane"
+            ],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "class_name,control_type",
+            "recommendedTargetValue": "MUPTaskMainView,Custom"
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click",
+        "controlId": "captured_control_20",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.3,
+        "waitAfter": 0.3,
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "step_21",
+      "name": "点击-控件21",
+      "stage": "captured",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "伴随拾取生成：控件21",
+      "successLog": "",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "控件21",
+        "className": "MUPTaskMainView",
+        "automationId": "",
+        "controlType": "Custom",
+        "uiPath": "",
+        "templateKey": "recorder_captures/step_21_控件21.png"
+      },
+      "controls": [
+        {
+          "id": "captured_control_21",
+          "name": "控件21",
+          "role": "伴随拾取",
+          "enabled": true,
+          "windowTitle": "",
+          "targetMethod": "class_name,control_type",
+          "targetValue": "MUPTaskMainView,Custom",
+          "templateKey": "recorder_captures/step_21_控件21.png",
+          "uiPath": "",
+          "notes": "由伴随拾取模式自动生成（未匹配，依赖实时定位）",
+          "rawInspectText": "Name: \t \"\"\nControlType: \t Custom\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=0,t=52,r=2560,b=1516]\nIsEnabled: \t True\nIsOffscreen: \t False\nFrameworkId: \t \"WPF\"\nClassName: \t \"MUPTaskMainView\"\nAutomationId: \t \"\"\nNativeWindowHandle: \t \nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nChildren: \t M219.76711,609.1864L218.51466,610.43701 235.76137,627.68188 218.51466,644.92859 219.76711,646.1792 237.01198,628.93433 254.25685,646.1792 255.50929,644.92859 238.26259,627.68188 255.50929,610.43701 254.25685,609.1864 237.01198,626.43128z | Button | Button\n\t MBATaskWatcher | Custom\n\t Button | Button\nAncestors: \t Window | Window\n\t 桌面 1 | #32769 | Pane",
+          "auxChecks": [
+            "FrameworkId=WPF",
+            "ClassName=MUPTaskMainView",
+            "ControlType=Custom",
+            "IsEnabled=True",
+            "IsOffscreen=False"
+          ],
+          "inspectData": {
+            "howFound": "",
+            "name": "",
+            "controlType": "Custom",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=0,t=52,r=2560,b=1516]",
+            "isEnabled": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "",
+            "runtimeId": "",
+            "frameworkId": "WPF",
+            "className": "MUPTaskMainView",
+            "automationId": "",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [
+              "M219.76711,609.1864L218.51466,610.43701 235.76137,627.68188 218.51466,644.92859 219.76711,646.1792 237.01198,628.93433 254.25685,646.1792 255.50929,644.92859 238.26259,627.68188 255.50929,610.43701 254.25685,609.1864 237.01198,626.43128z | Button | Button",
+              "MBATaskWatcher | Custom",
+              "Button | Button"
+            ],
+            "ancestors": [
+              "Window | Window",
+              "桌面 1 | #32769 | Pane"
+            ],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "class_name,control_type",
+            "recommendedTargetValue": "MUPTaskMainView,Custom"
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click",
+        "controlId": "captured_control_21",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.3,
+        "waitAfter": 0.3,
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": ""
+    },
+    {
+      "id": "step_22",
+      "name": "输入文本-文件名(N):",
+      "stage": "captured",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "伴随拾取生成：文件名(N):",
+      "successLog": "",
+      "windowTitle": "文件名(N):",
+      "inspectHints": {
+        "controlName": "文件名(N):",
+        "className": "Edit",
+        "automationId": "1148",
+        "controlType": "Edit",
+        "uiPath": "文件名(N):",
+        "templateKey": "recorder_captures/step_22_文件名_N__.png"
+      },
+      "controls": [
+        {
+          "id": "captured_control_22",
+          "name": "文件名(N):",
+          "role": "伴随拾取",
+          "enabled": true,
+          "windowTitle": "文件名(N):",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "1148,Edit",
+          "templateKey": "recorder_captures/step_22_文件名_N__.png",
+          "uiPath": "文件名(N):",
+          "notes": "由伴随拾取模式自动生成（未匹配，依赖实时定位）",
+          "rawInspectText": "Name: \t \"文件名(N):\"\nControlType: \t Edit\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=1240,t=992,r=1726,b=1020]\nIsEnabled: \t True\nIsOffscreen: \t False\nFrameworkId: \t \"Win32\"\nClassName: \t \"Edit\"\nAutomationId: \t \"1148\"\nNativeWindowHandle: \t 0x40a18\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t 文件名(N): | ComboBox | ComboBox\n\t 打开 | #32770 | Window\n\t Window | Window\n\t 桌面 1 | #32769 | Pane",
+          "auxChecks": [
+            "FrameworkId=Win32",
+            "ClassName=Edit",
+            "ControlType=Edit",
+            "IsEnabled=True",
+            "IsOffscreen=False"
+          ],
+          "inspectData": {
+            "howFound": "Interactive click collector",
+            "name": "文件名(N):",
+            "controlType": "Edit",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=1240,t=992,r=1726,b=1020]",
+            "isEnabled": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "34640",
+            "runtimeId": "[2A,40A18]",
+            "frameworkId": "Win32",
+            "className": "Edit",
+            "automationId": "1148",
+            "nativeWindowHandle": "0x40a18",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [],
+            "ancestors": [
+              "文件名(N): | ComboBox | ComboBox",
+              "打开 | #32770 | Window",
+              "Window | Window",
+              "桌面 1 | #32769 | Pane"
+            ],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "automation_id,control_type",
+            "recommendedTargetValue": "1148,Edit"
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "type_text",
+        "controlId": "captured_control_22",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.3,
+        "waitAfter": 0.3,
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue",
+        "text": "${runtime.sourceFilePath}"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": ""
+    }
+  ],
+  "conversionMeta": {
+    "sourceScript": "D:/My_RF_Project/WT_Automation/samples/recorder_scripts/recorded Wed Jul 22 20_10_01 2026.py",
+    "rawSteps": 18,
+    "totalSteps": 17,
+    "actionSteps": 17,
+    "placeholderSteps": 0,
+    "droppedNoOpDragCount": 0,
+    "droppedDuplicateCount": 1,
+    "waitInferred": 2,
+    "sequencesMerged": 3,
+    "noiseFiltered": 0,
+    "controlMapMatchedCount": 12,
+    "controlMapLoadedCount": 281,
+    "runtimeParamBindings": 0,
+    "uniquePathSelectors": 3,
+    "suspiciousStepCount": 5,
+    "findActionCount": 0,
+    "menuClickActionCount": 1,
+    "setTextActionCount": 0,
+    "setComboboxActionCount": 0,
+    "screenshotLinkedCount": 0,
+    "a11yEnrichedCount": 5,
+    "maxNestingDepth": 2,
+    "highConfidenceMatchedCount": 0,
+    "mediumConfidenceMatchedCount": 4,
+    "candidateCount": 3,
+    "candidateDir": "D:\\My_RF_Project\\WT_Automation\\control_maps\\_candidates",
+    "incrementalMerged": 0,
+    "incrementalNew": 0,
+    "incrementalRemoved": 0,
+    "qualityReportPath": "D:/My_RF_Project/WT_Automation/flow_packages/flow_definition_导入地形图_录制结果_report.html",
+    "confidenceThresholds": {
+      "high": 0.95,
+      "medium": 0.7,
+      "low": 0.6
+    },
+    "controlMapDir": "D:\\My_RF_Project\\WT_Automation\\control_maps",
+    "screenshotDir": "",
+    "droppedRecorderLines": [],
+    "reviewItems": [
+      {
+        "stepId": "",
+        "stepName": "点击 Custom#[1,2]",
+        "hints": [
+          "未命中控件库，建议补充控件库或检查目标控件定位"
+        ]
+      },
+      {
+        "stepId": "",
+        "stepName": "点击 Custom#[1,2]",
+        "hints": [
+          "未命中控件库，建议补充控件库或检查目标控件定位"
+        ]
+      },
+      {
+        "stepId": "",
+        "stepName": "在 Window 输入: cgcs{ENTER}",
+        "hints": [
+          "未命中控件库，建议补充控件库或检查目标控件定位"
+        ]
+      },
+      {
+        "stepId": "",
+        "stepName": "点击 Custom#[1,2]",
+        "hints": [
+          "未命中控件库，建议补充控件库或检查目标控件定位"
+        ]
+      },
+      {
+        "stepId": "",
+        "stepName": "在 Window 输入: {VK_CONTROL down}{VK_MENU down}{r down}{VK_CONTROL up}{r up}{VK_MENU up}{VK_CONTROL down}{VK_MENU down}{r down}{VK_CONTROL up}{r up}{VK_MENU up}",
+        "hints": [
+          "未命中控件库，建议补充控件库或检查目标控件定位"
+        ]
+      }
+    ]
+  }
+}

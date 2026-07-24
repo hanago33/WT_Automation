@@ -79,7 +79,11 @@ def sanitize(name):
 
 
 def build_control_from_catalog(aid, cat_ctrl, window_title):
-    """用标准库条目构造 controls[] 中的控件对象（含定位信息）。"""
+    """用标准库条目构造 controls[] 中的控件对象（含定位信息）。
+
+    会合并标准库中的 inspectData / optionValues 等运行时依赖字段，
+    使得下拉框等控件的键盘导航兜底逻辑有数据可用。
+    """
     tv = cat_ctrl.get("targetValue", "")
     method = cat_ctrl.get("targetMethod", "automation_id")
     name = cat_ctrl.get("name", aid)
@@ -93,6 +97,57 @@ def build_control_from_catalog(aid, cat_ctrl, window_title):
         aux.append(f"ClassName={cls}")
     if ctrl_type:
         aux.append(f"ControlType={ctrl_type}")
+
+    # 以空模板为基底的 inspectData，再合并标准库中真实的 inspectData
+    base_inspect = {
+        "howFound": "standard_catalog",
+        "name": "",
+        "controlType": ctrl_type,
+        "localizedControlType": "",
+        "boundingRectangle": "",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "",
+        "runtimeId": "",
+        "frameworkId": fw,
+        "className": cls,
+        "automationId": aid,
+        "nativeWindowHandle": "",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [],
+        "ancestors": [],
+        "availablePatterns": [],
+        "recommendedTargetMethod": method.split(",")[0],
+        "recommendedTargetValue": aid,
+    }
+    # 合并标准库中真实的 inspectData（优先保留 optionValues / dropdownValueText）
+    cat_inspect = cat_ctrl.get("inspectData", {})
+    if isinstance(cat_inspect, dict) and len(cat_inspect) > 0:
+        for k, v in cat_inspect.items():
+            if v is not None and v != "" and not (isinstance(v, list) and len(v) == 0):
+                base_inspect[k] = v
+    # 标准库顶层 optionValues（采集器可能放在 control 级别）
+    cat_option_values = cat_ctrl.get("optionValues", [])
+    if isinstance(cat_option_values, list) and len(cat_option_values) > 0:
+        base_inspect["optionValues"] = cat_option_values
+    cat_dropdown_value = cat_ctrl.get("dropdownValueText", "")
+    if cat_dropdown_value:
+        base_inspect["dropdownValueText"] = cat_dropdown_value
+
+    notes = "由标准控件库合并生成，定位权威度高，可直接用于结构化定位；运行前请验证。"
+    suggested = cat_ctrl.get("suggestedControlName", "")
+    if suggested:
+        notes += f" 建议名称: {suggested}"
+
     return {
         "id": cid,
         "name": name,
@@ -103,39 +158,10 @@ def build_control_from_catalog(aid, cat_ctrl, window_title):
         "targetValue": tv,
         "templateKey": "",
         "uiPath": "",
-        "notes": "由标准控件库合并生成，定位权威度高，可直接用于结构化定位；运行前请验证。",
+        "notes": notes,
         "rawInspectText": "",
         "auxChecks": aux,
-        "inspectData": {
-            "howFound": "standard_catalog",
-            "name": "",
-            "controlType": ctrl_type,
-            "localizedControlType": "",
-            "boundingRectangle": "",
-            "isEnabled": "True",
-            "isOffscreen": "False",
-            "isKeyboardFocusable": "",
-            "hasKeyboardFocus": "",
-            "processId": "",
-            "runtimeId": "",
-            "frameworkId": fw,
-            "className": cls,
-            "automationId": aid,
-            "nativeWindowHandle": "",
-            "providerDescription": "",
-            "legacyName": "",
-            "legacyRole": "",
-            "legacyState": "",
-            "firstChild": "",
-            "lastChild": "",
-            "next": "",
-            "previous": "",
-            "children": [],
-            "ancestors": [],
-            "availablePatterns": [],
-            "recommendedTargetMethod": method.split(",")[0],
-            "recommendedTargetValue": aid,
-        },
+        "inspectData": base_inspect,
     }
 
 

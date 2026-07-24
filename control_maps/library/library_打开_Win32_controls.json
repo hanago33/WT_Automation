@@ -9,13 +9,13 @@
     "frameworkId": "Win32"
   },
   "scanMeta": {
-    "scanTime": "2026-07-01T17:35:54",
+    "scanTime": "2026-07-23T19:27:21",
     "backend": "editor",
     "mode": "editor_library",
     "categoryWindowTitle": "打开",
     "categoryFrameworkId": "Win32",
-    "totalControls": 1,
-    "rawTotalControls": 1
+    "totalControls": 3,
+    "rawTotalControls": 3
   },
   "controlDefinitions": [
     {
@@ -70,7 +70,110 @@
         "recommendedTargetMethod": "automation_id,control_type",
         "recommendedTargetValue": "1,SplitButton"
       }
+    },
+    {
+      "id": "1148_文件名(N)_Edit",
+      "name": "文件名(N):",
+      "role": "来自控件库扫描：打开",
+      "enabled": true,
+      "windowTitle": "打开",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "1148,Edit",
+      "templateKey": "",
+      "uiPath": "打开 > 文件名(N): > 文件名(N):",
+      "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | 已自动收录到控件库分类：打开 / Win32",
+      "rawInspectText": "Name: \t \"文件名(N):\"\nControlType: \t Edit\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=1240,t=992,r=1726,b=1020]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 34640\nFrameworkId: \t \"Win32\"\nClassName: \t \"Edit\"\nAutomationId: \t \"1148\"\nNativeWindowHandle: \t 332254\nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t 打开\n\t 文件名(N):",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "FrameworkId=Win32",
+        "ClassName=Edit"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "文件名(N):",
+        "controlType": "Edit",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=1240,t=992,r=1726,b=1020]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "34640",
+        "runtimeId": "[2A,511DE]",
+        "frameworkId": "Win32",
+        "className": "Edit",
+        "automationId": "1148",
+        "nativeWindowHandle": "332254",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [],
+        "ancestors": [
+          "打开",
+          "文件名(N):"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "automation_id,control_type",
+        "recommendedTargetValue": "1148,Edit"
+      }
+    },
+    {
+      "id": "1_打开(O)_Button",
+      "name": "打开(O)",
+      "role": "来自控件库扫描：打开",
+      "enabled": true,
+      "windowTitle": "打开",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "1,Button",
+      "templateKey": "",
+      "uiPath": "打开 > 打开(O)",
+      "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | 已自动收录到控件库分类：打开 / Win32",
+      "rawInspectText": "Name: \t \"打开(O)\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=1780,t=1034,r=1934,b=1080]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 34640\nFrameworkId: \t \"Win32\"\nClassName: \t \"Button\"\nAutomationId: \t \"1\"\nNativeWindowHandle: \t 856286\nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t 打开",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "FrameworkId=Win32",
+        "ClassName=Button"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "打开(O)",
+        "controlType": "Button",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=1780,t=1034,r=1934,b=1080]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "34640",
+        "runtimeId": "[2A,D10DE]",
+        "frameworkId": "Win32",
+        "className": "Button",
+        "automationId": "1",
+        "nativeWindowHandle": "856286",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [],
+        "ancestors": [
+          "打开"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "automation_id,control_type",
+        "recommendedTargetValue": "1,Button"
+      }
     }
   ],
-  "lastUpdated": "2026-07-01T17:35:54"
+  "lastUpdated": "2026-07-23T19:27:21"
 }

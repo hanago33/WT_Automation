@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
+import wt_dpi
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageGrab
@@ -1651,7 +1652,9 @@ class TemplateBuilderApp:
 
 
 def main():
+    wt_dpi.enable_process_dpi_awareness()
     root = tk.Tk()
+    wt_dpi.compute_scale(root)
     app = TemplateBuilderApp(root)
     if os.path.isdir(DEFAULT_OUTPUT_DIR):
         app.output_dir_var.set(DEFAULT_OUTPUT_DIR)

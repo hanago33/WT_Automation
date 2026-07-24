@@ -12,9 +12,12 @@ import time
 import tkinter as tk
 import zipfile
 import ctypes
+import contextlib
+import io
 from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
+import wt_dpi
 from flow_excel_io import (
     DEFAULT_FLOW_XLSX,
     audit_flow_excel_roundtrip,
@@ -312,8 +315,8 @@ class RelativeRegionHelperDialog:
 
         self.window = tk.Toplevel(parent)
         self.window.title("父窗口相对区域取点助手")
-        self.window.geometry("980x760")
-        self.window.minsize(860, 680)
+        wt_dpi.geometry(self.window, 980, 760)
+        self.window.minsize(wt_dpi.scale(860), wt_dpi.scale(680))
         self.window.configure(bg=self.theme.get("bg", "#eef3f9"))
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
@@ -743,7 +746,8 @@ class RelativeRegionHelperDialog:
             pass
         screen_width = overlay.winfo_screenwidth()
         screen_height = overlay.winfo_screenheight()
-        overlay.geometry(f"{screen_width}x{screen_height}+0+0")
+        # 全屏遮罩用真实屏幕像素，绕过 DPI 自动缩放，否则会超出屏幕、框选坐标错位
+        wt_dpi.raw_geometry(overlay, f"{screen_width}x{screen_height}+0+0")
         overlay.configure(bg="#0f172a")
         canvas = tk.Canvas(overlay, bg="#0f172a", highlightthickness=0, cursor="crosshair")
         canvas.pack(fill=tk.BOTH, expand=True)
@@ -1061,8 +1065,8 @@ class LauncherApp:
     def __init__(self, root):
         self.root = root
         self.root.title("WT 自动化项目总控台")
-        self.root.geometry("1320x860")
-        self.root.minsize(1140, 760)
+        wt_dpi.geometry(self.root, 1320, 860)
+        self.root.minsize(wt_dpi.scale(1140), wt_dpi.scale(760))
         self.theme = {
             "bg": "#eef3f9",
             "card": "#ffffff",
@@ -1104,6 +1108,7 @@ class LauncherApp:
         launcher_state, _state_error = load_json_file(LAUNCHER_STATE_FILE)
         launcher_state = launcher_state or {}
         self.enable_ai_intervention_var = tk.BooleanVar(value=bool(launcher_state.get("enableAiIntervention", False)))
+        self.ui_scale_var = tk.StringVar(value=wt_dpi.scale_to_label(wt_dpi.load_scale_config()))
         self.flow_definition_path_var.set(launcher_state.get("flowDefinitionPath") or FLOW_DEFINITION_FILE)
         state_step_order = launcher_state.get("stepOrderByFlowPath", {})
         self.step_order_by_flow_path = state_step_order if isinstance(state_step_order, dict) else {}
@@ -1219,8 +1224,8 @@ class LauncherApp:
             highlightbackground=self.theme["border"],
         )
 
-        self.main_paned.add(left_frame, minsize=360)
-        self.main_paned.add(right_frame, minsize=760)
+        self.main_paned.add(left_frame, minsize=wt_dpi.scale(360))
+        self.main_paned.add(right_frame, minsize=wt_dpi.scale(760))
         self.root.after(120, lambda: self._set_left_panel_width(430))
 
         self._build_left_panel(left_frame)
@@ -1418,6 +1423,32 @@ class LauncherApp:
             justify=tk.LEFT,
             anchor="w",
         ).pack(anchor="w", pady=(4, 0))
+
+        # 界面缩放（类似 Windows 显示缩放）
+        scale_row = tk.Frame(test_frame, bg=self.theme["card"])
+        scale_row.pack(fill=tk.X, pady=(8, 0))
+        tk.Label(
+            scale_row,
+            text="界面缩放",
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        ttk.Combobox(
+            scale_row,
+            textvariable=self.ui_scale_var,
+            values=[label for label, _ in wt_dpi.SCALE_PRESETS],
+            state="readonly",
+            width=8,
+        ).pack(side=tk.LEFT, padx=(8, 4))
+        tk.Label(
+            scale_row,
+            text="（修改后本窗口即时生效，其余窗口重启后生效）",
+            bg=self.theme["card"],
+            fg=self.theme.get("muted", self.theme["text"]),
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT)
+        self.ui_scale_var.trace_add("write", lambda *_args: self._on_ui_scale_changed())
 
         flow_file_frame = tk.Frame(test_frame, bg=self.theme["card"])
         flow_file_frame.pack(fill=tk.X, pady=(8, 0))
@@ -1727,6 +1758,7 @@ class LauncherApp:
             "流程设计与转换",
             [
                 ("启动 pywinauto recorder", self.open_pywinauto_recorder),
+                ("同步录制脚本(增量·最新)", self.sync_recorded_scripts),
                 ("打开流程链路编辑", self.open_flow_editor),
                 ("相对区域取点", self.open_relative_region_helper),
                 ("转换 Recorder 脚本", self.convert_recorder_script),
@@ -1755,6 +1787,8 @@ class LauncherApp:
                 ("模型配置检查", self.run_model_check),
                 ("打开 UI-TARS 配置", self.open_ui_tars_config),
                 ("打开运行日志", self.open_log_file),
+                ("分析运行日志·最近一次", self.analyze_run_logs_last),
+                ("分析运行日志·汇总趋势", self.analyze_run_logs_aggregate),
                 ("一键日志打包", self.package_debug_logs),
             ],
         )
@@ -2209,6 +2243,71 @@ class LauncherApp:
         os.makedirs(RUN_REPORT_DIR, exist_ok=True)
         os.startfile(RUN_REPORT_DIR)
 
+    def _load_run_log_analyzer(self):
+        """惰性加载 tools/analyze_run_logs.py（只读分析工具），并缓存模块。"""
+        module = getattr(self, "_run_log_analyzer_module", None)
+        if module is not None:
+            return module
+        tool_path = os.path.join(BASE_DIR, "tools", "analyze_run_logs.py")
+        spec = importlib.util.spec_from_file_location("wt_analyze_run_logs", tool_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self._run_log_analyzer_module = module
+        return module
+
+    def _render_run_log_analysis(self, print_callable, analysis):
+        """把分析工具的文本输出捕获后填入运行报告详情面板。"""
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            print_callable(analysis)
+        self._set_run_report_detail_text(buffer.getvalue())
+
+    def analyze_run_logs_last(self):
+        """诊断最近一次运行：首因定位 + 软成功 + 耗时热点，结果显示在报告面板。"""
+        try:
+            analyzer = self._load_run_log_analyzer()
+            report = analyzer.resolve_single_report("last", RUN_REPORT_DIR)
+            if report is None:
+                self._append_log("未找到可分析的运行报告，先跑一次自动化流程后再试。", tag="warning")
+                self._set_run_report_detail_text("未找到可分析的运行报告。先跑一次自动化流程后再试。")
+                return
+            analysis = analyzer.build_single_analysis(report)
+            self._render_run_log_analysis(analyzer.print_single_analysis, analysis)
+            root_cause = analysis.get("rootCause")
+            if root_cause:
+                self._append_log(
+                    f"运行日志分析(最近一次)：首因 {root_cause.get('stepId', '')} "
+                    f"{root_cause.get('stepName', '')}",
+                    tag="error",
+                )
+            else:
+                self._append_log(
+                    f"运行日志分析(最近一次)：{analysis.get('runId', '')} 无失败步 ✅",
+                    tag="success",
+                )
+        except Exception as exc:
+            self._append_log(f"分析运行日志失败：{exc}", tag="error")
+
+    def analyze_run_logs_aggregate(self):
+        """聚合最近若干次运行：失败频次 / 错误签名聚类 / fallback 高频步 / 慢步。"""
+        try:
+            analyzer = self._load_run_log_analyzer()
+            paths = analyzer.iter_report_paths(RUN_REPORT_DIR)
+            if not paths:
+                self._append_log("报告目录为空，暂无可聚合的运行日志。", tag="warning")
+                self._set_run_report_detail_text("报告目录为空。先跑几次自动化流程后再试。")
+                return
+            recent_paths = paths[-40:]
+            reports = [r for r in (analyzer.load_report(p) for p in recent_paths) if r is not None]
+            analysis = analyzer.build_aggregate_analysis(reports, top_n=10)
+            self._render_run_log_analysis(analyzer.print_aggregate_analysis, analysis)
+            self._append_log(
+                f"运行日志分析(汇总)：纳入最近 {analysis.get('runCount', 0)} 次运行",
+                tag="system",
+            )
+        except Exception as exc:
+            self._append_log(f"分析运行日志失败：{exc}", tag="error")
+
     def _get_run_report_for_export(self):
         report = self.current_run_report if isinstance(getattr(self, "current_run_report", None), dict) else None
         if report:
@@ -2396,6 +2495,14 @@ class LauncherApp:
         self._append_log(f"已切换到最近使用模型：{selected_item.get('model', '未命名模型')}", tag="system")
         self.status_var.set("状态：已切换最近使用模型")
         self.current_step_var.set("当前步骤：模型参数已从历史记录回填")
+
+    def _on_ui_scale_changed(self):
+        """界面缩放变更：写入共享配置并即时应用到主窗口。"""
+        try:
+            value = wt_dpi.label_to_scale(self.ui_scale_var.get())
+            wt_dpi.apply_scale(self.root, value, 1320, 860)
+        except Exception as exc:
+            self._append_log(f"应用界面缩放失败：{exc}", tag="warning")
 
     def _save_launcher_state(self):
         values = self._get_model_config_values()
@@ -3059,8 +3166,8 @@ class LauncherApp:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.configure(bg=self.theme["bg"])
-        dialog.geometry("760x560")
-        dialog.minsize(680, 500)
+        wt_dpi.geometry(dialog, 760, 560)
+        dialog.minsize(wt_dpi.scale(680), wt_dpi.scale(500))
 
         mode_var = tk.StringVar(value="all")
         selected_step_ids = self._get_selected_step_ids()
@@ -3297,8 +3404,8 @@ class LauncherApp:
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.configure(bg=self.theme["bg"])
-        dialog.geometry("760x580")
-        dialog.minsize(700, 520)
+        wt_dpi.geometry(dialog, 760, 580)
+        dialog.minsize(wt_dpi.scale(700), wt_dpi.scale(520))
 
         save_as_path_var = tk.StringVar(value=os.path.join(suggested_dir, suggested_name))
         package_id_var = tk.StringVar(value=default_package_id)
@@ -3704,8 +3811,8 @@ class LauncherApp:
     def _show_text_report_dialog(self, title, summary_text, detail_text):
         dialog = tk.Toplevel(self.root)
         dialog.title(title)
-        dialog.geometry("860x640")
-        dialog.minsize(720, 520)
+        wt_dpi.geometry(dialog, 860, 640)
+        dialog.minsize(wt_dpi.scale(720), wt_dpi.scale(520))
         dialog.configure(bg=self.theme["bg"])
         dialog.transient(self.root)
         try:
@@ -4534,6 +4641,44 @@ class LauncherApp:
             messagebox.showerror("打开失败", f"启动 pywinauto recorder 失败：\n{exc}")
             self._append_log(f"启动 pywinauto recorder 失败：{exc}", tag="error")
 
+    def sync_recorded_scripts(self):
+        """把 pywinauto recorder 输出目录里“这次新录的那一个”增量同步到项目。
+
+        采用清单增量：已同步过的源文件即使在项目里被改名/删除，也不会被搬回。
+        """
+        try:
+            from tools import sync_recorded as _sync_mod
+            importlib.reload(_sync_mod)
+            result = _sync_mod.sync(mode="latest")
+        except Exception as exc:
+            messagebox.showerror("同步失败", f"同步录制脚本时出错：\n{exc}")
+            self._append_log(f"同步录制脚本失败：{exc}", tag="error")
+            return
+
+        log_text = result.get("log_text") or result.get("message", "")
+        if not result.get("ok", True):
+            self._append_log(f"同步录制脚本：{result.get('message', '')}", tag="error")
+            messagebox.showwarning("同步录制脚本", result.get("message", "同步未完成"))
+            return
+
+        copied = result.get("copied", [])
+        self._append_log("同步录制脚本结果：\n" + log_text, tag="success" if copied else "system")
+        self.status_var.set("状态：录制脚本已同步" if copied else "状态：无新录制脚本")
+
+        if copied:
+            newest = copied[-1]
+            self.current_step_var.set(f"当前步骤：已同步 {newest}")
+            if messagebox.askyesno(
+                "同步完成",
+                f"已同步最新录制脚本：\n{newest}\n\n是否打开收录目录查看？",
+            ):
+                dest_dir = result.get("dest", "")
+                if dest_dir and os.path.isdir(dest_dir):
+                    os.startfile(dest_dir)
+        else:
+            self.current_step_var.set("当前步骤：无新录制脚本可同步")
+            messagebox.showinfo("同步录制脚本", result.get("message", "没有新文件需要同步。"))
+
     def open_template_root_dir(self):
         os.makedirs(TEMPLATE_ROOT_DIR, exist_ok=True)
         os.startfile(TEMPLATE_ROOT_DIR)
@@ -4609,7 +4754,9 @@ class LauncherApp:
 
 
 def main():
+    wt_dpi.enable_process_dpi_awareness()
     root = tk.Tk()
+    wt_dpi.compute_scale(root)
     LauncherApp(root)
     root.mainloop()
 

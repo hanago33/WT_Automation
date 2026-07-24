@@ -264,5 +264,7 @@ def clear_conversation(session_id: str) -> bool:
         return False
 
     conv.messages = []
+    conv.metadata.pop("summary", None)
+    conv.metadata.pop("summary_msg_count", None)
     conv.title = f"新会话 {datetime.now().strftime('%m-%d %H:%M')}"
     return save_conversation(conv)

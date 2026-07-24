@@ -574,6 +574,41 @@ def _normalize_send_keys_text(text):
     return normalized.strip()
 
 
+# 录制器路径段自带控件类型（Name||ControlType），转换时据此把 click+send_keys
+# 提升为语义化动作：Edit/Document -> type_text，ComboBox -> select_dropdown_item_runtime。
+_EDIT_CONTROL_TOKENS = ("edit", "document")
+_COMBOBOX_CONTROL_TOKENS = ("combo",)
+
+
+def _classify_control_kind(control_type):
+    """按录制路径里的 ControlType 归类控件语义。
+
+    返回 'combobox' / 'edit' / ''(未知或无需语义化)。
+    仅用于把“点击输入框/下拉框 + 键入”这类拆分步骤合并成可直接执行的语义动作，
+    因此故意不把静态 Text/Window 归入可输入类，避免误合并坐标点击或快捷键。
+    """
+    lowered = str(control_type or "").strip().lower()
+    if not lowered:
+        return ""
+    if any(token in lowered for token in _COMBOBOX_CONTROL_TOKENS):
+        return "combobox"
+    if any(token in lowered for token in _EDIT_CONTROL_TOKENS):
+        return "edit"
+    return ""
+
+
+def _extract_combobox_value(send_keys_text):
+    """从 send_keys 文本中提取下拉框目标选项的字面值。
+
+    去除 {ENTER}/{TAB}/{DOWN} 等按键标记与 ^ % + 修饰符；
+    若只剩纯键盘导航（无任何字面文本），返回 "" —— 此时无法还原选中项。
+    """
+    text = _normalize_send_keys_text(send_keys_text)
+    without_braces = re.sub(r"\{[^}]*\}", "", text)      # 去除 {ENTER}、{DOWN 3} 等按键标记
+    without_mods = re.sub(r"[\^%+]", "", without_braces)  # 去除 Ctrl(^)/Alt(%)/Shift(+) 修饰符
+    return without_mods.strip().strip('"').strip("'").strip()
+
+
 def _append_step_review_hint(step, hint_text):
     if not isinstance(step, dict):
         return
@@ -916,6 +951,10 @@ def _build_action_step_base(action_name, line_no, step_name, window_title, inspe
         "description": f"由 recorder 第 {line_no} 行自动转换。",
         "successLog": step_name,
         "windowTitle": window_title,
+        # 内部字段（_ 前缀，最终输出前会被 _cleanup_generated_steps 剔除）：
+        # 保留录制器原始的叶子 ControlType，不会被控件库匹配覆盖，
+        # 供 _merge_related_operations 判断点击目标是 Edit/ComboBox。
+        "_recorderControlType": leaf_segment.get("controlType", ""),
         "inspectHints": {
             "controlName": leaf_segment.get("name", ""),
             "className": "",
@@ -1376,6 +1415,7 @@ class SemanticAnalyzer:
             "waitInferred": 0,
             "sequencesMerged": 0,
             "noiseFiltered": 0,
+            "comboboxRecognized": 0,
         }
     
     def analyze(self, raw_steps):
@@ -1511,7 +1551,14 @@ class SemanticAnalyzer:
         return result
     
     def _merge_related_operations(self, steps):
-        """合并相关的操作序列"""
+        """合并相关的操作序列。
+
+        录制器把"文本输入"录成 click(输入框)+send_keys(...)、把"下拉选择"录成
+        click(下拉框)+send_keys(...)，且 send_keys 常退化到窗口作用域(||Window)导致
+        丢失真实目标控件。这里依据前一步点击控件的 ControlType 做语义化合并：
+          - Edit/Document → type_text（用点击控件定位覆盖键入步骤，修复丢失的目标）
+          - ComboBox      → select_dropdown_item_runtime（提取并写入 recommendedTargetValue）
+        """
         result = []
         i = 0
         
@@ -1526,22 +1573,62 @@ class SemanticAnalyzer:
                 current_sig = _build_step_signature(current)
                 next_sig = _build_step_signature(next_step)
                 
-                if ("click:" in current_sig and ("send_keys:" in next_sig or "type_text:" in next_sig)):
+                is_input_next = (
+                    "send_keys:" in next_sig
+                    or "type_text:" in next_sig
+                    or "select_dropdown_item_runtime:" in next_sig
+                )
+                if "click:" in current_sig and is_input_next:
+                    current_hints = current.get("inspectHints", {}) or {}
+                    # 命中控件库后 inspectHints.controlType/uiPath 可能被库定义覆盖，
+                    # 优先用基础构建时保留的录制器原始 ControlType，再依次回退到
+                    # inspectHints.controlType 与 uiPath 叶子段（仍可能携带 ||Edit / ||ComboBox）。
+                    click_control_type = str(current.get("_recorderControlType", "")).strip()
+                    if not _classify_control_kind(click_control_type):
+                        click_control_type = current_hints.get("controlType", "")
+                    if not _classify_control_kind(click_control_type):
+                        leaf_type = _get_leaf_segment(current_hints.get("uiPath", "")).get("controlType", "")
+                        click_control_type = leaf_type or click_control_type
+                    click_kind = _classify_control_kind(click_control_type)
+                    next_config = next_step.get("actionConfig", {}) or {}
                     current_control = str(((current.get("actionConfig", {}) or {}).get("controlId", ""))).strip()
-                    next_control = str(((next_step.get("actionConfig", {}) or {}).get("controlId", ""))).strip()
-                    current_path = str(((current.get("inspectHints", {}) or {}).get("uiPath", ""))).strip()
+                    next_control = str((next_config.get("controlId", ""))).strip()
+                    current_path = str((current_hints.get("uiPath", ""))).strip()
                     next_path = str(((next_step.get("inspectHints", {}) or {}).get("uiPath", ""))).strip()
-                    if (current_control and next_control and current_control == next_control) or (current_path and current_path == next_path):
-                        next_step["actionConfig"]["action"] = "type_text"
-                        next_step["actionConfig"]["controlId"] = next_control or current_control
-                        if current.get("controls") and not next_step.get("controls"):
+                    same_target = (current_control and next_control and current_control == next_control) or (current_path and current_path == next_path)
+                    # 当点击的是可输入控件(Edit/ComboBox)时，即使键入步骤已退化到窗口作用域
+                    # (目标不同)，也用点击控件的定位覆盖键入步骤，修复丢失的真实目标。
+                    if click_kind in ("edit", "combobox") or same_target:
+                        keyed_text = str(next_config.get("text", ""))
+                        # 用点击步骤的控件定位覆盖键入步骤（键入步骤常丢失真实目标）
+                        if current.get("controls"):
                             next_step["controls"] = copy.deepcopy(current.get("controls", []))
-                        if current.get("inspectHints") and not next_step.get("inspectHints", {}).get("controlName"):
+                        if current.get("inspectHints"):
                             next_step["inspectHints"] = copy.deepcopy(current.get("inspectHints", {}))
-                        if current.get("windowTitle") and not next_step.get("windowTitle"):
+                        if current.get("windowTitle"):
                             next_step["windowTitle"] = current.get("windowTitle", "")
-                        next_step["name"] = str(next_step.get("name", "")).replace("输入 ", "在 ", 1)
-                        next_step["notes"] = (next_step.get("notes", "") + " [已吸收前一步点击，自动转为可直接输入]").strip()
+                        next_step["actionConfig"]["controlId"] = current_control or next_control
+                        if click_kind == "combobox":
+                            combo_value = _extract_combobox_value(keyed_text)
+                            next_step["actionConfig"]["action"] = "select_dropdown_item_runtime"
+                            next_step["actionConfig"]["recommendedTargetValue"] = combo_value
+                            next_step["actionConfig"].pop("text", None)
+                            if next_step.get("controls"):
+                                ctrl = next_step["controls"][0]
+                                ctrl.setdefault("inspectData", {})
+                                ctrl["inspectData"]["recommendedTargetValue"] = combo_value
+                            leaf_name = current_hints.get("controlName", "") or "下拉框"
+                            if combo_value:
+                                next_step["name"] = f"在 {leaf_name} 选择 {combo_value}"
+                            else:
+                                next_step["name"] = f"在 {leaf_name} 选择下拉项"
+                                _append_step_review_hint(next_step, "下拉选项为纯键盘导航，无法还原选中值，请手动补充 recommendedTargetValue")
+                            next_step["notes"] = (next_step.get("notes", "") + " [已吸收前一步点击，识别为下拉选择]").strip()
+                            self.stats["comboboxRecognized"] = self.stats.get("comboboxRecognized", 0) + 1
+                        else:
+                            next_step["actionConfig"]["action"] = "type_text"
+                            next_step["name"] = str(next_step.get("name", "")).replace("输入 ", "在 ", 1)
+                            next_step["notes"] = (next_step.get("notes", "") + " [已吸收前一步点击，自动转为可直接输入]").strip()
                         self.stats["sequencesMerged"] += 1
                         i += 1
                         result.append(next_step)

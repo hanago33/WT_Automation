@@ -1,0 +1,15 @@
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\obj\Release\net10.0-windows\uia_tree_dumper.GeneratedMSBuildEditorConfig.editorconfig
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\obj\Release\net10.0-windows\uia_tree_dumper.AssemblyInfoInputs.cache
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\obj\Release\net10.0-windows\uia_tree_dumper.AssemblyInfo.cs
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\obj\Release\net10.0-windows\uia_tree_dumper.csproj.CoreCompileInputs.cache
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\obj\Release\net10.0-windows\uia_tree_dumper.sourcelink.json
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\bin\Release\net10.0-windows\uia_tree_dumper.exe
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\bin\Release\net10.0-windows\uia_tree_dumper.deps.json
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\bin\Release\net10.0-windows\uia_tree_dumper.runtimeconfig.json
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\bin\Release\net10.0-windows\uia_tree_dumper.dll
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\bin\Release\net10.0-windows\uia_tree_dumper.pdb
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\obj\Release\net10.0-windows\uia_tree_dumper.dll
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\obj\Release\net10.0-windows\refint\uia_tree_dumper.dll
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\obj\Release\net10.0-windows\uia_tree_dumper.pdb
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\obj\Release\net10.0-windows\uia_tree_dumper.genruntimeconfig.cache
+D:\My_RF_Project\WT_Automation\uia_tree_dumper\uia_tree_dumper\obj\Release\net10.0-windows\ref\uia_tree_dumper.dll

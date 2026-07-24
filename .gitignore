@@ -19,6 +19,11 @@ launcher_state.json
 flow_editor_startup.signal
 *.local
 workspace/
+tools/.sync_state.json
+tools/.last_sync.log
+# Agent LLM 配置（含明文 API Key，禁止入库）
+WT_AUTOMATION_Agent/_gui_config.json
+WT_AUTOMATION_Agent/model_profiles.json
 
 # Agent 会话历史
 WT_AUTOMATION_Agent/history/

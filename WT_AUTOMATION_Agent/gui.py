@@ -174,6 +174,120 @@ def handle_api(path: str, handler) -> None:
                 for s in all_skills
             ])
 
+        # ── 多模型配置档案 ──
+        if route == "/api/profiles" and handler.command == "GET":
+            from WT_AUTOMATION_Agent.model_profiles import migrate_from_legacy, list_profiles
+            migrate_from_legacy()
+            return _json_response(handler, list_profiles())
+        if route == "/api/profiles" and handler.command == "POST":
+            from WT_AUTOMATION_Agent.model_profiles import save_profile
+            data = _read_body(handler)
+            ok = save_profile(data.get("name", ""), data.get("config", {}))
+            return _json_response(handler, {"ok": ok})
+        if route == "/api/profiles" and handler.command == "DELETE":
+            from WT_AUTOMATION_Agent.model_profiles import delete_profile
+            from urllib.parse import parse_qs
+            qs = parse_qs(parsed.query)
+            name = (qs.get("name") or [""])[0]
+            ok = delete_profile(name)
+            return _json_response(handler, {"ok": ok})
+        if route == "/api/profiles" and handler.command == "PATCH":
+            from WT_AUTOMATION_Agent.model_profiles import set_default
+            data = _read_body(handler)
+            ok = set_default(data.get("name", ""))
+            return _json_response(handler, {"ok": ok})
+
+        # ── 项目知识库 ──
+        if route == "/api/kb/build" and handler.command == "POST":
+            from WT_AUTOMATION_Agent import knowledge_base
+            kb = knowledge_base.rebuild()
+            return _json_response(handler, kb.status())
+        if route == "/api/kb/status" and handler.command == "GET":
+            from WT_AUTOMATION_Agent import knowledge_base
+            return _json_response(handler, knowledge_base.get_knowledge_base().status())
+        if route == "/api/kb/sources" and handler.command == "GET":
+            from WT_AUTOMATION_Agent import knowledge_base
+            return _json_response(handler, knowledge_base.get_knowledge_base().list_sources())
+        if route == "/api/kb/search" and handler.command == "POST":
+            from WT_AUTOMATION_Agent import knowledge_base
+            data = _read_body(handler)
+            try:
+                top_k = int(data.get("top_k", 5))
+            except (TypeError, ValueError):
+                top_k = 5
+            hits = knowledge_base.get_knowledge_base().retrieve(data.get("query", ""), top_k=top_k)
+            return _json_response(handler, hits)
+
+        # ── 控件库语义检索 ──
+        if route == "/api/control-search" and handler.command == "POST":
+            from WT_AUTOMATION_Agent import control_search
+            data = _read_body(handler)
+            query = (data.get("query") or "").strip()
+            try:
+                top_k = int(data.get("top_k") or 5)
+            except (TypeError, ValueError):
+                top_k = 5
+            if not query:
+                return _json_response(handler, {"status": "error", "message": "查询为空"}, 400)
+            cands = control_search.find_controls(query, top_k=top_k)
+            return _json_response(handler, {
+                "status": "ok", "query": query,
+                "count": len(cands), "candidates": cands,
+            })
+
+        if route == "/api/control-stats" and handler.command == "GET":
+            from WT_AUTOMATION_Agent import control_search
+            return _json_response(handler, control_search.stats())
+
+        # ── 流程解释 / 编辑 / 比对 ──
+        if route == "/api/flow/explain" and handler.command == "POST":
+            from WT_AUTOMATION_Agent import flow_ops
+            data = _read_body(handler)
+            flow = flow_ops.load_flow((data.get("flow_path") or "").strip())
+            if not flow:
+                return _json_response(handler, {"status": "error", "message": "流程文件不存在或解析失败"}, 400)
+            agent = _build_agent(data.get("config", {}))
+            answer = agent.explain_flow(flow, (data.get("question") or "").strip())
+            return _json_response(handler, {"status": "ok", "answer": answer})
+
+        if route == "/api/flow/edit" and handler.command == "POST":
+            from WT_AUTOMATION_Agent import flow_ops
+            data = _read_body(handler)
+            flow = flow_ops.load_flow((data.get("flow_path") or "").strip())
+            if not flow:
+                return _json_response(handler, {"status": "error", "message": "流程文件不存在或解析失败"}, 400)
+            agent = _build_agent(data.get("config", {}))
+            result = agent.edit_flow(flow, (data.get("instruction") or "").strip(), write_back=False)
+            return _json_response(handler, {"status": "ok" if result.get("ok") else "partial", **result})
+
+        if route == "/api/flow/diff" and handler.command == "POST":
+            from WT_AUTOMATION_Agent import flow_ops
+            data = _read_body(handler)
+            flow_a = flow_ops.load_flow((data.get("flow_a") or "").strip())
+            flow_b = flow_ops.load_flow((data.get("flow_b") or "").strip())
+            if not flow_a or not flow_b:
+                return _json_response(handler, {"status": "error", "message": "两个流程文件均需有效"}, 400)
+            agent = _build_agent(data.get("config", {}))
+            answer = agent.diff_flows(flow_a, flow_b)
+            return _json_response(handler, {"status": "ok", "answer": answer})
+
+        # ── 执行日志 / 运行报告诊断 ──
+        if route == "/api/log/diagnose" and handler.command == "POST":
+            from WT_AUTOMATION_Agent import flow_ops, log_diagnosis
+            data = _read_body(handler)
+            log_input = (data.get("log_input") or "").strip()
+            flow_path = (data.get("flow_path") or "").strip()
+            flow_steps = None
+            if flow_path and os.path.exists(flow_path):
+                fl = flow_ops.load_flow(flow_path)
+                if fl:
+                    flow_steps = fl.get("steps", [])
+            if not log_input:
+                return _json_response(handler, {"status": "error", "message": "请提供日志内容或报告路径"}, 400)
+            agent = _build_agent(data.get("config", {}))
+            answer = agent.diagnose_log(log_input, flow_steps=flow_steps)
+            return _json_response(handler, {"status": "ok", "answer": answer})
+
         if route == "/api/chat" and handler.command == "POST":
             data = _read_body(handler)
             config_data = data.get("config", {})
@@ -181,6 +295,8 @@ def handle_api(path: str, handler) -> None:
             flow_path = config_data.get("control_file", "")
             project_desc = config_data.get("project_desc", "")
             conversation_id = data.get("conversation_id") or None
+            kb_enabled = bool(data.get("kb_enabled", True))
+            compress = bool(data.get("compress", True))
 
             if not message.strip():
                 return _json_response(handler, {"error": "消息不能为空"}, 400)
@@ -191,13 +307,14 @@ def handle_api(path: str, handler) -> None:
             # 判断是对话还是转换
             mode = data.get("mode", "chat")
             if mode == "sequence":
-                steps = agent.nl_to_sequence(message, context, conversation_id=conversation_id)
-                return _json_response(handler, {"type": "steps", "steps": steps})
+                steps = agent.nl_to_sequence(message, context, conversation_id=conversation_id, compress=compress)
+                return _json_response(handler, {"type": "steps", "steps": steps, "mode": "sequence"})
             elif mode == "step":
-                steps = agent.nl_to_step(message, context, conversation_id=conversation_id)
-                return _json_response(handler, {"type": "steps", "steps": steps})
+                steps = agent.nl_to_step(message, context, conversation_id=conversation_id, compress=compress)
+                return _json_response(handler, {"type": "steps", "steps": steps, "mode": "step"})
             else:
-                reply = agent.chat(message, context, conversation_id=conversation_id)
+                reply = agent.chat(message, context, conversation_id=conversation_id,
+                                   kb_enabled=kb_enabled, compress=compress)
                 return _json_response(handler, {"type": "chat", "reply": reply, "conversation_id": conversation_id})
 
         # 会话管理 API
@@ -419,6 +536,45 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
 .step-detail .step-item:hover { background:rgba(108,92,231,0.04); }
 .step-detail .step-item .step-action { color:var(--accent); font-weight:600; min-width:50px; }
 
+/* 序列模式：可拖拽排序 / 可展开步骤清单 */
+.seq-steps { margin-top:8px; border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden; }
+.seq-step {
+  display:flex; align-items:center; gap:8px; padding:8px 10px;
+  border-bottom:1px solid var(--border); font-size:12px; background:#fff;
+  transition:background 0.15s; cursor:default;
+}
+.seq-step:last-child { border-bottom:none; }
+.seq-step.expanded { background:rgba(108,92,231,0.05); }
+.seq-step.dragging { opacity:0.45; }
+.seq-step.drag-before { box-shadow:inset 0 2px 0 0 var(--accent); }
+.seq-step.drag-after { box-shadow:inset 0 -2px 0 0 var(--accent); }
+.seq-step .drag-handle { cursor:grab; color:#a0a0a8; font-size:14px; user-select:none; }
+.seq-step .drag-handle:active { cursor:grabbing; }
+.seq-step .seq-toggle {
+  border:none; background:transparent; cursor:pointer; color:var(--accent);
+  font-size:10px; width:18px; padding:0;
+}
+.seq-step .seq-num {
+  background:var(--accent); color:#fff; font-size:10px; font-weight:600;
+  min-width:18px; height:18px; line-height:18px; text-align:center; border-radius:9px; flex:none;
+}
+.seq-step .seq-action { color:var(--accent); font-weight:600; min-width:54px; }
+.seq-step .seq-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.seq-step .seq-copy {
+  border:1px solid var(--border); background:#fff; border-radius:4px; cursor:pointer;
+  font-size:11px; padding:2px 8px; color:#555; flex:none;
+}
+.seq-step .seq-copy:hover { background:rgba(108,92,231,0.08); }
+.seq-step .seq-detail {
+  flex-basis:100%; order:9; margin:6px 0 0; padding:8px 10px; background:#f7f7fb;
+  border-radius:var(--radius-sm); font-size:11px; line-height:1.5; max-height:240px; overflow:auto;
+  white-space:pre-wrap; word-break:break-all;
+}
+.seq-footer { margin-top:8px; }
+.seq-footer .btn-sm { font-size:12px; padding:4px 12px; }
+.seq-step:focus { outline:2px solid var(--accent); outline-offset:-2px; }
+.seq-step:focus:not(.expanded) { background:rgba(108,92,231,0.06); }
+
 /* Input area */
 .input-area {
   padding:14px 20px; background:#fff; border-top:1px solid var(--border);
@@ -567,6 +723,79 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
       <button class="btn btn-secondary btn-sm" onclick="listSkills()">🔧 Skills</button>
     </div>
 
+    <!-- 模型配置档案 -->
+    <div style="margin-top:14px; border-top:1px solid rgba(255,255,255,0.06); padding-top:12px;">
+      <div class="collapsible-header" onclick="toggleProfiles()" id="prof-header">
+        <span>🧩 模型配置档案</span><span class="arrow">▶</span>
+      </div>
+      <div class="collapsible-body" id="prof-body">
+        <div class="config-section">
+          <label>已保存档案</label>
+          <select id="profile-select" onchange="loadProfile()" style="width:100%; padding:8px; border-radius:6px; background:var(--input-bg); color:var(--input-text); border:1px solid var(--input-border);">
+            <option value="">— 选择档案 —</option>
+          </select>
+        </div>
+        <div class="config-section">
+          <label>档案名称</label>
+          <input type="text" id="profile-name" placeholder="例如：OpenAI / 本地Ollama / 火山方舟">
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-secondary btn-sm" onclick="saveProfile()">💾 存为档案</button>
+          <button class="btn btn-secondary btn-sm" onclick="deleteProfile()">🗑 删除</button>
+        </div>
+        <button class="btn btn-secondary btn-sm" style="width:100%; margin-top:6px;" onclick="setDefaultProfile()">⭐ 设为默认</button>
+      </div>
+    </div>
+
+    <!-- 智能增强 -->
+    <div style="margin-top:14px; border-top:1px solid rgba(255,255,255,0.06); padding-top:12px;">
+      <div class="collapsible-header" onclick="toggleEnhance()" id="enh-header">
+        <span>🧠 智能增强</span><span class="arrow">▶</span>
+      </div>
+      <div class="collapsible-body" id="enh-body">
+        <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--sidebar-text); margin-bottom:8px; cursor:pointer;">
+          <input type="checkbox" id="opt-kb" checked onchange="onKbToggle()"> 启用项目知识库问答
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--sidebar-text); margin-bottom:8px; cursor:pointer;">
+          <input type="checkbox" id="opt-compress" checked> 启用长对话记忆压缩
+        </label>
+        <button class="btn btn-secondary btn-sm" style="width:100%;" onclick="buildKb()">📚 构建/刷新知识库索引</button>
+        <div id="kb-status" style="font-size:11px; color:var(--text-secondary); margin-top:6px;">未构建</div>
+      </div>
+    </div>
+
+    <!-- 流程助手 -->
+    <div style="margin-top:16px; border-top:1px solid rgba(255,255,255,0.06); padding-top:12px;">
+      <div class="collapsible-header" onclick="toggleFlowTools()" id="ft-header">
+        <span>🛠 流程助手</span><span class="arrow">▶</span>
+      </div>
+      <div class="collapsible-body" id="ft-body">
+        <div id="ft-stats" style="font-size:11px; color:var(--text-secondary); margin-bottom:8px;">控件库加载中…</div>
+        <div class="config-section">
+          <label>控件语义检索</label>
+          <input type="text" id="ft-query" placeholder="如：风机类型下拉框">
+          <button class="btn btn-secondary btn-sm" style="width:100%; margin-top:6px;" onclick="flowSearch()">🔎 检索控件</button>
+        </div>
+        <div class="config-section">
+          <label>流程文件 / 报告路径</label>
+          <input type="text" id="ft-flow" placeholder="flow_definition.json 路径">
+          <input type="text" id="ft-flow-b" placeholder="比对用第二份流程（可选）" style="margin-top:6px;">
+        </div>
+        <div class="config-section">
+          <label>指令 / 问题 / 日志内容</label>
+          <textarea id="ft-instr" placeholder="解释这个流程；把第3步加超时；或粘贴运行日志/报告路径"></textarea>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-secondary btn-sm" onclick="flowExplain()">💡 解释</button>
+          <button class="btn btn-secondary btn-sm" onclick="flowEdit()">✏️ 编辑</button>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-secondary btn-sm" onclick="flowDiff()">🔀 比对</button>
+          <button class="btn btn-secondary btn-sm" onclick="logDiagnose()">🩺 日志诊断</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 历史会话 -->
     <div style="margin-top:16px; border-top:1px solid rgba(255,255,255,0.06); padding-top:12px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -683,27 +912,183 @@ function addMessage(role, content, extra) {
   return div;
 }
 
-function addStepsMessage(steps) {
+function addStepsMessage(steps, mode) {
   if (emptyState) { emptyState.remove(); emptyState = null; }
   let div = document.createElement('div');
   div.className = 'message agent';
+  div.innerHTML = '<div class="avatar">🤖</div>';
 
-  let summaryHtml = '<div class="steps-summary"><span class="badge">' + steps.length + ' 步</span>已生成步骤序列</div>';
-  let detailHtml = '<div class="step-detail">';
-  steps.forEach((s, i) => {
-    let ac = s.actionConfig || {};
-    detailHtml += '<div class="step-item" onclick="copyStepJson(' + i + ')" title="点击复制 JSON">';
-    detailHtml += '<span class="step-action">' + escapeHtml(ac.action || '?') + '</span>';
-    detailHtml += '<span>' + escapeHtml(s.name || 'Step ' + (i+1)) + '</span>';
-    detailHtml += '</div>';
-  });
-  detailHtml += '</div>';
+  // 序列模式（且多于 1 步）启用拖拽排序；单步模式同样使用可展开 / 可复制的步骤行
+  let drag = (mode === 'sequence' && steps.length > 1);
+  div.appendChild(buildSeqBlock(steps, drag));
 
-  div.innerHTML = '<div class="avatar">🤖</div><div class="bubble">' + summaryHtml + detailHtml + '</div>';
   div.__steps = steps;
   messagesContainer.appendChild(div);
   scrollToBottom();
   return div;
+}
+
+// ── 步骤清单：可展开 / 可复制；序列模式额外支持拖拽与方向键排序 ──
+function buildSeqBlock(steps, drag) {
+  steps.forEach((s, i) => { if (!s.__seqKey) s.__seqKey = 'sk_' + Date.now() + '_' + i; });
+  let bubble = document.createElement('div');
+  bubble.className = 'bubble';
+
+  let header = document.createElement('div');
+  header.className = 'steps-summary';
+  header.innerHTML = '<span class="badge">' + steps.length + ' 步</span>' +
+    (drag ? '已生成步骤序列 · 拖拽 ⠿ 或聚焦后方向键排序，点击 ▶ 展开'
+          : '已生成步骤' + (steps.length > 1 ? '序列' : '') + ' · 点击 ▶ 展开');
+  bubble.appendChild(header);
+
+  let list = document.createElement('div');
+  list.className = 'seq-steps';
+  steps.forEach((s, i) => list.appendChild(buildSeqRow(s, i, drag)));
+  bubble.appendChild(list);
+
+  let footer = document.createElement('div');
+  footer.className = 'seq-footer';
+  let copyBtn = document.createElement('button');
+  copyBtn.className = 'btn btn-secondary btn-sm';
+  copyBtn.textContent = drag ? '📋 复制排序后 JSON' : '📋 复制 JSON';
+  copyBtn.onclick = function () { copySeqJson(this); };
+  footer.appendChild(copyBtn);
+  bubble.appendChild(footer);
+
+  return bubble;
+}
+
+function buildSeqRow(s, i, drag) {
+  let ac = s.actionConfig || {};
+  let row = document.createElement('div');
+  row.className = 'seq-step';
+  row.dataset.key = s.__seqKey;
+  if (drag) {
+    row.draggable = true;
+    row.tabIndex = 0;
+    row.setAttribute('aria-label', '步骤 ' + (i + 1) + '，使用上下方向键排序');
+  }
+
+  let handle = drag ? '<span class="drag-handle" title="拖拽排序（或聚焦后按方向键）">⠿</span>' : '';
+  row.innerHTML =
+    handle +
+    '<button class="seq-toggle" onclick="toggleSeqStep(this)">' + (s.__expanded ? '▼' : '▶') + '</button>' +
+    '<span class="seq-num">' + (i + 1) + '</span>' +
+    '<span class="seq-action">' + escapeHtml(ac.action || '?') + '</span>' +
+    '<span class="seq-name">' + escapeHtml(s.name || ('Step ' + (i + 1))) + '</span>' +
+    '<button class="seq-copy" onclick="copySeqStep(this)">复制</button>' +
+    '<pre class="seq-detail"' + (s.__expanded ? '' : ' style="display:none"') + '>' +
+      escapeHtml(JSON.stringify(s, null, 2)) + '</pre>';
+
+  if (drag) {
+    row.addEventListener('dragstart', seqDragStart);
+    row.addEventListener('dragover', seqDragOver);
+    row.addEventListener('dragleave', seqDragLeave);
+    row.addEventListener('drop', seqDrop);
+    row.addEventListener('dragend', seqDragEnd);
+    row.addEventListener('keydown', seqKeyNav);
+  }
+  return row;
+}
+
+function toggleSeqStep(btn) {
+  let row = btn.closest('.seq-step');
+  let detail = row.querySelector('.seq-detail');
+  let expanded = detail.style.display === 'none';
+  detail.style.display = expanded ? 'block' : 'none';
+  btn.textContent = expanded ? '▼' : '▶';
+  row.classList.toggle('expanded', expanded);
+  let msgEl = row.closest('.message');
+  let step = msgEl.__steps.find(s => s.__seqKey === row.dataset.key);
+  if (step) step.__expanded = expanded;
+}
+
+function copySeqStep(btn) {
+  let row = btn.closest('.seq-step');
+  let msgEl = row.closest('.message');
+  let step = msgEl.__steps.find(s => s.__seqKey === row.dataset.key);
+  if (!step) return;
+  let clean = _cleanStep(step);
+  navigator.clipboard.writeText(JSON.stringify(clean, null, 2)).then(() => {
+    let old = btn.textContent; btn.textContent = '已复制'; setTimeout(() => btn.textContent = old, 1200);
+  });
+}
+
+function copySeqJson(btn) {
+  let msgEl = btn.closest('.message');
+  let clean = msgEl.__steps.map(s => _cleanStep(s));
+  navigator.clipboard.writeText(JSON.stringify(clean, null, 2)).then(() => {
+    let old = btn.textContent; btn.textContent = '已复制 ✓'; setTimeout(() => btn.textContent = old, 1500);
+  });
+}
+
+function _cleanStep(s) {
+  let c = Object.assign({}, s);
+  delete c.__seqKey; delete c.__expanded;
+  return c;
+}
+
+// 按 DOM 顺序同步 steps 数组并重编号
+function syncSeqOrder(list, msgEl) {
+  let order = Array.from(list.querySelectorAll('.seq-step')).map(el => el.dataset.key);
+  msgEl.__steps.sort((a, b) => order.indexOf(a.__seqKey) - order.indexOf(b.__seqKey));
+  Array.from(list.querySelectorAll('.seq-step')).forEach((el, i) => {
+    el.querySelector('.seq-num').textContent = (i + 1);
+  });
+}
+
+// 拖拽排序
+let _seqDragSrc = null;
+function seqDragStart(e) {
+  _seqDragSrc = e.currentTarget;
+  e.currentTarget.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  try { e.dataTransfer.setData('text/plain', e.currentTarget.dataset.key); } catch (err) {}
+}
+function seqDragOver(e) {
+  e.preventDefault();
+  if (!_seqDragSrc || e.currentTarget === _seqDragSrc) return;
+  let rect = e.currentTarget.getBoundingClientRect();
+  let after = (e.clientY - rect.top) > rect.height / 2;
+  e.currentTarget.classList.toggle('drag-after', after);
+  e.currentTarget.classList.toggle('drag-before', !after);
+}
+function seqDragLeave(e) {
+  e.currentTarget.classList.remove('drag-after', 'drag-before');
+}
+function seqDrop(e) {
+  e.preventDefault();
+  let target = e.currentTarget;
+  if (!_seqDragSrc || target === _seqDragSrc) { clearSeqDrag(); return; }
+  let list = target.parentElement;
+  let after = (e.clientY - target.getBoundingClientRect().top) > target.getBoundingClientRect().height / 2;
+  if (after) list.insertBefore(_seqDragSrc, target.nextSibling);
+  else list.insertBefore(_seqDragSrc, target);
+  syncSeqOrder(list, target.closest('.message'));
+  clearSeqDrag();
+}
+function seqDragEnd() { clearSeqDrag(); }
+function clearSeqDrag() {
+  if (_seqDragSrc) _seqDragSrc.classList.remove('dragging');
+  document.querySelectorAll('.seq-step').forEach(el => el.classList.remove('drag-after', 'drag-before'));
+  _seqDragSrc = null;
+}
+
+// 键盘可达性：聚焦步骤行后，方向键上下移动排序
+function seqKeyNav(e) {
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+  e.preventDefault();
+  let row = e.currentTarget;
+  let list = row.parentElement;
+  let rows = Array.from(list.querySelectorAll('.seq-step'));
+  let idx = rows.indexOf(row);
+  let targetIdx = e.key === 'ArrowUp' ? idx - 1 : idx + 1;
+  if (targetIdx < 0 || targetIdx >= rows.length) return;
+  let target = rows[targetIdx];
+  if (e.key === 'ArrowUp') list.insertBefore(row, target);
+  else list.insertBefore(row, target.nextSibling);
+  syncSeqOrder(list, row.closest('.message'));
+  row.focus();
 }
 
 function addLoadingMessage() {
@@ -794,6 +1179,9 @@ async function sendMessage() {
   try {
     let body = { config: cfg, message: text, mode: currentMode };
     if (_currentConversationId) body.conversation_id = _currentConversationId;
+    let enh = getEnhanceOptions();
+    body.kb_enabled = enh.kb_enabled;
+    body.compress = enh.compress;
     let result = await apiCall('/api/chat', body);
     removeLoadingMessage();
 
@@ -801,7 +1189,7 @@ async function sendMessage() {
       addMessage('agent', '❌ 错误: ' + escapeHtml(result.error));
       updateStatus(false);
     } else if (result.type === 'steps') {
-      addStepsMessage(result.steps);
+      addStepsMessage(result.steps, result.mode);
       updateStatus(true);
     } else {
       addMessage('agent', result.reply || '(无响应)');
@@ -874,6 +1262,233 @@ async function loadConfig() {
   document.getElementById('cfg-backoff').value = cfg.retry_backoff || 2.0;
   document.getElementById('cfg-retry-codes').value = cfg.retry_codes || '429,500,502,503,504';
   showToast('配置已加载', 'info');
+}
+
+// ── 模型配置档案 ──
+function toggleProfiles() {
+  document.getElementById('prof-header').classList.toggle('open');
+  document.getElementById('prof-body').classList.toggle('open');
+}
+function toggleEnhance() {
+  document.getElementById('enh-header').classList.toggle('open');
+  document.getElementById('enh-body').classList.toggle('open');
+}
+
+async function loadProfiles() {
+  try {
+    let resp = await fetch('/api/profiles');
+    let data = await resp.json();
+    let sel = document.getElementById('profile-select');
+    sel.innerHTML = '<option value="">— 选择档案 —</option>';
+    Object.keys(data.profiles || {}).forEach(name => {
+      let opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name + (data.default === name ? ' (默认)' : '');
+      if (data.default === name) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  } catch (e) {}
+}
+
+async function loadProfile() {
+  let name = document.getElementById('profile-select').value;
+  if (!name) return;
+  try {
+    let resp = await fetch('/api/profiles');
+    let data = await resp.json();
+    let cfg = data.profiles[name];
+    if (!cfg) return;
+    document.getElementById('cfg-base-url').value = cfg.base_url || '';
+    document.getElementById('cfg-api-key').value = cfg.api_key || '';
+    document.getElementById('cfg-model').value = cfg.model || 'gpt-4o';
+    document.getElementById('cfg-timeout').value = cfg.timeout || 120;
+    document.getElementById('cfg-retries').value = cfg.max_retries || 3;
+    document.getElementById('cfg-backoff').value = cfg.retry_backoff || 2.0;
+    document.getElementById('cfg-retry-codes').value = cfg.retry_codes || '429,500,502,503,504';
+    document.getElementById('profile-name').value = name;
+    showToast('已加载档案: ' + name, 'info');
+  } catch (e) {}
+}
+
+async function saveProfile() {
+  let name = document.getElementById('profile-name').value.trim();
+  if (!name) { showToast('请先填写档案名称', 'error'); return; }
+  let cfg = getConfig();
+  await fetch('/api/profiles', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name, config: cfg}),
+  });
+  await loadProfiles();
+  showToast('档案已保存: ' + name, 'success');
+}
+
+async function deleteProfile() {
+  let name = document.getElementById('profile-select').value;
+  if (!name) { showToast('请先选择一个档案', 'error'); return; }
+  if (!confirm('确定删除档案「' + name + '」？')) return;
+  await fetch('/api/profiles?name=' + encodeURIComponent(name), {method: 'DELETE'});
+  document.getElementById('profile-name').value = '';
+  await loadProfiles();
+  showToast('档案已删除', 'info');
+}
+
+async function setDefaultProfile() {
+  let name = document.getElementById('profile-select').value;
+  if (!name) { showToast('请先选择一个档案', 'error'); return; }
+  await fetch('/api/profiles', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name}),
+  });
+  await loadProfiles();
+  showToast('已设为默认: ' + name, 'success');
+}
+
+// ── 知识库 ──
+async function buildKb() {
+  let btn = event.target;
+  let old = btn.textContent;
+  btn.textContent = '⏳ 构建中...';
+  btn.disabled = true;
+  try {
+    let resp = await fetch('/api/kb/build', {method: 'POST'});
+    let data = await resp.json();
+    document.getElementById('kb-status').textContent =
+      '已索引 ' + (data.sources||0) + ' 个源 / ' + (data.chunks||0) + ' 个片段';
+    showToast('知识库索引已构建', 'success');
+  } catch (e) {
+    showToast('构建失败: ' + e.message, 'error');
+  }
+  btn.textContent = old;
+  btn.disabled = false;
+}
+
+function getEnhanceOptions() {
+  return {
+    kb_enabled: document.getElementById('opt-kb').checked,
+    compress: document.getElementById('opt-compress').checked,
+  };
+}
+
+async function loadKbStatus() {
+  try {
+    let resp = await fetch('/api/kb/status');
+    let data = await resp.json();
+    if (data.built) {
+      document.getElementById('kb-status').textContent =
+        '已索引 ' + (data.sources||0) + ' 个源 / ' + (data.chunks||0) + ' 个片段';
+    }
+  } catch (e) {}
+}
+
+function onKbToggle() {}
+
+function toggleFlowTools() {
+  document.getElementById('ft-header').classList.toggle('open');
+  document.getElementById('ft-body').classList.toggle('open');
+}
+
+async function flowSearch() {
+  let q = document.getElementById('ft-query').value.trim();
+  if (!q) { showToast('请输入控件描述', 'error'); return; }
+  if (!getConfig().base_url) { showToast('请先配置 LLM 连接', 'error'); return; }
+  addMessage('user', '🔎 检索控件：' + q);
+  addLoadingMessage();
+  try {
+    let resp = await fetch('/api/control-search', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query: q, top_k: 5}),
+    });
+    let data = await resp.json();
+    removeLoadingMessage();
+    if (data.status === 'error') { addMessage('agent', '❌ ' + data.message); return; }
+    let text = '## 控件库检索结果（' + data.count + ' 个候选）\n\n';
+    data.candidates.forEach((c, i) => {
+      text += (i+1) + '. **' + (c.name || '(未命名)') + '**\n';
+      text += '   - control_id: `' + c.targetValue + '`\n';
+      text += '   - 类型: ' + (c.controlType || '?') + ' / 权威度: ' + (c.authority || 'N/A') + '\n';
+      if (c.notes) text += '   - 备注: ' + c.notes + '\n';
+    });
+    text += '\n> 把上面的 control_id 填入 add_step 即可复用现有资产。';
+    addMessage('agent', text);
+  } catch (e) {
+    removeLoadingMessage();
+    addMessage('agent', '❌ ' + e.message);
+  }
+}
+
+async function _flowPost(url, body) {
+  let cfg = getConfig();
+  if (!cfg.base_url) { showToast('请先配置 LLM 连接', 'error'); return null; }
+  addLoadingMessage();
+  try {
+    let resp = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(Object.assign({config: cfg}, body)),
+    });
+    let data = await resp.json();
+    removeLoadingMessage();
+    return data;
+  } catch (e) {
+    removeLoadingMessage();
+    addMessage('agent', '❌ ' + e.message);
+    return null;
+  }
+}
+
+async function flowExplain() {
+  let path = document.getElementById('ft-flow').value.trim();
+  let instr = document.getElementById('ft-instr').value.trim();
+  if (!path) { showToast('请填写流程文件路径', 'error'); return; }
+  addMessage('user', '💡 解释流程：' + path + (instr ? '\n' + instr : ''));
+  let data = await _flowPost('/api/flow/explain', {flow_path: path, question: instr});
+  if (data) addMessage('agent', data.answer || '(无响应)');
+}
+
+async function flowEdit() {
+  let path = document.getElementById('ft-flow').value.trim();
+  let instr = document.getElementById('ft-instr').value.trim();
+  if (!path) { showToast('请填写流程文件路径', 'error'); return; }
+  if (!instr) { showToast('请填写修改指令', 'error'); return; }
+  addMessage('user', '✏️ 编辑流程：' + instr);
+  let data = await _flowPost('/api/flow/edit', {flow_path: path, instruction: instr, write_back: false});
+  if (data) {
+    if (data.ok) {
+      addMessage('agent', '✅ 已生成修改后步骤（共 ' + data.steps.length + ' 步）。\n\n' + (data.raw || ''));
+    } else {
+      addMessage('agent', '⚠️ 模型未返回可解析的 JSON 步骤，原始回复：\n\n' + (data.raw || ''));
+    }
+  }
+}
+
+async function flowDiff() {
+  let a = document.getElementById('ft-flow').value.trim();
+  let b = document.getElementById('ft-flow-b').value.trim();
+  if (!a || !b) { showToast('请填写两份流程文件路径', 'error'); return; }
+  addMessage('user', '🔀 比对流程 A/B');
+  let data = await _flowPost('/api/flow/diff', {flow_a: a, flow_b: b});
+  if (data) addMessage('agent', data.answer || '(无响应)');
+}
+
+async function logDiagnose() {
+  let flow = document.getElementById('ft-flow').value.trim();
+  let instr = document.getElementById('ft-instr').value.trim();
+  if (!instr) { showToast('请粘贴日志内容或报告路径', 'error'); return; }
+  addMessage('user', '🩺 日志诊断');
+  let data = await _flowPost('/api/log/diagnose', {log_input: instr, flow_path: flow});
+  if (data) addMessage('agent', data.answer || '(无响应)');
+}
+
+async function loadControlStats() {
+  try {
+    let resp = await fetch('/api/control-stats');
+    let data = await resp.json();
+    let el = document.getElementById('ft-stats');
+    if (el) el.textContent = '控件库：' + (data.total || 0) + ' 个控件（含 targetValue ' + (data.with_target || 0) + '）';
+  } catch (e) {}
 }
 
 async function listSchemas() {
@@ -1025,16 +1640,6 @@ function copyCode(btn) {
   });
 }
 
-function copyStepJson(idx) {
-  let msgEl = event.target.closest('.message');
-  let steps = msgEl.__steps;
-  if (steps && steps[idx]) {
-    navigator.clipboard.writeText(JSON.stringify(steps[idx], null, 2)).then(() => {
-      showToast('已复制步骤 JSON', 'success');
-    });
-  }
-}
-
 function showToast(msg, type) {
   let toast = document.createElement('div');
   toast.className = 'toast ' + type;
@@ -1052,6 +1657,9 @@ document.getElementById('user-input').addEventListener('input', function() {
 // ── Init ──
 loadConfig();
 loadConversations();
+loadProfiles();
+loadKbStatus();
+loadControlStats();
 
 // ── Conversation Info Bar ──
 function updateConversationInfo(title) {

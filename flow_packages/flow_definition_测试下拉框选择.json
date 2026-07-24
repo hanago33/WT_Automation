@@ -1,0 +1,230 @@
+{
+  "version": "1.0",
+  "project": "WT_Automation",
+  "description": "测试下拉框选项选择：验证访问级别 PART_DropDownButton 的 click + select_dropdown_item_runtime（键盘导航兜底）。运行前需确保 WT 软件已打开至地理信息数据导入界面。",
+  "lastUpdated": "2026-07-24T17:00:00",
+  "runtimeConfig": {
+    "gmExe": "",
+    "sourceFilePath": "",
+    "outputDir": "",
+    "projectionFilePath": ""
+  },
+  "flowPackages": [
+    {
+      "id": "test_dropdown_select",
+      "name": "测试下拉框选择",
+      "description": "测试访问级别下拉框：先点击展开、再键盘导航选中\"组\"",
+      "stepIds": [
+        "step_1",
+        "step_2"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "step_1",
+      "name": "点击-访问级别下拉框",
+      "stage": "converted",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "点击访问级别 PART_DropDownButton 打开下拉列表",
+      "successLog": "点击 访问级别下拉框",
+      "windowTitle": "地理信息数据",
+      "inspectHints": {
+        "controlName": "访问级别 下拉框",
+        "className": "Button",
+        "automationId": "PART_DropDownButton",
+        "controlType": "Button",
+        "uiPath": "Window > MUPGeographicalDataMainView > GeoDataMainView_TabControl_Tabs > MUPGeographicalDataCreatorView > PART_DropDownButton",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "PART_DropDownButton_访问级别_下拉框_Button",
+          "name": "访问级别 下拉框",
+          "role": "来自实时采集：访问级别同行下拉按钮，已展开采集 3 个可选项",
+          "enabled": true,
+          "windowTitle": "地理信息数据",
+          "targetMethod": "automation_id,control_type,found_index",
+          "targetValue": "PART_DropDownButton,Button,1",
+          "templateKey": "",
+          "uiPath": "Window > MUPGeographicalDataMainView > GeoDataMainView_TabControl_Tabs > MUPGeographicalDataCreatorView > PART_DropDownButton",
+          "notes": "found_index=1 消歧：同一父容器下存在多个 PART_DropDownButton（访问级别与性质），通过 found_index 区分",
+          "rawInspectText": "Name: \t \"\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nIsEnabled: \t True\nIsOffscreen: \t False\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"PART_DropDownButton\"\nAncestors: \t Window\n\t MUPGeographicalDataMainView\n\t GeoDataMainView_TabControl_Tabs\n\t MUPGeographicalDataCreatorView",
+          "auxChecks": [
+            "IsEnabled=True",
+            "IsOffscreen=False",
+            "FrameworkId=WPF",
+            "ClassName=Button"
+          ],
+          "inspectData": {
+            "name": "公共",
+            "value": "公共",
+            "toggleState": "0",
+            "controlType": "Button",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=137,t=267,r=841,b=309]",
+            "isEnabled": "True",
+            "isVisible": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "36088",
+            "runtimeId": "[7,8CF8,1710A23]",
+            "frameworkId": "WPF",
+            "className": "Button",
+            "automationId": "PART_DropDownButton",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "helpText": "",
+            "ancestors": [
+              "Window",
+              "MUPGeographicalDataMainView",
+              "GeoDataMainView_TabControl_Tabs",
+              "MUP.Module.GeoData.ViewModels.MUPGeographicalDataCreatorViewModel",
+              "MUPGeographicalDataCreatorView"
+            ],
+            "children": [],
+            "recommendedTargetMethod": "automation_id,control_type",
+            "recommendedTargetValue": "PART_DropDownButton,Button",
+            "optionValues": [
+              "公共",
+              "组",
+              "私有"
+            ]
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click",
+        "controlId": "PART_DropDownButton_访问级别_下拉框_Button",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.5,
+        "waitAfter": 0.5,
+        "retryCount": 1,
+        "retryInterval": 1.0,
+        "onError": "fail"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "先点击下拉按钮展开选项列表，为下一步选择做准备"
+    },
+    {
+      "id": "step_2",
+      "name": "选择下拉项-组",
+      "stage": "converted",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": false,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "从访问级别下拉框中选择「组」",
+      "successLog": "选择下拉项：组",
+      "windowTitle": "地理信息数据",
+      "inspectHints": {
+        "controlName": "访问级别 下拉框",
+        "className": "Button",
+        "automationId": "PART_DropDownButton",
+        "controlType": "Button",
+        "uiPath": "Window > MUPGeographicalDataMainView > GeoDataMainView_TabControl_Tabs > MUPGeographicalDataCreatorView > PART_DropDownButton",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "PART_DropDownButton_访问级别_下拉框_Button",
+          "name": "访问级别 下拉框",
+          "role": "来自实时采集：访问级别同行下拉按钮，已展开采集 3 个可选项",
+          "enabled": true,
+          "windowTitle": "地理信息数据",
+          "targetMethod": "automation_id,control_type,found_index",
+          "targetValue": "PART_DropDownButton,Button,1",
+          "templateKey": "",
+          "uiPath": "Window > MUPGeographicalDataMainView > GeoDataMainView_TabControl_Tabs > MUPGeographicalDataCreatorView > PART_DropDownButton",
+          "notes": "runtime 键盘导航兜底：从 inspectData.optionValues 找到 \"组\" 索引=1，按 ↓×1 → Enter 选中",
+          "rawInspectText": "Name: \t \"\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nIsEnabled: \t True\nIsOffscreen: \t False\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"PART_DropDownButton\"\nAncestors: \t Window\n\t MUPGeographicalDataMainView\n\t GeoDataMainView_TabControl_Tabs\n\t MUPGeographicalDataCreatorView",
+          "auxChecks": [
+            "IsEnabled=True",
+            "IsOffscreen=False",
+            "FrameworkId=WPF",
+            "ClassName=Button"
+          ],
+          "inspectData": {
+            "name": "公共",
+            "value": "公共",
+            "toggleState": "0",
+            "controlType": "Button",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=137,t=267,r=841,b=309]",
+            "isEnabled": "True",
+            "isVisible": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "36088",
+            "runtimeId": "[7,8CF8,1710A23]",
+            "frameworkId": "WPF",
+            "className": "Button",
+            "automationId": "PART_DropDownButton",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "helpText": "",
+            "ancestors": [
+              "Window",
+              "MUPGeographicalDataMainView",
+              "GeoDataMainView_TabControl_Tabs",
+              "MUP.Module.GeoData.ViewModels.MUPGeographicalDataCreatorViewModel",
+              "MUPGeographicalDataCreatorView"
+            ],
+            "children": [],
+            "recommendedTargetMethod": "automation_id,control_type",
+            "recommendedTargetValue": "PART_DropDownButton,Button",
+            "optionValues": [
+              "公共",
+              "组",
+              "私有"
+            ]
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "select_dropdown_item_runtime",
+        "controlId": "PART_DropDownButton_访问级别_下拉框_Button",
+        "value": "组",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.3,
+        "waitAfter": 0.5,
+        "retryCount": 1,
+        "retryInterval": 1.0,
+        "onError": "fail"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "运行时逻辑：1) 枚举弹窗未命中虚拟化选项 → 2) 键盘导航兜底：从 optionValues 找到 \"组\" 索引=1，按 ↓×1 → Enter"
+    }
+  ],
+  "feedbackHistory": [
+    {
+      "stepId": "step_2",
+      "timestamp": "2026-07-24T16:19:59",
+      "runId": "wt_run_20260724_161935",
+      "type": "step_failure",
+      "error": "_select_dropdown_item_runtime() got an unexpected keyword argument 'target_option'",
+      "actionType": "action"
+    }
+  ]
+}
