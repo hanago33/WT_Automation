@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: core_engine/ui_window_helpers
+title: UI 窗口与投影流程辅助工具集
+scope:
+    - wt_window_helpers.py
+    - wt_flow_editor_utils.py
+    - wt_projection_helpers.py
+source_files: []
+depends_on: []
+related_to:
+    - path: image_templates

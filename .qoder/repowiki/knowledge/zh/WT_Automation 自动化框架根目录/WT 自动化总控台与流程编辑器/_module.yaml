@@ -1,0 +1,13 @@
+schema_version: 1
+module_path: top_level_scripts
+title: WT 自动化总控台与流程编辑器
+scope:
+    - WT_AUT_recorded.py
+    - WT_Flow_Editor.py
+    - WT_Launcher.py
+    - 启动WT自动化总控台.bat
+source_files: []
+depends_on: []
+related_to:
+    - path: core_engine/flow_execution_runtime
+    - path: flow_packages

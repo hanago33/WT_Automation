@@ -39,7 +39,18 @@ debug_screenshots/
 backups/
 *.tmp
 *.bak
-~\$*
+~$*
+
+# Temporary debug/diff scratch files
+_tmp_*
+_debug_*.py
+_test_locator_runtime.py
+*_diff.txt
+build/
+graphify-out/
+.agents/
+csv_to_xlsx.spec
+control_maps/self_heal_store.json
 
 # OS/editor noise
 .DS_Store

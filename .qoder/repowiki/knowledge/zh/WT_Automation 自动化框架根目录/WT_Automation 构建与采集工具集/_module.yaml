@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: tools_and_utilities
+title: WT_Automation 构建与采集工具集
+scope:
+    - tools/
+    - build_control_map_library.py
+    - build_image_template_library.py
+source_files: []
+depends_on: []
+related_to: []

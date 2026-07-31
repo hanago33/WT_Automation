@@ -1107,6 +1107,10 @@ class LauncherApp:
 
         launcher_state, _state_error = load_json_file(LAUNCHER_STATE_FILE)
         launcher_state = launcher_state or {}
+        self.simple_mode_flows = {}
+        simple_flows = launcher_state.get("simpleModeFlows", {})
+        if isinstance(simple_flows, dict):
+            self.simple_mode_flows.update(simple_flows)
         self.enable_ai_intervention_var = tk.BooleanVar(value=bool(launcher_state.get("enableAiIntervention", False)))
         self.ui_scale_var = tk.StringVar(value=wt_dpi.scale_to_label(wt_dpi.load_scale_config()))
         self.flow_definition_path_var.set(launcher_state.get("flowDefinitionPath") or FLOW_DEFINITION_FILE)
@@ -1169,28 +1173,58 @@ class LauncherApp:
         container = tk.Frame(self.root, padx=16, pady=16, bg=self.theme["bg"])
         container.pack(fill=tk.BOTH, expand=True)
 
-        header = tk.Frame(container, bg=self.theme["primary"], padx=20, pady=18)
+        # ── 头部：标题 + 模式切换 ──
+        header = tk.Frame(container, bg=self.theme["primary"], padx=20, pady=14)
         header.pack(fill=tk.X)
+        header.columnconfigure(0, weight=1)
 
+        title_frame = tk.Frame(header, bg=self.theme["primary"])
+        title_frame.grid(row=0, column=0, sticky="w")
         tk.Label(
-            header,
+            title_frame,
             text="WT 自动化项目总控台",
             font=("Microsoft YaHei UI", 16, "bold"),
             bg=self.theme["primary"],
             fg="white",
         ).pack(anchor="w")
         tk.Label(
-            header,
+            title_frame,
             text="集成流程运行监测、模板制作、运行检测、模型配置编辑与日志打包",
             fg="#dbeafe",
             bg=self.theme["primary"],
-        ).pack(anchor="w", pady=(4, 0))
+        ).pack(anchor="w", pady=(2, 0))
 
-        main_frame = tk.Frame(container, bg=self.theme["bg"])
-        main_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        # 模式切换按钮（顶部右侧）
+        mode_frame = tk.Frame(header, bg=self.theme["primary"])
+        mode_frame.grid(row=0, column=1, sticky="e", padx=(20, 0))
+        self.ui_mode_var = tk.StringVar(value="advanced")
+
+        self.btn_simple_mode = tk.Button(
+            mode_frame, text="▸ Simple", font=("Microsoft YaHei UI", 10, "bold"),
+            command=lambda: self._switch_ui_mode("simple"),
+            relief=tk.FLAT, bd=0, padx=16, pady=6,
+            cursor="hand2",
+        )
+        self.btn_simple_mode.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.btn_advanced_mode = tk.Button(
+            mode_frame, text="Advanced ◂", font=("Microsoft YaHei UI", 10, "bold"),
+            command=lambda: self._switch_ui_mode("advanced"),
+            relief=tk.FLAT, bd=0, padx=16, pady=6,
+            cursor="hand2",
+        )
+        self.btn_advanced_mode.pack(side=tk.LEFT)
+        self._update_mode_button_styles()
+
+        # ── Simple 模式内容区 ──
+        self.simple_frame = tk.Frame(container, bg=self.theme["bg"])
+        self._build_simple_panel(self.simple_frame)
+
+        # ── Advanced 模式内容区（原界面） ──
+        self.advanced_frame = tk.Frame(container, bg=self.theme["bg"])
 
         self.main_paned = tk.PanedWindow(
-            main_frame,
+            self.advanced_frame,
             orient=tk.HORIZONTAL,
             sashwidth=12,
             sashrelief=tk.RAISED,
@@ -1230,6 +1264,340 @@ class LauncherApp:
 
         self._build_left_panel(left_frame)
         self._build_right_panel(right_frame)
+
+        # 默认显示 Advanced 模式
+        self.simple_frame.pack_forget()
+        self.advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+
+    # ── 模式切换 ──────────────────────────────────────────────────────────────
+
+    def _update_mode_button_styles(self):
+        active_bg = "#3b82f6"
+        inactive_bg = "#1e40af"
+        active_fg = "white"
+        inactive_fg = "#93c5fd"
+        mode = self.ui_mode_var.get()
+        self.btn_simple_mode.config(
+            bg=active_bg if mode == "simple" else inactive_bg,
+            fg=active_fg if mode == "simple" else inactive_fg,
+        )
+        self.btn_advanced_mode.config(
+            bg=active_bg if mode == "advanced" else inactive_bg,
+            fg=active_fg if mode == "advanced" else inactive_fg,
+        )
+
+    def _switch_ui_mode(self, mode):
+        self.ui_mode_var.set(mode)
+        self._update_mode_button_styles()
+        if mode == "simple":
+            self.advanced_frame.pack_forget()
+            self.simple_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        else:
+            self.simple_frame.pack_forget()
+            self.advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        self.root.update_idletasks()
+
+    # ── Simple 模式界面 ──────────────────────────────────────────────────────
+
+    SIMPLE_SECTIONS = [
+        {"key": "terrain", "title": "新建地形信息数据", "icon": "🗺️"},
+        {"key": "weather", "title": "新建气象数据", "icon": "🌤️"},
+        {"key": "turbine", "title": "新建风机类型", "icon": "🌬️"},
+        {"key": "project", "title": "新建工程项目", "icon": "📋"},
+        {"key": "cfd", "title": "发送 CFD 计算", "icon": "⚙️"},
+        {"key": "comprehensive", "title": "发送综合计算", "icon": "📊"},
+    ]
+
+    def _build_simple_panel(self, parent):
+        """构建 Simple 模式界面：6 个功能板块卡片，2 列 3 行布局。"""
+        theme = self.theme
+
+        # ── 顶部操作栏 ──
+        toolbar = tk.Frame(parent, bg=theme["bg"])
+        toolbar.pack(fill=tk.X, pady=(0, 12))
+
+        tk.Label(toolbar, text="运行流程", font=("Microsoft YaHei UI", 14, "bold"),
+                 bg=theme["bg"], fg=theme["text"]).pack(side=tk.LEFT)
+
+        tk.Button(toolbar, text="全选", command=lambda: self._simple_toggle_all(True),
+                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+                  padx=12, pady=4, cursor="hand2").pack(side=tk.LEFT, padx=(20, 4))
+        tk.Button(toolbar, text="取消全选", command=lambda: self._simple_toggle_all(False),
+                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+                  padx=12, pady=4, cursor="hand2").pack(side=tk.LEFT, padx=4)
+
+        sep = tk.Frame(toolbar, width=1, bg=theme["border"])
+        sep.pack(side=tk.LEFT, fill=tk.Y, padx=12)
+
+        self.btn_simple_run = tk.Button(
+            toolbar, text="▶ 运行所选板块", command=self._run_simple_mode,
+            bg="#059669", fg="white", font=("Microsoft YaHei UI", 10, "bold"),
+            relief=tk.FLAT, padx=20, pady=6, cursor="hand2",
+        )
+        self.btn_simple_run.pack(side=tk.LEFT)
+
+        self.simple_status_var = tk.StringVar(value="就绪")
+        tk.Label(toolbar, textvariable=self.simple_status_var, bg=theme["bg"],
+                 fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.RIGHT)
+
+        # ── 卡片网格容器（可滚动） ──
+        canvas_frame = tk.Frame(parent, bg=theme["bg"])
+        canvas_frame.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(canvas_frame, bg=theme["bg"], highlightthickness=0)
+        h_scroll = tk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+        scrollable = tk.Frame(canvas, bg=theme["bg"])
+
+        scrollable.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable, anchor="nw", tags="inner")
+        canvas.configure(yscrollcommand=h_scroll.set)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        h_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 鼠标滚轮支持
+        def _on_mousewheel(event):
+            canvas.yview_scroll(-1 * (event.delta // 120), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel, add="+")
+        # 控件进入/离开 canvas 时绑定/解绑滚轮，避免干扰其他可滚动区域
+        canvas.bind("<Enter>", lambda e: setattr(self, "_simple_scroll_canvas", canvas))
+        canvas.bind("<Leave>", lambda e: setattr(self, "_simple_scroll_canvas", None))
+
+        # ── 6 个板块卡片 ──
+        self.simple_section_vars = {}  # key -> {"enabled": BooleanVar, "path": str, ...}
+        section_widgets = {}  # key -> {"path_label": Label, "frame": Frame}
+
+        for i, sec in enumerate(self.SIMPLE_SECTIONS):
+            key = sec["key"]
+            enabled_var = tk.BooleanVar(value=True)
+            path_key = f"simple_{key}_path"
+            flow_path = getattr(self, path_key, "") or self.simple_mode_flows.get(key, "")
+
+            self.simple_section_vars[key] = {
+                "enabled": enabled_var,
+                "path": flow_path,
+            }
+
+            # 卡片外框
+            card = tk.Frame(
+                scrollable, bg=theme["card"],
+                highlightthickness=1, highlightbackground=theme["border"],
+                padx=14, pady=12,
+            )
+            row = i // 2
+            col = i % 2
+            card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+            scrollable.columnconfigure(0, weight=1)
+            scrollable.columnconfigure(1, weight=1)
+            scrollable.rowconfigure(row, weight=0)
+
+            # ── 标题行：勾选 + 图标 + 名称 ──
+            title_row = tk.Frame(card, bg=theme["card"])
+            title_row.pack(fill=tk.X, anchor="w")
+
+            tk.Checkbutton(title_row, variable=enabled_var, bg=theme["card"],
+                           font=("Microsoft YaHei UI", 12, "bold"), cursor="hand2").pack(side=tk.LEFT)
+            tk.Label(title_row, text=f"{sec['icon']} {sec['title']}",
+                     font=("Microsoft YaHei UI", 12, "bold"), bg=theme["card"],
+                     fg=theme["text"]).pack(side=tk.LEFT, padx=(4, 0))
+
+            # ── 默认流程路径 ──
+            path_row = tk.Frame(card, bg=theme["card"])
+            path_row.pack(fill=tk.X, anchor="w", pady=(8, 0))
+
+            tk.Label(path_row, text="当前默认:", font=("Microsoft YaHei UI", 9),
+                     bg=theme["card"], fg=theme["muted"]).pack(side=tk.LEFT)
+            path_label = tk.Label(
+                path_row, text=flow_path or "（未设置）",
+                font=("Consolas", 9), bg=theme["card"],
+                fg=theme["primary"] if flow_path else "#9ca3af",
+                anchor="w",
+            )
+            path_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+            # ── 按钮行 ──
+            btn_row = tk.Frame(card, bg=theme["card"])
+            btn_row.pack(fill=tk.X, anchor="w", pady=(8, 0))
+
+            def _make_import_flow(k=key):
+                return lambda: self._simple_import_flow(k)
+
+            def _make_import_excel(k=key):
+                return lambda: self._simple_import_excel(k)
+
+            def _make_export(k=key):
+                return lambda: self._simple_export_flow(k)
+
+            ip_btn = tk.Button(btn_row, text="导入流程", command=_make_import_flow(),
+                               bg=theme["primary_soft"], fg=theme["primary"],
+                               relief=tk.FLAT, padx=10, pady=2, cursor="hand2",
+                               font=("Microsoft YaHei UI", 9))
+            ip_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+            ie_btn = tk.Button(btn_row, text="导入Excel", command=_make_import_excel(),
+                               bg=theme["primary_soft"], fg=theme["primary"],
+                               relief=tk.FLAT, padx=10, pady=2, cursor="hand2",
+                               font=("Microsoft YaHei UI", 9))
+            ie_btn.pack(side=tk.LEFT, padx=4)
+
+            ex_btn = tk.Button(btn_row, text="导出", command=_make_export(),
+                               bg=theme["secondary"], fg=theme["muted"],
+                               relief=tk.FLAT, padx=10, pady=2, cursor="hand2",
+                               font=("Microsoft YaHei UI", 9))
+            ex_btn.pack(side=tk.LEFT, padx=4)
+
+            section_widgets[key] = {"path_label": path_label, "frame": card}
+
+        # 保存对 widget 的引用供导入后更新
+        self._simple_section_widgets = section_widgets
+
+    def _simple_import_flow(self, section_key):
+        """为某个板块导入流程链路文件（JSON）。"""
+        path = filedialog.askopenfilename(
+            title=f"导入流程链路文件 - {section_key}",
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        self.simple_section_vars[section_key]["path"] = path
+        self._simple_update_path_label(section_key)
+        self._simple_save_state()
+
+    def _simple_import_excel(self, section_key):
+        """为某个板块导入 Excel 流程定义，自动转换为 flow 并设为默认。"""
+        path = filedialog.askopenfilename(
+            title=f"导入流程 Excel - {section_key}",
+            filetypes=[("Excel 文件", "*.xlsx"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            flow_payload = load_flow_payload_from_excel(path)
+            if not flow_payload:
+                messagebox.showwarning("导入失败", "Excel 文件未能解析为有效的流程定义。")
+                return
+            # 保存为 JSON 并设为该板块的默认
+            target_dir = os.path.join(BASE_DIR, "flow_packages")
+            os.makedirs(target_dir, exist_ok=True)
+            base_name = f"simple_{section_key}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            target_path = os.path.join(target_dir, base_name)
+            with open(target_path, "w", encoding="utf-8") as f:
+                json.dump(flow_payload, f, ensure_ascii=False, indent=2)
+            self.simple_section_vars[section_key]["path"] = target_path
+            self._simple_update_path_label(section_key)
+            self._simple_save_state()
+            messagebox.showinfo("导入完成", f"已将 Excel 转换为流程文件并设为默认:\n{target_path}")
+        except Exception as exc:
+            messagebox.showerror("导入失败", f"导入 Excel 时出错:\n{exc}")
+
+    def _simple_export_flow(self, section_key):
+        """导出某个板块的默认流程文件。"""
+        flow_path = self.simple_section_vars[section_key]["path"]
+        if not flow_path:
+            messagebox.showinfo("提示", f"该板块尚未设置默认流程，无法导出。")
+            return
+        out_path = filedialog.asksaveasfilename(
+            title=f"导出流程 - {section_key}",
+            initialfile=os.path.basename(flow_path),
+            defaultextension=".json",
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not out_path:
+            return
+        try:
+            shutil.copy2(flow_path, out_path)
+            messagebox.showinfo("导出完成", f"已导出到:\n{out_path}")
+        except Exception as exc:
+            messagebox.showerror("导出失败", str(exc))
+
+    def _simple_update_path_label(self, section_key):
+        w = self._simple_section_widgets.get(section_key)
+        if not w:
+            return
+        path = self.simple_section_vars[section_key]["path"]
+        w["path_label"].config(
+            text=path or "（未设置）",
+            fg=self.theme["primary"] if path else "#9ca3af",
+        )
+
+    def _simple_toggle_all(self, checked):
+        for sec in self.SIMPLE_SECTIONS:
+            self.simple_section_vars[sec["key"]]["enabled"].set(checked)
+
+    def _simple_save_state(self):
+        """将 Simple 模式各板块的流程配置持久化到 launcher_state.json。"""
+        try:
+            state, _ = load_json_file(LAUNCHER_STATE_FILE)
+            state = state or {}
+            simple_flows = {}
+            for sec in self.SIMPLE_SECTIONS:
+                key = sec["key"]
+                path = self.simple_section_vars.get(key, {}).get("path", "")
+                if path:
+                    simple_flows[key] = path
+            state["simpleModeFlows"] = simple_flows
+            save_json_file(LAUNCHER_STATE_FILE, state)
+        except Exception:
+            pass
+
+    def _run_simple_mode(self):
+        """运行 Simple 模式中勾选的板块（顺序执行，线程安全）。"""
+        selected = []
+        for sec in self.SIMPLE_SECTIONS:
+            key = sec["key"]
+            info = self.simple_section_vars.get(key, {})
+            if info.get("enabled", tk.BooleanVar(value=False)).get() and info.get("path"):
+                selected.append(key)
+
+        if not selected:
+            messagebox.showinfo("提示", "请先勾选要运行的板块，并确保每个板块已设置默认流程文件。")
+            return
+
+        self.btn_simple_run.config(state=tk.DISABLED)
+        self._simple_run_queue = list(selected)
+        self._simple_run_index = 0
+        self._simple_run_next()
+
+    def _simple_run_next(self):
+        """启动下一个待运行板块（由 after 在主线程中调度，线程安全）。"""
+        if self._simple_run_index >= len(self._simple_run_queue):
+            self.simple_status_var.set("全部运行完成 ✓")
+            self.btn_simple_run.config(state=tk.NORMAL)
+            self._simple_run_queue = []
+            return
+
+        key = self._simple_run_queue[self._simple_run_index]
+        sec = next(s for s in self.SIMPLE_SECTIONS if s["key"] == key)
+        flow_path = self.simple_section_vars.get(key, {}).get("path", "")
+        idx = self._simple_run_index + 1
+        total = len(self._simple_run_queue)
+
+        if not flow_path or not os.path.exists(flow_path):
+            self.simple_status_var.set(f"⚠ {idx}/{total} {sec['title']}: 流程文件不存在")
+            self._simple_run_index += 1
+            self.root.after(500, self._simple_run_next)
+            return
+
+        self.simple_status_var.set(f"▶ {idx}/{total}: {sec['title']}")
+        original_path = self._get_flow_definition_path()
+        self.flow_definition_path_var.set(flow_path)
+        self._launch_automation([], banner=f"========== Simple: {sec['title']} ==========")
+        self.flow_definition_path_var.set(original_path)
+
+        self._simple_run_index += 1
+        # 启动后台监控线程，等待进程退出后调度下一个
+        import threading as _th
+        _th.Thread(target=self._simple_wait_for_next, args=(idx, total, sec["title"]), daemon=True).start()
+
+    def _simple_wait_for_next(self, idx, total, title):
+        """等待当前进程退出，然后调度下一个板块（在后台线程中）。"""
+        try:
+            if self.process:
+                self.process.wait()
+        except Exception:
+            pass
+        time.sleep(0.5)
+        self.root.after(0, self._simple_run_next)
 
     def _configure_styles(self):
         style = ttk.Style()
@@ -2507,6 +2875,13 @@ class LauncherApp:
     def _save_launcher_state(self):
         values = self._get_model_config_values()
         self._add_current_config_to_recent_models()
+        simple_flows = {}
+        if hasattr(self, "simple_section_vars"):
+            for sec in self.SIMPLE_SECTIONS:
+                key = sec["key"]
+                path = self.simple_section_vars.get(key, {}).get("path", "")
+                if path:
+                    simple_flows[key] = path
         save_json_file(
             LAUNCHER_STATE_FILE,
             {
@@ -2520,6 +2895,7 @@ class LauncherApp:
                 "flowDefinitionPath": self._get_flow_definition_path(),
                 "stepOrderByFlowPath": self.step_order_by_flow_path,
                 "recentModels": self.recent_models,
+                "simpleModeFlows": simple_flows,
                 "updatedAt": datetime.now().isoformat(timespec="seconds"),
             },
         )
@@ -4207,6 +4583,10 @@ class LauncherApp:
         except ImportError as exc:
             messagebox.showerror("打开失败", f"缺少实时检测器依赖：\n{exc}", parent=self.root)
             self._append_log(f"打开实时控件检测器失败：{exc}", tag="error")
+        except Exception as exc:
+            # UI 构建失败（如 TclError）也要明确提示，避免只剩一个空窗口
+            messagebox.showerror("打开失败", f"实时检测器初始化失败：\n{exc}", parent=self.root)
+            self._append_log(f"实时控件检测器初始化失败：{exc}", tag="error")
 
     def open_flow_editor(self):
         if getattr(self, "_editor_process", None) is not None and self._editor_process.poll() is None:

@@ -5,12 +5,27 @@ import collections
 import ctypes
 import json
 import os
+import queue
+import copy
+import shutil
 import re
 import subprocess
 import sys
 import threading
 import tkinter as tk
 import time
+
+_HOVER_MONITOR_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_hover_monitor.log")
+
+def _hover_log(msg):
+    """同时输出到控制台和日志文件。"""
+    line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+    print(line)
+    try:
+        with open(_HOVER_MONITOR_LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 # 强制 COM 初始化为 MTA 模式 (Multi-Threaded Apartment)
 # 这是 pywinauto 社区推荐的 UIA 后端核心性能优化，能大幅提升跨进程 COM 调用的速度。
@@ -24,18 +39,80 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 import wt_dpi
 import wt_flow_editor_utils
 
+# pynput 全局热键：用于悬停跟踪模式下的冻结/采集/树导航快捷键。
+# 仅在探测模式开启时生效，避免与 Tk 自身快捷键冲突。
+try:
+    from pynput import keyboard as _pynput_keyboard
+    _PYNPUT_AVAILABLE = True
+except Exception:
+    _pynput_keyboard = None
+    _PYNPUT_AVAILABLE = False
+
 try:
     from pywinauto import Desktop
     import pywinauto
+    import comtypes
 except Exception:
     Desktop = None
     pywinauto = None
+    comtypes = None
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONTROL_MAP_DIR = os.path.join(BASE_DIR, "control_maps")
 DEFAULT_BACKEND = "smart"
 DEFAULT_MAX_DEPTH = 10
+
+
+class _TaskbarProgress:
+    """Windows 任务栏进度条（通过 ITaskbarList3 COM 接口）。
+
+    在采集期间显示进度，给用户直观的反馈。comtypes 不可用或
+    非 Windows 平台时静默降级为 no-op。
+    """
+    TBPF_NOPROGRESS = 0x0
+    TBPF_NORMAL = 0x1
+    TBPF_PAUSED = 0x8
+    TBPF_ERROR = 0x4
+
+    def __init__(self, root):
+        self._hwnd = None
+        self._taskbar = None
+        try:
+            self._hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        except Exception:
+            return
+        if comtypes is None:
+            return
+        try:
+            from comtypes.client import GetActiveObject, CreateObject
+            try:
+                self._taskbar = GetActiveObject(
+                    "{56FDF344-FD6D-11d0-958A-006097C9A090}"
+                )
+            except Exception:
+                self._taskbar = CreateObject(
+                    "{56FDF344-FD6D-11d0-958A-006097C9A090}"
+                )
+        except Exception:
+            self._taskbar = None
+
+    def set_state(self, state):
+        if self._taskbar and self._hwnd:
+            try:
+                self._taskbar.SetProgressState(self._hwnd, state)
+            except Exception:
+                pass
+
+    def set_value(self, current, total):
+        if self._taskbar and self._hwnd and total > 0:
+            try:
+                self._taskbar.SetProgressValue(self._hwnd, current, total)
+            except Exception:
+                pass
+
+    def clear(self):
+        self.set_state(self.TBPF_NOPROGRESS)
 # 整树采集（无画框区域）时的最小递归深度。WPF 控件树嵌套很深，
 # 默认 10 层往往覆盖不到滚动区/折叠面板/未激活 Tab 中的深层控件。
 FULLTREE_MIN_DEPTH = 18
@@ -96,6 +173,11 @@ def build_locator_recommendation(parsed, index=-1, ui_path=None):
     # 过滤掉 SVG path 几何数据、超长乱码等无效 name
     if name and (_is_garbage_name(name) or len(name) > 80):
         name = ""
+    # 关联标签文本（labelText）：标签伴随定位法的定位值，同样过滤乱码。
+    # 该值来自真实的标签元素（运行时按标签找邻近控件），比回填的 name 更可靠。
+    label_text = str(parsed.get("labelText", "")).strip()
+    if label_text and (_is_garbage_name(label_text) or len(label_text) > 80):
+        label_text = ""
 
     candidates = [
         ("automation_id,control_type", [automation_id, control_type], 100, "automation_id + control_type"),
@@ -104,6 +186,8 @@ def build_locator_recommendation(parsed, index=-1, ui_path=None):
         ("name,control_type", [name, control_type], 88, "name + control_type"),
         ("name,class_name", [name, class_name], 84, "name + class_name"),
         ("name", [name], 78, "name"),
+        ("label_text,control_type", [label_text, control_type], 76, "label_text + control_type（标签伴随定位）"),
+        ("label_text", [label_text], 72, "label_text（标签伴随定位）"),
         ("class_name,control_type", [class_name, control_type], 68, "class_name + control_type"),
         ("class_name", [class_name], 58, "class_name"),
         ("control_type", [control_type], 42, "control_type"),
@@ -238,6 +322,24 @@ def build_synthetic_inspect_text(inspect_data):
         f'LegacyIAccessible.Name: \t "{inspect_data.get("legacyName", "")}"',
         f'LegacyIAccessible.Role: \t {inspect_data.get("legacyRole", "")}',
         f'LegacyIAccessible.State: \t {inspect_data.get("legacyState", "")}',
+        f'AccessKey: \t "{inspect_data.get("accessKey", "")}"',
+        f'AcceleratorKey: \t "{inspect_data.get("acceleratorKey", "")}"',
+        f'ItemType: \t "{inspect_data.get("itemType", "")}"',
+        f'ItemStatus: \t "{inspect_data.get("itemStatus", "")}"',
+        f'IsContentElement: \t {inspect_data.get("isContentElement", "")}',
+        f'IsControlElement: \t {inspect_data.get("isControlElement", "")}',
+        f'IsPassword: \t {inspect_data.get("isPassword", "")}',
+        f'HelpText: \t "{inspect_data.get("helpText", "")}"',
+        f'LabeledBy: \t "{inspect_data.get("labeledByName", "")}"',
+        f'SupportedPatterns: \t "{", ".join(str(p) for p in (inspect_data.get("supportedPatterns") or []))}"',
+        f'LegacyIAccessible.ChildId: \t {inspect_data.get("legacyChildId", "")}',
+        f'LegacyIAccessible.Value: \t "{inspect_data.get("legacyValue", "")}"',
+        f'LegacyIAccessible.Description: \t "{inspect_data.get("legacyDescription", "")}"',
+        f'LegacyIAccessible.Role: \t {inspect_data.get("legacyRoleText", "") or inspect_data.get("legacyRole", "")}',
+        f'LegacyIAccessible.State: \t {inspect_data.get("legacyStateText", "") or inspect_data.get("legacyState", "")}',
+        f'LegacyIAccessible.Help: \t "{inspect_data.get("legacyHelp", "")}"',
+        f'LegacyIAccessible.Kbshortcut: \t "{inspect_data.get("legacyKeyboardShortcut", "")}"',
+        f'LegacyIAccessible.DefAction: \t "{inspect_data.get("legacyDefaultAction", "")}"',
     ]
     children = inspect_data.get("children", [])
     if children:
@@ -393,7 +495,7 @@ def _find_window_by_keyword(keyword, backend, excluded_process_ids=None, exclude
         raise RuntimeError("缺少 pywinauto 依赖，请先安装 pywinauto。")
     keyword = str(keyword or "").strip().lower()
     if not keyword:
-        raise RuntimeError("请先输入目标窗口关键字，或改用“当前前台窗口”模式。")
+        raise RuntimeError('请先输入目标窗口关键字，或改用"当前前台窗口"模式。')
     excluded_process_ids = {str(item) for item in (excluded_process_ids or []) if str(item).strip()}
     excluded_titles = {str(item).strip() for item in (excluded_titles or []) if str(item).strip()}
 
@@ -534,11 +636,13 @@ def _classify_control_quality(flat_control):
     score = int(flat_control.get("locatorScore", 0) or 0)
     has_automation_id = bool(str(flat_control.get("automationId", "")).strip())
     has_name = bool(str(flat_control.get("name", "")).strip())
+    has_label_text = bool(str(flat_control.get("labelText", "")).strip())
     depth = int(flat_control.get("depth", 0) or 0)
     child_count = len(((flat_control.get("inspectData", {}) or {}).get("children", []) or []))
 
-    # 非动作控件黑名单：Thumb(列宽手柄)、ScrollBar、Separator、Header 等
-    non_actionable_types = {"thumb", "scrollbar", "separator", "header", "titlebar", "statusbar", "menubar", "tooltip", "tooltip"}
+    # 非动作控件黑名单：ScrollBar、Separator、Header 等
+    # 注：thumb 已从黑名单移除——WPF Thumb 常用于滑块/拖拽控件，有采集价值
+    non_actionable_types = {"scrollbar", "separator", "header", "titlebar", "statusbar", "menubar", "tooltip"}
     if control_type in non_actionable_types:
         return "建议忽略", f"{control_type} 不是动作控件，无需入库"
 
@@ -547,7 +651,15 @@ def _classify_control_quality(flat_control):
         return "建议忽略", "顶层窗口通常不作为直接动作控件"
     if control_type in {"custom", "pane", "group"} and (child_count >= 3 or score < 80):
         return "容器控件", "更适合作为区域或父级上下文"
-    if control_type in {"button", "edit", "combobox", "menuitem", "tabitem", "treeitem", "checkbox", "radiobutton", "listitem"} and (score >= 80 or has_automation_id or has_name):
+    # 推荐保留白名单：含 WPF TextBlock(text/textblock)、Hyperlink、Thumb 滑块等
+    # text/textblock 须有标识（name/automationId/labelText），否则纯装饰文本会膨胀控件数量
+    if control_type in {"textblock", "text"}:
+        if has_name or has_automation_id or has_label_text:
+            return "推荐保留", "有标识的文本控件"
+        else:
+            return "建议忽略", "纯装饰文本无标识，无自动化价值"
+    if control_type in {"button", "edit", "combobox", "menuitem", "tabitem", "treeitem", "checkbox", "radiobutton", "listitem",
+                        "thumb", "hyperlink"} and (score >= 80 or has_automation_id or has_name):
         return "推荐保留", "定位稳定且控件类型适合直接编排动作"
     if score >= 90 and (has_automation_id or has_name):
         return "推荐保留", "定位策略稳定"
@@ -753,10 +865,215 @@ def _detect_expand_collapse_state(wrapper, supported_patterns=None):
         return ""
 
 
-def _extract_wrapper_info(wrapper, depth, index, path_segments, target_window):
+# 需要探测 UIA LabeledBy 属性的控件类型（弱定位时读取，提升标签-输入对关联精度）
+_LABELED_BY_PROBE_TYPES = {
+    "edit", "combobox", "spinner", "document", "custom", "pane", "group",
+    "button", "splitbutton", "image", "text", "listitem", "treeitem", "menuitem",
+    "checkbox", "radiobutton", "slider",
+}
+
+
+def _read_labeled_by_info(wrapper):
+    """读取 UIA LabeledBy 属性指向的标签元素（WPF Label.Target 权威关联）。
+
+    返回 (标签 name, 标签 automationId)；不支持/读取失败时返回 ("", "")。
+    pywinauto 未封装该属性，直接走 COM；每次约 1-2ms，仅对弱定位控件使用。
+    """
+    try:
+        from pywinauto.uia_defines import IUIA
+        element = _safe_get_value(lambda: wrapper.element_info.element, None)
+        if element is None:
+            return "", ""
+        prop_id = getattr(IUIA().UIA_dll, "UIA_LabeledByPropertyId", 30018)
+        labeled = element.GetCurrentPropertyValue(prop_id)
+        if not labeled:
+            return "", ""
+        from pywinauto.uia_element_info import UIAElementInfo
+        info = UIAElementInfo(labeled)
+        name = str(_safe_get_value(lambda: getattr(info, "name", ""), "")).strip()
+        automation_id = str(_safe_get_value(lambda: getattr(info, "automation_id", ""), "")).strip()
+        return name, automation_id
+    except Exception:
+        return "", ""
+
+
+# ── Inspect 字段补全：pywinauto UIAElementInfo 未暴露的属性，COM 直读 ─────
+# pywinauto 的 UIAElementInfo 只暴露 name/class_name/control_type/handle 等少数字段，
+# HelpText/AccessKey/ItemStatus/焦点状态/LegacyIAccessible 等 Inspect 可见信息必须
+# 通过 IUIAutomationElement.GetCurrentPropertyValue / LegacyIAccessiblePattern 直读，
+# 否则采集结果中这些字段恒为空串。
+_UIA_PROP_IDS = {
+    "localizedControlType": 30004,
+    "acceleratorKey": 30006,
+    "accessKey": 30007,
+    "hasKeyboardFocus": 30008,
+    "isKeyboardFocusable": 30009,
+    "helpText": 30013,
+    "isControlElement": 30016,
+    "isContentElement": 30017,
+    "isPassword": 30019,
+    "itemType": 30021,
+    "isOffscreen": 30022,
+    "itemStatus": 30026,
+}
+
+# MSAA 角色码 → 中文可读名（对齐 Inspect 的本地化角色文本）
+_MSAA_ROLE_TEXT = {
+    0x01: "标题栏", 0x02: "菜单栏", 0x03: "滚动条", 0x04: "手柄", 0x05: "声音",
+    0x06: "光标", 0x07: "插入符号", 0x08: "警告", 0x09: "窗口", 0x0A: "客户端",
+    0x0B: "弹出菜单", 0x0C: "菜单项", 0x0D: "工具提示", 0x0E: "应用程序",
+    0x0F: "文档", 0x10: "窗格", 0x11: "图表", 0x12: "对话框", 0x13: "边框",
+    0x14: "分组", 0x15: "分隔符", 0x16: "工具栏", 0x17: "状态栏", 0x18: "表格",
+    0x19: "列标题", 0x1A: "行标题", 0x1B: "列", 0x1C: "行", 0x1D: "单元格",
+    0x1E: "链接", 0x1F: "帮助气球", 0x20: "字符", 0x21: "列表", 0x22: "列表项",
+    0x23: "大纲", 0x24: "大纲项", 0x25: "选项卡页", 0x26: "属性页", 0x27: "指示器",
+    0x28: "图形", 0x29: "静态文本", 0x2A: "可编辑文本", 0x2B: "按下按钮",
+    0x2C: "复选按钮", 0x2D: "单选按钮", 0x2E: "组合框", 0x2F: "下拉列表",
+    0x30: "进度条", 0x31: "刻度盘", 0x32: "热键字段", 0x33: "滑块",
+    0x34: "数值调节钮", 0x35: "示意图", 0x36: "动画", 0x37: "公式",
+    0x38: "下拉按钮", 0x39: "菜单按钮", 0x3A: "网格下拉按钮", 0x3B: "空白",
+    0x3C: "选项卡列表", 0x3D: "时钟", 0x3E: "拆分按钮", 0x3F: "IP 地址",
+    0x40: "大纲按钮",
+}
+
+# MSAA 状态位 → 中文可读名（按位或组合，对齐 Inspect 的状态文本）
+_MSAA_STATE_BITS = (
+    (0x00000001, "不可用"), (0x00000002, "已选择"), (0x00000004, "焦点"),
+    (0x00000008, "按下"), (0x00000010, "已选中"), (0x00000020, "半选"),
+    (0x00000040, "只读"), (0x00000080, "热跟踪"), (0x00000100, "默认"),
+    (0x00000200, "已扩展"), (0x00000400, "已折叠"), (0x00000800, "忙"),
+    (0x00001000, "浮动"), (0x00002000, "滚动字幕"), (0x00004000, "动画"),
+    (0x00008000, "不可见"), (0x00010000, "离屏"), (0x00020000, "可调大小"),
+    (0x00040000, "可移动"), (0x00080000, "自朗读"), (0x00100000, "可设定焦点"),
+    (0x00200000, "可选择"), (0x00400000, "已链接"), (0x00800000, "已遍历"),
+    (0x01000000, "可多选"), (0x02000000, "可扩展选择"), (0x04000000, "低警报"),
+    (0x08000000, "中警报"), (0x10000000, "高警报"), (0x20000000, "受保护"),
+)
+
+
+def decode_msaa_role(role_value):
+    """MSAA 角色码 → "按下按钮 (0x2B)" 风格文本（对齐 Inspect Role 行）。"""
+    try:
+        role_int = int(role_value)
+    except (TypeError, ValueError):
+        return ""
+    if role_int <= 0:
+        return ""
+    label = _MSAA_ROLE_TEXT.get(role_int, "")
+    return f"{label} (0x{role_int:X})" if label else f"(0x{role_int:X})"
+
+
+def decode_msaa_state(state_value):
+    """MSAA 状态位掩码 → "不可用 (0x1)" 风格文本（对齐 Inspect State 行）。"""
+    try:
+        state_int = int(state_value)
+    except (TypeError, ValueError):
+        return ""
+    if state_int < 0:
+        return ""
+    labels = [label for bit, label in _MSAA_STATE_BITS if state_int & bit]
+    text = ",".join(labels) if labels else "常规"
+    return f"{text} (0x{state_int:X})"
+
+
+def _read_uia_property(element, prop_id, default=""):
+    """COM 直读 UIA 属性；不支持/失败/空值时返回 default。
+
+    GetCurrentPropertyValue 对不受支持的属性返回 ReservedNotSupportedValue
+    （IUnknown 指针），需按类型过滤，避免把指针对象写入 JSON。
+    """
+    if element is None or not prop_id:
+        return default
+    try:
+        value = element.GetCurrentPropertyValue(int(prop_id))
+    except Exception:
+        return default
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        return value if value else default
+    return default
+
+
+def _read_legacy_accessible_info(wrapper, supported_patterns=None):
+    """读取 LegacyIAccessible（MSAA）信息，对齐 Inspect 的 MSAA 面板。
+
+    返回 dict：legacyChildId/legacyName/legacyValue/legacyDescription/legacyRole(+Text)/
+    legacyState(+Text)/legacyHelp/legacyKeyboardShortcut/legacyDefaultAction。
+    仅在元素支持 LegacyIAccessible Pattern 时读取（WPF/Win32 大多支持）；
+    任何字段读取失败都降级为空，不影响主流程。
+    """
+    info = {
+        "legacyChildId": "",
+        "legacyName": "",
+        "legacyValue": "",
+        "legacyDescription": "",
+        "legacyRole": "",
+        "legacyRoleText": "",
+        "legacyState": "",
+        "legacyStateText": "",
+        "legacyHelp": "",
+        "legacyKeyboardShortcut": "",
+        "legacyDefaultAction": "",
+    }
+    if wrapper is None:
+        return info
+    if supported_patterns is not None and "LegacyIAccessible" not in supported_patterns:
+        return info
+    try:
+        from pywinauto.uia_defines import IUIA
+        element = _safe_get_value(lambda: wrapper.element_info.element, None)
+        if element is None:
+            return info
+        pattern = element.GetCurrentPattern(10018)  # UIA_LegacyIAccessiblePatternId
+        if not pattern:
+            return info
+        legacy = pattern.QueryInterface(IUIA().ui_automation_client.IUIAutomationLegacyIAccessiblePattern)
+    except Exception:
+        return info
+
+    def _text(attr):
+        value = _safe_get_value(lambda: getattr(legacy, attr, ""), "")
+        return str(value).strip() if isinstance(value, str) else ""
+
+    def _int(attr):
+        value = _safe_get_value(lambda: getattr(legacy, attr, None), None)
+        if isinstance(value, bool):
+            return ""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return ""
+
+    child_id = _int("CurrentChildId")
+    if child_id != "":
+        info["legacyChildId"] = str(child_id)
+    info["legacyName"] = _text("CurrentName")
+    info["legacyValue"] = _text("CurrentValue")
+    info["legacyDescription"] = _text("CurrentDescription")
+    role = _int("CurrentRole")
+    if role != "":
+        info["legacyRole"] = str(role)
+        info["legacyRoleText"] = decode_msaa_role(role)
+    state = _int("CurrentState")
+    if state != "":
+        info["legacyState"] = str(state)
+        info["legacyStateText"] = decode_msaa_state(state)
+    info["legacyHelp"] = _text("CurrentHelp")
+    info["legacyKeyboardShortcut"] = _text("CurrentKeyboardShortcut")
+    info["legacyDefaultAction"] = _text("CurrentDefaultAction")
+    return info
+
+
+def _extract_wrapper_info(wrapper, depth, index, path_segments, target_window, lightweight=False):
     element_info = _safe_get_value(lambda: wrapper.element_info, None)
     if element_info is not None:
         _safe_get_value(lambda: element_info.set_cache_strategy("basic"), None)
+    raw_element = _safe_get_value(lambda: getattr(element_info, "element", None), None)
     name = str(_safe_get_value(lambda: wrapper.window_text(), "")).strip()
     if element_info is not None and not name:
         name = str(_safe_get_value(lambda: getattr(element_info, "name", ""), "")).strip()
@@ -765,42 +1082,98 @@ def _extract_wrapper_info(wrapper, depth, index, path_segments, target_window):
         _safe_get_value(lambda: getattr(element_info, "control_type", ""), ""),
         _safe_get_value(lambda: getattr(element_info, "localized_control_type", ""), ""),
     )
+    # pywinauto 未暴露 localized_control_type 等属性（getattr 恒为空），全部 COM 直读补齐
     localized_control_type = str(_safe_get_value(lambda: getattr(element_info, "localized_control_type", ""), "")).strip()
+    if not localized_control_type:
+        localized_control_type = str(_read_uia_property(raw_element, _UIA_PROP_IDS["localizedControlType"], "")).strip()
     automation_id = str(_safe_get_value(lambda: getattr(element_info, "automation_id", ""), "")).strip()
     framework_id = str(_safe_get_value(lambda: getattr(element_info, "framework_id", ""), "")).strip()
     process_id = str(_safe_get_value(lambda: getattr(element_info, "process_id", ""), "")).strip()
     handle = str(_safe_get_value(lambda: getattr(element_info, "handle", ""), "")).strip()
-    help_text = str(_safe_get_value(lambda: getattr(element_info, "rich_text", ""), "")).strip()
-    provider_description = str(_safe_get_value(lambda: getattr(element_info, "provider_description", ""), "")).strip()
+    # HelpText 必须读 UIA_HelpTextPropertyId；旧实现误用 rich_text（TextPattern 文档文本）
+    text_content = str(_safe_get_value(lambda: getattr(element_info, "rich_text", ""), "")).strip()
+    if lightweight:
+        # 悬停补采轻量级模式：跳过非核心字段，大幅减少 COM 调用
+        help_text = ""
+        provider_description = ""
+        access_key = ""
+        accelerator_key = ""
+        item_type = ""
+        item_status = ""
+        is_content_element = ""
+        is_control_element = ""
+        is_password = ""
+    else:
+        help_text = str(_read_uia_property(raw_element, _UIA_PROP_IDS["helpText"], "")).strip()
+        provider_description = str(_safe_get_value(lambda: getattr(element_info, "provider_description", ""), "")).strip()
+        if not provider_description:
+            provider_description = str(_read_uia_property(raw_element, 30107, "")).strip()
+        # 对齐 Inspect 的补充属性：快捷键/项状态/视图归属/密码标记（流程编排与安全提示用）
+        access_key = str(_read_uia_property(raw_element, _UIA_PROP_IDS["accessKey"], "")).strip()
+        accelerator_key = str(_read_uia_property(raw_element, _UIA_PROP_IDS["acceleratorKey"], "")).strip()
+        item_type = str(_read_uia_property(raw_element, _UIA_PROP_IDS["itemType"], "")).strip()
+        item_status = str(_read_uia_property(raw_element, _UIA_PROP_IDS["itemStatus"], "")).strip()
+        is_content_element = _read_uia_property(raw_element, _UIA_PROP_IDS["isContentElement"], "")
+        is_control_element = _read_uia_property(raw_element, _UIA_PROP_IDS["isControlElement"], "")
+        is_password = _read_uia_property(raw_element, _UIA_PROP_IDS["isPassword"], "")
+
     runtime_id = _format_runtime_id(_safe_get_value(lambda: getattr(element_info, "runtime_id", ""), ""))
     rect = _safe_get_value(lambda: wrapper.rectangle(), None)
     bounding_rectangle = _format_rectangle(rect)
     is_enabled = _safe_get_value(lambda: wrapper.is_enabled(), "")
     is_visible = _safe_get_value(lambda: wrapper.is_visible(), "")
-    is_offscreen = _safe_get_value(lambda: getattr(element_info, "offscreen", ""), "")
+    is_offscreen = _read_uia_property(raw_element, _UIA_PROP_IDS["isOffscreen"], "")
+    if is_offscreen == "":
+        is_offscreen = _safe_get_value(lambda: getattr(element_info, "offscreen", ""), "")
     if is_offscreen == "" and is_visible != "":
         is_offscreen = str(not bool(is_visible))
-    keyboard_focusable = _safe_get_value(lambda: getattr(element_info, "keyboard_focusable", ""), "")
-    has_keyboard_focus = _safe_get_value(lambda: getattr(element_info, "has_keyboard_focus", ""), "")
+    keyboard_focusable = _read_uia_property(raw_element, _UIA_PROP_IDS["isKeyboardFocusable"], "")
+    if keyboard_focusable == "":
+        keyboard_focusable = _safe_get_value(lambda: getattr(element_info, "keyboard_focusable", ""), "")
+    has_keyboard_focus = _read_uia_property(raw_element, _UIA_PROP_IDS["hasKeyboardFocus"], "")
+    if has_keyboard_focus == "":
+        has_keyboard_focus = _safe_get_value(lambda: getattr(element_info, "has_keyboard_focus", ""), "")
+    # UIA LabeledBy（WPF Label.Target 权威标签关联）：仅弱定位控件读取，控制 COM 开销
+    labeled_by_name = ""
+    labeled_by_automation_id = ""
+    if not lightweight and (not name or not automation_id) and control_type.strip().lower() in _LABELED_BY_PROBE_TYPES:
+        labeled_by_name, labeled_by_automation_id = _read_labeled_by_info(wrapper)
     
-    # 尝试获取 ValuePattern (对于没有 name 但有内容的文本框极其重要)
+    # 尝试获取 ValuePattern (对于没有 name 但有内容的文本框及其重要)
     value_pattern_value = ""
     if hasattr(wrapper, "get_value"):
         value_pattern_value = str(_safe_get_value(lambda: wrapper.get_value(), "")).strip()
-    
+        
     # 尝试获取 TogglePattern (对于复选框/单选框的状态采集)
     toggle_state = ""
     if hasattr(wrapper, "get_toggle_state"):
         toggle_state = str(_safe_get_value(lambda: wrapper.get_toggle_state(), "")).strip()
-
-    # 检测支持的 Control Patterns（对齐 Inspect Action 菜单）
-    supported_patterns = _detect_supported_patterns(wrapper)
-    # 检测 ExpandCollapse 状态（ComboBox / Tree / 下拉框），复用已测 Pattern 跳过不支持项
-    expand_collapse_state = _detect_expand_collapse_state(wrapper, supported_patterns)
-
-    legacy_name = str(_safe_get_value(lambda: getattr(element_info, "legacy_name", ""), "")).strip()
-    legacy_role = str(_safe_get_value(lambda: getattr(element_info, "legacy_role", ""), "")).strip()
-    legacy_state = str(_safe_get_value(lambda: getattr(element_info, "legacy_state", ""), "")).strip()
+    
+    if lightweight:
+        # 悬停补采轻量级模式：跳过 Pattern 探测、LegacyIAccessible，大幅减少 COM 调用
+        supported_patterns = []
+        expand_collapse_state = ""
+        legacy_info = {
+            "legacyName": "", "legacyRole": "", "legacyState": "",
+            "legacyRoleText": "", "legacyStateText": "", "legacyChildId": "",
+            "legacyValue": "", "legacyDescription": "", "legacyHelp": "",
+            "legacyKeyboardShortcut": "", "legacyDefaultAction": "",
+        }
+    else:
+        # 检测支持的 Control Patterns（对齐 Inspect Action 菜单）
+        supported_patterns = _detect_supported_patterns(wrapper)
+        # 检测 ExpandCollapse 状态（ComboBox / Tree / 下拉框），复用已测 Pattern 跳过不支持项
+        expand_collapse_state = _detect_expand_collapse_state(wrapper, supported_patterns)
+    
+        # LegacyIAccessible（MSAA）信息：Role/State/Help/DefAction 等，对齐 Inspect MSAA 面板；
+        # 仅在支持 LegacyIAccessible Pattern 时读取（复用已测 Pattern 结果，零额外门槛调用）
+        legacy_info = _read_legacy_accessible_info(wrapper, supported_patterns)
+    legacy_name = legacy_info["legacyName"]
+    legacy_role = legacy_info["legacyRole"]
+    legacy_state = legacy_info["legacyState"]
+    # HelpText 兜底：WPF 桥接的 MSAA Help 常比 UIA HelpText 更完整（如"删除"按钮）
+    if not help_text:
+        help_text = legacy_info["legacyHelp"]
 
     inspect_data = {
         "name": name,
@@ -824,7 +1197,27 @@ def _extract_wrapper_info(wrapper, depth, index, path_segments, target_window):
         "legacyName": legacy_name,
         "legacyRole": legacy_role,
         "legacyState": legacy_state,
+        "legacyRoleText": legacy_info["legacyRoleText"],
+        "legacyStateText": legacy_info["legacyStateText"],
+        "legacyChildId": legacy_info["legacyChildId"],
+        "legacyValue": legacy_info["legacyValue"],
+        "legacyDescription": legacy_info["legacyDescription"],
+        "legacyHelp": legacy_info["legacyHelp"],
+        "legacyKeyboardShortcut": legacy_info["legacyKeyboardShortcut"],
+        "legacyDefaultAction": legacy_info["legacyDefaultAction"],
         "helpText": help_text,
+        "textContent": text_content,
+        "accessKey": access_key,
+        "acceleratorKey": accelerator_key,
+        "itemType": item_type,
+        "itemStatus": item_status,
+        "isContentElement": str(is_content_element),
+        "isControlElement": str(is_control_element),
+        "isPassword": str(is_password),
+        "labeledByName": labeled_by_name,
+        "labeledByAutomationId": labeled_by_automation_id,
+        "supportedPatterns": list(supported_patterns or []),
+        "expandCollapseState": expand_collapse_state,
         "ancestors": list(path_segments[:-1]),
         "children": [],
     }
@@ -862,7 +1255,27 @@ def _extract_wrapper_info(wrapper, depth, index, path_segments, target_window):
         "isEnabled": bool(is_enabled) if str(is_enabled) != "" else None,
         "isVisible": bool(is_visible) if str(is_visible) != "" else None,
         "isOffscreen": str(is_offscreen),
+        "isKeyboardFocusable": str(keyboard_focusable),
+        "hasKeyboardFocus": str(has_keyboard_focus),
         "helpText": help_text,
+        "textContent": text_content,
+        "accessKey": access_key,
+        "acceleratorKey": accelerator_key,
+        "itemType": item_type,
+        "itemStatus": item_status,
+        "isContentElement": str(is_content_element),
+        "isControlElement": str(is_control_element),
+        "isPassword": str(is_password),
+        "legacyName": legacy_name,
+        "legacyRole": legacy_role,
+        "legacyState": legacy_state,
+        "legacyRoleText": legacy_info["legacyRoleText"],
+        "legacyStateText": legacy_info["legacyStateText"],
+        "legacyHelp": legacy_info["legacyHelp"],
+        "legacyKeyboardShortcut": legacy_info["legacyKeyboardShortcut"],
+        "legacyDefaultAction": legacy_info["legacyDefaultAction"],
+        "labeledByName": labeled_by_name,
+        "labeledByAutomationId": labeled_by_automation_id,
         "providerDescription": provider_description,
         "locatorScore": locator_score,
         "locatorReason": locator_reason,
@@ -1014,7 +1427,7 @@ def _enrich_tree_metadata(flat_controls):
 
     添加字段：
      - pathHash: 基于 uiPath 的短哈希，用于快速定位和去重
-     - isTransparentContainer: 标记“透明容器”（无名、单子节点），GUI 可折叠显示
+     - isTransparentContainer: 标记"透明容器"（无名、单子节点），GUI 可折叠显示
      - childCount: 直接子节点数量
     """
     import hashlib
@@ -1121,6 +1534,7 @@ def _walk_raw_view_bfs(
     start_time=None,
     scan_timeout_seconds=30,
     status_callback=None,
+    lightweight=False,
 ):
     """使用 RawViewWalker 进行 BFS 树遍历，不丢失 IsContentElement=False 的控件。
 
@@ -1128,6 +1542,9 @@ def _walk_raw_view_bfs(
      1. IUIAutomation::RawViewWalker → 不过滤 IsContentElement / IsControlElement
      2. 迭代 BFS → 可控内存、可暂停
      3. 输出 flat_controls 格式与 _walk_wrapper 完全兼容
+
+    返回 stats dict：{"timedOut": bool, "hitLimit": bool}，标记采集是否被截断（调用方应上报，
+    静默截断 = 静默漏采）。
     """
     from pywinauto.uia_defines import IUIA
     from pywinauto.controls.uiawrapper import UIAWrapper
@@ -1139,11 +1556,14 @@ def _walk_raw_view_bfs(
     path_segments = list(path_segments or [])
     root_display = path_segments[0] if path_segments else _build_display_name(target_window, "窗口", 1)
 
+    # 采集完整性统计：超时/元素熔断导致的截断需显式上报（静默截断 = 静默漏采）
+    stats = {"timedOut": False, "hitLimit": False}
+
     iuia = IUIA().iuia
     raw_walker = iuia.RawViewWalker
 
     # ---- 根节点 ----
-    root_info = _extract_wrapper_info(target_window_wrapper, 0, 1, path_segments, target_window)
+    root_info = _extract_wrapper_info(target_window_wrapper, 0, 1, path_segments, target_window, lightweight=lightweight)
     root_info["treeLevel"] = 0
     root_info["parentIndex"] = -1
     root_info["siblingsIndex"] = 1
@@ -1156,7 +1576,7 @@ def _walk_raw_view_bfs(
 
     if max_depth <= 0:
         _rebuild_bfs_paths(flat_controls)
-        return None
+        return stats
 
     # ---- BFS 队列 ----
     # 每个队列项: (element, depth, parent_index, siblings_index)
@@ -1182,11 +1602,13 @@ def _walk_raw_view_bfs(
         if time.time() - start_time > scan_timeout_seconds:
             if status_callback:
                 status_callback("扫描超时，已停止遍历。", len(flat_controls))
+            stats["timedOut"] = True
             break
 
         if len(flat_controls) >= _MAX_ELEMENTS_PER_WALK:
             if status_callback:
                 status_callback(f"已达上限 {_MAX_ELEMENTS_PER_WALK} 个控件，暂停。", len(flat_controls))
+            stats["hitLimit"] = True
             break
 
         element, depth, parent_idx, sib_idx = queue.popleft()
@@ -1205,7 +1627,7 @@ def _walk_raw_view_bfs(
         identity = _build_wrapper_identity(wrapper)
         # path_segments 在 BFS 中先填占位值，后续由 _rebuild_bfs_paths 修正
         info = _extract_wrapper_info(
-            wrapper, depth, len(flat_controls) + 1, [root_display], target_window
+            wrapper, depth, len(flat_controls) + 1, [root_display], target_window, lightweight=lightweight
         )
         info["treeLevel"] = depth
         info["parentIndex"] = parent_idx
@@ -1215,12 +1637,20 @@ def _walk_raw_view_bfs(
         current_index = len(flat_controls)
         flat_controls.append(info)
 
+        # P1: COM 节流——每处理 20 个元素短暂 sleep，让目标进程有机会处理自身消息
+        if lightweight and len(flat_controls) % 20 == 0:
+            time.sleep(0.002)
+
         if status_callback and current_index - last_report >= 50:
             last_report = current_index
             status_callback(
                 f"已发现 {len(flat_controls)} 个控件 (depth {depth}, 队列 {len(queue)})...",
                 len(flat_controls),
             )
+
+        if len(flat_controls) % 100 == 0:
+            _bfs_elapsed = (time.time() - start_time) * 1000
+            _hover_log(f"bfs progress, count={len(flat_controls)}, elapsed={_bfs_elapsed:.1f}ms")
 
         if depth >= max_depth:
             continue
@@ -1231,6 +1661,7 @@ def _walk_raw_view_bfs(
             child = raw_walker.GetFirstChildElement(element)
             while child:
                 if time.time() - start_time > scan_timeout_seconds:
+                    stats["timedOut"] = True
                     break
                 child_sib += 1
                 queue.append((child, depth + 1, current_index, child_sib))
@@ -1247,7 +1678,423 @@ def _walk_raw_view_bfs(
             len(flat_controls),
         )
 
-    return None
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Inspect 式定点补采 — 人工定位 → 实时读子树 → 合并回主控件树
+# ---------------------------------------------------------------------------
+# 整树 BFS 只能采到扫描瞬间已实体化的元素；WPF 虚拟化/懒加载子控件要等鼠标悬停、
+# 面板展开后才出现。补采流程对齐 Inspect：先采完整树骨架，再由人工把鼠标指到
+# 目标控件（或在层级树中选中已采控件），实时 BFS 该控件子树并合并回现有 payload。
+
+# 定点补采的子树相对深度上限（相对被指控件，而非窗口根）
+SUPPLEMENT_SUBTREE_MAX_DEPTH = FULLTREE_MIN_DEPTH
+SUPPLEMENT_SCAN_TIMEOUT_SECONDS = 45
+
+# 连续悬停补采（Inspect 式跟踪）：深度降到 6 层控制单次补采耗时（悬停补采是
+# 高频增量操作，漏采的深层可再悬停子节点继续补；定点补采仍用大深度）
+HOVER_SUPPLEMENT_MAX_DEPTH = 6
+HOVER_SUPPLEMENT_TIMEOUT_SECONDS = 8
+# 悬停轮询周期（毫秒）：查看层每 tick 都跟随，150ms 让红框/树聚焦近乎跟手；
+# 采集层另由停顿门控约束（4 tick ≈ 0.6s），重操作触发频率与改前相当
+HOVER_TICK_MS = 150
+HOVER_STABLE_TICKS = 4
+
+
+def _prefix_subtree_paths(sub_flats, ancestor_segments, base_depth=0):
+    """为子树 BFS 结果补全绝对路径与深度。
+
+    _walk_raw_view_bfs 以子树根为起点，uiPath/depth 都是相对值；合并回主树前
+    需要用子树根在窗口内的祖先链前缀补全为绝对 uiPath，并偏移 depth/treeLevel。
+    """
+    prefix_parts = [seg for seg in (ancestor_segments or []) if seg]
+    prefix = " > ".join(prefix_parts)
+    for item in sub_flats or []:
+        if prefix:
+            ui_path = str(item.get("uiPath", "")).strip()
+            item["uiPath"] = f"{prefix} > {ui_path}" if ui_path else prefix
+            parent_path = str(item.get("parentPath", "")).strip()
+            item["parentPath"] = f"{prefix} > {parent_path}" if parent_path else prefix
+            inspect = item.get("inspectData")
+            if isinstance(inspect, dict):
+                inspect["ancestors"] = prefix_parts + list(inspect.get("ancestors") or [])
+        if base_depth:
+            item["depth"] = int(item.get("depth", 0) or 0) + base_depth
+            item["treeLevel"] = int(item.get("treeLevel", 0) or 0) + base_depth
+
+
+def _climb_to_expected_wrapper(wrapper, expected, max_up=12):
+    """从命中元素沿祖先链上溯，找到与期望控件最匹配的元素。
+
+    from_point 命中的往往是期望控件内部的深层叶子（TextBlock 等），需按
+    runtimeId（最强）→ 矩形完全一致 → name+className+controlType 签名逐级回溯。
+    找不到时返回原命中元素兜底。
+    """
+    if not isinstance(expected, dict):
+        return wrapper
+    exp_runtime = str(expected.get("runtimeId", "")).strip()
+    exp_rect = _normalize_rect_dict(expected.get("boundingBox"))
+    exp_sig = (
+        str(expected.get("name", "")).strip(),
+        str(expected.get("className", "")).strip(),
+        str(expected.get("controlType", "")).strip(),
+    )
+    has_sig = any(exp_sig)
+    current = wrapper
+    for _ in range(max_up):
+        if current is None:
+            break
+        if exp_runtime and _get_wrapper_runtime_id(current) == exp_runtime:
+            return current
+        rect = _rect_to_dict(_safe_get_value(lambda: current.rectangle(), None))
+        if exp_rect and rect and _normalize_rect_dict(rect) == exp_rect:
+            return current
+        if has_sig:
+            sig = (
+                str(_safe_get_value(lambda: current.window_text(), "")).strip(),
+                str(_safe_get_value(lambda: current.class_name(), "")).strip(),
+                normalize_control_type_name(
+                    _safe_get_value(lambda: getattr(current.element_info, "control_type", ""), ""),
+                    _safe_get_value(lambda: getattr(current.element_info, "localized_control_type", ""), ""),
+                ),
+            )
+            if sig == exp_sig:
+                return current
+        parent = _safe_get_value(lambda: current.parent(), None)
+        if not parent or parent is current:
+            break
+        current = parent
+    return wrapper
+
+
+def collect_subtree_at_point(
+    x,
+    y,
+    climb_levels=0,
+    expected=None,
+    max_depth=SUPPLEMENT_SUBTREE_MAX_DEPTH,
+    scan_timeout_seconds=SUPPLEMENT_SCAN_TIMEOUT_SECONDS,
+    excluded_process_ids=None,
+    allowed_process_ids=None,
+    status_callback=None,
+):
+    """Inspect 式定点补采：从屏幕坐标命中元素，实时 BFS 采集其子树。
+
+    参数：
+     - climb_levels: 命中后沿祖先链上溯的层数（人工指到叶子时可扩大补采范围），
+       不越过顶层窗口；
+     - expected: 期望控件的 identity 字段（补采已选中控件时用于锚定，见
+       _climb_to_expected_wrapper），提供时忽略 climb_levels。
+
+    返回 (sub_flats, target_window, error_message)：
+     - sub_flats: 与主采集完全兼容的 flat_control 列表（已补全绝对路径、
+       已做树元数据增强、已剥离 wrapper 引用）；
+     - target_window: 子树所在顶层窗口信息；
+     - error_message: 失败原因，成功时为空串。
+    """
+    _hover_log(f"collect_subtree start, lightweight=True")
+    if Desktop is None:
+        return [], {}, "pywinauto 不可用，无法定点补采。"
+    desktop = Desktop(backend="uia")
+    wrapper = _safe_get_value(lambda: desktop.from_point(int(x), int(y)), None)
+    if wrapper is None:
+        return [], {}, f"坐标 ({x},{y}) 未命中任何 UIA 元素。"
+    hit_pid = str(_safe_get_value(lambda: wrapper.element_info.process_id, "")).strip()
+    excluded = {str(pid).strip() for pid in (excluded_process_ids or []) if str(pid).strip()}
+    if hit_pid and hit_pid in excluded:
+        return [], {}, "命中了采集工具自身窗口，请把鼠标悬停在目标软件的控件上。"
+    allowed = {str(pid).strip() for pid in (allowed_process_ids or []) if str(pid).strip()}
+    if allowed and hit_pid and hit_pid not in allowed:
+        return [], {}, "命中元素不属于目标软件进程，已跳过。"
+
+    top_wrapper = _safe_get_value(lambda: wrapper.top_level_parent(), None) or wrapper
+    top_handle = _get_wrapper_handle(top_wrapper)
+
+    root_wrapper = wrapper
+    if isinstance(expected, dict) and expected:
+        root_wrapper = _climb_to_expected_wrapper(wrapper, expected)
+    else:
+        for _ in range(max(0, int(climb_levels or 0))):
+            current_handle = _get_wrapper_handle(root_wrapper)
+            if top_handle and current_handle and str(current_handle) == str(top_handle):
+                break
+            parent = _safe_get_value(lambda: root_wrapper.parent(), None)
+            if not parent or parent is root_wrapper:
+                break
+            root_wrapper = parent
+
+    target_window = _build_target_window_info(top_wrapper)
+    ancestor_segments = _build_path_segments_from_wrapper(
+        root_wrapper, root_handle=str(target_window.get("handle", "")).strip()
+    )
+    if not ancestor_segments:
+        ancestor_segments = [_build_display_name({"name": "", "controlType": ""}, "控件", 1)]
+
+    sub_flats = []
+    if status_callback:
+        status_callback("定点补采：开始实时遍历子树...", 0)
+    try:
+        _walk_raw_view_bfs(
+            root_wrapper,
+            max_depth=max_depth,
+            target_window=target_window,
+            flat_controls=sub_flats,
+            path_segments=[ancestor_segments[-1]],
+            scan_timeout_seconds=scan_timeout_seconds,
+            status_callback=status_callback,
+            lightweight=True,
+        )
+    except Exception as exc:
+        return [], target_window, f"子树遍历失败：{exc}"
+
+    _prefix_subtree_paths(sub_flats, ancestor_segments[:-1], base_depth=max(0, len(ancestor_segments) - 1))
+    # 子树自身的 pathHash / childCount / isTransparentContainer（parentIndex 仍为局部索引）
+    _enrich_tree_metadata(sub_flats)
+    for item in sub_flats:
+        item["scanBackend"] = "uia"
+        item.pop("_wrapperRef", None)
+        item.pop("_wrapperIdentity", None)
+    return sub_flats, target_window, ""
+
+
+def _nodes_identity_match(a, b):
+    """判断两个节点是否身份匹配（签名一致或 runtimeId 一致）。"""
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return a is b
+    a_runtime, a_sig, a_ok = _extract_identity_match_keys(a)
+    b_runtime, b_sig, b_ok = _extract_identity_match_keys(b)
+    if a_runtime and b_runtime and a_runtime == b_runtime:
+        return True
+    if a_ok and b_ok and a_sig == b_sig:
+        return True
+    return False
+
+
+def _extract_identity_match_keys(item):
+    """提取 identity 匹配键：(runtimeId, 多字段签名, 签名是否可用)。
+
+    签名基于稳定标识字段（name / className / controlType），
+    不包含 boundingRectangle（屏幕绝对坐标，窗口移动后不可靠）。
+    """
+    sig = (
+        str(item.get("name", "")).strip(),
+        str(item.get("className", "")).strip(),
+        str(item.get("controlType", "")).strip(),
+    )
+    sig_usable = bool(sig[0] or sig[1] or sig[2])
+    return str(item.get("runtimeId", "")).strip(), sig, sig_usable
+
+
+def _find_tree_node_by_identity(tree_root, target_item):
+    """在 controlsTree 中按 runtimeId（优先）或多字段签名递归查找锚点节点。"""
+    if not isinstance(tree_root, dict) or not isinstance(target_item, dict):
+        return None
+    target_runtime, target_sig, sig_usable = _extract_identity_match_keys(target_item)
+    stack = [tree_root]
+    sig_match = None
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        node_runtime = str(node.get("runtimeId", "")).strip()
+        if target_runtime and node_runtime and node_runtime == target_runtime:
+            return node
+        if sig_usable and sig_match is None:
+            _, node_sig, _ = _extract_identity_match_keys(node)
+            if node_sig == target_sig:
+                sig_match = node
+        stack.extend(node.get("children", []) or [])
+    return sig_match
+
+
+# 树合并时旧节点向新节点补空继承的字段白名单（含用户在 GUI 侧命名/质量分级成果）
+_TREE_MERGE_INHERIT_KEYS = (
+    "savedControlName",
+    "savedControlId",
+    "suggestedControlName",
+    "displayName",
+    "recommendedTargetMethod",
+    "recommendedTargetValue",
+    "locatorScore",
+    "qualityTier",
+    "qualityReason",
+    "supportedPatterns",
+    "expandCollapseState",
+    "value",
+    "toggleState",
+    "pathHash",
+    "scanBackend",
+)
+
+
+def _merge_tree_children_preserving(old_children, new_children):
+    """递归合并锚点子树：以实时采集的新子树为基准，保留旧子树中未匹配节点。
+
+    补采（尤其悬停模式）深度受限，若整体替换 children 会把旧扫描中更深的分支
+    从树上砍掉（flatControls 条目还在但层级丢失），违反零丢弃原则；此处按
+    identity（runtimeId 优先、多字段签名兜底）匹配并递归合并：
+     - 匹配到的节点：新节点保留实时值，旧节点的白名单字段补空继承，children 递归合并；
+     - 未匹配的旧节点：原样保留（可能是更深层分支或暂时离屏的虚拟化项）。
+    """
+    old_children = [child for child in (old_children or []) if isinstance(child, dict)]
+    new_children = [child for child in (new_children or []) if isinstance(child, dict)]
+    if not old_children:
+        return new_children
+    if not new_children:
+        return old_children
+    remaining_old = list(old_children)
+    merged = []
+    for new_child in new_children:
+        runtime, sig, sig_usable = _extract_identity_match_keys(new_child)
+        match_index = -1
+        if runtime:
+            for i, old_child in enumerate(remaining_old):
+                if str(old_child.get("runtimeId", "")).strip() == runtime:
+                    match_index = i
+                    break
+        if match_index < 0 and sig_usable:
+            for i, old_child in enumerate(remaining_old):
+                _, old_sig, _ = _extract_identity_match_keys(old_child)
+                if old_sig == sig:
+                    match_index = i
+                    break
+        if match_index >= 0:
+            old_child = remaining_old.pop(match_index)
+            for key in _TREE_MERGE_INHERIT_KEYS:
+                if not new_child.get(key) and old_child.get(key) not in (None, "", [], {}):
+                    new_child[key] = old_child.get(key)
+            new_child["children"] = _merge_tree_children_preserving(
+                old_child.get("children", []), new_child.get("children", [])
+            )
+            new_child["childCount"] = len(new_child["children"])
+        merged.append(new_child)
+    merged.extend(remaining_old)
+    return merged
+
+
+def merge_supplement_into_payload(payload, sub_flats, target_window=None, status_callback=None):
+    """将定点补采的子树 flat 列表就地合并进现有 payload。
+
+    合并策略（遵循"只增强、零丢弃"原则）：
+     1. flatControls 按 identity 去重后追加新控件（追加式合并，既有条目的下标
+        不变，GUI 勾选状态保持有效）；已存在条目只补空缺字段，不覆盖；
+     2. controlsTree 按子树根 identity 定位锚点，其 children 与实时子树递归合并
+        （新子树为基准、旧的更深层分支保留，防止浅层补采砍树；找不到锚点时挂到树根下）；
+     3. controlDefinitions 为新控件追加定义，保持与 flatControls 1:1 对应；
+     4. scanMeta 记录本次补采统计（supplementScans）。
+
+    注意：新增条目的 parentIndex 是合并后 flatControls 的下标空间，与初扫条目
+    残留的原始（未过滤）下标空间不同，层级展示以 controlsTree 为准。
+
+    返回 (added_count, anchor_found)。
+    """
+    if not isinstance(payload, dict) or not sub_flats:
+        return 0, False
+
+    # 先用局部 parentIndex 重建嵌套子树（后续会将条目 parentIndex 改写为合并索引）
+    sub_tree_root = _build_tree_from_flat(sub_flats)
+
+    flat = payload.setdefault("flatControls", [])
+    definitions = payload.setdefault("controlDefinitions", [])
+    definitions_aligned = len(definitions) == len(flat)
+    identity_to_index = {}
+    for idx, item in enumerate(flat):
+        identity_to_index.setdefault(_build_flat_control_identity(item), idx)
+
+    resolved_target_window = target_window or payload.get("targetWindow", {}) or {}
+    local_to_merged = {}
+    new_items = []
+    for local_idx, item in enumerate(sub_flats):
+        identity = _build_flat_control_identity(item)
+        if identity in identity_to_index:
+            merged_idx = identity_to_index[identity]
+            local_to_merged[local_idx] = merged_idx
+            # 用实时采集结果补全既有条目的空缺字段（只补空，不覆盖既有值）
+            existing = flat[merged_idx]
+            for key in ("supportedPatterns", "expandCollapseState", "value", "toggleState", "pathHash"):
+                if not existing.get(key) and item.get(key):
+                    existing[key] = item.get(key)
+            continue
+        merged_idx = len(flat)
+        try:
+            local_parent = int(item.get("parentIndex", -1))
+        except Exception:
+            local_parent = -1
+        item["parentIndex"] = local_to_merged.get(local_parent, -1)
+        item["index"] = merged_idx + 1
+        item["supplementSource"] = "point_supplement"
+        identity_to_index[identity] = merged_idx
+        local_to_merged[local_idx] = merged_idx
+        flat.append(item)
+        new_items.append(item)
+
+    if new_items:
+        _enrich_flat_controls(new_items, resolved_target_window)
+        # 仅在既有定义与 flatControls 对齐时追加，保持 1:1；错位时交由保存路径就地补建
+        if definitions_aligned:
+            existing_ids = {
+                str(definition.get("id", "")).strip()
+                for definition in definitions
+                if isinstance(definition, dict) and str(definition.get("id", "")).strip()
+            }
+            for item in new_items:
+                definitions.append(_build_control_definition_from_flat(item, existing_ids))
+
+    # ---- controlsTree 锚点替换：子树节点 flatIndex 重映射到合并后下标 ----
+    def _remap_flat_index(node):
+        if not isinstance(node, dict):
+            return
+        node["flatIndex"] = local_to_merged.get(node.get("flatIndex", -1), -1)
+        for child in node.get("children", []) or []:
+            _remap_flat_index(child)
+
+    anchor_found = False
+    if isinstance(sub_tree_root, dict) and sub_tree_root:
+        _remap_flat_index(sub_tree_root)
+        tree = payload.get("controlsTree")
+        if isinstance(tree, dict) and tree:
+            anchor = _find_tree_node_by_identity(tree, sub_flats[0])
+            if anchor is not None:
+                anchor["children"] = _merge_tree_children_preserving(
+                    anchor.get("children", []), sub_tree_root.get("children", [])
+                )
+                anchor["childCount"] = len(anchor["children"])
+                anchor["isTransparentContainer"] = bool(
+                    sub_tree_root.get("isTransparentContainer", anchor.get("isTransparentContainer", False))
+                )
+                # 锚点自身也用实时结果补空缺字段
+                for key in ("supportedPatterns", "expandCollapseState", "value", "pathHash"):
+                    if not anchor.get(key) and sub_tree_root.get(key):
+                        anchor[key] = sub_tree_root.get(key)
+                anchor_found = True
+            else:
+                tree.setdefault("children", []).append(sub_tree_root)
+        else:
+            payload["controlsTree"] = sub_tree_root
+            anchor_found = True
+
+    # ---- scanMeta 统计 ----
+    scan_meta = payload.setdefault("scanMeta", {})
+    scan_meta["totalControls"] = len(flat)
+    by_type = dict(scan_meta.get("controlTypeSummary") or {})
+    for item in new_items:
+        control_type = str(item.get("controlType", "")).strip() or "Unknown"
+        by_type[control_type] = by_type.get(control_type, 0) + 1
+    scan_meta["controlTypeSummary"] = dict(sorted(by_type.items(), key=lambda pair: (-pair[1], pair[0])))
+    scan_meta.setdefault("supplementScans", []).append(
+        {
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "rootPath": str(sub_flats[0].get("uiPath", "")),
+            "collected": len(sub_flats),
+            "added": len(new_items),
+            "anchorFound": anchor_found,
+        }
+    )
+
+    if status_callback:
+        status_callback(f"定点补采合并完成：新增 {len(new_items)} 个控件", len(flat))
+    return len(new_items), anchor_found
 
 
 def _generate_probe_points(region_rect):
@@ -1537,8 +2384,300 @@ def _collect_fulltree_probe_wrappers(
             current = parent
 
 
+# ── 标签伴随采集：保证"标签 → 输入/操作控件"成对采全 ─────────────────────
+# 场景：BFS/画框只采到"名称"标签，其右侧文本框（WPF 自定义输入控件常报 Custom
+# 且无 name/automationId/Pattern）未被采到，自动化无法定位输入。这里对每个已采集
+# 标签做 from_point 定向探测（标签右侧/下方），把实际输入控件强制补采入库并标记
+# regionRelated/relatedLabelName，使其通过区域过滤与噪声过滤。
+_COMPANION_STRONG_INPUT_TYPES = {
+    "edit", "combobox", "spinner", "splitbutton", "document", "slider",
+    "checkbox", "radiobutton", "button", "list", "listitem",
+}
+_COMPANION_CONTAINER_TYPES = {"custom", "pane", "group", "image"}
+# 伴随探测的标签数量上限（防止大表单探测耗时失控）
+_COMPANION_MAX_LABELS = 60
+# 每个标签最多补采的伴随控件数（如 输入框 + 浏览按钮）
+_COMPANION_MAX_PER_LABEL = 2
+
+
+def _wrapper_control_type_name(wrapper):
+    return normalize_control_type_name(
+        _safe_get_value(lambda: getattr(wrapper.element_info, "control_type", ""), ""),
+        _safe_get_value(lambda: getattr(wrapper.element_info, "localized_control_type", ""), ""),
+    ).strip().lower()
+
+
+def _item_is_companion_input(item):
+    """dict 级判定：是否是"标签伴随"的输入/操作控件（强类型直通，容器需可交互证据）。"""
+    if not isinstance(item, dict):
+        return False
+    control_type = str(item.get("controlType", "")).strip().lower()
+    if control_type in _COMPANION_STRONG_INPUT_TYPES:
+        return True
+    if control_type not in _COMPANION_CONTAINER_TYPES:
+        return False
+    class_name = str(item.get("className", "")).strip().lower()
+    if any(hint in class_name for hint in _INPUT_CLASS_NAME_HINTS):
+        return True
+    return _item_has_actionable_pattern(item)
+
+
+def _wrapper_is_companion_input(wrapper):
+    """wrapper 级判定：强类型直通；容器类型需 className/Pattern/可聚焦证据。"""
+    control_type = _wrapper_control_type_name(wrapper)
+    if control_type in _COMPANION_STRONG_INPUT_TYPES:
+        return True
+    if control_type not in _COMPANION_CONTAINER_TYPES:
+        return False
+    class_name = str(_safe_get_value(lambda: wrapper.class_name(), "")).strip().lower()
+    if any(hint in class_name for hint in _INPUT_CLASS_NAME_HINTS):
+        return True
+    patterns = {str(p).strip().lower() for p in _detect_supported_patterns(wrapper)}
+    if patterns & _ACTIONABLE_PATTERNS:
+        return True
+    element = _safe_get_value(lambda: getattr(wrapper.element_info, "element", None), None)
+    focusable = _read_uia_property(element, _UIA_PROP_IDS["isKeyboardFocusable"], "")
+    return focusable is True or str(focusable).strip().lower() == "true"
+
+
+def _label_companion_geometry_match(label_rect, candidate_rect):
+    """标签-伴随控件几何关系：同行右侧（间隙≤420px）或正下方（水平重叠、间隙≤120px）。"""
+    label_rect = _normalize_rect_dict(label_rect)
+    candidate_rect = _normalize_rect_dict(candidate_rect)
+    if not label_rect or not candidate_rect:
+        return False
+    # 同行右侧（标准表单布局）
+    if _vertical_overlap_ratio(label_rect, candidate_rect) >= _SAME_ROW_MIN_VERTICAL_OVERLAP:
+        gap = candidate_rect["left"] - label_rect["right"]
+        if -_SAME_ROW_LEFT_TOLERANCE <= gap <= 420:
+            return True
+    # 正下方（标签在上、控件在下的纵向布局）
+    if _horizontal_overlap_ratio(label_rect, candidate_rect) >= 0.3:
+        gap_below = candidate_rect["top"] - label_rect["bottom"]
+        if 0 <= gap_below <= 120:
+            return True
+    return False
+
+
+def _companion_path_blocked_by_label(label_item, label_rect, candidate_rect, label_pairs):
+    """标签与候选之间隔着另一个标签（双栏/多栏表单）时视为阻挡，防止跨栏误绑。"""
+    if not label_pairs:
+        return False
+    gap_left = label_rect["right"] - 4
+    gap_right = candidate_rect["left"] + 4
+    if gap_right <= gap_left:
+        return False
+    for other_item, other_rect in label_pairs:
+        if other_item is label_item:
+            continue
+        if _vertical_overlap_ratio(label_rect, other_rect) < _SAME_ROW_MIN_VERTICAL_OVERLAP:
+            continue
+        if other_rect["left"] >= gap_left and other_rect["right"] <= gap_right:
+            return True
+    return False
+
+
+def _find_existing_companion_for_label(label_item, label_rect, flat_controls, label_pairs):
+    """dict 级查重：标签附近是否已有伴随输入控件（有则补标记并跳过实时探测）。"""
+    label_name = str(label_item.get("name", "")).strip()
+    for item in flat_controls:
+        if not isinstance(item, dict) or item is label_item:
+            continue
+        if not _item_is_companion_input(item):
+            continue
+        existing_related = str(item.get("relatedLabelName", "")).strip()
+        if existing_related and existing_related != label_name:
+            continue  # 已被其他标签占用，不抢占
+        candidate_rect = _normalize_rect_dict(item.get("boundingBox"))
+        if not _label_companion_geometry_match(label_rect, candidate_rect):
+            continue
+        if _companion_path_blocked_by_label(label_item, label_rect, candidate_rect, label_pairs):
+            continue
+        item["regionRelated"] = True
+        if not str(item.get("regionRelation", "")).strip():
+            item["regionRelation"] = "label-companion-existing"
+        if not existing_related:
+            item["relatedLabelName"] = label_name
+        return True
+    return False
+
+
+def _generate_label_companion_probe_points(label_rect):
+    """围绕标签生成探测点：右侧一行（+6~+420px，步长28）+ 下方一列（+6~+120px，步长24）。"""
+    points = []
+    center_y = int((label_rect["top"] + label_rect["bottom"]) / 2)
+    for offset in range(6, 421, 28):
+        points.append((label_rect["right"] + offset, center_y))
+    center_x = int((label_rect["left"] + label_rect["right"]) / 2)
+    for offset in range(6, 121, 24):
+        points.append((center_x, label_rect["bottom"] + offset))
+    return points
+
+
+def _climb_to_companion_input(wrapper, label_rect, root_handle="", max_climb=8):
+    """从 from_point 命中点沿祖先链爬升到 input-like 控件。
+
+    包含守卫：候选矩形完全包住标签且为容器类型时拒绝（那是共享布局容器，
+    不是输入控件）；强输入类型允许覆盖标签（覆盖式输入框）。
+    """
+    current = wrapper
+    for _ in range(max_climb):
+        if current is None:
+            return None
+        if _wrapper_is_companion_input(current):
+            control_type = _wrapper_control_type_name(current)
+            rect = _rect_to_dict(_safe_get_value(lambda: current.rectangle(), None))
+            if rect and label_rect and _rect_contains(label_rect, rect):
+                if control_type not in _COMPANION_STRONG_INPUT_TYPES:
+                    return None
+            return current
+        current_handle = _get_wrapper_handle(current)
+        if root_handle and current_handle and str(current_handle) == str(root_handle):
+            return None
+        parent = _safe_get_value(lambda: current.parent(), None)
+        if not parent or parent is current:
+            return None
+        current = parent
+    return None
+
+
+def _mark_label_companion_item(flat_controls, identity, label_name, relation):
+    for item in flat_controls:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("_wrapperIdentity", "")) != identity:
+            continue
+        item["regionRelated"] = True
+        item["labelCompanion"] = True
+        if not str(item.get("regionRelation", "")).strip():
+            item["regionRelation"] = relation
+        if not str(item.get("relatedLabelName", "")).strip():
+            item["relatedLabelName"] = label_name
+        return item
+    return None
+
+
+def _collect_label_companion_wrappers(
+    backend,
+    target_window,
+    flat_controls,
+    seen_identities,
+    root_handle="",
+    max_depth=DEFAULT_MAX_DEPTH,
+    start_time=None,
+    scan_timeout_seconds=30,
+    status_callback=None,
+):
+    """标签伴随采集（树采集+画框采集通用）。
+
+    对每个已采集标签（有 name + 矩形），先 dict 级检查其附近是否已有输入/操作
+    控件；没有则在标签右侧/下方做 from_point 定向探测，沿祖先链提升到 input-like
+    层级后强制入库，并标记 regionRelated/relatedLabelName——保证"名称"这类标签
+    对应的输入框一定能被采到、能参与后续关联与定位。
+    """
+    if Desktop is None or not flat_controls:
+        return
+    if start_time is None:
+        start_time = time.time()
+    labels = []
+    for item in flat_controls:
+        if not isinstance(item, dict):
+            continue
+        if not _control_is_assoc_label(item):
+            continue
+        rect = _normalize_rect_dict(item.get("boundingBox"))
+        if not rect:
+            continue
+        labels.append((item, rect))
+    if not labels:
+        return
+    labels.sort(key=lambda pair: (pair[1]["top"], pair[1]["left"]))
+    labels = labels[:_COMPANION_MAX_LABELS]
+    try:
+        desktop = Desktop(backend=backend)
+    except Exception:
+        return
+    added_count = 0
+    for label_item, label_rect in labels:
+        if time.time() - start_time > scan_timeout_seconds:
+            if status_callback:
+                status_callback("标签伴随采集超时，已停止探测。", len(flat_controls))
+            break
+        label_name = str(label_item.get("name", "")).strip()
+        # 快速通道：已存在几何相邻的输入控件，仅补标记，零 COM 开销
+        if _find_existing_companion_for_label(label_item, label_rect, flat_controls, labels):
+            continue
+        collected = 0
+        for x, y in _generate_label_companion_probe_points(label_rect):
+            if time.time() - start_time > scan_timeout_seconds:
+                break
+            wrapper = _safe_get_value(lambda: desktop.from_point(x, y), None)
+            if wrapper is None:
+                continue
+            candidate = _climb_to_companion_input(wrapper, label_rect, root_handle=root_handle)
+            if candidate is None:
+                continue
+            candidate_rect = _rect_to_dict(_safe_get_value(lambda: candidate.rectangle(), None))
+            if not _label_companion_geometry_match(label_rect, candidate_rect):
+                continue
+            if _companion_path_blocked_by_label(label_item, label_rect, candidate_rect, labels):
+                continue
+            identity = _build_wrapper_identity(candidate)
+            if not identity:
+                continue
+            existing = _mark_label_companion_item(flat_controls, identity, label_name, "label-companion-probe")
+            if existing is not None:
+                collected += 1
+            else:
+                added = _append_wrapper_info(
+                    flat_controls,
+                    seen_identities,
+                    candidate,
+                    target_window,
+                    root_handle=root_handle,
+                    max_depth=max_depth,
+                )
+                if added:
+                    _mark_label_companion_item(flat_controls, identity, label_name, "label-companion-probe")
+                    added_count += 1
+                    collected += 1
+            if collected >= _COMPANION_MAX_PER_LABEL:
+                break
+    if status_callback and added_count:
+        status_callback(f"标签伴随补采 {added_count} 个输入控件", len(flat_controls))
+
+
+def _find_loose_companion_control(label_rect, controls, label, claimed, label_pairs):
+    """第三轮宽松伴随关联：接受伴随输入型候选（含容器证据型），同行右侧间隙≤420px。"""
+    label_center_y = (label_rect["top"] + label_rect["bottom"]) / 2.0
+    best = None
+    best_key = None
+    for candidate in controls:
+        if candidate is label or id(candidate) in claimed:
+            continue
+        if not (_control_is_assoc_actionable(candidate) or _item_is_companion_input(candidate)):
+            continue
+        candidate_rect = _normalize_rect_dict(candidate.get("boundingBox"))
+        if not candidate_rect:
+            continue
+        if _vertical_overlap_ratio(label_rect, candidate_rect) < _SAME_ROW_MIN_VERTICAL_OVERLAP:
+            continue
+        horizontal_gap = candidate_rect["left"] - label_rect["right"]
+        if horizontal_gap < -_SAME_ROW_LEFT_TOLERANCE or horizontal_gap > 420:
+            continue
+        if _companion_path_blocked_by_label(label, label_rect, candidate_rect, label_pairs):
+            continue
+        horizontal_gap = max(0, horizontal_gap)
+        candidate_center_y = (candidate_rect["top"] + candidate_rect["bottom"]) / 2.0
+        key = (horizontal_gap, abs(candidate_center_y - label_center_y))
+        if best_key is None or key < best_key:
+            best_key = key
+            best = candidate
+    return best, "loose-companion"
+
+
 def _prune_empty_unidentified_containers(flat_controls):
-    """整树采集放宽过滤后，只剔除“真正的空壳容器”：
+    """整树采集放宽过滤后，只剔除"真正的空壳容器"：
     无 name / automationId / labelText 的 Custom/Pane/Group，且在扁平树中没有任何子级。
 
     这样既保留所有有标识的控件与承载真实控件的结构容器，又不会让无意义的
@@ -1575,7 +2714,11 @@ def _prune_empty_unidentified_containers(flat_controls):
             and not has_label_text
             and child_count.get(idx, 0) == 0
         )
-        if is_empty_container:
+        # 标签伴随/关联控件豁免：已确认是某标签对应的实际输入控件，不得按空壳剪枝
+        if is_empty_container and (item.get("regionRelated") or str(item.get("relatedLabelName", "")).strip()):
+            is_empty_container = False
+        # 可交互的空壳容器（自定义输入框/图形按钮）不视为空壳，保留
+        if is_empty_container and not _item_has_actionable_pattern(item):
             continue
         kept.append(item)
     return kept
@@ -1606,6 +2749,11 @@ def _ensure_unique_control_id(control_definition, existing_ids):
 
 def _build_control_definition_from_flat(flat_item, existing_ids):
     inspect_data = dict(flat_item.get("inspectData", {}) or {})
+    # 将关联/回填产物同步进 inspectData：运行时 label_text 候选与界面展示直接可用
+    for sync_key in ("labelText", "labelRelation", "relatedLabelName", "nameSource"):
+        sync_value = str(flat_item.get(sync_key, "")).strip()
+        if sync_value and not str(inspect_data.get(sync_key, "")).strip():
+            inspect_data[sync_key] = sync_value
     display_name = (
         str(flat_item.get("savedControlName", "")).strip()
         or str(flat_item.get("suggestedControlName", "")).strip()
@@ -1643,9 +2791,35 @@ def _build_control_definition_from_flat(flat_item, existing_ids):
         ),
         "rawInspectText": str(flat_item.get("rawInspectText", "")).strip(),
         "auxChecks": [str(item).strip() for item in flat_item.get("auxChecks", []) if str(item).strip()],
+        # 标签关联与交互元数据（流程编排直接可用：标签定位、快捷键、可驱动性预判）
+        "labelText": str(flat_item.get("labelText", "")).strip(),
+        "labelRelation": str(flat_item.get("labelRelation", "")).strip(),
+        "labeledByAutomationId": str(flat_item.get("labeledByAutomationId", "")).strip(),
+        "accessKey": str(flat_item.get("accessKey", "")).strip(),
+        "isEnabled": flat_item.get("isEnabled"),
+        "supportedPatterns": [str(p) for p in (flat_item.get("supportedPatterns") or []) if str(p).strip()],
+        "helpText": str(flat_item.get("helpText", "")).strip(),
+        # 标签伴随/关联元数据（流程编排可直接按关联标签定位输入控件）
+        "relatedLabelName": str(flat_item.get("relatedLabelName", "")).strip(),
+        "labelCompanion": bool(flat_item.get("labelCompanion")),
+        "regionRelated": bool(flat_item.get("regionRelated")),
+        "nameSource": str(flat_item.get("nameSource", "")).strip(),
+        # 交互与框架元数据（可驱动性预判/富文本内容/项状态）
+        "isKeyboardFocusable": str(flat_item.get("isKeyboardFocusable", "")).strip(),
+        "expandCollapseState": str(flat_item.get("expandCollapseState", "")).strip(),
+        "textContent": str(flat_item.get("textContent", "")).strip(),
+        "itemStatus": str(flat_item.get("itemStatus", "")).strip(),
+        # MSAA 桥接信息（对齐 Inspect MSAA 面板，老控件兜底定位/说明用）
+        "legacyHelp": str(flat_item.get("legacyHelp", "")).strip(),
+        "legacyDefaultAction": str(flat_item.get("legacyDefaultAction", "")).strip(),
+        "legacyRoleText": str(flat_item.get("legacyRoleText", "")).strip(),
+        "legacyStateText": str(flat_item.get("legacyStateText", "")).strip(),
         "inspectData": inspect_data,
         "source": "control_map",
     }
+    tab_nav = flat_item.get("tabNavigation")
+    if tab_nav:
+        control_definition["tabNavigation"] = tab_nav
     return _ensure_unique_control_id(control_definition, existing_ids)
 
 
@@ -1684,7 +2858,7 @@ def _score_region_candidate(item, region_rect):
 _SAME_ROW_MAX_GAP = 60
 # 同行关联允许控件左缘略早于标签右缘的容差（超过则视为重叠，交由重叠关联处理）。
 _SAME_ROW_LEFT_TOLERANCE = 20
-# 判定“同一行”所需的最小垂直重叠比例。
+# 判定"同一行"所需的最小垂直重叠比例。
 _SAME_ROW_MIN_VERTICAL_OVERLAP = 0.5
 # 纵向相邻关联：标签在控件正上/下方时，允许的最大垂直间隙与最小水平重叠比例。
 _VERTICAL_MAX_GAP = 40
@@ -1757,7 +2931,7 @@ def _looks_like_type_name(text):
 
 def _extract_option_text(item_wrapper, max_depth=3):
     """提取单个选项的可读文本：选项自身 name 若是类型全名（如 MTDLocalizedEnumValue
-    的 ToString），则下钻到其子级 TextBlock 取真正显示文本（如“组”）。"""
+    的 ToString），则下钻到其子级 TextBlock 取真正显示文本（如"组"）。"""
     text = _wrapper_option_text(item_wrapper)
     if text and not _looks_like_type_name(text):
         return text
@@ -1891,7 +3065,7 @@ def _enumerate_top_level_windows(backend):
 
 
 def _collect_options_near_anchor(root_wrapper, anchor_rect, max_depth=14):
-    """在主窗口视觉树内按锚点矩形圈定“弹出区域”，采集其中的下拉选项文本。
+    """在主窗口视觉树内按锚点矩形圈定"弹出区域"，采集其中的下拉选项文本。
 
     用于 WPF Popup 内嵌于主窗口视觉树（未独立成顶层窗口）的情形：此时选项项
     仍是主窗口的后代，但位于锚点下拉按钮正下方的弹出层。仅按空间位置圈定，
@@ -1945,7 +3119,7 @@ def _nearest_option_ancestor(wrapper, max_up=5):
 
 def _realize_options_by_point_sweep(anchor_rect, backend="uia", desktop=None,
                                     step=22, max_span=640, existing=None, diag=None):
-    """在锚点下拉按钮正下方按屏幕坐标做“命中点扫掠”，强制实体化并采集选项文本。
+    """在锚点下拉按钮正下方按屏幕坐标做"命中点扫掠"，强制实体化并采集选项文本。
 
     MTD 等 WPF 下拉框对选项列表启用 UI 虚拟化：选项节点只有在被 UIA 命中测试
     （ElementFromPoint，即鼠标悬停到该处）时才实体化，普通子树遍历/顶层窗口枚举
@@ -2092,10 +3266,8 @@ def _expand_dropdown_and_collect_options(wrapper, backend="uia", diag=None, anch
             if options:
                 stage = "popup_window"
         # 5) 命中点扫掠兑底（WPF 虚拟化：选项仅在被命中/悬停时实体化，前述遍历均取不到）。
-        # 注意：即使第 4 步 near-anchor 已返回结果，点扫掠也必须运行——near-anchor 走的是
-        # 主窗口静态树，可能返回假阳性或过时结果；点扫掠通过 from_point 强制实体化，结果
-        # 更可靠，优先采用。
-        if opened and anchor_rect:
+        # 仅在前述步骤（1-4）均未取到结果时才运行，避免覆盖已成功获取的 options。
+        if opened and anchor_rect and not options:
             sweep_options = _realize_options_by_point_sweep(anchor_rect, backend, diag=diag)
             if sweep_options:
                 options = sweep_options
@@ -2220,7 +3392,7 @@ def _fold_dropdown_value_texts(controls, dropdowns):
     """下拉框自身常无 name，真实显示值在其矩形内的独立 TextBlock 中。
 
     将该值文本并入对应下拉框（记录 dropdownValueText/value），并标记该文本为
-    foldedIntoDropdown，避免它作为孤立“建议忽略”控件干扰入库。
+    foldedIntoDropdown，避免它作为孤立"建议忽略"控件干扰入库。
     """
     if not dropdowns:
         return
@@ -2344,7 +3516,7 @@ def _find_vertical_or_overlap_control(label_rect, controls, label, claimed):
 
 
 def _associate_region_labels_with_controls(flat_controls):
-    """在 dict 级对采集结果做“标签→实际控件”关联，独立于实时探测路径。
+    """在 dict 级对采集结果做"标签→实际控件"关联，独立于实时探测路径。
 
     分两轮：
     1. 同行关联（最强）：标签右侧、同行、间隙小的可操作控件（下拉框优先）。
@@ -2384,8 +3556,18 @@ def _associate_region_labels_with_controls(flat_controls):
             pending.append((label, label_rect))
 
     # 第二轮：纵向/重叠关联（仅处理未命中同行的标签，避开已被占用的控件）。
+    still_pending = []
     for label, label_rect in pending:
         best, relation = _find_vertical_or_overlap_control(label_rect, controls, label, claimed)
+        if best is not None:
+            _bind(label, best, relation)
+        else:
+            still_pending.append((label, label_rect))
+
+    # 第三轮：宽松伴随关联。候选放宽到伴随输入型（含容器型自定义输入控件），
+    # 同行右侧间隙放宽到 420px；中间隔着其他标签时不绑（双栏表单防误绑）。
+    for label, label_rect in still_pending:
+        best, relation = _find_loose_companion_control(label_rect, controls, label, claimed, labels)
         if best is not None:
             _bind(label, best, relation)
 
@@ -2445,6 +3627,26 @@ def _prune_low_value_region_controls(region_controls, target_window_title):
     return pruned or region_controls
 
 
+# 可交互 Control Pattern 集合：命中其一即认为控件具备操作价值，
+# 即使无 name/automationId 也不得被无标识容器规则误丢（自定义输入框/图形按钮常如此）。
+_ACTIONABLE_PATTERNS = {
+    "value", "text", "invoke", "toggle", "selectionitem", "expandcollapse",
+    "rangevalue", "scrollitem", "selection", "grid", "griditem", "table", "tableitem",
+}
+
+
+def _item_has_actionable_pattern(item):
+    """控件是否具备可交互能力（支持操作 Pattern 或可键盘聚焦）。"""
+    if not isinstance(item, dict):
+        return False
+    patterns = {str(p).strip().lower() for p in (item.get("supportedPatterns") or []) if str(p).strip()}
+    if patterns & _ACTIONABLE_PATTERNS:
+        return True
+    inspect = item.get("inspectData") if isinstance(item.get("inspectData"), dict) else {}
+    focusable = str(item.get("isKeyboardFocusable", inspect.get("isKeyboardFocusable", ""))).strip().lower()
+    return focusable == "true"
+
+
 def _filter_noise_controls(controls, exclude_offscreen=True, exclude_unidentified_containers=True):
     """A+C: 过滤离屏控件和无标识容器，减少无关信息。
 
@@ -2474,15 +3676,30 @@ def _filter_noise_controls(controls, exclude_offscreen=True, exclude_unidentifie
             if control_type in {"listitem", "list"} and parent_path:
                 continue  # ListItem 可能是 ComboBox 的下拉选项，即使离屏也保留
             continue
-        # C: 过滤无 name 且无 automationId 的容器（Custom/Pane/Group）
+        # C: 过滤无 name 且无 automationId 的容器（Custom/Pane/Group）；
+        # 但具备可交互 Pattern 或可聚焦的容器一律放行——它们通常是自定义输入框/
+        # 图形按钮（如 WT 的 MUP 输入控件），误丢会导致自动化无法定位输入。
         if exclude_unidentified_containers:
             has_name = bool(str(item.get("name", "")).strip())
             has_automation_id = bool(str(item.get("automationId", "")).strip())
             has_label_text = bool(str(item.get("labelText", "")).strip())
             if control_type in {"custom", "pane", "group"} and not has_name and not has_automation_id and not has_label_text:
+                # 标签伴随/关联控件豁免：已确认是某标签对应的实际输入控件
+                if item.get("regionRelated") or str(item.get("relatedLabelName", "")).strip():
+                    filtered.append(item)
+                    continue
+                if _item_has_actionable_pattern(item):
+                    filtered.append(item)
                 continue
         filtered.append(item)
     return filtered
+
+
+# 输入框类名特征（子串匹配，覆盖 TextBoxEx/WatermarkTextBox 等 WPF 自定义变体）
+_INPUT_CLASS_NAME_HINTS = (
+    "textbox", "passwordbox", "richtextbox", "texteditor", "spinedit",
+    "watermarktextbox", "maskedtextbox", "numericupdown", "comboboxedit",
+)
 
 
 def _normalize_textbox_wrappers(flat_controls):
@@ -2517,9 +3734,9 @@ def _normalize_textbox_wrappers(flat_controls):
         control_type = str(item.get("controlType", "")).strip().lower()
         automation_id = str(item.get("automationId", "")).strip()
 
-        # 情况 1：TextBox/PasswordBox 包装器被标记为 Custom/Pane
-        if class_name in ("textbox", "passwordbox", "richtextbox"):
-            if control_type in ("custom", "pane", "group"):
+        # 情况 1：输入框类名命中（子串匹配，覆盖 TextBoxEx/WatermarkTextBox 等自定义变体）
+        if any(hint in class_name for hint in _INPUT_CLASS_NAME_HINTS):
+            if control_type in ("custom", "pane", "group", "document"):
                 item["controlType"] = "Edit"
                 item["controlTypeSource"] = "normalized-from-classname"
                 # 同步更新 inspectData
@@ -2546,13 +3763,191 @@ def _normalize_textbox_wrappers(flat_controls):
                         inspect_p = parent.get("inspectData")
                         if isinstance(inspect_p, dict):
                             inspect_p["controlType"] = "Edit"
-            # 折叠 PART_ContentHost 自身 — 它不应作为独立控件被定位/操作
-            item["foldedIntoParent"] = True
-            item["qualityTier"] = "建议忽略"
-            item["qualityReason"] = ("PART_ContentHost: WPF TextBox 内部编辑区域，"
-                                      "非独立可定位控件，已由父级 TextBox 替代")
             if textbox_parent is not None:
+                # 折叠 PART_ContentHost 自身 — 它不应作为独立控件被定位/操作
+                item["foldedIntoParent"] = True
+                item["qualityTier"] = "建议忽略"
+                item["qualityReason"] = ("PART_ContentHost: WPF TextBox 内部编辑区域，"
+                                          "非独立可定位控件，已由父级 TextBox 替代")
                 item["foldedTargetIndex"] = parent_idx
+            else:
+                # 孤儿 PART_ContentHost：UIA 树中不存在父级 TextBox（MTD 的"名称/描述"
+                # 等自定义输入控件即此形态——ScrollViewer 直接挂在视图容器下，
+                # IsControlElement=False）。该 ScrollViewer 就是实际可编辑面，
+                # 若按上支折叠，此类输入框将在库中彻底缺失；提升为 Edit 使其进入
+                # 标签关联/回填/定位管道，可由邻近标签获得稳定定位。
+                item["controlType"] = "Edit"
+                item["controlTypeSource"] = "normalized-from-contenthost-orphan"
+                item["qualityTier"] = "推断输入框"
+                item["qualityReason"] = ("PART_ContentHost: 未找到父级 TextBox，"
+                                          "按实际编辑区域提升为输入框")
+                inspect = item.get("inspectData")
+                if isinstance(inspect, dict):
+                    inspect["controlType"] = "Edit"
+
+        # 情况 3：支持 Value/Text Pattern 的无标识容器——几乎必是可读写文本的
+        # 自定义输入控件（WT 的 MUP 输入框即此类），规范化为 Edit 以进入标签关联与定位管道
+        if str(item.get("controlType", "")).strip().lower() in ("custom", "pane", "group"):
+            patterns = {str(p).strip().lower() for p in (item.get("supportedPatterns") or []) if str(p).strip()}
+            if "value" in patterns or "text" in patterns:
+                item["controlType"] = "Edit"
+                item["controlTypeSource"] = "normalized-from-valuepattern"
+                inspect = item.get("inspectData")
+                if isinstance(inspect, dict):
+                    inspect["controlType"] = "Edit"
+
+
+def _backfill_sibling_label_for_inputs(flat_controls):
+    """为 PART_ContentHost 及普通 Edit/TextBox 回填同父容器内前邻 TextBlock 的 name。
+
+    设计原因：
+    _backfill_label_text_to_controls 基于全局几何最近邻匹配标签，但在某些 WPF 布局中
+    （如 MTD 的自定义输入控件），标签与输入框虽在同一父容器下，几何距离可能因布局偏移
+    而超出阈值。本函数利用 UIA 树的父子/兄弟关系做精确的同容器内标签查找，作为
+    _backfill_label_text_to_controls 的前置补充。
+
+    策略：
+    1. 对 labelText 为空的 PART_ContentHost（含已折叠/已提升的）和普通 Edit 控件
+    2. 通过 parentIndex 找到同父容器下的所有子控件（按 index 顺序即 UI 顺序）
+    3. 先向前查找最近的 TextBlock（controlType=text/textblock, className=TextBlock）
+    4. 若向前未找到，也向后查找（部分布局标签在输入框右侧/下方）
+    5. 对候选标签做几何验证（同行左侧 或 同列上方），通过后才回填
+    """
+    if not flat_controls:
+        return
+
+    # 按 parentIndex 分组子控件，保持原始 index 顺序（即 UI 顺序）
+    children_by_parent = {}  # parentIndex -> [(child_index, child_item), ...]
+    for idx, item in enumerate(flat_controls):
+        if not isinstance(item, dict):
+            continue
+        pidx = item.get("parentIndex")
+        if pidx is None or pidx < 0:
+            continue
+        children_by_parent.setdefault(pidx, []).append((idx, item))
+
+    for idx, item in enumerate(flat_controls):
+        if not isinstance(item, dict):
+            continue
+
+        # 只处理 labelText 为空的控件
+        if str(item.get("labelText", "")).strip():
+            continue
+
+        automation_id = str(item.get("automationId", "")).strip()
+        control_type = str(item.get("controlType", "")).strip().lower()
+        class_name = str(item.get("className", "")).strip().lower()
+
+        # 目标控件：PART_ContentHost（含折叠/提升的）或普通 Edit/TextBox
+        is_target = False
+        if automation_id == "PART_ContentHost":
+            is_target = True
+        elif control_type == "edit" or "textbox" in class_name:
+            is_target = True
+        if not is_target:
+            continue
+
+        parent_idx = item.get("parentIndex")
+        if parent_idx is None or parent_idx < 0:
+            continue
+        siblings = children_by_parent.get(parent_idx)
+        if not siblings:
+            continue
+
+        item_rect = _normalize_rect_dict(item.get("boundingBox"))
+
+        # 在兄弟列表中查找 TextBlock 标签
+        # 先向前（index 更小的兄弟），再向后（index 更大的兄弟）
+        found_label_name = ""
+        found_label_relation = ""
+
+        my_pos_in_siblings = None
+        for si, (s_idx, _) in enumerate(siblings):
+            if s_idx == idx:
+                my_pos_in_siblings = si
+                break
+        if my_pos_in_siblings is None:
+            continue
+
+        # 向前查找（UI 顺序中在目标之前的兄弟）
+        for si in range(my_pos_in_siblings - 1, -1, -1):
+            s_idx, s_item = siblings[si]
+            s_ct = str(s_item.get("controlType", "")).strip().lower()
+            s_cn = str(s_item.get("className", "")).strip().lower()
+            if s_ct in ("text", "textblock") or s_cn == "textblock":
+                s_name = str(s_item.get("name", "")).strip()
+                if s_name and not _is_garbage_name(s_name):
+                    # 几何验证（如果有 boundingBox）
+                    if item_rect:
+                        s_rect = _normalize_rect_dict(s_item.get("boundingBox"))
+                        if s_rect and _verify_label_geometry(s_rect, item_rect):
+                            found_label_name = s_name
+                            found_label_relation = "sibling-textblock"
+                            break
+                        # 几何验证不通过，继续找
+                        continue
+                    # 无 boundingBox 时不做几何验证，直接采用
+                    found_label_name = s_name
+                    found_label_relation = "sibling-textblock"
+                    break
+
+        # 向前没找到，向后查找
+        if not found_label_name:
+            for si in range(my_pos_in_siblings + 1, len(siblings)):
+                s_idx, s_item = siblings[si]
+                s_ct = str(s_item.get("controlType", "")).strip().lower()
+                s_cn = str(s_item.get("className", "")).strip().lower()
+                if s_ct in ("text", "textblock") or s_cn == "textblock":
+                    s_name = str(s_item.get("name", "")).strip()
+                    if s_name and not _is_garbage_name(s_name):
+                        if item_rect:
+                            s_rect = _normalize_rect_dict(s_item.get("boundingBox"))
+                            if s_rect and _verify_label_geometry(s_rect, item_rect):
+                                found_label_name = s_name
+                                found_label_relation = "sibling-textblock-following"
+                                break
+                            continue
+                        found_label_name = s_name
+                        found_label_relation = "sibling-textblock-following"
+                        break
+
+        if found_label_name:
+            item["labelText"] = found_label_name
+            if not str(item.get("labelRelation", "")).strip():
+                item["labelRelation"] = found_label_relation
+            # 如果控件没有 name，也用标签文本回填（与 _backfill_label_text_to_controls 一致）
+            if not str(item.get("name", "")).strip():
+                item["name"] = found_label_name
+                item["nameSource"] = "sibling-label-backfill"
+            # 对折叠的 PART_ContentHost，将 labelText 也传递给折叠目标（父级 TextBox）
+            folded_target_idx = item.get("foldedTargetIndex")
+            if folded_target_idx is not None and 0 <= folded_target_idx < len(flat_controls):
+                target = flat_controls[folded_target_idx]
+                if isinstance(target, dict) and not str(target.get("labelText", "")).strip():
+                    target["labelText"] = found_label_name
+                    if not str(target.get("labelRelation", "")).strip():
+                        target["labelRelation"] = found_label_relation
+
+
+def _verify_label_geometry(label_rect, content_rect):
+    """验证标签与输入控件的几何关系是否合理（同行左侧 或 同列上方）。
+
+    同行：标签在输入框左侧，垂直中心接近（差距 < 30px）
+    同列：标签在输入框上方，水平起始接近（差距 < 30px）
+    """
+    if not label_rect or not content_rect:
+        return False
+    # 同行：标签右边界在输入框左边界之前（或重叠不多），垂直接近
+    same_row = (
+        abs(label_rect.get("top", 0) - content_rect.get("top", 0)) < 30
+        and label_rect.get("right", 0) <= content_rect.get("left", 0) + 20
+    )
+    # 同列：标签在输入框上方，水平起始接近
+    same_col = (
+        abs(label_rect.get("left", 0) - content_rect.get("left", 0)) < 30
+        and label_rect.get("bottom", 0) <= content_rect.get("top", 0) + 5
+    )
+    return same_row or same_col
 
 
 def _backfill_label_text_to_controls(flat_controls):
@@ -2580,21 +3975,54 @@ def _backfill_label_text_to_controls(flat_controls):
             if name and rect:
                 labels.append({"name": name, "rect": rect, "path": str(item.get("uiPath", "")).strip()})
 
-    if not labels:
-        return
-
     # 对弱定位控件回填
     for item in flat_controls:
         if not isinstance(item, dict):
             continue
         control_type = str(item.get("controlType", "")).strip().lower()
-        if control_type not in {"edit", "combobox", "spinner", "document"}:
-            continue
 
         has_name = bool(str(item.get("name", "")).strip())
         has_automation_id = bool(str(item.get("automationId", "")).strip())
-        if has_name and has_automation_id:
-            continue  # 已有强定位，不需要回填
+
+        # 最优先：标签伴随/关联阶段已确认的关联标签（同区域几何验证过，可信度最高）。
+        # 该路径不限控件类型（容器型自定义输入控件也可回填），故放在类型过滤之前；
+        # labelText 无条件补写——即使控件已有强定位，labelText 也供消歧与界面展示使用，
+        # 但强定位控件的 name 与推荐定位器保持不变。
+        related_label_name = str(item.get("relatedLabelName", "")).strip()
+        if related_label_name:
+            item["labelText"] = related_label_name
+            if not str(item.get("labelRelation", "")).strip():
+                item["labelRelation"] = "region-association"
+            if has_name and has_automation_id:
+                continue  # 强定位：仅补 labelText，不改动 name/推荐定位器
+            if not has_name:
+                item["name"] = related_label_name
+                item["nameSource"] = "relatedlabel-backfill"
+            _rescore_backfilled_control(item)
+            continue
+
+        # 强定位控件（同时有 name 和 automationId）：仍执行 labelText 回填（供运行时消歧），
+        # 但不改动 name 与推荐定位器。用 is_strong_locator 标记控制下游行为。
+        is_strong_locator = has_name and has_automation_id
+
+        if control_type not in {"edit", "combobox", "spinner", "document", "splitbutton", "checkbox", "radiobutton", "slider"}:
+            continue
+
+        # 优先使用 UIA LabeledBy（WPF Label.Target 权威关联，精度高于几何最近邻）；
+        # 该路径不依赖窗口内存在 Text 标签，故放在 labels 判空之外
+        labeled_by_name = str(item.get("labeledByName", "")).strip()
+        if labeled_by_name:
+            item["labelText"] = labeled_by_name
+            item["labelRelation"] = "uia-labeledby"
+            if not is_strong_locator and not has_name:
+                item["name"] = labeled_by_name
+                item["nameSource"] = "labeledby-backfill"
+            if not is_strong_locator:
+                _rescore_backfilled_control(item)
+            continue
+
+        if not labels:
+            continue  # 无几何候选标签可关联
 
         item_rect = _normalize_rect_dict(item.get("boundingBox"))
         if not item_rect:
@@ -2624,21 +4052,35 @@ def _backfill_label_text_to_controls(flat_controls):
             item["labelText"] = label_text
             item["labelRelation"] = "nearest-text-label"
             # 如果控件没有 name，用标签文本回填
-            if not has_name:
+            if not is_strong_locator and not has_name:
                 item["name"] = label_text
                 item["nameSource"] = "label-backfill"
-            # 如果没有 automationId 但有 name 了，重新计算定位
-            if not has_automation_id:
-                method, value, score, reason = build_locator_recommendation(item, int(item.get("index", 0) or 0), item.get("uiPath", ""))
-                if score > int(item.get("locatorScore", 0) or 0):
-                    item["recommendedTargetMethod"] = method
-                    item["recommendedTargetValue"] = value
-                    item["locatorScore"] = score
-                    item["locatorReason"] = reason
-            # 重新分级质量
-            quality_tier, quality_reason = _classify_control_quality(item)
-            item["qualityTier"] = quality_tier
-            item["qualityReason"] = quality_reason
+            if not is_strong_locator:
+                _rescore_backfilled_control(item)
+
+
+def _rescore_backfilled_control(item):
+    """标签回填后的定位器重算与质量重分级。
+
+    回填的 name（nameSource 以 -backfill 结尾）不是真实 UIA Name，运行时 name
+    定位必然失配；重算定位时将其剔除，让 label_text 等真实可匹配的方法胜出。
+    """
+    has_automation_id = bool(str(item.get("automationId", "")).strip())
+    if not has_automation_id:
+        locator_source = item
+        if str(item.get("nameSource", "")).strip().endswith("-backfill"):
+            locator_source = dict(item)
+            locator_source["name"] = ""
+        method, value, score, reason = build_locator_recommendation(
+            locator_source, int(item.get("index", 0) or 0), item.get("uiPath", ""))
+        if score > int(item.get("locatorScore", 0) or 0):
+            item["recommendedTargetMethod"] = method
+            item["recommendedTargetValue"] = value
+            item["locatorScore"] = score
+            item["locatorReason"] = reason
+    quality_tier, quality_reason = _classify_control_quality(item)
+    item["qualityTier"] = quality_tier
+    item["qualityReason"] = quality_reason
 
 
 def _locator_scope_method(target_method):
@@ -2683,7 +4125,7 @@ def _compute_sibling_found_index(item, flat_controls, scope_method):
 
 
 def _locator_identity(item):
-    """用于区分“真正不同的控件”与“同一控件的多次出现”：优先 runtimeId，其次 rect。"""
+    """用于区分"真正不同的控件"与"同一控件的多次出现"：优先 runtimeId，其次 rect。"""
     runtime_id = str(item.get("runtimeId", "")).strip()
     if runtime_id:
         return runtime_id
@@ -2695,7 +4137,7 @@ def _locator_identity(item):
 
 def _disambiguate_duplicate_locators(flat_controls):
     """全局唯一性后处理：多个不同控件若共用同一 recommendedTargetValue（如
-    “访问级别下拉框”和“性质下拉框”两个 PART_DropDownButton 都得到
+    "访问级别下拉框"和"性质下拉框"两个 PART_DropDownButton 都得到
     "PART_DropDownButton,Button"），运行时会双双定位到同一个控件。此处对这类冲突
     控件追加 found_index 消歧（同父容器内按 control_type/class_name/name 计数），
     使各自定位唯一，并避免它们在分组去重中被误并为一个。
@@ -2710,7 +4152,7 @@ def _disambiguate_duplicate_locators(flat_controls):
             continue
         groups.setdefault((method, value), []).append(item)
     for (method, value), members in groups.items():
-        # 仅对“真正不同的控件”消歧（不同 runtimeId/rect），跨后端同一控件不处理。
+        # 仅对"真正不同的控件"消歧（不同 runtimeId/rect），跨后端同一控件不处理。
         distinct = []
         seen_identity = set()
         for member in members:
@@ -2720,6 +4162,22 @@ def _disambiguate_duplicate_locators(flat_controls):
             seen_identity.add(identity)
             distinct.append(member)
         if len(distinct) < 2:
+            continue
+        # 优先 label_text 消歧：组内成员各有互不相同的关联标签文本（标签伴随/
+        # 区域关联产物）时，用标签文本消歧比 found_index 更抗布局与顺序变动。
+        label_text_members = {}
+        for member in distinct:
+            lt = str(member.get("labelText", "") or member.get("relatedLabelName", "")).strip()
+            if not lt or "," in lt or lt in label_text_members:
+                label_text_members = {}
+                break
+            label_text_members[lt] = member
+        if len(label_text_members) >= 2:
+            for lt, member in label_text_members.items():
+                member["recommendedTargetMethod"] = method + ",label_text"
+                member["recommendedTargetValue"] = value + "," + lt
+                reason = str(member.get("locatorReason", "")).strip()
+                member["locatorReason"] = (reason + " + label_text消歧").strip(" +")
             continue
         scope_method = _locator_scope_method(method)
         if not scope_method:
@@ -2843,7 +4301,6 @@ def _collect_uia_dumper_flat_controls(
     return _merge_uia_dumper_records(
         records, target_window, flat_controls, seen_identities, status_callback
     )
-# __UIA_DUMPER_MERGE_PLACEHOLDER__
 def _merge_uia_dumper_records(records, target_window, flat_controls, seen_identities, status_callback=None):
     """将 uia_tree_dumper 输出的记录数组转换为标准 flat_control 结构并去重合并。"""
     by_index = {}
@@ -2905,7 +4362,10 @@ def _merge_uia_dumper_records(records, target_window, flat_controls, seen_identi
 
         name = str(rec.get("name") or "").strip()
         class_name = str(rec.get("className") or "").strip()
-        control_type = normalize_control_type_name(str(rec.get("controlType") or "").strip())
+        control_type = normalize_control_type_name(
+            str(rec.get("controlType") or "").strip(),
+            str(rec.get("localizedControlType") or "").strip(),
+        )
         automation_id = str(rec.get("automationId") or "").strip()
         help_text = str(rec.get("helpText") or "").strip()
         value_pattern_value = str(rec.get("value") or "").strip()
@@ -2913,7 +4373,22 @@ def _merge_uia_dumper_records(records, target_window, flat_controls, seen_identi
         expand_state = str(rec.get("expandState") or "").strip()
         runtime_id = _format_runtime_id(rec.get("runtimeId"))
         process_id = str(rec.get("processId") or "").strip() or win_pid
-        handle = str(rec.get("handle") or "").strip() or (win_handle if depth == 0 else "")
+        handle = (
+            str(rec.get("handle") or "").strip()
+            or str(rec.get("nativeWindowHandle") or "").strip()
+            or (win_handle if depth == 0 else "")
+        )
+        # dumper v2 补充字段（对齐 Inspect 面板与 pywinauto 采集端 schema）
+        localized_control_type = str(rec.get("localizedControlType") or "").strip()
+        framework_id = str(rec.get("frameworkId") or "").strip()
+        access_key = str(rec.get("accessKey") or "").strip()
+        accelerator_key = str(rec.get("acceleratorKey") or "").strip()
+        item_type = str(rec.get("itemType") or "").strip()
+        item_status = str(rec.get("itemStatus") or "").strip()
+        labeled_by_name = str(rec.get("labeledByName") or "").strip()
+        supported_patterns = [
+            p.strip() for p in str(rec.get("patterns") or "").split(",") if p.strip()
+        ]
 
         # 矩形转换: dumper 输出 {X,Y,W,H} -> {left,top,right,bottom}
         bounding_box = None
@@ -2938,6 +4413,10 @@ def _merge_uia_dumper_records(records, target_window, flat_controls, seen_identi
         if is_offscreen_raw is not None:
             is_visible_val = not bool(is_offscreen_raw)
         keyboard_focusable = rec.get("isKeyboardFocusable")
+        has_keyboard_focus = rec.get("hasKeyboardFocus")
+        is_content_element = rec.get("isContentElement")
+        is_control_element = rec.get("isControlElement")
+        is_password = rec.get("isPassword")
 
         path_segments = _path_segments_for(rec)
 
@@ -2946,16 +4425,16 @@ def _merge_uia_dumper_records(records, target_window, flat_controls, seen_identi
             "value": value_pattern_value,
             "toggleState": toggle_state,
             "controlType": control_type,
-            "localizedControlType": "",
+            "localizedControlType": localized_control_type,
             "boundingRectangle": bounding_rectangle,
             "isEnabled": str(is_enabled_raw) if is_enabled_raw is not None else "",
             "isVisible": str(is_visible_val) if is_visible_val is not None else "",
             "isOffscreen": is_offscreen,
             "isKeyboardFocusable": str(keyboard_focusable) if keyboard_focusable is not None else "",
-            "hasKeyboardFocus": "",
+            "hasKeyboardFocus": str(has_keyboard_focus) if has_keyboard_focus is not None else "",
             "processId": process_id,
             "runtimeId": runtime_id,
-            "frameworkId": "",
+            "frameworkId": framework_id,
             "className": class_name,
             "automationId": automation_id,
             "nativeWindowHandle": handle,
@@ -2964,6 +4443,16 @@ def _merge_uia_dumper_records(records, target_window, flat_controls, seen_identi
             "legacyRole": "",
             "legacyState": "",
             "helpText": help_text,
+            "accessKey": access_key,
+            "acceleratorKey": accelerator_key,
+            "itemType": item_type,
+            "itemStatus": item_status,
+            "isContentElement": str(is_content_element) if is_content_element is not None else "",
+            "isControlElement": str(is_control_element) if is_control_element is not None else "",
+            "isPassword": str(is_password) if is_password is not None else "",
+            "labeledByName": labeled_by_name,
+            "supportedPatterns": list(supported_patterns),
+            "expandCollapseState": expand_state,
             "expandState": expand_state,
             "ancestors": list(path_segments[:-1]),
             "children": [],
@@ -2988,21 +4477,27 @@ def _merge_uia_dumper_records(records, target_window, flat_controls, seen_identi
             "name": name,
             "className": class_name,
             "controlType": control_type,
-            "localizedControlType": "",
+            "localizedControlType": localized_control_type,
             "automationId": automation_id,
-            "frameworkId": "",
+            "frameworkId": framework_id,
             "runtimeId": runtime_id,
             "value": value_pattern_value,
             "toggleState": toggle_state,
-            # uia_tree_dumper 回填路径无 wrapper，无法探测 Pattern，置空默认保持输出 schema 一致
-            "supportedPatterns": [],
-            "expandCollapseState": "",
+            "supportedPatterns": list(supported_patterns),
+            "expandCollapseState": expand_state,
             "boundingRectangle": bounding_rectangle,
             "boundingBox": bounding_box,
             "isEnabled": bool(is_enabled_raw) if is_enabled_raw is not None else None,
             "isVisible": is_visible_val,
             "isOffscreen": is_offscreen,
+            "isKeyboardFocusable": str(keyboard_focusable) if keyboard_focusable is not None else "",
+            "hasKeyboardFocus": str(has_keyboard_focus) if has_keyboard_focus is not None else "",
             "helpText": help_text,
+            "accessKey": access_key,
+            "acceleratorKey": accelerator_key,
+            "itemType": item_type,
+            "itemStatus": item_status,
+            "labeledByName": labeled_by_name,
             "providerDescription": "",
             "locatorScore": locator_score,
             "locatorReason": locator_reason,
@@ -3102,12 +4597,13 @@ def _scan_single_backend_payload(
         1,
     )
     flat_controls = []
+    bfs_stats = {}
     use_raw_view_bfs = backend != "win32"
     if use_raw_view_bfs:
         try:
             # RawView BFS 遍历每个元素需多次 COM 调用，超时比常规 DFS 更宽松
             bfs_timeout = max(scan_timeout_seconds, 90)
-            control_tree = _walk_raw_view_bfs(
+            bfs_stats = _walk_raw_view_bfs(
                 target_window_wrapper,
                 max_depth=max_depth,
                 target_window=target_window,
@@ -3173,12 +4669,33 @@ def _scan_single_backend_payload(
             scan_timeout_seconds=scan_timeout_seconds,
             status_callback=status_callback,
         )
+    # 标签伴随采集：保证每个已采集标签对应的输入/操作控件也被采到（树采集+画框采集通用）。
+    # 放在 _enrich_tree_metadata 之前，使补采条目同样获得 pathHash 等树元数据。
+    _collect_label_companion_wrappers(
+        backend,
+        target_window,
+        flat_controls,
+        seen_identities,
+        root_handle=root_handle,
+        max_depth=max_depth,
+        start_time=start_time,
+        scan_timeout_seconds=scan_timeout_seconds,
+        status_callback=status_callback,
+    )
     # ---- 全部采集与补采完成，统一增强元数据并重建控件树 ----
     _enrich_tree_metadata(flat_controls)
     control_tree = _build_tree_from_flat(flat_controls)
     for item in flat_controls:
         item["scanBackend"] = backend
-    # 在区域筛选前做 dict 级“标签→实际控件”横向关联（同行下拉框/输入框优先）。
+    # 先规范化 WPF 输入框（Custom/Pane→Edit），再做同行标签关联：
+    # 关联只认可操作类型集合，自定义输入控件必须先恢复为 Edit 才不会错过关联（数据流时序）。
+    _normalize_textbox_wrappers(flat_controls)
+    # 同父容器内兄弟 TextBlock 标签回填（PART_ContentHost / Edit / TextBox）：
+    # 必须在 _normalize_textbox_wrappers 之后（controlType 已规范化为 Edit），
+    # 在 _associate_region_labels_with_controls 之前（区域关联会设置 relatedLabelName，
+    # 本函数只处理 labelText 仍为空的控件，避免覆盖区域关联结果）。
+    _backfill_sibling_label_for_inputs(flat_controls)
+    # 在区域筛选前做 dict 级"标签→实际控件"横向关联（同行下拉框/输入框优先）。
     _associate_region_labels_with_controls(flat_controls)
     # 全局唯一性消歧：对共用同一定位器的不同控件追加 found_index，避免定位到同一处。
     _disambiguate_duplicate_locators(flat_controls)
@@ -3193,9 +4710,7 @@ def _scan_single_backend_payload(
     region_controls = _filter_flat_controls_by_region(flat_controls, region_rect)
     region_controls = _prune_low_value_region_controls(region_controls, target_window.get("title", ""))
     _enrich_flat_controls(region_controls, target_window)
-    # 规范化 WPF TextBox 包装器：将 Custom/Pane+TextBox className 修正为 Edit，
-    # 避免被后续 _filter_noise_controls 误删，并让 _backfill_label_text_to_controls 能关联标签。
-    _normalize_textbox_wrappers(region_controls)
+    # TextBox 规范化已前移至标签关联之前（对全量 flat_controls 生效），此处无需重复。
     # A+C: 过滤离屏控件和无标识容器
     region_controls = _filter_noise_controls(
         region_controls,
@@ -3207,6 +4722,8 @@ def _scan_single_backend_payload(
         region_controls = _prune_empty_unidentified_containers(region_controls)
     # 标签关联回填：对弱定位的 Edit/ComboBox 用邻近标签文本增强
     _backfill_label_text_to_controls(region_controls)
+    # 回填可能改变推荐定位器（label_text），对回填后的结果再消歧一次
+    _disambiguate_duplicate_locators(region_controls)
     for item in region_controls:
         item.pop("_wrapperIdentity", None)
     control_definitions = [_build_control_definition_from_flat(item, existing_ids) for item in region_controls]
@@ -3221,22 +4738,33 @@ def _scan_single_backend_payload(
     # 生成控件摘要（快速概览，不影响原始数据）
     control_summary = _build_control_summary(region_controls, flat_controls)
 
+    scan_meta = {
+        "scanTime": datetime.now().isoformat(timespec="seconds"),
+        "backend": backend,
+        "mode": "foreground" if use_foreground else "keyword",
+        "windowKeyword": str(window_keyword or "").strip(),
+        "maxDepth": max_depth,
+        "scanTimeoutSeconds": scan_timeout_seconds,
+        "totalControls": len(region_controls),
+        "rawTotalControls": len(flat_controls),
+        "regionRect": _normalize_rect_dict(region_rect),
+        "controlTypeSummary": dict(sorted(by_type.items(), key=lambda item: (-item[1], item[0]))),
+        "dropdownExpandDiagnostics": dropdown_diagnostics,
+        "fullTreeRelaxation": fulltree_relaxation,
+    }
+    # 采集截断可见性：超时/元素熔断会静默漏采后续元素，必须显式记录，
+    # 提醒用户对缺失区域使用悬停跟踪/定点补采。
+    if bfs_stats.get("timedOut") or bfs_stats.get("hitLimit"):
+        scan_meta["truncation"] = {
+            "bfsTimedOut": bool(bfs_stats.get("timedOut")),
+            "bfsHitElementLimit": bool(bfs_stats.get("hitLimit")),
+            "elementLimit": _MAX_ELEMENTS_PER_WALK,
+            "hint": "整树采集被截断，结果可能不全；请对缺失区域使用悬停跟踪/定点补采。",
+        }
+
     return {
         "schemaVersion": "1.0",
-        "scanMeta": {
-            "scanTime": datetime.now().isoformat(timespec="seconds"),
-            "backend": backend,
-            "mode": "foreground" if use_foreground else "keyword",
-            "windowKeyword": str(window_keyword or "").strip(),
-            "maxDepth": max_depth,
-            "scanTimeoutSeconds": scan_timeout_seconds,
-            "totalControls": len(region_controls),
-            "rawTotalControls": len(flat_controls),
-            "regionRect": _normalize_rect_dict(region_rect),
-            "controlTypeSummary": dict(sorted(by_type.items(), key=lambda item: (-item[1], item[0]))),
-            "dropdownExpandDiagnostics": dropdown_diagnostics,
-            "fullTreeRelaxation": fulltree_relaxation,
-        },
+        "scanMeta": scan_meta,
         "controlSummary": control_summary,
         "targetWindow": target_window,
         "controlsTree": control_tree,
@@ -3318,6 +4846,7 @@ def build_control_map_payload(
     merged_controls = _prune_low_value_region_controls(merged_controls, base_payload.get("targetWindow", {}).get("title", ""))
     _enrich_flat_controls(merged_controls, base_payload.get("targetWindow", {}))
     _normalize_textbox_wrappers(merged_controls)
+    _backfill_sibling_label_for_inputs(merged_controls)
     _backfill_label_text_to_controls(merged_controls)
     existing_ids = set()
     merged_definitions = [_build_control_definition_from_flat(item, existing_ids) for item in merged_controls]
@@ -3378,6 +4907,114 @@ def save_control_map_payload(payload, output_path=""):
     with open(output_path, "w", encoding="utf-8") as file_obj:
         json.dump(payload, file_obj, ensure_ascii=False, indent=2)
     return output_path
+
+
+class _PersistentHighlight:
+    """持久跟随鼠标目标的高亮框，鼠标完全穿透（WS_EX_TRANSPARENT）。
+
+    设计原因：悬停跟踪模式下需要实时高亮当前命中的控件矩形，但不能让 overlay
+    本身被 pywinauto 的 from_point() 命中（否则会"自伤"——采到自己的控件信息）。
+    WS_EX_TRANSPARENT 使 overlay 对鼠标和 hit-test 完全透明，WS_EX_LAYERED 是
+    transparentcolor 生效的前提，WS_EX_NOACTIVATE 防止抢焦点。
+    """
+
+    # Windows 扩展样式常量
+    _GWL_EXSTYLE = -20
+    _WS_EX_TRANSPARENT = 0x00000020
+    _WS_EX_LAYERED = 0x00080000
+    _WS_EX_NOACTIVATE = 0x08000000
+
+    def __init__(self, parent):
+        self._parent = parent
+        self._overlay = None  # Tk Toplevel，延迟创建
+        self._canvas = None   # Canvas 控件，延迟创建
+
+    def _ensure_overlay(self):
+        """懒创建 overlay 窗口（首次调用时）。"""
+        if self._overlay is not None:
+            try:
+                if self._overlay.winfo_exists():
+                    return
+            except Exception:
+                pass
+            self._overlay = None
+        try:
+            overlay = tk.Toplevel(self._parent)
+            overlay.overrideredirect(True)
+            overlay.attributes("-topmost", True)
+            # 背景透明：magenta 作为 transparentcolor，只留红色边框可见
+            overlay.attributes("-transparentcolor", "magenta")
+            # 初始隐藏，等 show() 时再定位显示
+            overlay.withdraw()
+            # 设置鼠标穿透样式：overlay 不可被 hit-test 命中
+            try:
+                hwnd_str = overlay.frame() if overlay.frame() else str(overlay.winfo_id())
+                hwnd = int(hwnd_str, 16)
+                style = ctypes.windll.user32.GetWindowLongW(hwnd, self._GWL_EXSTYLE)
+                new_style = style | self._WS_EX_TRANSPARENT | self._WS_EX_LAYERED | self._WS_EX_NOACTIVATE
+                ctypes.windll.user32.SetWindowLongW(hwnd, self._GWL_EXSTYLE, new_style)
+            except Exception:
+                pass  # 穿透设置失败不阻塞功能，仍有 pid 过滤兜底
+            self._overlay = overlay
+        except Exception:
+            self._overlay = None
+
+    def show(self, rect):
+        """移动/调整高亮框到指定矩形区域。已显示则只移动不重建。
+
+        rect: 具有 left/top/right/bottom 属性的矩形对象或 (left, top, right, bottom) 元组。
+        """
+        try:
+            if hasattr(rect, 'left'):
+                left, top, right, bottom = int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+            else:
+                left, top, right, bottom = int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])
+            width = max(4, right - left)
+            height = max(4, bottom - top)
+        except Exception:
+            return
+
+        self._ensure_overlay()
+        if self._overlay is None:
+            return
+        try:
+            # 绕过 DPI 缩放设置 geometry，与 _show_locator_highlight 保持一致
+            wt_dpi.raw_geometry(self._overlay, f"{width}x{height}+{left}+{top}")
+            # 如果 canvas 已存在则只更新矩形位置
+            canvas = getattr(self, '_canvas', None)
+            if canvas is not None:
+                try:
+                    canvas.delete('rect')
+                    canvas.create_rectangle(2, 2, width - 2, height - 2, outline="#ff2020", width=4, tags='rect')
+                except Exception:
+                    pass
+            else:
+                canvas = tk.Canvas(self._overlay, bg="magenta", highlightthickness=0, bd=0)
+                canvas.pack(fill=tk.BOTH, expand=True)
+                canvas.create_rectangle(2, 2, width - 2, height - 2, outline="#ff2020", width=4, tags='rect')
+                self._canvas = canvas
+            self._overlay.deiconify()
+            self._overlay.lift()
+        except Exception:
+            pass
+
+    def hide(self):
+        """隐藏高亮框（不销毁，可再次 show）。"""
+        if self._overlay is not None:
+            try:
+                self._overlay.withdraw()
+            except Exception:
+                pass
+
+    def destroy(self):
+        """彻底销毁 overlay。"""
+        self._canvas = None
+        if self._overlay is not None:
+            try:
+                self._overlay.destroy()
+            except Exception:
+                pass
+            self._overlay = None
 
 
 class RegionPickerOverlay:
@@ -3472,7 +5109,7 @@ class ControlMapBuilderApp:
         self.var_exclude_offscreen = tk.BooleanVar(value=True)
         self.var_exclude_unidentified = tk.BooleanVar(value=True)
         self.var_expand_dropdowns = tk.BooleanVar(value=False)
-        self.var_status = tk.StringVar(value="准备就绪：建议先切到目标软件窗口，再点击“一键整树采集并保存”。")
+        self.var_status = tk.StringVar(value='准备就绪：建议先切到目标软件窗口，再点击"一键整树采集并保存"。')
         self.var_summary = tk.StringVar(value="尚未扫描控件树。")
         self.current_payload = None
         self.current_output_path = ""
@@ -3483,8 +5120,49 @@ class ControlMapBuilderApp:
         self.var_saved_control_name = tk.StringVar(value="")
         self.var_saved_control_id = tk.StringVar(value="")
         self.var_scan_progress = tk.StringVar(value="")
+        # 定点补采：命中元素后沿祖先链上溯的层数（人工指到叶子时扩大补采范围）
+        self.var_supplement_climb = tk.IntVar(value=1)
+        # 层级树视图 iid → 树节点映射（选中预览与补采锚定用）；iid 用单调递增序号，
+        # 增量插入/删除后也不会撞号
+        self._hierarchy_nodes_by_iid = {}
+        self._hierarchy_iid_seq = 0
+        # 补采选中控件时暂存的期望 identity
+        self._pending_supplement_expected = None
+        # 连续悬停跟踪补采（Inspect 式）运行状态
+        self._hover_mode_active = False
+        self._hover_consecutive_errors = 0  # 连续错误计数，超过阈值自动禁用悬停模式
+        self._hover_after_id = None
+        self._hover_last_pos = None
+        self._hover_stable_count = 0
+        self._hover_last_hit_key = ""
+        # 采集层去重：本轮已入队补采过的元素 key（与查看层 last_hit_key 分离）
+        self._hover_last_collect_key = ""
+        # 当前悬停元素在 flatControls 中的下标缓存（None=不在库中）
+        self._hover_existing_index = None
+        self._hover_session_added = 0
+        # "只看不采"模式：开启时悬停仅高亮跟随，不触发补采写库
+        self._hover_look_only = False
+        # 冻结状态：锁定当前悬停元素，停止探测但保持高亮
+        self._hover_frozen = False
+        self._hover_frozen_wrapper = None  # 冻结时锁定的 pywinauto wrapper
+        self._hover_frozen_rect = None  # 冻结时锁定的控件矩形 (left,top,right,bottom)
+        # 持久高亮跟随 overlay（Inspect 式红框），悬停模式开启时创建，停止时销毁
+        self._persistent_highlight = None
+        # pynput 全局热键监听器（悬停模式开启时创建，停止时销毁）
+        # 设计原因：悬停时焦点在目标软件，Tk 快捷键不生效，需全局监听
+        self._hotkey_listener = None
+        # ---- Worker 线程（秒级子树采集卸载到后台，避免阻塞 UI）----
+        # 设计原因：collect_subtree_at_point 对 WPF 深树是秒级操作，
+        # 而 _hover_tick 每 350ms 调度一次，若同步执行会严重阻塞 UI。
+        # 通过 worker 线程 + 队列 + 防重入标志，保证 UI 流畅且不会并发采集。
+        self._worker_queue = queue.Queue()
+        self._worker_busy = False  # 防重入标志：上一个任务未完成时为 True
+        self._worker_thread = None  # 当前运行的 worker 线程
 
         self._build_ui()
+
+        # 任务栏进度条（采集期间显示进度）
+        self._taskbar_progress = _TaskbarProgress(self.root)
 
     def _build_ui(self):
         toolbar = tk.LabelFrame(self.root, text="扫描配置", padx=10, pady=10)
@@ -3520,6 +5198,30 @@ class ControlMapBuilderApp:
             fg="#2563eb",
         ).pack(side=tk.LEFT)
 
+        supplement_row = tk.Frame(toolbar)
+        supplement_row.grid(row=4, column=0, columnspan=10, sticky="w", pady=(6, 0))
+        self.btn_hover_supplement = tk.Button(
+            supplement_row, text="🔴 悬停跟踪补采", command=self.cmd_toggle_hover_supplement, bg="#fca5a5"
+        )
+        self.btn_hover_supplement.pack(side=tk.LEFT, padx=(0, 3))
+        # "只看不采"模式开关：开启后悬停仅高亮跟随，不触发补采写库（默认关闭，保持原有行为）
+        self.var_look_only = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            supplement_row,
+            text="👁 只看不采",
+            variable=self.var_look_only,
+            command=self._on_look_only_toggle,
+        ).pack(side=tk.LEFT, padx=(0, 3))
+        tk.Button(supplement_row, text="🎯 定点补采子树", command=self.cmd_point_supplement, bg="#fde68a").pack(side=tk.LEFT, padx=3)
+        tk.Button(supplement_row, text="🌱 补采选中控件", command=self.cmd_selected_supplement, bg="#fde68a").pack(side=tk.LEFT, padx=3)
+        tk.Label(supplement_row, text="上溯层级").pack(side=tk.LEFT, padx=(10, 2))
+        tk.Spinbox(supplement_row, from_=0, to=8, textvariable=self.var_supplement_climb, width=4).pack(side=tk.LEFT)
+        tk.Label(
+            supplement_row,
+            text="(Inspect 式跟踪：开启后鼠标悬停到哪里就实时补采哪里的子树并同步定位层级树；Esc 或再次点击停止；虚拟化控件需先在目标软件里展开；F6 冻结/解冻，F7 采集入库，Ctrl+Shift+方向键导航)",
+            fg="#92400e",
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
         button_row = tk.Frame(toolbar)
         button_row.grid(row=1, column=0, columnspan=10, sticky="ew", pady=(10, 0))
         tk.Button(button_row, text="一键整树采集并保存", command=self.cmd_scan_and_save, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
@@ -3529,26 +5231,43 @@ class ControlMapBuilderApp:
         tk.Button(button_row, text="智能勾选", command=self.cmd_smart_check_results).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row, text="全选结果", command=self.cmd_check_all_results).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row, text="清空勾选", command=self.cmd_clear_checked_results).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row, text="🗑 清空当前结果", command=self.cmd_clear_current_payload, bg="#fee2e2").pack(side=tk.LEFT, padx=3)
         tk.Button(button_row, text="保存当前结果", command=self.cmd_save_current_payload).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row, text="打开控件库目录", command=self.cmd_open_control_map_dir).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row, text="🔍 搜索控件", command=self.cmd_search_controls, bg="#fef9c3").pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row, text="📥 合并入库", command=self.cmd_merge_into_library, bg="#e0f2fe").pack(side=tk.LEFT, padx=3)
         tk.Button(button_row, text="复制所选定位", command=self.cmd_copy_selected_locator).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row, text="检验定位", command=self.cmd_test_selected_locator, bg="#e0e7ff").pack(side=tk.LEFT, padx=3)
         self.var_tree_view_mode = tk.StringVar(value="flat")
         tk.Checkbutton(button_row, text="层级树视图", variable=self.var_tree_view_mode, onvalue="hierarchy", offvalue="flat", command=self._refresh_tree).pack(side=tk.LEFT, padx=8)
+        tk.Button(button_row, text="展开全部", command=self._cmd_expand_all_tree,
+                  font=("Microsoft YaHei UI", 9), padx=6, pady=0).pack(side=tk.LEFT, padx=2)
+        tk.Button(button_row, text="折叠全部", command=self._cmd_collapse_all_tree,
+                  font=("Microsoft YaHei UI", 9), padx=6, pady=0).pack(side=tk.LEFT, padx=2)
         tk.Label(button_row, textvariable=self.var_status, fg="#555555").pack(side=tk.RIGHT)
         tk.Label(button_row, textvariable=self.var_scan_progress, fg="#22c55e").pack(side=tk.RIGHT, padx=(10, 0))
 
-        summary = tk.LabelFrame(self.root, text="扫描概览", padx=10, pady=10)
-        summary.pack(fill=tk.X, padx=10)
-        tk.Label(summary, textvariable=self.var_summary, justify=tk.LEFT, anchor="w", wraplength=1320).pack(fill=tk.X)
-
-        body = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        # 主内容区：左右两栏，左2/3（控件候选），右1/3（扫描概览 + 控件详情）
+        body = tk.Frame(self.root)
         body.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        body.columnconfigure(0, weight=2)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
 
         left = tk.LabelFrame(body, text="控件候选", padx=10, pady=10)
-        body.add(left, stretch="always")
-        right = tk.LabelFrame(body, text="控件详情", padx=10, pady=10)
-        body.add(right, stretch="always")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+
+        right_container = tk.Frame(body)
+        right_container.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        right_container.columnconfigure(0, weight=1)
+        right_container.rowconfigure(1, weight=1)
+
+        summary = tk.LabelFrame(right_container, text="扫描概览", padx=10, pady=10)
+        summary.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        tk.Label(summary, textvariable=self.var_summary, justify=tk.LEFT, anchor="w", wraplength=380).pack(fill=tk.X)
+
+        right = tk.LabelFrame(right_container, text="控件详情", padx=10, pady=10)
+        right.grid(row=1, column=0, sticky="nsew")
 
         tree_style = ttk.Style()
         tree_style.configure("ControlMap.Treeview", rowheight=28)
@@ -3569,12 +5288,12 @@ class ControlMapBuilderApp:
         self.control_tree.heading("locator", text="推荐定位")
         self.control_tree.heading("score", text="评分")
         self.control_tree.heading("path", text="路径")
-        self.control_tree.column("pick", width=48, anchor="center")
-        self.control_tree.column("seq", width=50, anchor="center")
+        self.control_tree.column("pick", width=48, anchor="center", stretch=True, minwidth=36)
+        self.control_tree.column("seq", width=50, anchor="center", stretch=True, minwidth=36)
         self.control_tree.column("name", width=260, anchor="w", stretch=True, minwidth=180)
-        self.control_tree.column("type", width=150, anchor="w", stretch=False, minwidth=120)
-        self.control_tree.column("locator", width=300, anchor="w", stretch=True, minwidth=220)
-        self.control_tree.column("score", width=60, anchor="center")
+        self.control_tree.column("type", width=150, anchor="w", stretch=True, minwidth=100)
+        self.control_tree.column("locator", width=300, anchor="w", stretch=True, minwidth=200)
+        self.control_tree.column("score", width=60, anchor="center", stretch=True, minwidth=40)
         self.control_tree.column("path", width=460, anchor="w", stretch=True, minwidth=260)
         self.control_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
         self.control_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
@@ -3702,6 +5421,10 @@ class ControlMapBuilderApp:
         except Exception as exc:
             messagebox.showerror("扫描失败", f"控件树扫描失败：\n{exc}")
             self.var_status.set(f"扫描失败：{exc}")
+            try:
+                self._taskbar_progress.clear()
+            except Exception:
+                pass
             return
 
         self.current_payload = payload
@@ -3721,6 +5444,12 @@ class ControlMapBuilderApp:
                 self.var_status.set(f"扫描完成，但保存失败：{exc}")
         self._refresh_tree()
         self._refresh_summary()
+        # 采集完成，恢复窗口标题，清除任务栏进度
+        self.root.title("WT 控件库采集器")
+        try:
+            self._taskbar_progress.clear()
+        except Exception:
+            pass
         if auto_save and self.current_output_path:
             self.var_status.set(f"已完成控件库扫描并保存：{self.current_output_path}")
         elif self.current_region_rect:
@@ -3755,8 +5484,21 @@ class ControlMapBuilderApp:
         merged_backends = scan_meta.get("mergedBackends", []) or []
         if merged_backends:
             summary.append(f"实际采集后端：{', '.join(merged_backends)}")
+        supplements = scan_meta.get("supplementScans", []) or []
+        if supplements:
+            total_added = sum(int(entry.get("added", 0) or 0) for entry in supplements)
+            summary.append(f"定点补采：{len(supplements)} 次，累计新增 {total_added} 个控件")
         if scan_meta.get("rawTotalControls", 0) and scan_meta.get("rawTotalControls", 0) != scan_meta.get("totalControls", 0):
             summary.append(f"整窗原始控件数：{scan_meta.get('rawTotalControls', 0)}")
+        truncation = scan_meta.get("truncation")
+        if isinstance(truncation, dict):
+            reasons = []
+            if truncation.get("bfsTimedOut"):
+                reasons.append("遍历超时")
+            if truncation.get("bfsHitElementLimit"):
+                reasons.append(f"达到元素上限 {truncation.get('elementLimit', '')}")
+            if reasons:
+                summary.append(f"⚠ 采集被截断（{'、'.join(reasons)}），结果可能不全，缺失区域请用悬停/定点补采")
         region_rect = scan_meta.get("regionRect")
         if region_rect:
             summary.append(
@@ -3780,12 +5522,33 @@ class ControlMapBuilderApp:
             summary.append(f"类型分布：{top_types}")
         self.var_summary.set("\n".join(summary))
 
+    def _cmd_expand_all_tree(self):
+        """展开控件树全部节点。"""
+        for item in self._all_tree_items(self.control_tree):
+            self.control_tree.item(item, open=True)
+
+    def _cmd_collapse_all_tree(self):
+        """折叠控件树全部节点。"""
+        for item in self._all_tree_items(self.control_tree):
+            self.control_tree.item(item, open=False)
+
+    @staticmethod
+    def _all_tree_items(tree, parent=""):
+        """递归获取树视图的所有条目 iid（深度优先）。"""
+        items = []
+        for child in tree.get_children(parent):
+            items.append(child)
+            items.extend(ControlMapBuilderApp._all_tree_items(tree, child))
+        return items
+
     def _refresh_tree(self):
         """根据视图模式刷新控件树：扁平分组视图或层级树视图。"""
         self.control_tree.delete(*self.control_tree.get_children())
+        mode = getattr(self, "var_tree_view_mode", tk.StringVar(value="flat")).get()
+        # #0 树列标题随视图语义切换，避免层级树下仍显示"归类"
+        self.control_tree.heading("#0", text="层级结构" if mode == "hierarchy" else "归类")
         if not isinstance(self.current_payload, dict):
             return
-        mode = getattr(self, "var_tree_view_mode", tk.StringVar(value="flat")).get()
         if mode == "hierarchy":
             self._refresh_hierarchical_tree()
         else:
@@ -3864,44 +5627,136 @@ class ControlMapBuilderApp:
     def _refresh_hierarchical_tree(self):
         """层级树视图：展示真实父子关系。"""
         control_tree = self.current_payload.get("controlsTree", {}) if isinstance(self.current_payload, dict) else {}
-        flat_controls = self.current_payload.get("flatControls", []) if isinstance(self.current_payload, dict) else []
+        self._hierarchy_nodes_by_iid = {}
         if not control_tree:
             return
-        # 递归插入树节点
-        def insert_node(node, parent_iid="", depth=0):
-            if not isinstance(node, dict):
-                return
-            # 构建显示名称
-            name = str(node.get("name", "")).strip()
-            control_type = str(node.get("controlType", "")).strip() or "Unknown"
-            auto_id = str(node.get("automationId", "")).strip()
-            display_name = name or auto_id or f"[{control_type}]"
-            # 透明容器标记
-            is_transparent = node.get("isTransparentContainer", False)
+        self._insert_hierarchy_node(control_tree)
+
+    def _insert_hierarchy_node(self, node, parent_iid="", depth=0, open_depth=2):
+        """递归插入一个 controlsTree 节点及其子树，返回根 iid。
+
+        全量刷新与补采后的增量子树替换共用此方法；iid 用单调递增序号保证全局唯一，
+        节点实体（controlsTree 节点引用）通过 _hierarchy_nodes_by_iid 反查。
+        """
+        if not isinstance(node, dict):
+            return None
+        # 构建显示名称
+        name = str(node.get("name", "")).strip()
+        control_type = str(node.get("controlType", "")).strip() or "Unknown"
+        auto_id = str(node.get("automationId", "")).strip()
+        display_name = name or auto_id or f"[{control_type}]"
+        # 透明容器标记；定点补采新增节点用 ✦ 区分
+        is_transparent = node.get("isTransparentContainer", False)
+        if node.get("supplementSource"):
+            prefix = "✦"
+        else:
             prefix = "○" if is_transparent else "●"
-            # 构建 iid
-            node_index = node.get("flatIndex", -1)
-            iid = f"hierarchy:{node_index}" if node_index >= 0 else f"hierarchy:{id(node)}"
-            # 插入节点
-            self.control_tree.insert(
-                parent_iid,
-                tk.END,
-                iid=iid,
-                open=(depth < 2),  # 前 2 层默认展开
-                text=f"{prefix} {display_name}",
-                values=(
-                    f"{control_type}",
-                    auto_id or "-",
-                    name or "-",
-                    node.get("pathHash", ""),
-                    node.get("treeLevel", depth),
-                ),
-            )
-            # 递归插入子节点
-            children = node.get("children", [])
-            for child in children:
-                insert_node(child, iid, depth + 1)
-        insert_node(control_tree)
+        self._hierarchy_iid_seq += 1
+        iid = f"hierarchy:{self._hierarchy_iid_seq}"
+        self._hierarchy_nodes_by_iid[iid] = node
+        # values 与扁平视图共用同一套 7 列语义：勾选/#/控件/类型/推荐定位/评分/路径，
+        # 避免切到层级树后列标题与内容错位
+        try:
+            flat_index = int(node.get("flatIndex", -1))
+        except Exception:
+            flat_index = -1
+        has_flat = flat_index >= 0
+        full_display = (
+            str(node.get("savedControlName", "")).strip()
+            or str(node.get("suggestedControlName", "")).strip()
+            or str(node.get("displayName", "")).strip()
+            or display_name
+        )
+        scan_backend = str(node.get("scanBackend", "")).strip() or "-"
+        locator = f"{node.get('recommendedTargetMethod', '')}:{node.get('recommendedTargetValue', '')}".strip(":")
+        # 插入节点
+        self.control_tree.insert(
+            parent_iid,
+            tk.END,
+            iid=iid,
+            open=(depth < open_depth),
+            text=f"{prefix} {display_name}",
+            values=(
+                ("[x]" if flat_index in self.checked_control_indices else "[ ]") if has_flat else "",
+                flat_index + 1 if has_flat else "",
+                full_display,
+                f"{control_type}@{scan_backend}",
+                locator or "-",
+                node.get("locatorScore", 0) if has_flat else "",
+                str(node.get("uiPath", "")).strip(),
+            ),
+        )
+        # 递归插入子节点
+        for child in node.get("children", []) or []:
+            self._insert_hierarchy_node(child, iid, depth + 1, open_depth=open_depth)
+        return iid
+
+    def _locate_hierarchy_iid_by_identity(self, item):
+        """在当前层级树视图中反查节点 iid。
+
+        匹配策略（逐步回退）：
+        1. runtimeId 精确匹配（最可靠，但重启后失效）
+        2. 多字段签名匹配（name+className+controlType，稳定）
+        3. uiPath 模糊匹配（父子路径安全，签名退化时的兜底）
+        """
+        if not isinstance(item, dict):
+            return None
+        target_runtime, target_sig, sig_usable = _extract_identity_match_keys(item)
+        target_ui_path = str(item.get("uiPath", "") or item.get("inspectData", {}).get("uiPath", "")).strip()
+
+        sig_iid = None
+        ui_path_iid = None
+        runtime_iid = None
+        for iid, node in self._hierarchy_nodes_by_iid.items():
+            if not isinstance(node, dict):
+                continue
+            node_runtime = str(node.get("runtimeId", "")).strip()
+            if target_runtime and node_runtime and node_runtime == target_runtime:
+                runtime_iid = iid  # 最高优先级：runtimeId 匹配
+                break
+            if sig_usable and sig_iid is None:
+                _, node_sig, _ = _extract_identity_match_keys(node)
+                if node_sig == target_sig:
+                    sig_iid = iid
+            # uiPath 回退：签名中所有字段为空时才有意义
+            if not sig_usable and ui_path_iid is None and target_ui_path:
+                node_ui_path = str(node.get("uiPath", "") or node.get("inspectData", {}).get("uiPath", "")).strip()
+                if node_ui_path and node_ui_path == target_ui_path:
+                    ui_path_iid = iid
+        # exists() 是跨 Tcl 调用，只对最终候选验证（旧实现对每个节点验证，
+        # 数千节点时一次反查耗时上百毫秒，是悬停聚焦卡顿的主因之一）
+        for candidate in (runtime_iid, sig_iid, ui_path_iid):
+            if candidate and self.control_tree.exists(candidate):
+                return candidate
+        return None
+
+    def _sync_hierarchy_after_supplement(self, anchor_item):
+        """补采合并后增量同步层级树：只重建锚点子树（结构更新，定位高亮由调用方统一处理）。
+
+        相比全量 _refresh_tree，保留其余节点的展开状态且性能恒定，是 Inspect 式
+        悬停跟踪的核心体验。返回是否同步成功（失败时调用方应回退全量刷新）。
+        """
+        if self.var_tree_view_mode.get() != "hierarchy":
+            return False
+        iid = self._locate_hierarchy_iid_by_identity(anchor_item)
+        if not iid:
+            return False
+        node = self._hierarchy_nodes_by_iid.get(iid)
+        tree_root = self.current_payload.get("controlsTree", {}) if isinstance(self.current_payload, dict) else {}
+        payload_anchor = _find_tree_node_by_identity(tree_root, anchor_item)
+        # GUI 映射的节点必须与 payload 树中锚点匹配（身份签名一致），
+        # 否则说明树结构已重建，增量更新会刷到旧对象上，退回全量刷新
+        if payload_anchor is None or not _nodes_identity_match(node, payload_anchor):
+            return False
+        # 删除锚点旧子项并清理失效 iid 映射，再插入最新子树
+        for child_iid in self.control_tree.get_children(iid):
+            self.control_tree.delete(child_iid)
+        self._hierarchy_nodes_by_iid = {
+            key: value for key, value in self._hierarchy_nodes_by_iid.items() if self.control_tree.exists(key)
+        }
+        for child in node.get("children", []) or []:
+            self._insert_hierarchy_node(child, iid, depth=1, open_depth=2)
+        return True
 
     def _on_tree_click(self, event):
         row_id = self.control_tree.identify_row(event.y)
@@ -3915,17 +5770,58 @@ class ControlMapBuilderApp:
                     self._toggle_group_checked(group)
             elif str(row_id).startswith("item:"):
                 self._toggle_checked_index(int(str(row_id).split(":", 1)[1]))
+            elif str(row_id).startswith("hierarchy:"):
+                node = self._hierarchy_nodes_by_iid.get(str(row_id))
+                index = self._resolve_flat_index_for_node(node)
+                if index is not None:
+                    self._toggle_checked_index(index)
             return "break"
+
+    def _resolve_flat_index_for_node(self, node):
+        """把层级树节点解析为 flatControls 下标：flatIndex 优先，identity 校验，失败时全表兜底。"""
+        if not isinstance(node, dict) or not isinstance(self.current_payload, dict):
+            return None
+        flat = self.current_payload.get("flatControls", []) or []
+        if not flat:
+            return None
+        runtime, sig, sig_usable = _extract_identity_match_keys(node)
+
+        def _same(item):
+            if not isinstance(item, dict):
+                return False
+            item_runtime, item_sig, _ = _extract_identity_match_keys(item)
+            if runtime and item_runtime and runtime == item_runtime:
+                return True
+            return bool(sig_usable and item_sig == sig)
+
+        try:
+            index = int(node.get("flatIndex", -1))
+        except Exception:
+            index = -1
+        if 0 <= index < len(flat) and _same(flat[index]):
+            return index
+        for i, item in enumerate(flat):
+            if _same(item):
+                return i
+        return None
 
     def _toggle_checked_index(self, index):
         if index in self.checked_control_indices:
             self.checked_control_indices.remove(index)
         else:
             self.checked_control_indices.add(index)
-        current_selection = self.control_tree.selection()
+        flat = self.current_payload.get("flatControls", []) if isinstance(self.current_payload, dict) else []
+        flat_item = flat[index] if 0 <= index < len(flat) else None
         self._refresh_tree()
-        if current_selection:
-            self.control_tree.selection_set(current_selection)
+        # 恢复选中：扁平视图 iid 确定性重建；层级视图 iid 刷新后重排，按 identity 重新定位
+        if self.var_tree_view_mode.get() == "hierarchy":
+            iid = self._locate_hierarchy_iid_by_identity(flat_item) if isinstance(flat_item, dict) else None
+            if iid:
+                self.control_tree.selection_set(iid)
+        else:
+            iid = f"item:{index}"
+            if self.control_tree.exists(iid):
+                self.control_tree.selection_set(iid)
         self._refresh_summary()
 
     def _toggle_group_checked(self, group):
@@ -3949,6 +5845,33 @@ class ControlMapBuilderApp:
         if not selection or not isinstance(self.current_payload, dict):
             return
         selected_iid = selection[0]
+        if str(selected_iid).startswith("hierarchy:"):
+            # 层级树节点：直接用节点实体预览（flatIndex 在补采合并后可能跨下标空间，不可直接反查）
+            node = self._hierarchy_nodes_by_iid.get(str(selected_iid))
+            if not isinstance(node, dict):
+                return
+            self.var_saved_control_name.set(
+                str(node.get("savedControlName", "")).strip()
+                or str(node.get("suggestedControlName", "")).strip()
+                or str(node.get("displayName", "")).strip()
+            )
+            self.var_saved_control_id.set(
+                str(node.get("savedControlId", "")).strip()
+                or _build_saved_control_id_from_name(
+                    str(node.get("suggestedControlName", "")).strip() or str(node.get("displayName", "")).strip(),
+                    fallback="control",
+                )
+            )
+            preview = {
+                "qualityTier": node.get("qualityTier", ""),
+                "qualityReason": node.get("qualityReason", ""),
+                "supplementSource": node.get("supplementSource", ""),
+                "suggestedControlName": node.get("suggestedControlName", ""),
+                "flatControl": {key: value for key, value in node.items() if key != "children"},
+            }
+            self.preview_text.delete("1.0", tk.END)
+            self.preview_text.insert("1.0", json.dumps(preview, ensure_ascii=False, indent=2))
+            return
         if str(selected_iid).startswith("group:"):
             group = self._find_group_by_tree_iid(selected_iid)
             if not group:
@@ -4011,10 +5934,65 @@ class ControlMapBuilderApp:
                 return int(selected_iid.split(":", 1)[1])
             except Exception:
                 return None
+        if selected_iid.startswith("hierarchy:"):
+            # 层级树节点：按 identity 反查 flatControls 下标（支持检验定位/复制定位/补采）
+            node = self._hierarchy_nodes_by_iid.get(selected_iid)
+            if not isinstance(node, dict):
+                return None
+            return self._find_flat_index_by_identity(node)
         return None
 
+    def _find_flat_index_by_identity(self, item):
+        """按 identity 在当前 flatControls 中反查下标，未命中返回 None。"""
+        if not isinstance(self.current_payload, dict) or not isinstance(item, dict):
+            return None
+        target_identity = _build_flat_control_identity(item)
+        for index, flat_item in enumerate(self.current_payload.get("flatControls", []) or []):
+            if _build_flat_control_identity(flat_item) == target_identity:
+                return index
+        return None
+
+    def _show_locator_highlight(self, rect, duration_ms=3000):
+        """用置顶覆盖层高亮实际命中的屏幕区域（与控件库维护同款）。"""
+        try:
+            left = int(rect.left)
+            top = int(rect.top)
+            width = max(4, int(rect.right - rect.left))
+            height = max(4, int(rect.bottom - rect.top))
+        except Exception:
+            return False
+
+        try:
+            old_overlay = getattr(self, "_locator_highlight_window", None)
+            if old_overlay is not None and old_overlay.winfo_exists():
+                old_overlay.destroy()
+        except Exception:
+            pass
+
+        try:
+            overlay = tk.Toplevel(self.root)
+            overlay.overrideredirect(True)
+            overlay.attributes("-topmost", True)
+            # 高亮框套住目标控件的真实屏幕 rect，绕过 DPI 缩放，否则框会偏移放大
+            wt_dpi.raw_geometry(overlay, f"{width}x{height}+{left}+{top}")
+            try:
+                overlay.attributes("-transparentcolor", "magenta")
+                canvas = tk.Canvas(overlay, bg="magenta", highlightthickness=0, bd=0)
+                canvas.pack(fill=tk.BOTH, expand=True)
+                canvas.create_rectangle(2, 2, width - 2, height - 2, outline="#ff2020", width=4)
+            except Exception:
+                overlay.attributes("-alpha", 0.35)
+                canvas = tk.Canvas(overlay, bg="#ff2020", highlightthickness=0, bd=0)
+                canvas.pack(fill=tk.BOTH, expand=True)
+            overlay.protocol("WM_DELETE_WINDOW", overlay.destroy)
+            self._locator_highlight_window = overlay
+            overlay.after(duration_ms, overlay.destroy)
+            return True
+        except Exception:
+            return False
+
     def cmd_test_selected_locator(self):
-        """将画框采集结果中的当前控件交给统一定位检验器。"""
+        """使用流程执行器同一套定位规则检验并指向实际命中控件（后台线程，不阻塞 UI）。"""
         index = self._get_selected_tree_index()
         flat_controls = self.current_payload.get("flatControls", []) if isinstance(self.current_payload, dict) else []
         if index is None or not (0 <= index < len(flat_controls)):
@@ -4049,12 +6027,138 @@ class ControlMapBuilderApp:
         if not control.get("windowTitle") and isinstance(target_window, dict):
             control["windowTitle"] = str(target_window.get("title", "")).strip()
 
+        control["inspectData"] = inspect_data
+        if not control["targetMethod"] and not inspect_data:
+            self.var_status.set("⚠ 检验定位：该控件没有可用于定位的属性")
+            return
+
+        self.var_status.set("⏳ 正在检验定位（后台执行中）...")
+        self.root.update_idletasks()
+
+        import threading
+        t = threading.Thread(
+            target=self._run_locator_in_background,
+            args=(control,),
+            daemon=True,
+        )
+        t.start()
+
+    def _run_locator_in_background(self, control):
+        """在后台线程中执行定位检验（避免阻塞 Tk 主循环）。"""
+        import pythoncom
+        pythoncom.CoInitialize()
         try:
-            import WT_Flow_Editor
-            dialog = WT_Flow_Editor.ControlLocatorTesterDialog(self.root, initial_control=control)
-            self.root.wait_window(dialog.window)
+            import pyautogui
+            import wt_flow_locator as flow_locator
+            import time
+            
+            start = time.time()
+            
+            windows = list(flow_locator.iter_flow_search_windows(
+                {},
+                window_title_hint=str(control.get("windowTitle", "")).strip(),
+                control_definition=control,
+            ))
+            if not windows:
+                title = control.get("windowTitle") or "当前应用窗口"
+                self.root.after(0, lambda t=title: self.var_status.set(f"⚠ 检验定位：未找到目标窗口：{t}"))
+                return
+
+            matched = []
+            seen = set()
+
+            def _match_candidates(candidate_iter, _window):
+                for candidate in candidate_iter:
+                    handle = flow_locator.get_wrapper_handle(candidate) or id(candidate)
+                    if handle in seen:
+                        continue
+                    seen.add(handle)
+                    # 优化1：直接调用 score_control_match，避免 wrapper_matches_control_definition 重复评分
+                    score = flow_locator.score_control_match(candidate, control)
+                    if score > 0:
+                        matched.append((score, candidate, _window))
+
+            # 阶段1：快速候选
+            for window in windows:
+                _match_candidates(flow_locator.iter_fast_locator_candidates(window, control), window)
+
+            # 阶段2：RawView fallback
+            if not matched and control.get("inspectData", {}):
+                try:
+                    from wt_flow_locator import control_definition_expects_raw_view, iter_raw_view_fallback_candidates
+                    if control_definition_expects_raw_view(control):
+                        for window in windows:
+                            try:
+                                _match_candidates(iter_raw_view_fallback_candidates(window, control), window)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+            # 阶段3：descendants 兜底（最慢，大 WPF 窗口可达数十秒）
+            if not matched:
+                expected_type = str(
+                    control.get("controlType", "")
+                    or control.get("inspectData", {}).get("controlType", "")
+                ).strip()
+                for window in windows:
+                    try:
+                        if expected_type:
+                            desc = window.descendants(control_type=expected_type)
+                        else:
+                            desc = window.descendants()
+                        _match_candidates(desc, window)
+                    except Exception:
+                        try:
+                            _match_candidates(window.descendants(), window)
+                        except Exception:
+                            pass
+
+            elapsed = time.time() - start
+
+            def _show_result():
+                if not matched:
+                    self.var_status.set(
+                        f"⚠ 检验定位：未找到匹配控件（{control.get('targetMethod','')}={control.get('targetValue','')}，耗时 {elapsed:.1f}s）"
+                    )
+                    return
+                matched.sort(key=lambda e: e[0], reverse=True)
+                best_score, found, win = matched[0]
+                rect = found.rectangle()
+                center_x = (rect.left + rect.right) // 2
+                center_y = (rect.top + rect.bottom) // 2
+                try:
+                    win.set_focus()
+                except Exception:
+                    pass
+                pyautogui.moveTo(center_x, center_y, duration=0.2)
+                outline_drawn = self._show_locator_highlight(rect)
+                if not outline_drawn:
+                    try:
+                        found.draw_outline(colour="red", thickness=3)
+                    except Exception:
+                        pass
+                snap = flow_locator.get_wrapper_debug_snapshot(found)
+                parts = [
+                    f"✓ 定位成功 (评分:{best_score}, {elapsed:.1f}s)",
+                    f"名称:{snap.get('name', '') or '(无)'}",
+                    f"类型:{snap.get('controlType', '') or '(未知)'}",
+                    f"AID:{snap.get('automationId', '') or '(无)'}",
+                    f"位置:({center_x},{center_y})",
+                    "(多匹配)" if len(matched) > 1 else "(唯一)",
+                ]
+                self.var_status.set(" ".join(part for part in parts if part))
+
+            self.root.after(0, _show_result)
         except Exception as exc:
-            messagebox.showerror("打开失败", f"无法打开定位检验器：\n{exc}", parent=self.root)
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda e=exc: self.var_status.set(f"⚠ 检验出错：{e}"))
+        finally:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
     def cmd_scan_and_save(self):
         self._start_fulltree_scan(auto_save=True)
@@ -4131,8 +6235,801 @@ class ControlMapBuilderApp:
         self.root.focus_force()
 
     def _update_scan_progress(self, message, count):
+        """进度回调 — 可能在 worker 线程调用，必须线程安全。"""
+        try:
+            self.root.after(0, self._do_update_scan_progress, message, count)
+        except Exception:
+            pass  # 窗口已关闭
+
+    def _do_update_scan_progress(self, message, count):
+        """主线程执行的实际 UI 更新（由 root.after 调度）。"""
+        _hover_log(f"ui_update, message={message}, count={count}")
         self.var_scan_progress.set(f"{message} (已采集 {count} 个)")
+        # 同步更新主状态栏，即使窗口最小化，恢复后也能看到最后进度
+        self.var_status.set(f"扫描中：{message} (已采集 {count} 个)")
+        # 窗口标题实时显示进度（最小化时任务栏按钮可见）
+        self.root.title(f"WT 控件库采集器 — {count} 个控件")
+        # 更新任务栏进度条（使用估算上限，每 50 个控件为一档）
+        try:
+            estimated_total = max(count, ((count // 50) + 1) * 50)
+            self._taskbar_progress.set_state(_TaskbarProgress.TBPF_NORMAL)
+            self._taskbar_progress.set_value(count, estimated_total)
+        except Exception:
+            pass
+        try:
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+    # ---- Inspect 式定点补采 ----
+
+    def cmd_toggle_hover_supplement(self):
+        """开/关连续悬停跟踪补采（Inspect 式：悬停到哪里就实时补采哪里）。"""
+        if self._hover_mode_active:
+            self._stop_hover_supplement("已停止悬停跟踪补采。")
+            return
+        if not isinstance(self.current_payload, dict):
+            messagebox.showinfo("提示", "请先完成一次整树/画框扫描，再开启悬停跟踪补采。")
+            return
+        self._hover_mode_active = True
+        # 悬停模式启动时清空日志
+        try:
+            with open(_HOVER_MONITOR_LOG, "w", encoding="utf-8") as f:
+                f.write("")
+        except Exception:
+            pass
+        self._hover_last_pos = None
+        self._hover_stable_count = 0
+        self._hover_last_hit_key = ""
+        # 采集层去重：本轮已入队补采过的元素 key（与查看层 last_hit_key 分离）
+        self._hover_last_collect_key = ""
+        # 当前悬停元素在 flatControls 中的下标缓存（None=不在库中）
+        self._hover_existing_index = None
+        self._hover_session_added = 0
+        self._hover_frozen = False
+        self._hover_frozen_wrapper = None
+        self._hover_frozen_rect = None
+        # 初始化持久高亮 overlay（跟随鼠标目标实时显示红框）
+        self._persistent_highlight = _PersistentHighlight(self.root)
+        # 跟踪时需实时看到树同步：自动切到层级树视图并保持窗口置顶
+        if self.var_tree_view_mode.get() != "hierarchy":
+            self.var_tree_view_mode.set("hierarchy")
+            self._refresh_tree()
+        try:
+            self.root.attributes("-topmost", True)
+        except Exception:
+            pass
+        self.root.bind("<Escape>", lambda _event: self._stop_hover_supplement("已停止悬停跟踪补采（Esc）。"))
+        self.btn_hover_supplement.config(text="⏹ 停止悬停跟踪", bg="#fecaca")
+        self.var_status.set(
+            "悬停跟踪已开启：把鼠标悬停到目标软件控件上稍作停顿即自动补采其子树；Esc 或再次点击按钮停止；F6 冻结/解冻，F7 采集入库。"
+        )
+        # 启动 worker 线程（秒级子树采集卸载到后台）
+        self._worker_busy = False
+        self._start_worker_thread()
+        # 启动全局热键监听器
+        self._start_hotkey_listener()
+        self._hover_after_id = self.root.after(HOVER_TICK_MS, self._hover_tick)
+
+    def _stop_hover_supplement(self, message=""):
+        self._hover_mode_active = False
+        # 停止全局热键监听器
+        self._stop_hotkey_listener()
+        # 清除冻结状态
+        self._hover_frozen = False
+        self._hover_frozen_wrapper = None
+        self._hover_frozen_rect = None
+        if self._hover_after_id:
+            try:
+                self.root.after_cancel(self._hover_after_id)
+            except Exception:
+                pass
+            self._hover_after_id = None
+        # 停止 worker 线程（发送退出信号并等待结束）
+        self._stop_worker_thread()
+        # 销毁持久高亮 overlay
+        try:
+            if self._persistent_highlight is not None:
+                self._persistent_highlight.destroy()
+                self._persistent_highlight = None
+        except Exception:
+            pass
+        try:
+            self.root.attributes("-topmost", False)
+            self.root.unbind("<Escape>")
+        except Exception:
+            pass
+        # 停止悬停模式时清除任务栏进度
+        try:
+            self._taskbar_progress.clear()
+        except Exception:
+            pass
+        self.btn_hover_supplement.config(text="🔴 悬停跟踪补采", bg="#fca5a5")
+        if message:
+            self.var_status.set(message)
+
+    def _hover_tick(self):
+        """悬停轮询：先探测再重新调度，采集异常不中断跟踪循环。
+
+        冻结状态下跳过探测（保持当前高亮不动），但保持调度循环以便解冻后恢复。
+        """
+        if not self._hover_mode_active:
+            return
+        # 冻结时不探测，保持当前高亮和锁定元素
+        if self._hover_frozen:
+            if self._hover_mode_active:
+                self._hover_after_id = self.root.after(HOVER_TICK_MS, self._hover_tick)
+            return
+        try:
+            self._hover_probe_once()
+            self._hover_consecutive_errors = 0  # 成功时重置
+        except Exception as exc:
+            import traceback
+            self._hover_consecutive_errors += 1
+            _hover_log(f"hover exception ({self._hover_consecutive_errors}): {exc}\n{traceback.format_exc()}")
+            self.var_status.set(f"悬停补采异常：{exc}")
+            if self._hover_consecutive_errors >= 5:
+                _hover_log("连续错误过多，自动禁用悬停模式")
+                self._hover_mode_active = False
+                return
+        finally:
+            if self._hover_mode_active:
+                self._hover_after_id = self.root.after(HOVER_TICK_MS, self._hover_tick)
+
+    def _hover_probe_once(self):
+        """悬停探测（Inspect 式两层解耦）。
+
+        查看层：每个 tick 都做轻量 hit-test（10-50ms），元素一变→红框/状态栏/
+            树聚焦立即跟随，不受停顿门控约束（"指哪看哪"）。
+        采集层：仅当鼠标停顿满 HOVER_STABLE_TICKS、非只看不采、元素不在库中、
+            未采过且 worker 空闲时才触发秒级子树补采（重操作严格门控）。
+        """
+        point = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(point))
+        # 鼠标在采集器自身窗口上时不探（正常查看树/操作按钮）
+        try:
+            root_x, root_y = self.root.winfo_rootx(), self.root.winfo_rooty()
+            if (root_x <= point.x <= root_x + self.root.winfo_width()
+                    and root_y <= point.y <= root_y + self.root.winfo_height()):
+                self._hover_last_pos = None
+                self._hover_stable_count = 0
+                return
+        except Exception:
+            pass
+        last = self._hover_last_pos
+        self._hover_last_pos = (point.x, point.y)
+        if last is None or abs(point.x - last[0]) > 6 or abs(point.y - last[1]) > 6:
+            self._hover_stable_count = 0
+        else:
+            self._hover_stable_count += 1
+
+        # ---- 查看层：每 tick hit-test，元素变了立即跟随 ----
+        _t_probe = time.time()
+        hit_key, hit_rect = self._probe_hover_hit_key(point.x, point.y)
+        probe_ms = (time.time() - _t_probe) * 1000
+        if not hit_key:
+            return  # 命中失败（自进程/目标窗口关闭等），保持上次视图
+        if hit_key != self._hover_last_hit_key:
+            self._hover_last_hit_key = hit_key
+            # 红框立即跟随（O3：高亮不再等停顿门控）
+            if hit_rect is not None and self._persistent_highlight is not None:
+                try:
+                    self._persistent_highlight.show(hit_rect)
+                except Exception:
+                    pass
+            # 已存在控件：立即在层级树中聚焦（结果缓存到 tick 级，避免重复扫 flat）
+            _t_sync = time.time()
+            self._hover_existing_index = self._find_flat_in_payload_by_hit_key(hit_key)
+            if self._hover_existing_index is not None:
+                existing_item = self.current_payload["flatControls"][self._hover_existing_index]
+                anchor_iid = self._locate_hierarchy_iid_by_identity(existing_item)
+                # 已选中同一节点时跳过重复聚焦
+                if anchor_iid and self.control_tree.selection() != (anchor_iid,):
+                    self._expand_ancestors(anchor_iid)
+                    self.control_tree.see(anchor_iid)
+                    self.control_tree.selection_set(anchor_iid)
+                    self.control_tree.focus(anchor_iid)
+                    # selection_set() 不会触发 <<TreeviewSelect>> 事件，需显式调用面板更新
+                    try:
+                        self._on_tree_select()
+                    except Exception:
+                        pass
+                self.var_status.set("[已存在] 控件已在库中，树已聚焦（不会重复补采）")
+            elif self._hover_look_only:
+                self.var_status.set("[只看不采] 悬停命中新元素，仅高亮跟随（F7 可手动采集入库）")
+            else:
+                self.var_status.set("悬停命中新元素：停顿约 0.6 秒自动补采其子树…")
+            sync_ms = (time.time() - _t_sync) * 1000
+            # 仅慢 tick 才落盘（定位容器卡顿用）：高频日志本身会拖慢轮询
+            if probe_ms + sync_ms > 100:
+                _hover_log(
+                    f"slow view tick: from_point={probe_ms:.0f}ms, tree_sync={sync_ms:.0f}ms, "
+                    f"index={self._hover_existing_index}, key={hit_key[:80]!r}"
+                )
+
+        # ---- 采集层：停顿门控 + 只看不采拦截 + 已存在跳过 + 去重 + 防重入 ----
+        if self._hover_stable_count < HOVER_STABLE_TICKS:
+            return
+        if self._hover_look_only:
+            return  # O4：只看不采时绝不入队秒级采集（F7 手动采）
+        if self._hover_existing_index is not None:
+            return  # 已在库中，无需补采
+        if hit_key == self._hover_last_collect_key:
+            return  # 同一元素本轮已采过，不重复入队
+        if self._worker_busy:
+            return  # 上一个任务未完成，下个 tick 重试（门控条件仍满足）
+        self._hover_last_collect_key = hit_key
+        self._worker_busy = True
+        # 记录 source 供回调时使用（避免闭包捕获问题）
+        self._worker_last_source = f"悬停({point.x},{point.y})"
+        # 确保 worker 线程在运行
+        self._start_worker_thread()
+        # 将秒级操作放入队列，由 worker 线程执行
+        self._collect_t0 = time.time()  # 记录补采开始时间，供回调计算耗时
+        _hover_log(f"worker enqueue, queue_size={self._worker_queue.qsize()}")
+        self.var_status.set("正在后台补采子树…（界面可继续悬停查看，采完自动入树）")
+        self._worker_queue.put((
+            collect_subtree_at_point,
+            (
+                point.x,
+                point.y,
+            ),
+            {
+                "climb_levels": int(self.var_supplement_climb.get() or 0),
+                "max_depth": HOVER_SUPPLEMENT_MAX_DEPTH,
+                "scan_timeout_seconds": HOVER_SUPPLEMENT_TIMEOUT_SECONDS,
+                "excluded_process_ids": [str(os.getpid())],
+                "allowed_process_ids": self._get_target_process_ids(),
+                "status_callback": self._update_scan_progress,
+            },
+            self._on_subtree_collected,
+        ))
+
+    def _probe_hover_hit_key(self, x, y):
+        """轻量命中探测：只取元素 identity 作去重键，不做子树遍历。
+
+        返回 (hit_key, rect) 元组：hit_key 为 identity 字符串，rect 为控件屏幕矩形。
+        命中自身进程（overlay 等）时返回 ("", None)，防止探测"自伤"。
+        """
+        if Desktop is None:
+            return "", None
+        wrapper = _safe_get_value(lambda: Desktop(backend="uia").from_point(int(x), int(y)), None)
+        if wrapper is None:
+            return "", None
+        # 排除自身进程的窗口，防止 overlay 被 from_point 命中后"自伤"
+        try:
+            pid = wrapper.process_id()
+            if pid == os.getpid():
+                return "", None
+        except Exception:
+            pass
+        try:
+            rect = wrapper.rectangle()
+        except Exception:
+            rect = None
+        try:
+            identity = _build_wrapper_identity(wrapper)
+        except Exception as exc:
+            _hover_log(f"_build_wrapper_identity failed: {exc}")
+            return "", None
+        return identity, rect
+
+    def _get_target_process_ids(self):
+        """从当前 payload 收集目标软件的进程 id，悬停跟踪时限定只采同进程元素。"""
+        flat = self.current_payload.get("flatControls", []) if isinstance(self.current_payload, dict) else []
+        return sorted({str(item.get("processId", "")).strip() for item in flat if str(item.get("processId", "")).strip()})
+
+    # ---- "只看不采"模式开关 ----
+
+    def _on_look_only_toggle(self):
+        """"只看不采"模式切换回调：更新内部状态并提示用户。"""
+        self._hover_look_only = self.var_look_only.get()
+        if self._hover_mode_active:
+            if self._hover_look_only:
+                self.var_status.set("[只看不采] 已开启：悬停仅高亮跟随，不触发补采写库（F7 可手动采集）")
+            else:
+                self.var_status.set("[只看不采] 已关闭：恢复原有悬停补采行为")
+
+    # ---- pynput 全局热键监听器 ----
+
+    def _start_hotkey_listener(self):
+        """启动 pynput 全局热键监听器（仅在悬停模式开启时生效）。
+
+        热键定义：
+        - F6：冻结/解冻当前悬停元素（停止探测，锁定高亮）
+        - F7：采集当前冻结/悬停的控件入库
+        - Ctrl+Shift+方向键：在冻结状态下导航 UIA 树（父/子/兄弟）
+
+        设计原因：pynput 的 Listener 接收裸键，修饰键需通过 on_press 中检查状态。
+        热键仅在探测模式开启时生效，避免与日常操作冲突。
+        """
+        if not _PYNPUT_AVAILABLE:
+            return
+        if self._hotkey_listener is not None:
+            return  # 已在运行
+
+        # 修饰键状态跟踪
+        self._hotkey_ctrl_pressed = False
+        self._hotkey_shift_pressed = False
+
+        def _on_press(key):
+            """全局按键按下回调：检查修饰键并触发对应操作。"""
+            # 更新修饰键状态
+            if key in (_pynput_keyboard.Key.ctrl_l, _pynput_keyboard.Key.ctrl_r):
+                self._hotkey_ctrl_pressed = True
+            elif key in (_pynput_keyboard.Key.shift, _pynput_keyboard.Key.shift_l, _pynput_keyboard.Key.shift_r):
+                self._hotkey_shift_pressed = True
+
+            # F6：冻结/解冻
+            if key == _pynput_keyboard.Key.f6:
+                self.root.after(0, self._hotkey_freeze_toggle)
+            # F7：采集当前元素入库
+            elif key == _pynput_keyboard.Key.f7:
+                self.root.after(0, self._hotkey_capture_current)
+            # Ctrl+Shift+方向键：UIA 树导航（仅冻结状态下生效）
+            elif self._hotkey_ctrl_pressed and self._hotkey_shift_pressed and self._hover_frozen:
+                if key == _pynput_keyboard.Key.up:
+                    self.root.after(0, self._hotkey_navigate, "parent")
+                elif key == _pynput_keyboard.Key.down:
+                    self.root.after(0, self._hotkey_navigate, "first_child")
+                elif key == _pynput_keyboard.Key.left:
+                    self.root.after(0, self._hotkey_navigate, "prev_sibling")
+                elif key == _pynput_keyboard.Key.right:
+                    self.root.after(0, self._hotkey_navigate, "next_sibling")
+
+        def _on_release(key):
+            """全局按键释放回调：更新修饰键状态。"""
+            if key in (_pynput_keyboard.Key.ctrl_l, _pynput_keyboard.Key.ctrl_r):
+                self._hotkey_ctrl_pressed = False
+            elif key in (_pynput_keyboard.Key.shift, _pynput_keyboard.Key.shift_l, _pynput_keyboard.Key.shift_r):
+                self._hotkey_shift_pressed = False
+
+        try:
+            listener = _pynput_keyboard.Listener(on_press=_on_press, on_release=_on_release)
+            listener.start()
+            self._hotkey_listener = listener
+        except Exception as exc:
+            self.var_status.set(f"全局热键启动失败：{exc}")
+
+    def _stop_hotkey_listener(self):
+        """停止 pynput 全局热键监听器。"""
+        if self._hotkey_listener is not None:
+            try:
+                self._hotkey_listener.stop()
+            except Exception:
+                pass
+            self._hotkey_listener = None
+        self._hotkey_ctrl_pressed = False
+        self._hotkey_shift_pressed = False
+
+    def _hotkey_freeze_toggle(self):
+        """F6 热键：冻结/解冻当前悬停元素。
+
+        冻结时：停止探测，锁定当前高亮位置和控件信息。
+        解冻时：恢复探测，继续跟踪鼠标。
+        """
+        if not self._hover_mode_active:
+            return
+        if self._hover_frozen:
+            # 解冻：恢复探测
+            self._hover_frozen = False
+            self._hover_frozen_wrapper = None
+            self._hover_frozen_rect = None
+            self._hover_last_pos = None  # 重置位置跟踪，避免解冻后误判
+            self._hover_stable_count = 0
+            self.var_status.set("已解冻，恢复悬停跟踪。")
+        else:
+            # 冻结：锁定当前鼠标位置的元素
+            point = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(point))
+            if Desktop is None:
+                self.var_status.set("冻结失败：pywinauto 不可用。")
+                return
+            wrapper = _safe_get_value(lambda: Desktop(backend="uia").from_point(int(point.x), int(point.y)), None)
+            if wrapper is None:
+                self.var_status.set("冻结失败：未命中任何控件。")
+                return
+            try:
+                rect = wrapper.rectangle()
+                rect_tuple = (rect.left, rect.top, rect.right, rect.bottom)
+            except Exception:
+                rect_tuple = None
+            self._hover_frozen = True
+            self._hover_frozen_wrapper = wrapper
+            self._hover_frozen_rect = rect_tuple
+            # 保持高亮显示
+            if rect_tuple and self._persistent_highlight is not None:
+                try:
+                    self._persistent_highlight.show(rect_tuple)
+                except Exception:
+                    pass
+            name = _safe_get_value(lambda: wrapper.window_text(), "")
+            self.var_status.set(f"已冻结：{name[:40]}（F6 解冻，方向键导航，F7 采集）")
+
+    def _hotkey_capture_current(self):
+        """F7 热键：采集当前冻结/悬停的控件入库。
+
+        优先采集冻结元素，否则采集当前鼠标位置元素。
+        将采集任务提交到 worker 线程执行，避免阻塞 UI。
+        """
+        if not self._hover_mode_active:
+            return
+        if self._hover_frozen and self._hover_frozen_wrapper is not None:
+            # 采集冻结的元素
+            wrapper = self._hover_frozen_wrapper
+            try:
+                rect = wrapper.rectangle()
+                cx, cy = (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2
+            except Exception:
+                cx, cy = 0, 0
+        else:
+            # 采集当前鼠标位置
+            point = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(point))
+            cx, cy = int(point.x), int(point.y)
+        # 防重入：上一个 worker 任务未完成则跳过
+        if self._worker_busy:
+            self.var_status.set("[采集排队] 上一次采集尚未完成，请稍候再按 F7。")
+            return
+        self._worker_busy = True
+        self._worker_last_source = f"热键({cx},{cy})"
+        self._start_worker_thread()
+        # 将秒级操作放入队列，由 worker 线程执行
+        self._worker_queue.put((
+            collect_subtree_at_point,
+            (cx, cy),
+            {
+                "climb_levels": int(self.var_supplement_climb.get() or 0),
+                "max_depth": HOVER_SUPPLEMENT_MAX_DEPTH,
+                "scan_timeout_seconds": HOVER_SUPPLEMENT_TIMEOUT_SECONDS,
+                "excluded_process_ids": [str(os.getpid())],
+                "allowed_process_ids": self._get_target_process_ids(),
+                "status_callback": self._update_scan_progress,
+            },
+            self._on_subtree_collected,
+        ))
+        self.var_status.set(f"[F7 采集] 正在采集 ({cx},{cy}) 处控件子树…")
+
+    def _hotkey_navigate(self, direction):
+        """Ctrl+Shift+方向键：在冻结状态下导航 UIA 树。
+
+        direction: "parent" | "first_child" | "next_sibling" | "prev_sibling"
+        导航后更新冻结元素和高亮显示。
+        """
+        if not self._hover_frozen or self._hover_frozen_wrapper is None:
+            self.var_status.set("导航需先冻结元素（F6）。")
+            return
+        wrapper = self._hover_frozen_wrapper
+        target = None
+        try:
+            if direction == "parent":
+                target = wrapper.parent()
+            elif direction == "first_child":
+                children = wrapper.children()
+                if children:
+                    target = children[0]
+            elif direction == "next_sibling":
+                parent = wrapper.parent()
+                if parent:
+                    siblings = parent.children()
+                    idx = next((i for i, c in enumerate(siblings) if c == wrapper), -1)
+                    if 0 <= idx < len(siblings) - 1:
+                        target = siblings[idx + 1]
+            elif direction == "prev_sibling":
+                parent = wrapper.parent()
+                if parent:
+                    siblings = parent.children()
+                    idx = next((i for i, c in enumerate(siblings) if c == wrapper), -1)
+                    if idx > 0:
+                        target = siblings[idx - 1]
+        except Exception:
+            target = None
+        if target is None:
+            self.var_status.set(f"导航失败：{direction} 方向无元素。")
+            return
+        # 更新冻结元素
+        self._hover_frozen_wrapper = target
+        try:
+            rect = target.rectangle()
+            rect_tuple = (rect.left, rect.top, rect.right, rect.bottom)
+            self._hover_frozen_rect = rect_tuple
+            if self._persistent_highlight is not None:
+                self._persistent_highlight.show(rect_tuple)
+        except Exception:
+            pass
+        name = _safe_get_value(lambda: target.window_text(), "")
+        self.var_status.set(f"导航到：{name[:40]}（{direction}）")
+
+    # ---- Worker 线程管理（秒级子树采集卸载到后台）----
+
+    def _start_worker_thread(self):
+        """启动 worker 线程（如果尚未启动）。
+
+        Worker 线程负责执行秒级的 collect_subtree_at_point 操作，
+        避免阻塞 UI 主线程。线程入口做 COM 初始化以支持 UIA 调用。
+        """
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            return  # 已在运行
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            name="HoverProbeWorker",
+            daemon=True,  # 主进程退出时自动终止
+        )
+        self._worker_thread.start()
+
+    def _stop_worker_thread(self, timeout=2.0):
+        """停止 worker 线程：发送退出信号并等待线程结束。
+
+        探测停止或窗口关闭时调用，确保 worker 线程正确清理。
+        """
+        if self._worker_thread is None:
+            return
+        # 发送退出信号（None 作为毒丸）
+        try:
+            self._worker_queue.put_nowait(None)
+        except Exception:
+            pass
+        # 等待线程结束
+        try:
+            self._worker_thread.join(timeout=timeout)
+        except Exception:
+            pass
+        self._worker_thread = None
+        self._worker_busy = False
+
+    def _worker_loop(self):
+        """Worker 线程主循环：从队列取任务执行，结果通过 root.after 回调到 UI 线程。
+
+        设计要点：
+        1. 入口做 COM 初始化（MTA 模式），否则 UIA 调用会失败；
+        2. 任务格式为 (func, args, kwargs, callback) 四元组；
+        3. 执行完毕后通过 root.after(0, callback, result) 将结果传回 UI 线程；
+        4. 收到 None 毒丸时退出循环。
+        """
+        # Worker 线程必须独立做 COM 初始化，主线程的 MTA 设置不会传播到子线程
+        if comtypes is not None:
+            try:
+                comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+            except Exception:
+                pass
+        try:
+            while True:
+                task = self._worker_queue.get()
+                if task is None:
+                    break  # 退出信号
+                try:
+                    func, args, kwargs, callback = task
+                    _task_name = getattr(func, '__name__', str(func))
+                    _hover_log(f"worker dequeue, task={_task_name}")
+                    _task_t0 = time.time()
+                    result = func(*args, **kwargs)
+                    _task_elapsed = (time.time() - _task_t0) * 1000
+                    _hover_log(f"worker task done, task={_task_name}, elapsed={_task_elapsed:.1f}ms")
+                    # 通过 root.after 将结果回调到 UI 线程
+                    try:
+                        self.root.after(0, callback, result)
+                    except Exception:
+                        pass  # 窗口已关闭
+                except Exception as e:
+                    # 异常时回调 None
+                    try:
+                        self.root.after(0, callback, None)
+                    except Exception:
+                        pass
+                finally:
+                    self._worker_busy = False
+        finally:
+            if comtypes is not None:
+                try:
+                    comtypes.CoUninitialize()
+                except Exception:
+                    pass
+
+    def _on_subtree_collected(self, result):
+        """Worker 线程完成子树采集后的 UI 回调。
+
+        参数 result 为 collect_subtree_at_point 的返回值：
+        (sub_flats, target_window, error) 三元组，或 None（异常时）。
+        """
+        if result is None:
+            _hover_log(f"supplement done, total_elements=0 (result=None)")
+            return  # 异常已处理
+        sub_flats, target_window, error = result
+        _supp_elapsed = (time.time() - getattr(self, '_collect_t0', time.time())) * 1000
+        _hover_log(f"supplement done, total_elements={len(sub_flats)}, elapsed={_supp_elapsed:.1f}ms, error={error!r}")
+        # 调用 _finish_supplement 合并结果到 payload 并刷新视图
+        # 悬停模式下 interactive=False，不弹窗打断跟踪
+        self._finish_supplement(
+            sub_flats, target_window, error,
+            source=self._worker_last_source,
+            interactive=False,
+        )
+        # 采完后重置查看层 key：下个 tick 重新评估当前悬停元素，层级树自动聚焦
+        # 到刚入库的控件（采集层去重靠 _hover_last_collect_key，不会重复入队）
+        self._hover_last_hit_key = ""
+        self._hover_existing_index = None
+
+    def _bring_to_front_temporarily(self, duration_ms=2500):
+        """把主窗口临时置顶带回最前。
+
+        目标软件持有前台时，单纯 deiconify+lift 会被 Windows 前台锁挡住，
+        窗口回来了但压在目标软件后面，用户看不到补采结果；短暂置顶可绕过。
+        拿到焦点后自动取消置顶（悬停跟踪模式需保持置顶，不取消）。
+        """
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+            self.root.focus_force()
+        except Exception:
+            return
+
+        def _release_topmost():
+            if self._hover_mode_active:
+                return
+            try:
+                self.root.attributes("-topmost", False)
+            except Exception:
+                pass
+
+        self.root.after(max(500, int(duration_ms)), _release_topmost)
+
+    def cmd_point_supplement(self):
+        """定点补采：倒计时后按鼠标位置命中控件，实时采其子树并合并回当前结果。"""
+        if not isinstance(self.current_payload, dict):
+            messagebox.showinfo("提示", "请先完成一次整树/画框扫描，再做定点补采。")
+            return
+        delay_seconds = max(1, int(self.var_pick_delay.get() or DEFAULT_PICK_DELAY_SECONDS))
+        self.var_status.set(f"请在 {delay_seconds} 秒内把鼠标悬停到目标控件上，随后自动补采其子树…")
+        self.root.withdraw()
         self.root.update_idletasks()
+        self.root.after(delay_seconds * 1000, self._do_point_supplement)
+
+    def _do_point_supplement(self):
+        point = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(point))
+        try:
+            sub_flats, target_window, error = collect_subtree_at_point(
+                point.x,
+                point.y,
+                climb_levels=int(self.var_supplement_climb.get() or 0),
+                excluded_process_ids=[str(os.getpid())],
+                status_callback=self._update_scan_progress,
+            )
+        except Exception as exc:
+            sub_flats, target_window, error = [], {}, str(exc)
+        finally:
+            self._bring_to_front_temporarily()
+        self._finish_supplement(sub_flats, target_window, error, source=f"定点({point.x},{point.y})")
+
+    def cmd_selected_supplement(self):
+        """补采选中控件：按已采控件的屏幕位置与 identity 重新锚定活元素，实时采其子树。"""
+        if not isinstance(self.current_payload, dict):
+            messagebox.showinfo("提示", "请先完成一次整树/画框扫描，再做补采。")
+            return
+        item = self._get_selected_flat_item_or_node()
+        if not isinstance(item, dict):
+            messagebox.showinfo("提示", "请先在左侧列表或层级树中选中一个控件。")
+            return
+        rect = _normalize_rect_dict(item.get("boundingBox"))
+        if not rect:
+            messagebox.showinfo("提示", '选中控件没有屏幕坐标，无法实时定位，请改用"定点补采子树"。')
+            return
+        self._pending_supplement_expected = {
+            "runtimeId": item.get("runtimeId", ""),
+            "name": item.get("name", ""),
+            "className": item.get("className", ""),
+            "controlType": item.get("controlType", ""),
+            "boundingBox": rect,
+        }
+        self.var_status.set("正在按选中控件位置实时补采子树…（需目标控件当前在屏幕上可见）")
+        self.root.withdraw()
+        self.root.update_idletasks()
+        self.root.after(400, self._do_selected_supplement)
+
+    def _do_selected_supplement(self):
+        expected = self._pending_supplement_expected or {}
+        self._pending_supplement_expected = None
+        center = _rect_center(expected.get("boundingBox"))
+        try:
+            if not center:
+                raise RuntimeError("选中控件矩形无效。")
+            sub_flats, target_window, error = collect_subtree_at_point(
+                int(center[0]),
+                int(center[1]),
+                expected=expected,
+                excluded_process_ids=[str(os.getpid())],
+                status_callback=self._update_scan_progress,
+            )
+        except Exception as exc:
+            sub_flats, target_window, error = [], {}, str(exc)
+        finally:
+            self._bring_to_front_temporarily()
+        self._finish_supplement(sub_flats, target_window, error, source="选中控件")
+
+    def _get_selected_flat_item_or_node(self):
+        """取当前选中的控件实体：层级树节点优先，否则按扁平视图下标取 flatControls。"""
+        selection = self.control_tree.selection()
+        if selection and str(selection[0]).startswith("hierarchy:"):
+            return self._hierarchy_nodes_by_iid.get(str(selection[0]))
+        index = self._get_selected_tree_index()
+        flat_controls = self.current_payload.get("flatControls", []) if isinstance(self.current_payload, dict) else []
+        if index is None or not (0 <= index < len(flat_controls)):
+            return None
+        return flat_controls[index]
+
+    def _finish_supplement(self, sub_flats, target_window, error, source="", interactive=True):
+        """补采收尾：合并 payload、自动勾选、同步视图。
+
+        interactive=False 为悬停跟踪模式：不弹窗打断跟踪，错误/空结果只写状态栏。
+        """
+        if error:
+            if interactive:
+                messagebox.showwarning("定点补采", f"补采失败：{error}")
+            self.var_status.set(f"补采跳过{f'[{source}]' if source else ''}：{error}")
+            return
+        if not sub_flats:
+            if interactive:
+                messagebox.showinfo("定点补采", "未采集到任何控件。")
+            self.var_status.set("补采：未采集到任何控件。")
+            return
+        old_total = len(self.current_payload.get("flatControls", []) or [])
+        added, anchor_found = merge_supplement_into_payload(
+            self.current_payload,
+            sub_flats,
+            target_window=target_window,
+            status_callback=self._update_scan_progress,
+        )
+        # 追加式合并不改变既有下标，勾选状态保持有效；只需重建分组与视图
+        # 新增控件自动勾选（追加式合并 ⇒ 新增项必为尾部连续区间），
+        # 避免补采后直接保存时因未勾选而被静默丢弃（零丢弃原则）。
+        if added:
+            total = len(self.current_payload.get("flatControls", []) or [])
+            self.checked_control_indices.update(range(total - added, total))
+            # 更新任务栏进度（悬停补采累计）
+            try:
+                self._taskbar_progress.set_state(_TaskbarProgress.TBPF_NORMAL)
+                self._taskbar_progress.set_value(total, max(total, ((total // 50) + 1) * 50))
+            except Exception:
+                pass
+        self._rebuild_control_groups()
+        # 补采结果必须在层级树里可见：非层级视图时自动切换（否则同步定位无处展示）
+        if self.var_tree_view_mode.get() != "hierarchy":
+            self.var_tree_view_mode.set("hierarchy")
+        # 优先增量同步锚点子树（保留展开状态）；刚切视图/锚点缺失时退回全量刷新
+        synced = anchor_found and self._sync_hierarchy_after_supplement(sub_flats[0])
+        if not synced:
+            self._refresh_tree()
+        # 统一定位高亮：优先聚焦本次新增的控件（Inspect 式"采到哪看到哪"），无新增则聚焦锚点
+        flat_now = self.current_payload.get("flatControls", []) or []
+        focus_item = flat_now[old_total] if added and old_total < len(flat_now) else sub_flats[0]
+        anchor_iid = self._locate_hierarchy_iid_by_identity(focus_item)
+        if anchor_iid:
+            self.control_tree.see(anchor_iid)  # see 会自动展开祖先链
+            self.control_tree.item(anchor_iid, open=True)
+            self.control_tree.selection_set(anchor_iid)
+            self.control_tree.focus(anchor_iid)
+        else:
+            # 身份查找失败时，展开最近的分组让用户至少看到新增数据
+            groups = getattr(self, "control_groups", []) or []
+            if groups:
+                last_group = groups[-1]
+                last_iid = f"group:{last_group.get('id', '')}"
+                if self.control_tree.exists(last_iid):
+                    self.control_tree.item(last_iid, open=True)
+                    self.control_tree.see(last_iid)
+        self._refresh_summary()
+        source_note = f"[{source}]" if source else ""
+        if self._hover_mode_active:
+            self._hover_session_added += added
+            self.var_status.set(
+                f"悬停跟踪中{source_note}：本次扫描 {len(sub_flats)} 个、新增 {added} 个，累计新增 {self._hover_session_added} 个（Esc 停止）。"
+            )
+        else:
+            anchor_note = "" if anchor_found else "（未在原树中找到锚点，已挂到窗口根下）"
+            self.var_status.set(
+                f"补采完成{source_note}：实时采集 {len(sub_flats)} 个，新增 {added} 个控件{anchor_note}，已自动勾选，当前结果尚未保存。"
+            )
 
     def cmd_region_scan_and_save(self):
         self._start_region_pick(auto_save=True)
@@ -4171,6 +7068,30 @@ class ControlMapBuilderApp:
         self._refresh_tree()
         self._refresh_summary()
         self.var_status.set("已清空当前勾选结果。")
+
+    def cmd_clear_current_payload(self):
+        """🗑 清空当前采集结果，重置所有状态。"""
+        if not isinstance(self.current_payload, dict):
+            messagebox.showinfo("提示", "当前没有可清空的采集结果。")
+            return
+        if not messagebox.askyesno("确认清空", "确定要清空当前采集结果吗？\n未保存的修改将丢失。"):
+            return
+        self.current_payload = None
+        self.current_output_path = ""
+        self.current_region_rect = None
+        self.checked_control_indices = set()
+        self._all_checked_mode = False
+        self.control_groups = []
+        self.var_saved_control_name.set("")
+        self.var_saved_control_id.set("")
+        self._hierarchy_nodes_by_iid = {}
+        self._hierarchy_iid_seq = 0
+        self._pending_supplement_expected = None
+        self._flat_identity_cache = None  # 悬停查库的 identity 反查缓存一并释放
+        self.control_tree.delete(*self.control_tree.get_children())
+        self.var_status.set("已清空当前采集结果。")
+        self._refresh_summary()
+        self.root.title("WT 控件库采集器")
 
     def cmd_apply_current_control_alias(self):
         if not isinstance(self.current_payload, dict):
@@ -4318,6 +7239,640 @@ class ControlMapBuilderApp:
         self.root.clipboard_clear()
         self.root.clipboard_append(locator_text)
         self.var_status.set(f"已复制推荐定位：{item.get('displayName', '')}")
+
+
+    # ── 搜索控件 ──────────────────────────────────────────────────────────────
+
+    def _select_tree_item_by_index(self, index):
+        """在控件树中选中指定 flat index 对应的行（兼容 flat / hierarchy 两种视图）。
+
+        返回 True 表示成功选中；False 表示未找到。
+        """
+        # flat 模式：iid = item:{index}
+        iid = f"item:{index}"
+        children = self.control_tree.get_children()
+        if iid in children:
+            self.control_tree.selection_set(iid)
+            self.control_tree.see(iid)
+            self._on_tree_select()
+            return True
+        # hierarchy 模式：递归遍历所有层级，按 seq 列（第2列 = index+1）匹配
+        target_iid = self._search_hierarchy_child_by_seq(index + 1)
+        if target_iid:
+            # 展开祖先链使控件可见
+            self._expand_ancestors(target_iid)
+            self.control_tree.see(target_iid)
+            self.control_tree.selection_set(target_iid)
+            self.control_tree.focus(target_iid)
+            self._on_tree_select()
+            return True
+        return False
+
+    def _search_hierarchy_child_by_seq(self, target_seq, parent=""):
+        """递归搜索 hierarchy 树中 seq（第2列）等于 target_seq 的节点，返回其 iid。"""
+        for child in self.control_tree.get_children(parent):
+            vals = self.control_tree.item(child, "values") or []
+            if len(vals) >= 2:
+                try:
+                    if int(str(vals[1]).strip()) == target_seq:
+                        return child
+                except (ValueError, IndexError):
+                    pass
+            # 递归深入子节点
+            found = self._search_hierarchy_child_by_seq(target_seq, child)
+            if found:
+                return found
+        return None
+
+    def _expand_ancestors(self, iid):
+        """展开节点 iid 的所有祖先，使其完整可见。"""
+        parent = self.control_tree.parent(iid)
+        ancestors = []
+        while parent:
+            ancestors.append(parent)
+            parent = self.control_tree.parent(parent)
+        for anc in reversed(ancestors):
+            self.control_tree.item(anc, open=True)
+
+    def _get_flat_identity_maps(self):
+        """构建并缓存 flatControls 的 identity 反查字典（精确/5字段/runtimeId 三级）。
+
+        悬停查看层元素一变就要查一次库，O(n) 扫描在鼠标扫过容器/子控件之间
+        来回时会反复全表重算 identity；缓存后降为 O(1) 字典查找。
+        缓存键为 (id(flat), len(flat))：重新扫描换新列表→id 变；补采追加合并→len 变，
+        两种变更都能自动失效（别名编辑不改 identity 字段，无需失效）。
+        """
+        flat = self.current_payload.get("flatControls", []) or []
+        cache = getattr(self, "_flat_identity_cache", None)
+        cache_key = (id(flat), len(flat))
+        if cache is not None and cache[0] == cache_key:
+            return cache[1], cache[2], cache[3]
+        exact_map = {}
+        five_map = {}
+        runtime_map = {}
+        for idx, item in enumerate(flat):
+            identity = _build_flat_control_identity(item)
+            exact_map.setdefault(identity, idx)  # setdefault 保留首个匹配，与逐个扫描语义一致
+            parts = identity.split("|")
+            if len(parts) >= 5:
+                five_map.setdefault("|".join(parts[:5]), idx)
+            runtime = str(item.get("runtimeId", "")).strip()
+            if runtime:
+                runtime_map.setdefault(runtime, idx)
+        self._flat_identity_cache = (cache_key, exact_map, five_map, runtime_map)
+        return exact_map, five_map, runtime_map
+
+    def _find_flat_in_payload_by_hit_key(self, hit_key):
+        """在 flatControls 中按 hit_key 查找已存在控件的下标。
+
+        多级匹配策略（基于缓存字典，O(1)）：
+        1. 完整 identity 精确匹配（6 字段，含坐标）
+        2. 5 字段匹配（去掉坐标，窗口移动后仍可匹配）
+        3. runtimeId 单独匹配（最可靠但重启后失效）
+        """
+        if not hit_key or not isinstance(self.current_payload, dict):
+            return None
+        exact_map, five_map, runtime_map = self._get_flat_identity_maps()
+        if not exact_map and not runtime_map:
+            return None
+        idx = exact_map.get(hit_key)
+        if idx is not None:
+            return idx
+        hit_parts = hit_key.split("|")
+        if len(hit_parts) >= 5:
+            idx = five_map.get("|".join(hit_parts[:5]))
+            if idx is not None:
+                return idx
+        hit_runtime = hit_parts[0].strip() if hit_parts else ""
+        if hit_runtime:
+            return runtime_map.get(hit_runtime)
+        return None
+
+    def cmd_search_controls(self):
+        """打开搜索控件对话框：按关键字搜索当前扫描结果并跳转定位。"""
+        if not isinstance(self.current_payload, dict):
+            messagebox.showinfo("提示", "请先完成一次扫描。")
+            return
+        if not self.current_payload.get("flatControls"):
+            messagebox.showinfo("提示", "当前扫描结果中没有控件。")
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("搜索控件")
+        dlg.geometry("620x520")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        # -- 搜索行 --
+        top_frame = tk.Frame(dlg)
+        top_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
+        tk.Label(top_frame, text="关键字:").pack(side=tk.LEFT)
+        kw_var = tk.StringVar()
+        kw_entry = tk.Entry(top_frame, textvariable=kw_var, width=30)
+        kw_entry.pack(side=tk.LEFT, padx=(6, 0))
+        kw_entry.focus_set()
+        tk.Button(top_frame, text="搜索", bg="#d1fae5", command=lambda: _do_search()).pack(side=tk.LEFT, padx=(6, 0))
+
+        # -- 搜索范围 --
+        scope_var = tk.StringVar(value="all")
+        scope_frame = tk.Frame(dlg)
+        scope_frame.pack(fill=tk.X, padx=10, pady=4)
+        for text, val in [("全部字段", "all"), ("控件名(name)", "name"),
+                          ("ID(automationId)", "aid"), ("类型(controlType)", "ctype"),
+                          ("类名(className)", "cname")]:
+            tk.Radiobutton(scope_frame, text=text, variable=scope_var, value=val).pack(side=tk.LEFT, padx=(0, 8))
+
+        # -- 结果列表 --
+        list_frame = tk.Frame(dlg)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+        sb = tk.Scrollbar(list_frame)
+        result_listbox = tk.Listbox(list_frame, font=("Consolas", 10), yscrollcommand=sb.set)
+        sb.config(command=result_listbox.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        result_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        status_var = tk.StringVar(value="输入关键字后回车或点搜索")
+        tk.Label(dlg, textvariable=status_var, fg="#555555").pack(anchor="w", padx=10, pady=(0, 4))
+
+        # -- 底部按钮 --
+        btn_frame = tk.Frame(dlg)
+        btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        result_indices = []  # listbox position -> flat index
+
+        def _search_flat(kw, scope, ctrl):
+            texts = {
+                "all": lambda c: " ".join(str(v) for v in c.values()),
+                "name": lambda c: f"{c.get('displayName','')} {c.get('name','')}",
+                "aid": lambda c: c.get("automationId", ""),
+                "ctype": lambda c: c.get("controlType", ""),
+                "cname": lambda c: c.get("className", ""),
+            }
+            return kw in texts.get(scope, texts["all"])(ctrl).lower()
+
+        def _do_search(_event=None):
+            nonlocal result_indices
+            result_listbox.delete(0, tk.END)
+            result_indices.clear()
+            kw = kw_var.get().strip().lower()
+            if not kw:
+                status_var.set("请输入关键字")
+                return
+            scope = scope_var.get()
+            # 每次搜索都从 current_payload 重新读取，支持异步补采追加后的搜索
+            current_flat = self.current_payload.get("flatControls", []) or []
+            for idx, ctrl in enumerate(current_flat):
+                if _search_flat(kw, scope, ctrl):
+                    result_indices.append(idx)
+                    name = (ctrl.get("displayName") or ctrl.get("name") or "")
+                    aid = (ctrl.get("automationId") or "")
+                    ctype = (ctrl.get("controlType") or "")
+                    display = f"#{idx:<4} | {ctype:<12} | id={aid:<20} | {name}"
+                    result_listbox.insert(tk.END, display)
+            status_var.set(f"共找到 {len(result_indices)} 个匹配控件" if result_indices else "未找到匹配控件")
+
+        def _locate():
+            sel = result_listbox.curselection()
+            if not sel:
+                return
+            flat_idx = result_indices[sel[0]]
+            if self._select_tree_item_by_index(flat_idx):
+                self.var_status.set(f"已定位到搜索结果 #{flat_idx}")
+            else:
+                self.var_status.set(f"⚠ 未在控件树中找到 # {flat_idx}，请重新扫描")
+
+        kw_entry.bind("<Return>", _do_search)
+        result_listbox.bind("<Double-Button-1>", lambda e: _locate())
+        tk.Button(btn_frame, text="定位到选中项", command=_locate).pack(side=tk.LEFT, padx=3)
+        tk.Button(btn_frame, text="关闭", command=dlg.destroy).pack(side=tk.RIGHT, padx=3)
+
+    # ── 合并入库 ──────────────────────────────────────────────────────────────
+
+    def cmd_merge_into_library(self):
+        """合并入库对话框：源文件(新采集) → 合并进 → 目标文件(现有库)。
+
+        支持：
+          - 源+目标双文件合并（主流，新采集汇入现有库）
+          - 多源文件一并汇入（批量）
+          - 另存为新文件
+          - 三种去重策略 + 高权威覆盖
+        """
+        dlg = tk.Toplevel(self.root)
+        dlg.title("合并入库")
+        dlg.geometry("780x620")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        # ── 源文件区（新采集，可多选） ──
+        src_frame = tk.LabelFrame(dlg, text="源文件（新采集的要汇入的文件）", padx=8, pady=6)
+        src_frame.pack(fill=tk.X, padx=10, pady=(10, 2))
+
+        src_btn_row = tk.Frame(src_frame)
+        src_btn_row.pack(fill=tk.X)
+        tk.Button(src_btn_row, text="添加源文件...", command=lambda: _add_source()).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Button(src_btn_row, text="移除选中", command=lambda: _remove_source()).pack(side=tk.LEFT)
+
+        src_listbox = tk.Listbox(src_frame, height=4, font=("Consolas", 10))
+        src_listbox.pack(fill=tk.X, pady=(4, 0))
+        src_scroll = tk.Scrollbar(src_frame, orient="vertical", command=src_listbox.yview)
+        src_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        src_listbox.config(yscrollcommand=src_scroll.set)
+
+        src_entries = []  # [(display_name, full_path)]
+
+        # ── 目标文件区 ──
+        tgt_frame = tk.LabelFrame(dlg, text="目标文件（要合并到哪个库）", padx=8, pady=6)
+        tgt_frame.pack(fill=tk.X, padx=10, pady=2)
+
+        tgt_path_var = tk.StringVar()
+        tgt_entry = tk.Entry(tgt_frame, textvariable=tgt_path_var, width=60, state="readonly")
+        tgt_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(tgt_frame, text="选择目标...", command=lambda: _browse_target()).pack(side=tk.LEFT, padx=(6, 0))
+
+        # ── 合并选项 ──
+        opt_frame = tk.LabelFrame(dlg, text="合并选项", padx=8, pady=6)
+        opt_frame.pack(fill=tk.X, padx=10, pady=2)
+
+        dedup_var = tk.StringVar(value="automationId+controlType+name")
+        tk.Label(opt_frame, text="去重键:").pack(side=tk.LEFT)
+        ttk.Combobox(
+            opt_frame, textvariable=dedup_var, width=32, state="readonly",
+            values=["automationId+controlType+name", "uiPath", "name+controlType"]
+        ).pack(side=tk.LEFT, padx=(4, 16))
+
+        overwrite_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(opt_frame, text="高权威覆盖（源非空字段填充目标空字段）",
+                       variable=overwrite_var).pack(side=tk.LEFT)
+
+        # ── 预览区 ──
+        preview_box = scrolledtext.ScrolledText(dlg, wrap=tk.WORD, font=("Consolas", 10), height=10)
+        preview_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
+
+        lbl_status = tk.Label(dlg, text="请选择源文件（至少一个）和目标文件", fg="#555555")
+        lbl_status.pack(anchor="w", padx=10)
+
+        # ── 底部按钮 ──
+        bottom_bar = tk.Frame(dlg)
+        bottom_bar.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        # 缓存的源数据（避免重复加载）
+        _src_payloads_cache = []
+
+        # ── 内部函数 ──
+
+        def _add_source():
+            paths = filedialog.askopenfilenames(
+                title="选择源采集文件(JSON)",
+                filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+            )
+            for p in paths:
+                disp = os.path.basename(p)
+                if disp not in (e[0] for e in src_entries):
+                    src_entries.append((disp, p))
+                    src_listbox.insert(tk.END, disp)
+                    try:
+                        with open(p, encoding="utf-8") as fh:
+                            _src_payloads_cache.append(json.load(fh))
+                    except Exception:
+                        _src_payloads_cache.append(None)
+            _sync_status()
+
+        def _remove_source():
+            sel = src_listbox.curselection()
+            for i in reversed(sel):
+                del src_entries[i]
+                src_listbox.delete(i)
+                if i < len(_src_payloads_cache):
+                    del _src_payloads_cache[i]
+            _sync_status()
+
+        def _browse_target():
+            fpath = filedialog.askopenfilename(
+                title="选择目标控件库文件",
+                initialdir=CONTROL_MAP_DIR,
+                filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+            )
+            if fpath:
+                tgt_path_var.set(fpath)
+            _sync_status()
+
+        def _sync_status():
+            info = []
+            if src_entries:
+                info.append(f"源文件: {len(src_entries)} 个")
+            if tgt_path_var.get().strip():
+                info.append(f"目标: {os.path.basename(tgt_path_var.get().strip())}")
+            lbl_status.config(text=" | ".join(info) if info else "请选择源文件和目标文件")
+
+        def _load_target():
+            tgt_path = tgt_path_var.get().strip()
+            if not tgt_path:
+                messagebox.showwarning("提示", "请选择目标文件。")
+                return None
+            try:
+                with open(tgt_path, encoding="utf-8") as fh:
+                    return json.load(fh)
+            except Exception as exc:
+                messagebox.showerror("读取目标文件失败", str(exc))
+                return None
+
+        def _do_preview():
+            preview_box.delete("1.0", tk.END)
+            if not src_entries:
+                messagebox.showwarning("提示", "请至少添加一个源文件。")
+                return
+            if not tgt_path_var.get().strip():
+                messagebox.showwarning("提示", "请选择目标文件。")
+                return
+            tgt_data = _load_target()
+            if tgt_data is None:
+                return
+            mode = dedup_var.get()
+            override = overwrite_var.get()
+
+            src_flat_count = sum(len(p.get("flatControls", []) or []) for p in _src_payloads_cache if p)
+            tgt_flat = tgt_data.get("flatControls", []) or tgt_data.get("controlDefinitions", [])
+            tgt_count = len(tgt_flat)
+
+            # 模拟合并（只预估增量，不动数据）
+            tgt_index = {}
+            for ctrl in tgt_flat:
+                key = _merge_dedup_key(ctrl, mode)
+                tgt_index[key] = ctrl
+
+            added = 0
+            updated = 0
+            for p in _src_payloads_cache:
+                if p is None:
+                    continue
+                for ctrl in p.get("flatControls", []) or p.get("controlDefinitions", []):
+                    key = _merge_dedup_key(ctrl, mode)
+                    if key in tgt_index:
+                        if override:
+                            updated += 1
+                    else:
+                        tgt_index[key] = ctrl
+                        added += 1
+
+            tgt_title = tgt_data.get("targetWindow", {}).get("title", "(未知)") or "(未知)"
+
+            # 目标文件控件类型分布
+            tgt_type_count = {}
+            for ctrl in tgt_flat:
+                ct = str(ctrl.get("controlType", "") or ctrl.get("inspectData", {}).get("controlType", "") or "未知")
+                tgt_type_count[ct] = tgt_type_count.get(ct, 0) + 1
+            types_summary = ", ".join(f"{k}×{v}" for k, v in sorted(tgt_type_count.items(), key=lambda x: -x[1])[:6])
+            if len(tgt_type_count) > 6:
+                types_summary += f" …等共 {len(tgt_type_count)} 种"
+
+            # 源文件统计
+            src_details = []
+            for idx, (_, path) in enumerate(src_entries):
+                p_data = _src_payloads_cache[idx]
+                if p_data is None:
+                    src_details.append(f"  - {os.path.basename(path)}  (读取失败)")
+                else:
+                    fc = len(p_data.get("flatControls", []) or p_data.get("controlDefinitions", []))
+                    win = p_data.get("targetWindow", {}).get("title", "(未知)")
+                    src_details.append(f"  - {os.path.basename(path)} [{fc} 个控件, 窗口={win}]")
+
+            info_lines = [
+                f"== 合并预览 ==",
+                f"目标库: {os.path.basename(tgt_path_var.get().strip())}",
+                f"  窗口: {tgt_title}",
+                f"  已有控件: {tgt_count}",
+                f"  控件类型: {types_summary}",
+                f"",
+                f"源文件 ({len(src_entries)} 个):",
+            ]
+            info_lines += src_details
+
+            info_lines += [
+                f"",
+                f"预测合并结果:",
+                f"  新增控件: {added}",
+                f"  更新字段: {updated}",
+                f"  合并后总数: {tgt_count + added}",
+                f"  去重策略: {mode}",
+                f"  高权威覆盖: {'是' if override else '否'}",
+            ]
+            preview_box.insert("1.0", "\n".join(info_lines))
+
+        def _do_merge(target_override=None):
+            """执行合并。覆盖前备份 + 二次确认 + 合并后自动刷新主界面。"""
+            if not src_entries:
+                messagebox.showwarning("提示", "请至少添加一个源文件。")
+                return
+            tgt_path = target_override or tgt_path_var.get().strip()
+            if not tgt_path:
+                messagebox.showwarning("提示", "请选择目标文件。")
+                return
+            if os.path.abspath(tgt_path) in (os.path.abspath(e[1]) for e in src_entries):
+                messagebox.showwarning("提示", "目标和源文件不能相同时选择另存为新文件。")
+                return
+
+            # 备份目标文件（带时间戳）
+            backup_path = tgt_path + f".bak.{time.strftime('%Y%m%d_%H%M%S')}"
+            try:
+                shutil.copy2(tgt_path, backup_path)
+            except Exception as exc:
+                messagebox.showerror("备份失败", f"无法创建备份文件:\n{exc}")
+                return
+
+            # 二次确认
+            if not messagebox.askyesno(
+                "确认覆盖",
+                f"即将覆盖目标文件:\n{os.path.basename(tgt_path)}\n\n"
+                f"备份至:\n{os.path.basename(backup_path)}\n\n"
+                f"是否继续？",
+            ):
+                # 用户取消，删除刚创建的备份
+                try:
+                    os.remove(backup_path)
+                except Exception:
+                    pass
+                return
+
+            try:
+                tgt_data = _load_target()
+                if tgt_data is None:
+                    return
+                result, stats = _merge_payloads_into_target(
+                    tgt_data, _src_payloads_cache, dedup_var.get(), overwrite_var.get())
+            except Exception as exc:
+                messagebox.showerror("合并失败", str(exc))
+                return
+
+            try:
+                with open(tgt_path, "w", encoding="utf-8") as fh:
+                    json.dump(result, fh, ensure_ascii=False, indent=2)
+                msg = (
+                    f"合并完成！\n"
+                    f"目标文件: {os.path.basename(tgt_path)}\n"
+                    f"已有控件: {stats['tgt_before']}\n"
+                    f"新增: {stats['added']}  更新字段: {stats['updated']}\n"
+                    f"合并后总数: {stats['tgt_after']}"
+                )
+                messagebox.showinfo("合并成功", msg)
+
+                # 合并成功后，刷新主界面控件树
+                self.current_payload = result
+                self._refresh_tree()
+                self.var_status.set(f"已合并入库：新增 {stats['added']}，更新 {stats['updated']}")
+
+                dlg.destroy()
+            except Exception as exc:
+                messagebox.showerror("保存失败", str(exc))
+
+        def _save_as_new():
+            """另存为全新文件（不覆盖目标）。"""
+            tgt_data = _load_target()
+            if tgt_data is None:
+                return
+            try:
+                result, stats = _merge_payloads_into_target(
+                    tgt_data, _src_payloads_cache, dedup_var.get(), overwrite_var.get())
+            except Exception as exc:
+                messagebox.showerror("合并失败", str(exc))
+                return
+
+            base_name = "merged"
+            if src_entries:
+                base_name = os.path.splitext(src_entries[0][0])[0]
+            default_name = f"{base_name}_merged.json"
+            save_path = filedialog.asksaveasfilename(
+                title="另存为新文件",
+                initialdir=CONTROL_MAP_DIR,
+                initialfile=default_name,
+                defaultextension=".json",
+                filetypes=[("JSON 文件", "*.json")],
+            )
+            if not save_path:
+                return
+            try:
+                with open(save_path, "w", encoding="utf-8") as fh:
+                    json.dump(result, fh, ensure_ascii=False, indent=2)
+                messagebox.showinfo("保存成功", f"合并结果已另存为:\n{save_path}")
+                dlg.destroy()
+            except Exception as exc:
+                messagebox.showerror("保存失败", str(exc))
+
+        tk.Button(bottom_bar, text="预览合并", command=_do_preview, bg="#fef9c3").pack(side=tk.LEFT, padx=3)
+        tk.Button(bottom_bar, text="执行合并（覆盖目标）", command=_do_merge,
+                  bg="#d1fae5", font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT, padx=3)
+        tk.Button(bottom_bar, text="另存为新文件", command=_save_as_new, bg="#e0e7ff").pack(side=tk.LEFT, padx=3)
+        tk.Button(bottom_bar, text="关闭", command=dlg.destroy).pack(side=tk.RIGHT, padx=3)
+
+
+def _merge_dedup_key(item, mode):
+    """根据去重模式从 flat control 提取 dedup key（与 control_live_detector 一致）。
+
+    mode 取值:
+      "automationId+controlType+name" — 优先 AID，回退 (name, ct)
+      "uiPath"                         — uiPath 字符串
+      "name+controlType"               — (name, ct)
+    """
+    ins = item.get("inspectData", {}) or {}
+    if mode == "automationId+controlType+name":
+        aid = str(item.get("automationId", "") or ins.get("automationId", "")).strip().lower()
+        ct = str(item.get("controlType", "") or ins.get("controlType", "")).strip().lower()
+        name = str(item.get("name", "") or ins.get("name", "") or item.get("displayName", "")).strip().lower()
+        if aid:
+            return ("aid", aid, ct, name)
+        return ("name", name, ct)
+    elif mode == "uiPath":
+        return ("ui", str(item.get("uiPath", "") or ins.get("uiPath", "")).strip().lower())
+    elif mode == "name+controlType":
+        name = str(item.get("name", "") or ins.get("name", "") or item.get("displayName", "")).strip().lower()
+        ct = str(item.get("controlType", "") or ins.get("controlType", "")).strip().lower()
+        return ("nc", name, ct)
+    return ("raw", id(item))
+
+
+def _merge_payloads_into_target(target_payload, source_payloads, mode, authority_override):
+    """将 source_payloads 的控件合并进 target_payload，返回 (merged_payload, stats)。
+
+    合并规则（与 control_live_detector.MergeDialog._execute_merge 一致）：
+      - 以 target 控件构建去重索引
+      - source 控件新增的追加，已存在的按 authority_override 合并字段
+      - 合并 controlsTree
+      - 更新 scanMeta
+    """
+    # 从 target 提取控件列表
+    tgt_controls = target_payload.get("flatControls", []) or target_payload.get("controlDefinitions", [])
+    tgt_before = len(tgt_controls)
+
+    # 构建去重索引 {(key_tuple): ctrl}
+    index = {}
+    for ctrl in tgt_controls:
+        key = _merge_dedup_key(ctrl, mode)
+        index[key] = ctrl
+
+    added = 0
+    updated = 0
+    for pay in source_payloads:
+        if pay is None:
+            continue
+        for ctrl in pay.get("flatControls", []) or pay.get("controlDefinitions", []):
+            key = _merge_dedup_key(ctrl, mode)
+            if key in index:
+                if authority_override:
+                    existing = index[key]
+                    for field, value in ctrl.items():
+                        if field.startswith("_"):
+                            continue
+                        if value not in (None, "", [], {}) and not existing.get(field):
+                            existing[field] = value
+                    updated += 1
+            else:
+                index[key] = ctrl
+                added += 1
+
+    merged_list = list(index.values())
+
+    # 合并 controlsTree（简单追加）
+    tgt_tree = target_payload.get("controlsTree", [])
+    src_tree_merged = []
+    for pay in source_payloads:
+        if pay is None:
+            continue
+        st = pay.get("controlsTree", [])
+        if st:
+            src_tree_merged.extend(st)
+    if src_tree_merged and not tgt_tree:
+        target_payload["controlsTree"] = src_tree_merged
+    elif src_tree_merged and tgt_tree:
+        target_payload["controlsTree"] = tgt_tree + src_tree_merged
+
+    # 回写控件列表（优先 flatControls）
+    if target_payload.get("flatControls") is not None:
+        target_payload["flatControls"] = merged_list
+    elif target_payload.get("controlDefinitions") is not None:
+        target_payload["controlDefinitions"] = merged_list
+    else:
+        target_payload["flatControls"] = merged_list
+
+    # 更新 scanMeta
+    meta = target_payload.get("scanMeta", {}) or {}
+    meta["totalControls"] = len(merged_list)
+    meta["rawTotalControls"] = len(merged_list)
+    meta["mergeAdded"] = meta.get("mergeAdded", 0) + added
+    meta["mergeUpdated"] = meta.get("mergeUpdated", 0) + updated
+    meta["mergedFrom"] = ", ".join(
+        f"file_{i}" for i in range(len(source_payloads))
+    ) if len(source_payloads) <= 5 else f"{len(source_payloads)} files"
+    meta["mergedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    target_payload["scanMeta"] = meta
+
+    return target_payload, {
+        "added": added,
+        "updated": updated,
+        "tgt_before": tgt_before,
+        "tgt_after": len(merged_list),
+    }
+
+
+
 
 
 def main():

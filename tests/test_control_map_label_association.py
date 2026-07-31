@@ -423,14 +423,17 @@ class NormalizeTextboxWrappersTests(unittest.TestCase):
         self.assertEqual(content_host.get("foldedTargetIndex"), textbox_idx)
 
     def test_part_contenthost_without_textbox_parent_not_crashed(self):
-        # PART_ContentHost 的父级不是 TextBox 时不应崩溃
+        # PART_ContentHost 的父级不是 TextBox 时不应崩溃；
+        # 孤儿 PART_ContentHost 就是实际可编辑面（MTD 名称/描述输入框形态），
+        # 必须提升为 Edit 参与标签关联，而不是折叠丢弃。
         not_textbox = _control("", "Custom", (100, 100, 300, 140), "", "Border")
         content_host = _control("", "Pane", (102, 102, 298, 138), "PART_ContentHost", "ScrollViewer")
         content_host["parentIndex"] = 0
         controls = [not_textbox, content_host]
         bcm._normalize_textbox_wrappers(controls)
-        self.assertTrue(content_host.get("foldedIntoParent"))
-        self.assertIsNone(content_host.get("foldedTargetIndex"))
+        self.assertNotIn("foldedIntoParent", content_host)
+        self.assertEqual(content_host["controlType"], "Edit")
+        self.assertEqual(content_host["controlTypeSource"], "normalized-from-contenthost-orphan")
         self.assertEqual(not_textbox["controlType"], "Custom")  # 未变化
 
     def test_empty_input_no_crash(self):
@@ -608,14 +611,14 @@ class RawViewWalkBFSTests(unittest.TestCase):
 
     def test_bfs_max_depth_zero_returns_root_only(self):
         """max_depth=0 时只收集根节点，不进入 BFS 循环。
-        tree 构建已移至主流程，此处返回 None，验证 flat_controls 正确。"""
+        tree 构建已移至主流程；cov4 起函数返回 BFS 截断统计 dict，验证 flat_controls 正确。"""
         mock_wrapper = _mock_mod.MagicMock()
         mock_wrapper.element_info.element = _mock_mod.MagicMock()
 
         target = {"title": "RootWin", "className": "Window"}
         flat = []
 
-        tree = bcm._walk_raw_view_bfs(
+        stats = bcm._walk_raw_view_bfs(
             target_window_wrapper=mock_wrapper,
             max_depth=0,
             target_window=target,
@@ -626,8 +629,10 @@ class RawViewWalkBFSTests(unittest.TestCase):
         self.assertEqual(len(flat), 1)
         self.assertEqual(flat[0]["treeLevel"], 0)
         self.assertEqual(flat[0]["parentIndex"], -1)
-        # tree 构建已移至主流程统一执行，_walk_raw_view_bfs 不再返回 tree
-        self.assertIsNone(tree)
+        # cov4：_walk_raw_view_bfs 返回截断统计（timedOut/hitLimit），供摘要警告
+        self.assertIsInstance(stats, dict)
+        self.assertIn("timedOut", stats)
+        self.assertIn("hitLimit", stats)
         # _rebuild_bfs_paths 应已执行
         self.assertTrue(flat[0].get("uiPath"))
 

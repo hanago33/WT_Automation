@@ -1,0 +1,20 @@
+schema_version: 1
+module_path: core_engine
+title: WT 自动化 DSL 核心引擎
+scope:
+    - wt_flow_executor.py
+    - wt_flow_locator.py
+    - wt_business_steps.py
+    - wt_action_schema.py
+    - wt_action_defaults.py
+    - wt_control_index.py
+    - wt_window_helpers.py
+    - wt_run_reporting.py
+    - wt_projection_helpers.py
+    - wt_flow_validation.py
+    - wt_flow_editor_utils.py
+    - flow_excel_io.py
+    - flow_recorder_converter.py
+source_files: []
+depends_on: []
+related_to: []

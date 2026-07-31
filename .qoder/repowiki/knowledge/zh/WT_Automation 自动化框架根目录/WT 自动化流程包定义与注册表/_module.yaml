@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: flow_packages
+title: WT 自动化流程包定义与注册表
+scope:
+    - flow_packages/
+source_files: []
+depends_on: []
+related_to:
+    - path: top_level_scripts

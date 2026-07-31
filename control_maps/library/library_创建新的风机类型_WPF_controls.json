@@ -9,13 +9,13 @@
     "frameworkId": "WPF"
   },
   "scanMeta": {
-    "scanTime": "2026-07-16T16:25:52",
+    "scanTime": "2026-07-31T18:43:39",
     "backend": "editor",
     "mode": "editor_library",
     "categoryWindowTitle": "创建新的风机类型",
     "categoryFrameworkId": "WPF",
-    "totalControls": 1,
-    "rawTotalControls": 1
+    "totalControls": 2,
+    "rawTotalControls": 2
   },
   "controlDefinitions": [
     {
@@ -29,6 +29,8 @@
       "templateKey": "",
       "uiPath": "私有",
       "notes": "已自动收录到控件库分类：创建新的风机类型 / WPF",
+      "labelText": "",
+      "relatedLabelName": "",
       "rawInspectText": "",
       "auxChecks": [
         "IsEnabled=true",
@@ -69,10 +71,95 @@
           "\"MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue\" : 列表项目 : 已设定焦点,可设定焦点"
         ],
         "availablePatterns": [],
+        "foundIndex": "",
+        "isControlElement": "",
+        "isContentElement": "",
+        "value": "",
+        "toggleState": "",
+        "isVisible": "",
+        "supportedPatterns": [],
+        "textContent": "",
         "recommendedTargetMethod": "",
         "recommendedTargetValue": ""
       }
+    },
+    {
+      "id": "control_map_304",
+      "name": "私有",
+      "role": "来自控件库扫描：",
+      "enabled": true,
+      "windowTitle": "创建新的风机类型",
+      "targetMethod": "class_name,control_type",
+      "targetValue": "TextBlock,Text",
+      "templateKey": "",
+      "uiPath": "Window_Main > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel > MUPMicroScaleView > MUPMicroScaleSidebarControl > MicroScale_TabControl_EditingSite > MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel > MUPSiteEditView > ScrollViewer > 信息 > MBASiteDescriptionView > 私有",
+      "notes": "由控件库扫描导入，定位评分=68 | 已自动收录到控件库分类：创建新的风机类型 / WPF",
+      "labelText": "",
+      "relatedLabelName": "",
+      "rawInspectText": "Name: \t \"私有\"\nControlType: \t Text\nLocalizedControlType: \t \"text\"\nBoundingRectangle: \t [l=177,t=448,r=752,b=481]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t False\nHasKeyboardFocus: \t False\nProcessId: \t 37104\nFrameworkId: \t \"WPF\"\nClassName: \t \"TextBlock\"\nAutomationId: \t \"\"\nNativeWindowHandle: \t \nProviderDescription: \t \"[pid:37104,providerId:0x0 Main(parent link):Unidentified Provider (managed:MS.Internal.Automation.ElementProxy, PresentationCore, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35)]\"\nLegacyIAccessible.Name: \t \"私有\"\nLegacyIAccessible.Role: \t 41\nLegacyIAccessible.State: \t 0\nAccessKey: \t \"\"\nAcceleratorKey: \t \"\"\nItemType: \t \"\"\nItemStatus: \t \"\"\nIsContentElement: \t True\nIsControlElement: \t True\nIsPassword: \t False\nHelpText: \t \"\"\nLabeledBy: \t \"\"\nSupportedPatterns: \t \"LegacyIAccessible, SynchronizedInput\"\nLegacyIAccessible.ChildId: \t 0\nLegacyIAccessible.Value: \t \"\"\nLegacyIAccessible.Description: \t \"\"\nLegacyIAccessible.Role: \t 静态文本 (0x29)\nLegacyIAccessible.State: \t 常规 (0x0)\nLegacyIAccessible.Help: \t \"\"\nLegacyIAccessible.Kbshortcut: \t \"\"\nLegacyIAccessible.DefAction: \t \"\"",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "IsKeyboardFocusable=False",
+        "HasKeyboardFocus=False",
+        "FrameworkId=WPF",
+        "ClassName=TextBlock"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "私有",
+        "controlType": "Text",
+        "localizedControlType": "text",
+        "boundingRectangle": "[l=177,t=448,r=752,b=481]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "False",
+        "hasKeyboardFocus": "False",
+        "processId": "37104",
+        "runtimeId": "[7,90F0,18284E8]",
+        "frameworkId": "WPF",
+        "className": "TextBlock",
+        "automationId": "",
+        "nativeWindowHandle": "",
+        "providerDescription": "[pid:37104,providerId:0x0 Main(parent link):Unidentified Provider (managed:MS.Internal.Automation.ElementProxy, PresentationCore, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35)]",
+        "legacyName": "私有",
+        "legacyRole": "41",
+        "legacyState": "0",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [],
+        "ancestors": [
+          "Window_Main",
+          "MicroScaleMainView_View_Main",
+          "MicroScale_TabControl_Site",
+          "MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel",
+          "MUPMicroScaleView",
+          "MUPMicroScaleSidebarControl",
+          "MicroScale_TabControl_EditingSite",
+          "MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel",
+          "MUPSiteEditView",
+          "ScrollViewer",
+          "信息",
+          "MBASiteDescriptionView"
+        ],
+        "availablePatterns": [],
+        "foundIndex": "",
+        "isControlElement": "True",
+        "isContentElement": "True",
+        "value": "",
+        "toggleState": "",
+        "isVisible": "True",
+        "supportedPatterns": [
+          "LegacyIAccessible",
+          "SynchronizedInput"
+        ],
+        "textContent": "私有",
+        "recommendedTargetMethod": "class_name,control_type",
+        "recommendedTargetValue": "TextBlock,Text"
+      }
     }
   ],
-  "lastUpdated": "2026-07-16T16:25:52"
+  "lastUpdated": "2026-07-31T18:43:39"
 }

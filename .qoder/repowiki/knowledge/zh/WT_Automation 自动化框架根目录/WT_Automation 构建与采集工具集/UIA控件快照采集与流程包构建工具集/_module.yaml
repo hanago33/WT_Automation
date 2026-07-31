@@ -1,0 +1,13 @@
+schema_version: 1
+module_path: tools_and_utilities/build_helpers
+title: UIA控件快照采集与流程包构建工具集
+scope:
+    - tools/generate_flow_package.py
+    - tools/merge_standard_control_library.py
+    - build_control_map_library.py
+    - build_image_template_library.py
+source_files: []
+depends_on: []
+related_to:
+    - path: image_templates
+    - path: uia_tree_dumper

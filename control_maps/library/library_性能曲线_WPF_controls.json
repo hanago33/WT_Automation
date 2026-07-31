@@ -9,13 +9,13 @@
     "frameworkId": "WPF"
   },
   "scanMeta": {
-    "scanTime": "2026-07-16T16:04:39",
+    "scanTime": "2026-07-29T20:03:48",
     "backend": "editor",
     "mode": "editor_library",
     "categoryWindowTitle": "性能曲线",
     "categoryFrameworkId": "WPF",
-    "totalControls": 4,
-    "rawTotalControls": 4
+    "totalControls": 5,
+    "rawTotalControls": 5
   },
   "controlDefinitions": [
     {
@@ -29,6 +29,8 @@
       "templateKey": "",
       "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPWindTurbineTypeEditorLeftSideView > ScrollViewer > MTDTileView_Button_ToggleState > MUPHubHeightsSummaryEditControl_MTDButton_OpenDocuments",
       "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | 已自动收录到控件库分类：性能曲线 / WPF",
+      "labelText": "",
+      "relatedLabelName": "",
       "rawInspectText": "Name: \t \"\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=632,t=132,r=674,b=174]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 8720\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"MUPHubHeightsSummaryEditControl_MTDButton_OpenDocuments\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPWindTurbineTypeMainView\n\t MUPWindTurbineTypeEditorView\n\t MUPWindTurbineTypeEditorLeftSideView\n\t ScrollViewer\n\t MTDTileView_Button_ToggleState",
       "auxChecks": [
         "IsEnabled=True",
@@ -70,8 +72,8 @@
           "MTDTileView_Button_ToggleState"
         ],
         "availablePatterns": [],
-        "recommendedTargetMethod": "automation_id",
-        "recommendedTargetValue": "MUPHubHeightsSummaryEditControl_MTDButton_OpenDocuments"
+        "recommendedTargetMethod": "automation_id,control_type",
+        "recommendedTargetValue": "MUPHubHeightsSummaryEditControl_MTDButton_OpenDocuments,Button"
       }
     },
     {
@@ -85,6 +87,8 @@
       "templateKey": "",
       "uiPath": "Window > MUPWindTurbineTypeMainView > WindTurbineType_TabControl_Managers > MUP.Module.WindTurbineType.ViewModels.MUPWindTurbineTypeManagerViewModel > 风机类型",
       "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位策略稳定 | 已自动收录到控件库分类：性能曲线 / WPF",
+      "labelText": "",
+      "relatedLabelName": "",
       "rawInspectText": "Name: \t \"风机类型\"\nControlType: \t Text\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=73,t=130,r=178,b=165]\nIsEnabled: \t True\nIsOffscreen: \t True\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"TextBlock\"\nAutomationId: \t \"WTTMainView_TabControl_WindTurbineTypesManager\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPWindTurbineTypeMainView\n\t WindTurbineType_TabControl_Managers\n\t MUP.Module.WindTurbineType.ViewModels.MUPWindTurbineTypeManagerViewModel",
       "auxChecks": [
         "IsEnabled=True",
@@ -139,6 +143,8 @@
       "templateKey": "",
       "uiPath": "Window > MTDTitleBar > ComputationManager_Button_OpenModule",
       "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | 已自动收录到控件库分类：性能曲线 / WPF",
+      "labelText": "",
+      "relatedLabelName": "",
       "rawInspectText": "Name: \t \"\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=366,t=0,r=418,b=52]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"ComputationManager_Button_OpenModule\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MTDTitleBar",
       "auxChecks": [
         "IsEnabled=True",
@@ -176,8 +182,8 @@
           "MTDTitleBar"
         ],
         "availablePatterns": [],
-        "recommendedTargetMethod": "automation_id",
-        "recommendedTargetValue": "ComputationManager_Button_OpenModule"
+        "recommendedTargetMethod": "automation_id,control_type",
+        "recommendedTargetValue": "ComputationManager_Button_OpenModule,Button"
       }
     },
     {
@@ -191,6 +197,8 @@
       "templateKey": "",
       "uiPath": "Window > MUPWindTurbineTypeMainView > WindTurbineType_TabControl_Managers",
       "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位策略稳定 | 已自动收录到控件库分类：性能曲线 / WPF",
+      "labelText": "",
+      "relatedLabelName": "",
       "rawInspectText": "Name: \t \"\"\nControlType: \t Tab\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=20,t=122,r=2543,b=1497]\nIsEnabled: \t True\nIsOffscreen: \t True\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"RadTabControl\"\nAutomationId: \t \"WindTurbineType_TabControl_Managers\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPWindTurbineTypeMainView",
       "auxChecks": [
         "IsEnabled=True",
@@ -228,10 +236,77 @@
           "MUPWindTurbineTypeMainView"
         ],
         "availablePatterns": [],
-        "recommendedTargetMethod": "automation_id",
-        "recommendedTargetValue": "WindTurbineType_TabControl_Managers"
+        "recommendedTargetMethod": "automation_id,control_type",
+        "recommendedTargetValue": "WindTurbineType_TabControl_Managers,Tab"
+      }
+    },
+    {
+      "id": "CGCS2000_3-degree_Gauss-Kruger_zone_43_Text",
+      "name": "CGCS2000 / 3-degree Gauss-Kruger zone 43",
+      "role": "来自控件库扫描：",
+      "enabled": true,
+      "windowTitle": "性能曲线",
+      "targetMethod": "name,control_type",
+      "targetValue": "CGCS2000 / 3-degree Gauss-Kruger zone 43,Text",
+      "templateKey": "",
+      "uiPath": "Window_Main > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel > MUPMicroScaleView > MUPMicroScaleSidebarControl > MicroScale_TabControl_EditingSite > MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel > MUPSiteEditView > ScrollViewer > MBASiteProjectionSelectionView > MBAProjectionSelectionView > PART_ItemsScrollViewer > CGCS2000 / 3-degree Gauss-Kruger zone 43",
+      "notes": "由控件库扫描生成，定位评分=88，策略=name + control_type，质量=推荐保留，说明=有标识的文本控件 | 可自动化风险=高；原因=控件不可键盘聚焦(IsKeyboardFocusable=false)，pywinauto 难以驱动 | 已自动收录到控件库分类：性能曲线 / WPF",
+      "labelText": "",
+      "relatedLabelName": "",
+      "rawInspectText": "Name: \t \"CGCS2000 / 3-degree Gauss-Kruger zone 43\"\nControlType: \t Text\nLocalizedControlType: \t \"text\"\nBoundingRectangle: \t [l=191,t=980,r=601,b=1008]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t False\nHasKeyboardFocus: \t False\nProcessId: \t 27884\nFrameworkId: \t \"WPF\"\nClassName: \t \"TextBlock\"\nAutomationId: \t \"\"\nNativeWindowHandle: \t \nProviderDescription: \t \"[pid:27884,providerId:0x0 Main(parent link):Unidentified Provider (managed:MS.Internal.Automation.ElementProxy, PresentationCore, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35)]\"\nLegacyIAccessible.Name: \t \"CGCS2000 / 3-degree Gauss-Kruger zone 43\"\nLegacyIAccessible.Role: \t 41\nLegacyIAccessible.State: \t 0\nAccessKey: \t \"\"\nAcceleratorKey: \t \"\"\nItemType: \t \"\"\nItemStatus: \t \"\"\nIsContentElement: \t True\nIsControlElement: \t True\nIsPassword: \t False\nHelpText: \t \"\"\nLabeledBy: \t \"\"\nSupportedPatterns: \t \"LegacyIAccessible, SynchronizedInput\"\nLegacyIAccessible.ChildId: \t 0\nLegacyIAccessible.Value: \t \"\"\nLegacyIAccessible.Description: \t \"\"\nLegacyIAccessible.Role: \t 静态文本 (0x29)\nLegacyIAccessible.State: \t 常规 (0x0)\nLegacyIAccessible.Help: \t \"\"\nLegacyIAccessible.Kbshortcut: \t \"\"\nLegacyIAccessible.DefAction: \t \"\"",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "IsKeyboardFocusable=False",
+        "HasKeyboardFocus=False",
+        "FrameworkId=WPF",
+        "ClassName=TextBlock"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "CGCS2000 / 3-degree Gauss-Kruger zone 43",
+        "controlType": "Text",
+        "localizedControlType": "text",
+        "boundingRectangle": "[l=191,t=980,r=601,b=1008]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "False",
+        "hasKeyboardFocus": "False",
+        "processId": "27884",
+        "runtimeId": "[7,6CEC,336A363]",
+        "frameworkId": "WPF",
+        "className": "TextBlock",
+        "automationId": "",
+        "nativeWindowHandle": "",
+        "providerDescription": "[pid:27884,providerId:0x0 Main(parent link):Unidentified Provider (managed:MS.Internal.Automation.ElementProxy, PresentationCore, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35)]",
+        "legacyName": "CGCS2000 / 3-degree Gauss-Kruger zone 43",
+        "legacyRole": "41",
+        "legacyState": "0",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [],
+        "ancestors": [
+          "Window_Main",
+          "MicroScaleMainView_View_Main",
+          "MicroScale_TabControl_Site",
+          "MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel",
+          "MUPMicroScaleView",
+          "MUPMicroScaleSidebarControl",
+          "MicroScale_TabControl_EditingSite",
+          "MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel",
+          "MUPSiteEditView",
+          "ScrollViewer",
+          "MBASiteProjectionSelectionView",
+          "MBAProjectionSelectionView",
+          "PART_ItemsScrollViewer"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "name,control_type",
+        "recommendedTargetValue": "CGCS2000 / 3-degree Gauss-Kruger zone 43,Text"
       }
     }
   ],
-  "lastUpdated": "2026-07-16T16:04:39"
+  "lastUpdated": "2026-07-29T20:03:48"
 }

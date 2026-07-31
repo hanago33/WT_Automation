@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: automation_agent/gui
+title: WT Automation Agent 对话式 Web GUI
+scope:
+    - WT_AUTOMATION_Agent/gui.py
+    - WT_AUTOMATION_Agent/_gui_config.json
+    - WT_AUTOMATION_Agent/启动WT_AI助手.bat
+source_files: []
+depends_on: []
+related_to:
+    - path: automation_agent/core_agent

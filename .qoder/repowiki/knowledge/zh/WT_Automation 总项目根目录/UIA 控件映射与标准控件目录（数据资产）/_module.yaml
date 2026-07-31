@@ -1,8 +1,0 @@
-schema_version: 1
-module_path: control_maps
-title: UIA 控件映射与标准控件目录（数据资产）
-scope:
-    - control_maps/
-source_files: []
-depends_on: []
-related_to: []

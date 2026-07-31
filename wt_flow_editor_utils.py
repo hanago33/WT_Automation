@@ -218,6 +218,10 @@ def normalize_control(control, index):
         "templateKey": str(control.get("templateKey", "")).strip(),
         "uiPath": str(control.get("uiPath", "")).strip(),
         "notes": str(control.get("notes", "")).strip(),
+        # labelText/relatedLabelName 是多实例判别核心字段（如“半径/X/载入”旁的 Edit），
+        # 白名单构建必须显式透传，否则编辑器过滤/显示管线拿不到标签
+        "labelText": str(control.get("labelText") or "").strip(),
+        "relatedLabelName": str(control.get("relatedLabelName") or "").strip(),
         "rawInspectText": raw_inspect_text,
         "auxChecks": [str(item).strip() for item in control.get("auxChecks", []) if str(item).strip()],
         "inspectData": {
@@ -247,6 +251,15 @@ def normalize_control(control, index):
             "children": [normalize_inspect_scalar(item) for item in inspect_data.get("children", []) if normalize_inspect_scalar(item)],
             "ancestors": [normalize_inspect_scalar(item) for item in inspect_data.get("ancestors", []) if normalize_inspect_scalar(item)],
             "availablePatterns": [normalize_inspect_scalar(item) for item in inspect_data.get("availablePatterns", []) if normalize_inspect_scalar(item)],
+            # ── 定位增强字段：消歧 / Fallback / 状态匹配 ──
+            "foundIndex": normalize_inspect_scalar(inspect_data.get("foundIndex", "")),
+            "isControlElement": normalize_inspect_scalar(inspect_data.get("isControlElement", "")),
+            "isContentElement": normalize_inspect_scalar(inspect_data.get("isContentElement", "")),
+            "value": normalize_inspect_scalar(inspect_data.get("value", "")),
+            "toggleState": normalize_inspect_scalar(inspect_data.get("toggleState", "")),
+            "isVisible": normalize_inspect_scalar(inspect_data.get("isVisible", "")),
+            "supportedPatterns": [normalize_inspect_scalar(item) for item in inspect_data.get("supportedPatterns", []) if normalize_inspect_scalar(item)],
+            "textContent": normalize_inspect_scalar(inspect_data.get("textContent", "")),
             "recommendedTargetMethod": str(inspect_data.get("recommendedTargetMethod", "")).strip(),
             "recommendedTargetValue": str(inspect_data.get("recommendedTargetValue", "")).strip(),
         },
@@ -262,6 +275,18 @@ def normalize_control(control, index):
             normalized["auxChecks"] = parsed.get("suggestedAuxChecks", [])
         if not normalized["uiPath"]:
             normalized["uiPath"] = normalized["inspectData"].get("name", "")
+    # 保留 tabNavigation 配置（Tab 导航降级定位）
+    tab_nav = control.get("tabNavigation")
+    if isinstance(tab_nav, dict) and tab_nav:
+        normalized["tabNavigation"] = {
+            "anchorControlId": str(tab_nav.get("anchorControlId", "")).strip(),
+            "direction": str(tab_nav.get("direction", "forward")).strip() or "forward",
+            "steps": int(tab_nav.get("steps", 0)) if str(tab_nav.get("steps", "")).strip() else 0,
+            "verify": tab_nav.get("verify", {}) if isinstance(tab_nav.get("verify"), dict) else {},
+        }
+    # 保留 preferTabNavigation 配置（优先 Tab 导航，跳过常规降级链）
+    if control.get("preferTabNavigation"):
+        normalized["preferTabNavigation"] = True
     return normalized
 
 

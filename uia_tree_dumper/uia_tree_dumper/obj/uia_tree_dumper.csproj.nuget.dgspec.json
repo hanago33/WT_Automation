@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "D:\\My_RF_Project\\WT_Automation\\uia_tree_dumper\\uia_tree_dumper\\uia_tree_dumper.csproj": {}
+    "d:\\My_RF_Project\\WT_Automation\\uia_tree_dumper\\uia_tree_dumper\\uia_tree_dumper.csproj": {}
   },
   "projects": {
-    "D:\\My_RF_Project\\WT_Automation\\uia_tree_dumper\\uia_tree_dumper\\uia_tree_dumper.csproj": {
+    "d:\\My_RF_Project\\WT_Automation\\uia_tree_dumper\\uia_tree_dumper\\uia_tree_dumper.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "D:\\My_RF_Project\\WT_Automation\\uia_tree_dumper\\uia_tree_dumper\\uia_tree_dumper.csproj",
+        "projectUniqueName": "d:\\My_RF_Project\\WT_Automation\\uia_tree_dumper\\uia_tree_dumper\\uia_tree_dumper.csproj",
         "projectName": "uia_tree_dumper",
-        "projectPath": "D:\\My_RF_Project\\WT_Automation\\uia_tree_dumper\\uia_tree_dumper\\uia_tree_dumper.csproj",
+        "projectPath": "d:\\My_RF_Project\\WT_Automation\\uia_tree_dumper\\uia_tree_dumper\\uia_tree_dumper.csproj",
         "packagesPath": "C:\\Users\\14830\\.nuget\\packages\\",
-        "outputPath": "D:\\My_RF_Project\\WT_Automation\\uia_tree_dumper\\uia_tree_dumper\\obj\\",
+        "outputPath": "d:\\My_RF_Project\\WT_Automation\\uia_tree_dumper\\uia_tree_dumper\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\14830\\AppData\\Roaming\\NuGet\\NuGet.Config"

@@ -1,0 +1,80 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "WT微尺度模拟",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "WPF"
+  },
+  "scanMeta": {
+    "scanTime": "2026-07-29T19:33:19",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "WT微尺度模拟",
+    "categoryFrameworkId": "WPF",
+    "totalControls": 1,
+    "rawTotalControls": 1
+  },
+  "controlDefinitions": [
+    {
+      "id": "control_map_97",
+      "name": "WT微尺度模拟",
+      "role": "来自控件库扫描：",
+      "enabled": true,
+      "windowTitle": "WT微尺度模拟",
+      "targetMethod": "name,control_type",
+      "targetValue": "WT微尺度模拟,Text",
+      "templateKey": "",
+      "uiPath": "Window_Main > MUPHomePageMainView > OpenModule > WT微尺度模拟",
+      "notes": "由控件库扫描导入，定位评分=88 | 已自动收录到控件库分类：WT微尺度模拟 / WPF",
+      "labelText": "",
+      "relatedLabelName": "",
+      "rawInspectText": "Name: \t \"WT微尺度模拟\"\nControlType: \t Text\nLocalizedControlType: \t \"text\"\nBoundingRectangle: \t [l=1669,t=898,r=1821,b=926]\nIsEnabled: \t True\nIsOffscreen: \t True\nIsKeyboardFocusable: \t False\nHasKeyboardFocus: \t False\nProcessId: \t 37104\nFrameworkId: \t \"WPF\"\nClassName: \t \"TextBlock\"\nAutomationId: \t \"\"\nNativeWindowHandle: \t \nProviderDescription: \t \"[pid:37104,providerId:0x0 Main(parent link):Unidentified Provider (managed:MS.Internal.Automation.ElementProxy, PresentationCore, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35)]\"\nLegacyIAccessible.Name: \t \"WT微尺度模拟\"\nLegacyIAccessible.Role: \t 41\nLegacyIAccessible.State: \t 98304\nAccessKey: \t \"\"\nAcceleratorKey: \t \"\"\nItemType: \t \"\"\nItemStatus: \t \"\"\nIsContentElement: \t False\nIsControlElement: \t False\nIsPassword: \t False\nHelpText: \t \"\"\nLabeledBy: \t \"\"\nSupportedPatterns: \t \"LegacyIAccessible, SynchronizedInput\"\nLegacyIAccessible.ChildId: \t 0\nLegacyIAccessible.Value: \t \"\"\nLegacyIAccessible.Description: \t \"\"\nLegacyIAccessible.Role: \t 静态文本 (0x29)\nLegacyIAccessible.State: \t 不可见,离屏 (0x18000)\nLegacyIAccessible.Help: \t \"\"\nLegacyIAccessible.Kbshortcut: \t \"\"\nLegacyIAccessible.DefAction: \t \"\"",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=True",
+        "IsKeyboardFocusable=False",
+        "HasKeyboardFocus=False",
+        "FrameworkId=WPF",
+        "ClassName=TextBlock"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "WT微尺度模拟",
+        "controlType": "Text",
+        "localizedControlType": "text",
+        "boundingRectangle": "[l=1669,t=898,r=1821,b=926]",
+        "isEnabled": "True",
+        "isOffscreen": "True",
+        "isKeyboardFocusable": "False",
+        "hasKeyboardFocus": "False",
+        "processId": "37104",
+        "runtimeId": "[7,90F0,21A4211]",
+        "frameworkId": "WPF",
+        "className": "TextBlock",
+        "automationId": "",
+        "nativeWindowHandle": "",
+        "providerDescription": "[pid:37104,providerId:0x0 Main(parent link):Unidentified Provider (managed:MS.Internal.Automation.ElementProxy, PresentationCore, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35)]",
+        "legacyName": "WT微尺度模拟",
+        "legacyRole": "41",
+        "legacyState": "98304",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [],
+        "ancestors": [
+          "Window_Main",
+          "MUPHomePageMainView",
+          "OpenModule"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "name,control_type",
+        "recommendedTargetValue": "WT微尺度模拟,Text"
+      }
+    }
+  ],
+  "lastUpdated": "2026-07-29T19:33:19"
+}

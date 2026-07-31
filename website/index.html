@@ -24,6 +24,7 @@
                 <a href="#modules">关键模块</a>
                 <a href="#results">成果展示</a>
                 <a href="#quickstart">快速开始</a>
+                <a href="#releases">版本发布</a>
                 <a href="#contact">联系我们</a>
             </div>
             <div class="nav-brand-info">
@@ -841,43 +842,124 @@ text = <span class="function">ocr_extract</span>(screenshot, location)</code>
                 <div class="stat-block">
                     <span class="stat-icon">📁</span>
                     <div>
-                        <strong>15+</strong>
+                        <strong>20+</strong>
                         <span>核心 Python 模块</span>
                     </div>
                 </div>
                 <div class="stat-block">
                     <span class="stat-icon">🎯</span>
                     <div>
-                        <strong>30+</strong>
+                        <strong>93</strong>
                         <span>控件库 JSON 文件</span>
                     </div>
                 </div>
                 <div class="stat-block">
                     <span class="stat-icon">🖼</span>
                     <div>
-                        <strong>30+</strong>
+                        <strong>42</strong>
                         <span>图像模板资产</span>
                     </div>
                 </div>
                 <div class="stat-block">
                     <span class="stat-icon">🤖</span>
                     <div>
-                        <strong>8+</strong>
+                        <strong>17</strong>
                         <span>AI Agent 模块</span>
                     </div>
                 </div>
                 <div class="stat-block">
-                    <span class="stat-icon">📋</span>
+                    <span class="stat-icon">📚</span>
                     <div>
-                        <strong>4</strong>
-                        <span>业务流程蓝图</span>
+                        <strong>97</strong>
+                        <span>知识库中文文档</span>
                     </div>
                 </div>
                 <div class="stat-block">
                     <span class="stat-icon">✅</span>
                     <div>
-                        <strong>6</strong>
-                        <span>最小回归测试</span>
+                        <strong>131</strong>
+                        <span>回归测试全部通过</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Releases Section -->
+    <section id="releases" class="section section-alt">
+        <div class="container">
+            <div class="section-header">
+                <span class="section-label">09 / 版本发布</span>
+                <h2 class="section-title">版本发布记录</h2>
+                <p class="section-description">
+                    从架构重构到智能采集，每个版本都在向"主路径直接完成"的目标演进。
+                    完整发布说明见 GitHub Releases。
+                </p>
+            </div>
+
+            <div class="grid grid-2">
+                <div class="card feature-card-large">
+                    <div class="card-header">
+                        <div class="feature-icon-large icon-green">
+                            <svg width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M16 3l11 6v12l-11 6-11-6V9l11-6z"/>
+                                <path d="M16 15v12M16 15L5 9M16 15l11-6"/>
+                            </svg>
+                        </div>
+                        <h3>V4.0.0 · 2026-07-24（当前版本）</h3>
+                    </div>
+                    <p>控件采集引擎全面增强 + AI Agent 能力扩展 + 安全加固与知识库完善，131 项单元测试全部通过。</p>
+                    <ul class="feature-list">
+                        <li>RawViewWalker BFS 整树遍历，单窗口稳定采集 1000+ 控件</li>
+                        <li>32 种 UIA Control Patterns 零副作用检测（约 1.6ms/控件）</li>
+                        <li>ExpandCollapse 状态采集 + 层级树 GUI 浏览器</li>
+                        <li>AI Agent 六大模块：control_search / flow_ops / knowledge_base / log_diagnosis / memory / model_profiles</li>
+                        <li>安全加固：API Key 配置移出版本控制并纳入 .gitignore</li>
+                        <li>《Inspect UIA 调研手册》与 repowiki 中文知识库补全</li>
+                    </ul>
+                </div>
+
+                <div class="card feature-card-large">
+                    <div class="card-header">
+                        <div class="feature-icon-large icon-blue">
+                            <svg width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="4" y="4" width="24" height="24" rx="2"/>
+                                <path d="M4 12h24M12 4v24"/>
+                            </svg>
+                        </div>
+                        <h3>V3.0.0 · 2026-07-21</h3>
+                    </div>
+                    <p>架构重构里程碑：引入 DSL Agent 对话式自动化，建立 Flow 体系库与规范化资产目录。</p>
+                    <ul class="feature-list">
+                        <li>WT_AUTOMATION_Agent：自然语言 → RPA 步骤的 DSL Agent 框架</li>
+                        <li>Flow 体系库：flow_definition.json + flow_packages/ 注册映射</li>
+                        <li>control_maps/ 重构为 _candidates / library / recordings / standard 四子目录</li>
+                        <li>定位器升级：自愈定位、多尺度图像匹配、相对锚点点击</li>
+                        <li>外部采集适配：axewindows 桥接、uiapeek 客户端</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="benefits-grid">
+                <div class="benefit-item">
+                    <div class="benefit-icon">📚</div>
+                    <div>
+                        <h4>知识库体系</h4>
+                        <p>repowiki 中文知识库 12 大主题 / 97 篇文档，覆盖执行引擎、控件定位、AI Agent 等全模块。</p>
+                    </div>
+                </div>
+                <div class="benefit-item">
+                    <div class="benefit-icon">🧩</div>
+                    <div>
+                        <h4>Skill 技能包</h4>
+                        <p>3 套 CodeBuddy Skills：WT 业务知识、代码库架构图谱、调试经验教训，让 AI 助手秒懂项目。</p>
+                    </div>
+                </div>
+                <div class="benefit-item">
+                    <div class="benefit-icon">🗺</div>
+                    <div>
+                        <h4>下一步演进</h4>
+                        <p>流程编辑器与执行联动、细控件命中率提升、补全后半段业务链路、模板兜底 vs AI 续跑量化对比。</p>
                     </div>
                 </div>
             </div>
@@ -885,10 +967,10 @@ text = <span class="function">ocr_extract</span>(screenshot, location)</code>
     </section>
 
     <!-- Contact Section -->
-    <section id="contact" class="section section-alt">
+    <section id="contact" class="section">
         <div class="container">
             <div class="section-header">
-                <span class="section-label">09 / 联系我们</span>
+                <span class="section-label">10 / 联系我们</span>
                 <h2 class="section-title">关于项目与团队</h2>
                 <p class="section-description">
                     中车株洲所风电事业部风资源技术中心，致力于风资源评估与仿真技术的自动化研发

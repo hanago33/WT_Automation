@@ -174,24 +174,39 @@ def main() -> None:
             print(result)
         elif args.sequence:
             steps = agent.nl_to_sequence(args.instruction, context)
-            output = json.dumps(steps, ensure_ascii=False, indent=2)
+            output = _wrap_flow(steps)
             print(output)
         else:
             steps = agent.nl_to_step(args.instruction, context)
-            output = json.dumps(steps, ensure_ascii=False, indent=2)
+            output = _wrap_flow(steps)
             print(output)
 
         if args.output and not args.chat:
             with open(args.output, "w", encoding="utf-8") as f:
                 f.write(output)
             print(f"\n已保存到: {args.output}", file=sys.stderr)
-
     except Exception as exc:
         print(f"错误: {exc}", file=sys.stderr)
         if args.verbose:
             import traceback
             traceback.print_exc()
         sys.exit(1)
+
+
+def _wrap_flow(steps: object) -> str:
+    """把 Agent 产物包装成 WT_AUT_recorded.py 可直接消费的 flow_definition。
+
+    Agent 的 nl_to_sequence 返回步骤数组、nl_to_step 返回单个步骤字典；
+    而执行器只识别顶层含 "steps" 字段的对象（非 dict 会被当成空流程）。
+    这里统一包成 {"steps": [...]} 以保证"生成即可执行"。
+    """
+    if isinstance(steps, dict):
+        steps_list = [steps]
+    elif isinstance(steps, list):
+        steps_list = steps
+    else:
+        steps_list = []
+    return json.dumps({"steps": steps_list}, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":

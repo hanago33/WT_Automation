@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("uia_tree_dumper")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+26033ab938d56291c0df48f3520b1b615f646ae7")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+0b3926ea7f8346bae00b822332ff547dc064f5ac")]
 [assembly: System.Reflection.AssemblyProductAttribute("uia_tree_dumper")]
 [assembly: System.Reflection.AssemblyTitleAttribute("uia_tree_dumper")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -92,6 +92,24 @@ class DslAgentConfig:
             self.api_key = os.environ.get(self.ENV_KEY_API_KEY, "")
         if not self.model or self.model == "gpt-4o":
             self.model = os.environ.get(self.ENV_KEY_MODEL, "gpt-4o")
+        # 兜底：环境变量未配置时，回退到 model_profiles 的默认档案，
+        # 这样即便只通过 GUI/JSON 配置了"模型配置档案"，CLI 也能直接用它。
+        if not self.base_url or not self.api_key:
+            try:
+                from WT_AUTOMATION_Agent.model_profiles import get_default
+                prof = get_default()
+                if prof:
+                    self.base_url = self.base_url or (prof.get("base_url") or "").rstrip("/")
+                    self.api_key = self.api_key or (prof.get("api_key") or "")
+                    if not self.model or self.model == "gpt-4o":
+                        self.model = prof.get("model") or self.model
+                    if prof.get("timeout"):
+                        try:
+                            self.timeout = int(prof["timeout"])
+                        except (TypeError, ValueError):
+                            pass
+            except Exception:
+                logger.exception("回退到 model_profiles 默认档案失败")
 
     def is_ready(self) -> bool:
         return bool(self.base_url and self.api_key)
@@ -370,8 +388,46 @@ def _build_tools_definition() -> list[dict]:
                             "type": "integer",
                             "description": "返回的候选控件数量，默认 5。",
                         },
+                        "action": {
+                            "type": "string",
+                            "description": (
+                                "可选：该控件将执行的动作名（如 click / type_text / "
+                                "set_combobox），传入后会优先返回能执行该动作的控件类型。"
+                            ),
+                        },
+                        "within": {
+                            "type": "string",
+                            "description": (
+                                "可选：限定在某窗口/视图（uiPath 祖先）范围内检索，"
+                                "如 'MUPWindTurbineTypeMainView' 只在风机类型视图里找，"
+                                "能大幅提升歧义控件的命中精度。"
+                            ),
+                        },
                     },
                     "required": ["query"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "control_tree",
+                "description": (
+                    "返回 WT 应用的控件层级树（按 uiPath：Window > 视图 > 容器 > 控件），"
+                    "列出各窗口/视图及其下控件数。当你要定位某功能在哪个视图、或对某视图内控件"
+                    "做精确检索前，先调用本工具获得视图名，再传 within 给 find_control 缩小范围。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "max_depth": {
+                            "type": "integer",
+                            "description": "树展开深度，默认 3（1=只到视图层）。",
+                        },
+                    },
+                    "required": [],
                     "additionalProperties": False,
                 },
                 "strict": True,
@@ -647,16 +703,67 @@ def _raw_to_full_step(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
     if control_id:
-        step["controls"] = [{
-            "id": control_id,
-            "name": f"{action_name} 目标控件",
-            "role": "",
-            "enabled": True,
-            "targetMethod": "automation_id",
-            "targetValue": control_id,
-        }]
+        step["controls"] = [_build_step_control(action_name, control_id)]
 
     return step
+
+
+def _build_step_control(action_name: str, control_id: str) -> dict[str, Any]:
+    """把 control_id 对标到控件库真实控件，回填名称/定位方法/uiPath 等信息。
+
+    对标策略（依赖 control_search.best_control_for_step）：
+    1. 精确命中（targetValue / automationId 全等）→ 直接采用库内记录；
+    2. 未精确命中 → 按动作语义模糊检索，高置信候选（score>=6）才采用，
+       并在 notes 中标注"模糊匹配"，方便人工复核；
+    3. 完全未命中 → 保留原 control_id，notes 标注"未在控件库中找到"。
+    """
+    fallback = {
+        "id": control_id,
+        "name": f"{action_name} 目标控件",
+        "role": "",
+        "enabled": True,
+        "targetMethod": "automation_id",
+        "targetValue": control_id,
+        "notes": "未在控件库中找到，请人工确认该控件真实存在",
+    }
+    if control_search is None:
+        fallback.pop("notes", None)
+        return fallback
+    try:
+        rec, exact = control_search.best_control_for_step(action_name, control_id)
+    except Exception:
+        logger.exception("control_search.best_control_for_step 调用失败")
+        fallback.pop("notes", None)
+        return fallback
+    if rec is None:
+        return fallback
+
+    target_method = str(rec.get("targetMethod", "")).strip() or "automation_id"
+    target_value = str(rec.get("targetValue", "")).strip() or control_id
+    name = str(rec.get("name", "")).strip() \
+        or str(rec.get("labelText", "")).strip() \
+        or f"{action_name} 目标控件"
+    notes_parts: list[str] = []
+    if not exact:
+        notes_parts.append(f"由控件库模糊匹配（原 control_id: {control_id}），建议复核")
+    if rec.get("labelText") and rec.get("labelText") != name:
+        notes_parts.append(f"关联标签: {rec['labelText']}")
+    if rec.get("optionValues"):
+        notes_parts.append("下拉选项: " + " / ".join(rec["optionValues"][:8]))
+
+    control: dict[str, Any] = {
+        "id": control_id,
+        "name": name,
+        "role": str(rec.get("controlType", "")),
+        "enabled": True,
+        "targetMethod": target_method,
+        "targetValue": target_value,
+    }
+    if rec.get("uiPath"):
+        control["uiPath"] = rec["uiPath"]
+    if notes_parts:
+        control["notes"] = "；".join(notes_parts)
+    return control
 
 
 def _auto_name(action: str, control_id: str, text: str, schema: dict | None = None) -> str:
@@ -852,7 +959,7 @@ class DslAgent:
             })
             lookup_calls = [
                 tc for tc in tool_calls
-                if tc.get("function", {}).get("name") == "find_control"
+                if tc.get("function", {}).get("name") in ("find_control", "control_tree")
             ]
             if lookup_calls:
                 for tc in lookup_calls:
@@ -860,11 +967,17 @@ class DslAgent:
                         args = json.loads(tc.get("function", {}).get("arguments", "{}") or "{}")
                     except json.JSONDecodeError:
                         args = {}
-                    result = self._exec_find_control(args)
+                    name = tc.get("function", {}).get("name")
+                    if name == "control_tree":
+                        result = self._exec_control_tree(args)
+                        tool_name = "control_tree"
+                    else:
+                        result = self._exec_find_control(args)
+                        tool_name = "find_control"
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id"),
-                        "name": "find_control",
+                        "name": tool_name,
                         "content": result,
                     })
                 continue
@@ -889,7 +1002,19 @@ class DslAgent:
             top_k = 5
         if not query:
             return "查询为空，请提供控件描述（例如 '风机类型下拉框'）。"
-        return control_search.search_text(query, top_k=top_k)
+        action = str(args.get("action") or "").strip()
+        within = str(args.get("within") or "").strip() or None
+        return control_search.search_text(query, top_k=top_k, action=action, within=within)
+
+    def _exec_control_tree(self, args: dict) -> str:
+        """执行 control_tree 工具：返回 WT 应用控件层级树大纲。"""
+        if control_search is None:
+            return "控件检索模块不可用。"
+        try:
+            max_depth = int(args.get("max_depth") or 3)
+        except (TypeError, ValueError):
+            max_depth = 3
+        return control_search.tree_summary(max_depth=max_depth)
 
     def test_connection(self) -> bool:
         """测试 API 连接。"""

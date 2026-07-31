@@ -11,6 +11,11 @@ import pyautogui
 from pywinauto import Desktop
 from pywinauto_recorder.player import send_keys
 
+try:
+    from fuzzywuzzy import fuzz
+except ImportError:
+    fuzz = None
+
 
 FLOW_WINDOW_CACHE_TTL_SECONDS = 2.0
 FLOW_CONTROL_CACHE_TTL_SECONDS = 12.0
@@ -19,6 +24,7 @@ FLOW_PARENT_CACHE_TTL_SECONDS = 20.0
 FLOW_WINDOW_CACHE = {}
 FLOW_CONTROL_CACHE = {}
 FLOW_PARENT_CACHE = {}
+_control_map_cache = {}
 
 _GET_STEP_DEFINITION = lambda step_id: {}
 _LOG_STEP = lambda message: None
@@ -422,6 +428,56 @@ def normalize_match_text(value):
     if text.lower() in {"property does not exist", "[null]", "none", "null"}:
         return ""
     return strip_wrapping_quotes(text)
+
+
+def normalize_control_definition(control_definition):
+    source = control_definition if isinstance(control_definition, dict) else {}
+    normalized = dict(source)
+    inspect_data = source.get("inspectData", {})
+    inspect_data = dict(inspect_data) if isinstance(inspect_data, dict) else {}
+    field_map = {
+        "name": ("name", "displayName"),
+        "controlType": ("controlType",),
+        "localizedControlType": ("localizedControlType",),
+        "className": ("className",),
+        "automationId": ("automationId",),
+        "frameworkId": ("frameworkId",),
+        "processId": ("processId",),
+        "runtimeId": ("runtimeId",),
+        "isControlElement": ("isControlElement",),
+        "isContentElement": ("isContentElement",),
+        "isOffscreen": ("isOffscreen",),
+        "isEnabled": ("isEnabled",),
+        "boundingRectangle": ("boundingRectangle",),
+        "foundIndex": ("foundIndex", "siblingsIndex"),
+        "ancestors": ("ancestors",),
+        "children": ("children",),
+    }
+    for inspect_key, source_keys in field_map.items():
+        if inspect_data.get(inspect_key) not in (None, "", []):
+            continue
+        for source_key in source_keys:
+            value = source.get(source_key)
+            if value not in (None, "", []):
+                inspect_data[inspect_key] = value
+                break
+    normalized["inspectData"] = inspect_data
+    normalized["name"] = normalize_match_text(
+        source.get("name", "") or source.get("displayName", "") or inspect_data.get("name", "")
+    )
+    normalized["targetMethod"] = normalize_match_text(
+        source.get("targetMethod", "")
+        or source.get("recommendedTargetMethod", "")
+        or inspect_data.get("recommendedTargetMethod", "")
+    )
+    normalized["targetValue"] = normalize_match_text(
+        source.get("targetValue", "")
+        or source.get("recommendedTargetValue", "")
+        or inspect_data.get("recommendedTargetValue", "")
+    )
+    normalized["uiPath"] = normalize_match_text(source.get("uiPath", "") or inspect_data.get("uiPath", ""))
+    normalized["windowTitle"] = normalize_match_text(source.get("windowTitle", ""))
+    return normalized
 
 
 def build_locator_text(method, values):
@@ -2015,6 +2071,68 @@ def iter_fast_locator_candidates(window, control_definition):
     return result
 
 
+def control_definition_expects_raw_view(control_definition):
+    normalized = normalize_control_definition(control_definition)
+    inspect_data = normalized.get("inspectData", {})
+    is_control = str(inspect_data.get("isControlElement", "")).strip().lower()
+    is_content = str(inspect_data.get("isContentElement", "")).strip().lower()
+    return is_control == "false" or is_content == "false"
+
+
+def iter_raw_view_fallback_candidates(window, control_definition, max_elements=5000):
+    if window is None:
+        return []
+    try:
+        from pywinauto.uia_defines import IUIA
+        from pywinauto.controls.uiawrapper import UIAWrapper
+        from pywinauto.uia_element_info import UIAElementInfo
+    except Exception:
+        return []
+    normalized = normalize_control_definition(control_definition)
+    path_depth = len(_parse_recorded_uipath(normalized.get("uiPath", "")))
+    max_depth = min(32, max(16, path_depth + 2))
+    try:
+        walker = IUIA().iuia.RawViewWalker
+        root_element = window.element_info.element
+    except Exception:
+        return []
+    queue = []
+    try:
+        child = walker.GetFirstChildElement(root_element)
+        while child:
+            queue.append((child, 1))
+            child = walker.GetNextSiblingElement(child)
+    except Exception:
+        return []
+    result = []
+    seen = set()
+    index = 0
+    while index < len(queue) and index < max_elements:
+        element, depth = queue[index]
+        index += 1
+        try:
+            wrapper = UIAWrapper(UIAElementInfo(element))
+        except Exception:
+            wrapper = None
+        if wrapper is not None and wrapper_matches_control_definition(wrapper, normalized):
+            key = get_wrapper_handle(wrapper) or normalize_match_text(
+                _safe_get_value(lambda: str(wrapper.element_info.runtime_id), "")
+            ) or id(wrapper)
+            if key not in seen:
+                seen.add(key)
+                result.append(wrapper)
+        if depth >= max_depth:
+            continue
+        try:
+            child = walker.GetFirstChildElement(element)
+            while child:
+                queue.append((child, depth + 1))
+                child = walker.GetNextSiblingElement(child)
+        except Exception:
+            pass
+    return result
+
+
 def iter_flow_search_windows(step_definition, window_title_hint="", control_definition=None):
     title_candidates = []
     control_window_title = ""
@@ -2068,7 +2186,8 @@ def iter_flow_search_windows(step_definition, window_title_hint="", control_defi
         ranked_windows.append((score, window))
     if not ranked_windows:
         if title_candidates:
-            return []
+            _LOG_STEP("[FlowLocator] 窗口过滤软化: 严格标题过滤无命中，回退到全窗口枚举")
+        # 不 return，继续到下面的全窗口枚举逻辑
         for window in all_windows:
             if is_automation_window(window):
                 continue
@@ -3567,7 +3686,215 @@ def get_flow_control_definition(step_id, control_id):
     return {}
 
 
-def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_hint=""):
+# ---------------------------------------------------------------------------
+# 控件库 JSON 模糊匹配辅助函数
+# ---------------------------------------------------------------------------
+
+def _load_control_map_json(control_map_path):
+    """加载控件库 JSON 文件，带 30 秒 TTL 缓存。"""
+    if not control_map_path or not os.path.isfile(control_map_path):
+        return None
+    now = time.time()
+    cached = _control_map_cache.get(control_map_path)
+    if cached is not None and (now - cached[0]) < 30:
+        return cached[1]
+    try:
+        with open(control_map_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        _control_map_cache[control_map_path] = (now, data)
+        return data
+    except Exception:
+        _control_map_cache.pop(control_map_path, None)
+        return None
+
+
+def _flatten_controls_tree(node):
+    """递归展平嵌套控件树为平面列表，同时处理 controls / children / items / controlsTree 键。"""
+    result = []
+    if not isinstance(node, dict):
+        return result
+    # 收集当前节点（如果有标识字段）
+    if node.get("label") or node.get("name") or node.get("labelText") or node.get("displayName"):
+        result.append(node)
+    for child_key in ("controls", "children", "items", "controlsTree"):
+        child = node.get(child_key)
+        if isinstance(child, list):
+            for item in child:
+                result.extend(_flatten_controls_tree(item))
+        elif isinstance(child, dict):
+            result.extend(_flatten_controls_tree(child))
+    return result
+
+
+def _fuzzy_match_control_map(step_label, step_info, control_map_data):
+    """用 fuzz.ratio 在控件库中模糊匹配，返回最佳条目（含 score）。"""
+    if fuzz is None or not control_map_data or not step_label:
+        return None
+    root = control_map_data.get("controlsTree", control_map_data)
+    all_controls = _flatten_controls_tree(root)
+    best_entry = None
+    best_score = 0
+    step_label_str = str(step_label)
+    for entry in all_controls:
+        # 取控件的标识字段
+        entry_label = (
+            entry.get("label")
+            or entry.get("name")
+            or entry.get("labelText")
+            or entry.get("displayName")
+            or ""
+        )
+        if not entry_label:
+            continue
+        score = fuzz.ratio(step_label_str, str(entry_label))
+        if score < 65:
+            continue
+        # 交叉验证加分
+        if step_info.get("automationId") and entry.get("automationId"):
+            if str(step_info["automationId"]).strip() == str(entry["automationId"]).strip():
+                score += 15
+        if step_info.get("className") and entry.get("className"):
+            if str(step_info["className"]).strip() == str(entry["className"]).strip():
+                score += 10
+        if step_info.get("controlType") and entry.get("controlType"):
+            if str(step_info["controlType"]).strip().lower() == str(entry["controlType"]).strip().lower():
+                score += 5
+        if score > best_score:
+            best_score = score
+            best_entry = dict(entry)
+            best_entry["_fuzzy_score"] = score
+    return best_entry
+
+
+def _search_uia_by_json_entry(json_entry, window):
+    """根据 JSON 条目属性在运行时 UIA 树中搜索，返回 UIAWrapper 或 None。"""
+    if not json_entry or window is None:
+        return None
+    # 构造临时 control_definition
+    ctrl_def = {
+        "automationId": json_entry.get("automationId", ""),
+        "className": json_entry.get("className", ""),
+        "controlType": json_entry.get("controlType", ""),
+        "name": json_entry.get("name", "") or json_entry.get("displayName", ""),
+        "targetMethod": "",
+        "targetValue": "",
+    }
+    # 优先用 automationId
+    if ctrl_def["automationId"]:
+        ctrl_def["targetMethod"] = "automation_id,control_type"
+        ctrl_def["targetValue"] = "{aid},{ct}".format(
+            aid=ctrl_def["automationId"], ct=ctrl_def["controlType"]
+        )
+    elif ctrl_def["name"]:
+        ctrl_def["targetMethod"] = "name,control_type"
+        ctrl_def["targetValue"] = "{name},{ct}".format(
+            name=ctrl_def["name"], ct=ctrl_def["controlType"]
+        )
+    elif ctrl_def["className"]:
+        ctrl_def["targetMethod"] = "class_name,control_type"
+        ctrl_def["targetValue"] = "{cls},{ct}".format(
+            cls=ctrl_def["className"], ct=ctrl_def["controlType"]
+        )
+    else:
+        return None
+    # 使用现有快速定位器
+    for candidate in iter_fast_locator_candidates(window, ctrl_def):
+        if wrapper_matches_control_definition(candidate, ctrl_def):
+            # 确保返回 UIAWrapper 而非原始 dict
+            if hasattr(candidate, 'element_info'):
+                return candidate
+            continue
+    # 降级到全量 descendants
+    try:
+        for candidate in window.descendants():
+            if wrapper_matches_control_definition(candidate, ctrl_def):
+                if hasattr(candidate, 'element_info'):
+                    return candidate
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _find_by_bbox_fallback(candidates, expected_pos):
+    """根据 bbox 中心点到 expected_pos 的欧氏距离返回最近候选。"""
+    if not candidates or not expected_pos:
+        return None
+    exp_x, exp_y = expected_pos
+    best = None
+    best_dist = float("inf")
+    for entry in candidates:
+        bbox = entry.get("boundingBox") or entry.get("bbox") or {}
+        left = bbox.get("left", 0)
+        top = bbox.get("top", 0)
+        right = bbox.get("right", 0)
+        bottom = bbox.get("bottom", 0)
+        if not (left or top or right or bottom):
+            continue
+        cx = (left + right) / 2.0
+        cy = (top + bottom) / 2.0
+        dist = ((cx - exp_x) ** 2 + (cy - exp_y) ** 2) ** 0.5
+        if dist < best_dist:
+            best_dist = dist
+            best = dict(entry)
+            best["_bbox_distance"] = best_dist
+    return best
+
+
+# ── 定位分阶段耗时统计 ────────────────────────────────────────────────────
+# key: "step_id|control_id" → {
+#     "t_windows_ms": float, "t_fast_ms": float, "t_descendants_ms": float,
+#     "t_json_ms": float, "t_action_ms": float, "t_total_ms": float,
+# }
+_step_timing = {}
+
+
+def get_step_timing(step_id, control_id=""):
+    """获取并清除指定步骤的分阶段耗时记录，供 executor 汇总日志。"""
+    key = f"{step_id}|{control_id}"
+    return _step_timing.pop(key, None)
+
+
+def _record_locator_timing(step_id, control_id, t0, t1, t2, t3, t4):
+    """记录 find_flow_control 四个阶段的耗时（毫秒），供下游汇总。"""
+    key = f"{step_id}|{control_id}"
+    _step_timing[key] = {
+        "t_windows_ms": round((t1 - t0) * 1000, 2),
+        "t_fast_ms": round((t2 - t1) * 1000, 2),
+        "t_descendants_ms": round((t3 - t2) * 1000, 2),
+        "t_json_ms": round((t4 - t3) * 1000, 2),
+        "t_action_ms": 0.0,
+        "t_total_ms": 0.0,
+    }
+
+
+def _finalize_step_timing(step_id, control_id, t_act_start):
+    """在动作执行完成后，合并定位四阶段耗时 + 动作耗时，输出一条汇总日志。"""
+    key = f"{step_id}|{control_id}"
+    timing = _step_timing.get(key)
+    if timing is None:
+        return
+    t_act_ms = round((time.perf_counter() - t_act_start) * 1000, 2)
+    timing["t_action_ms"] = t_act_ms
+    timing["t_total_ms"] = round(
+        timing["t_windows_ms"] + timing["t_fast_ms"] + timing["t_descendants_ms"]
+        + timing["t_json_ms"] + t_act_ms, 2
+    )
+    _LOG_STEP(
+        "[定位耗时] step={}, ctrl={}, 窗枚举={:.1f}ms, 快查={:.1f}ms, "
+        "整树={:.1f}ms, JSON={:.1f}ms, 动作={:.1f}ms, 总计={:.1f}ms".format(
+            step_id, control_id,
+            timing["t_windows_ms"], timing["t_fast_ms"], timing["t_descendants_ms"],
+            timing["t_json_ms"], t_act_ms, timing["t_total_ms"],
+        )
+    )
+    _step_timing.pop(key, None)
+
+
+def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_hint="", control_map_path=None):
+    # ── 阶段计时初始化 ──────────────────────────────────────────────────────
+    _t0 = time.perf_counter()
+    _t1 = _t2 = _t3 = _t4 = _t0
     step_definition = _GET_STEP_DEFINITION(step_id)
     controls = step_definition.get("controls", []) if isinstance(step_definition, dict) else []
     if control_id:
@@ -3583,8 +3910,13 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
             best_match = None
             best_score = -1
             windows = []
+            _json_fallback_entry = None
+            _low_confidence_match = None
+            _low_confidence_score = -1
             for raw_control_definition in controls:
-                control_definition = _apply_self_heal_override(step_id, control_id, raw_control_definition)
+                control_definition = normalize_control_definition(
+                    _apply_self_heal_override(step_id, control_id, raw_control_definition)
+                )
                 cached_wrapper = get_cached_flow_control(step_id, control_definition, window_title_hint=window_title_hint)
                 if cached_wrapper is not None:
                     if str(step_id).strip() == "step_2" and get_wrapper_is_offscreen(cached_wrapper) == "True":
@@ -3606,6 +3938,7 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                     foreground_title = normalize_match_text(get_wrapper_text(foreground_wrapper))
                     if expected_window_title and value_matches(foreground_title, expected_window_title):
                         windows = [foreground_wrapper]
+                _t1 = time.perf_counter()  # Phase 1: 窗口枚举完成
                 for window in windows:
                     for candidate in iter_fast_locator_candidates(window, control_definition):
                         if not wrapper_matches_control_definition(candidate, control_definition):
@@ -3627,11 +3960,23 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                             )
                         if str(step_id).strip() == "step_2":
                             _emit_fan_type_create_debug_event("B", "wt_flow_locator.py:find_flow_control:fast-hit", "step_2 control matched", {"window": get_wrapper_debug_snapshot(window), "control": get_wrapper_debug_snapshot(best_match), "score": best_score})
+                        _t2 = _t3 = _t4 = time.perf_counter()
+                        _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
                         return best_match
+                    # 记录低置信匹配（正分但不足100）
+                    if best_match is not None and 0 < best_score < 100:
+                        if best_score > _low_confidence_score:
+                            _low_confidence_match = best_match
+                            _low_confidence_score = best_score
+                _t2 = time.perf_counter()  # Phase 2: 快速查询结束
                 for window in windows:
                     candidates = [window]
+                    expected_type = normalize_control_type_name(
+                        control_definition.get("controlType", ""),
+                        control_definition.get("inspectData", {}).get("controlType", ""),
+                    )
                     try:
-                        candidates.extend(window.descendants())
+                        candidates.extend(window.descendants(control_type=expected_type) if expected_type else window.descendants())
                     except Exception:
                         pass
                     for candidate in candidates:
@@ -3654,7 +3999,104 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                             )
                         if str(step_id).strip() == "step_2":
                             _emit_fan_type_create_debug_event("B", "wt_flow_locator.py:find_flow_control:descendant-hit", "step_2 control matched by descendants", {"window": get_wrapper_debug_snapshot(window), "control": get_wrapper_debug_snapshot(best_match), "score": best_score})
+                        _t3 = _t4 = time.perf_counter()
+                        _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
                         return best_match
+                    # 记录低置信匹配（正分但不足100）
+                    if best_match is not None and 0 < best_score < 100:
+                        if best_score > _low_confidence_score:
+                            _low_confidence_match = best_match
+                            _low_confidence_score = best_score
+                # --- 阈值放宽：fast+descendants 无 >=100 命中时，取最高正分 ---
+                if _low_confidence_match is not None and (best_match is None or best_score <= 0):
+                    best_match = _low_confidence_match
+                    best_score = _low_confidence_score
+                    _LOG_STEP(
+                        "[FlowLocator] 阈值放宽命中: step=%s, ctrl=%s, score=%s(<100)"
+                        % (step_id, control_id, best_score)
+                    )
+                    _t3 = _t4 = time.perf_counter()
+                    _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
+                    return best_match
+                if best_match is None and control_definition_expects_raw_view(control_definition):
+                    for window in windows:
+                        for candidate in iter_raw_view_fallback_candidates(window, control_definition):
+                            score = score_control_match(candidate, control_definition)
+                            if score > best_score:
+                                best_score = score
+                                best_match = candidate
+                    if best_match is not None:
+                        cache_wrapper_parent_chain(windows[0], best_match)
+                        cache_flow_control(step_id, control_definition, best_match, window_title_hint=window_title_hint)
+                        _LOG_STEP(
+                            f"流程控件定位命中 Raw View: step={step_id}, control={control_id or '(first)'}, score={best_score}"
+                        )
+                        _t3 = _t4 = time.perf_counter()
+                        _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
+                        return best_match
+            # --- 新阶段 A：控件库 JSON 模糊匹配 ---
+            _t3 = time.perf_counter()  # Phase 3: 整树 fallback 结束
+            if control_map_path and fuzz is not None and best_match is None:
+                _cm_data = _load_control_map_json(control_map_path)
+                if _cm_data is not None:
+                    for _cd in controls:
+                        _step_label = _cd.get("label") or _cd.get("name") or _cd.get("labelText") or ""
+                        if not _step_label:
+                            continue
+                        _json_fallback_entry = _fuzzy_match_control_map(_step_label, _cd, _cm_data)
+                        if _json_fallback_entry is not None:
+                            break
+                    if _json_fallback_entry is not None:
+                        _last_window = windows[-1] if windows else None
+                        if _last_window is not None:
+                            _json_wrapper = _search_uia_by_json_entry(_json_fallback_entry, _last_window)
+                            if _json_wrapper is not None and hasattr(_json_wrapper, 'element_info'):
+                                _LOG_STEP(
+                                    "[FlowLocator] 控件库JSON模糊匹配命中: label={}, score={}".format(
+                                        _json_fallback_entry.get("displayName") or _json_fallback_entry.get("name", ""),
+                                        _json_fallback_entry.get("_fuzzy_score", ""),
+                                    )
+                                )
+                                cache_wrapper_parent_chain(_last_window, _json_wrapper)
+                                for _cd in controls:
+                                    cache_flow_control(step_id, _cd, _json_wrapper, window_title_hint=window_title_hint)
+                                _t4 = time.perf_counter()
+                                _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
+                                return _json_wrapper
+            # --- 新阶段 B：bbox 空间距离兜底 ---
+            if _json_fallback_entry is not None and best_match is None:
+                _bbox = _json_fallback_entry.get("boundingBox") or _json_fallback_entry.get("bbox") or {}
+                _exp_x = _json_fallback_entry.get("expectedX") or _bbox.get("left", 0)
+                _exp_y = _json_fallback_entry.get("expectedY") or _bbox.get("top", 0)
+                # 如果 bbox 有完整信息则用中心点
+                if _bbox.get("right") and _bbox.get("bottom"):
+                    _exp_x = (_bbox.get("left", 0) + _bbox.get("right", 0)) / 2.0
+                    _exp_y = (_bbox.get("top", 0) + _bbox.get("bottom", 0)) / 2.0
+                if _exp_x is not None or _exp_y is not None:
+                    _cm_data_b = _load_control_map_json(control_map_path)
+                    if _cm_data_b is not None:
+                        _all_ctrls = _flatten_controls_tree(_cm_data_b.get("controlsTree", _cm_data_b))
+                        _bbox_candidates = [c for c in _all_ctrls if c.get("boundingBox") or c.get("bbox")]
+                        _bbox_hit = _find_by_bbox_fallback(_bbox_candidates, (_exp_x, _exp_y))
+                        if _bbox_hit is not None:
+                            _last_window_b = windows[-1] if windows else None
+                            if _last_window_b is not None:
+                                _bbox_wrapper = _search_uia_by_json_entry(_bbox_hit, _last_window_b)
+                                if _bbox_wrapper is not None and hasattr(_bbox_wrapper, 'element_info'):
+                                    _LOG_STEP(
+                                        "[FlowLocator] bbox空间距离兜底命中: label={}, distance={}".format(
+                                            _bbox_hit.get("displayName") or _bbox_hit.get("name", ""),
+                                            _bbox_hit.get("_bbox_distance", ""),
+                                        )
+                                    )
+                                    cache_wrapper_parent_chain(_last_window_b, _bbox_wrapper)
+                                    for _cd in controls:
+                                        cache_flow_control(step_id, _cd, _bbox_wrapper, window_title_hint=window_title_hint)
+                                    _t4 = time.perf_counter()
+                                    _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
+                                    return _bbox_wrapper
+            # --- JSON fallback 结束，记录 checkpoint ---
+            _t4 = time.perf_counter()  # Phase 4: JSON fallback 结束
             if best_match is not None:
                 for control_definition in controls:
                     cache_flow_control(step_id, control_definition, best_match, window_title_hint=window_title_hint)
@@ -3665,6 +4107,7 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                         f"流程控件定位耗时较长: step={step_id}, control={control_id or '(first)'}, "
                         f"seconds={elapsed:.2f}, score={best_score}"
                     )
+                _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
                 return best_match
             last_error = RuntimeError(
                 f"step={step_id}, control={control_id or '(first)'}, windows={len(windows)} 未找到匹配控件"
@@ -3673,6 +4116,22 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
             last_error = exc
         time.sleep(0.15)
     elapsed = time.time() - search_started
+    _t4 = time.perf_counter()
+    _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
+    timing = get_step_timing(step_id, control_id)
+    if timing:
+        _LOG_STEP(
+            "[定位耗时-失败] step={}, ctrl={}, 窗枚举={:.1f}ms, 快查={:.1f}ms, "
+            "整树={:.1f}ms, JSON={:.1f}ms, 总计={:.1f}ms".format(
+                step_id,
+                control_id,
+                timing["t_windows_ms"],
+                timing["t_fast_ms"],
+                timing["t_descendants_ms"],
+                timing["t_json_ms"],
+                round(elapsed * 1000, 2),
+            )
+        )
     if last_error is None:
         _LOG_STEP(
             f"流程控件定位失败: step={step_id}, control={control_id or '(first)'}, "
@@ -3693,6 +4152,7 @@ def wait_for_flow_control_condition(
     timeout_seconds=3,
     window_title_hint="",
     poll_interval_seconds=0.4,
+    control_map_path=None,
 ):
     target_condition = str(condition or "exists").strip().lower() or "exists"
     deadline = time.time() + max(0.1, float(timeout_seconds))
@@ -3702,6 +4162,7 @@ def wait_for_flow_control_condition(
             control_id=control_id,
             timeout_seconds=min(max(0.1, float(poll_interval_seconds)), max(0.1, float(timeout_seconds))),
             window_title_hint=window_title_hint,
+            control_map_path=control_map_path,
         )
         if target_condition in {"exists", "present"}:
             if control is not None:
@@ -3728,6 +4189,7 @@ def click_relative_anchor(
     timeout_seconds=3,
     window_title_hint="",
     click_kind="single",
+    control_map_path=None,
 ):
     """锚点相对点击：先定位锚点控件(anchor_control_id)，再以其可见矩形中心为基准，
     按像素偏移 offset=(offset_x, offset_y) 点击。
@@ -3743,6 +4205,7 @@ def click_relative_anchor(
         control_id=anchor_control_id,
         timeout_seconds=timeout_seconds,
         window_title_hint=window_title_hint,
+        control_map_path=control_map_path,
     )
     if anchor is None:
         _LOG_STEP(f"锚点相对点击未命中锚点控件: step={step_id}, anchor={anchor_control_id}")
@@ -3773,12 +4236,13 @@ def click_relative_anchor(
     }
 
 
-def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint="", click_kind="left"):
+def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint="", click_kind="left", control_map_path=None):
     control = find_flow_control(
         step_id,
         control_id=control_id,
         timeout_seconds=timeout_seconds,
         window_title_hint=window_title_hint,
+        control_map_path=control_map_path,
     )
     if control is None:
         if step_id == "step_15":
@@ -3828,6 +4292,7 @@ def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
         )
         # #endregion
         return False
+    _t_act = time.perf_counter()  # 动作执行阶段计时开始
     foreground_before = _try_get_window_by_handle(get_foreground_window_handle())
     if step_id == "step_15":
         open_window = None
@@ -3950,6 +4415,7 @@ def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
         )
         # #endregion
     _LOG_STEP(f"已通过流程链路匹配点击控件: step={step_id}, control={control_id}")
+    _finalize_step_timing(step_id, control_id, _t_act)
     return True
 
 
@@ -3990,23 +4456,27 @@ def click_menu_candidate_by_text(step_id, control_id):
     return False
 
 
-def focus_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint=""):
+def focus_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint="", control_map_path=None):
     control = find_flow_control(
         step_id,
         control_id=control_id,
         timeout_seconds=timeout_seconds,
         window_title_hint=window_title_hint,
+        control_map_path=control_map_path,
     )
     if control is None:
         return False
+    _t_act = time.perf_counter()  # 动作执行阶段计时开始
     try:
         control.click_input()
         time.sleep(0.3)
+        _finalize_step_timing(step_id, control_id, _t_act)
         return True
     except Exception:
         try:
             control.set_focus()
             time.sleep(0.2)
+            _finalize_step_timing(step_id, control_id, _t_act)
             return True
         except Exception:
             return False
@@ -4171,12 +4641,13 @@ def type_text_into_wrapper(control, text):
         return False
 
 
-def type_text_into_flow_control(step_id, control_id, text, timeout_seconds=3, window_title_hint=""):
+def type_text_into_flow_control(step_id, control_id, text, timeout_seconds=3, window_title_hint="", control_map_path=None):
     control = find_flow_control(
         step_id,
         control_id=control_id,
         timeout_seconds=timeout_seconds,
         window_title_hint=window_title_hint,
+        control_map_path=control_map_path,
     )
     if control is None:
         if step_id in {"step_39", "step_46"}:
@@ -4242,6 +4713,7 @@ def type_text_into_flow_control(step_id, control_id, text, timeout_seconds=3, wi
             )
             # #endregion
         return False
+    _t_act = time.perf_counter()  # 动作执行阶段计时开始
     if step_id == "step_14" or control_id == "step_14_control_1":
         foreground_before = _try_get_window_by_handle(get_foreground_window_handle())
         # #region debug-point F:time-series-path-input-before
@@ -4301,6 +4773,7 @@ def type_text_into_flow_control(step_id, control_id, text, timeout_seconds=3, wi
         )
         # #endregion
     _LOG_STEP(f"已通过流程链路匹配输入文本: step={step_id}, control={control_id}, text={text}")
+    _finalize_step_timing(step_id, control_id, _t_act)
     return True
 
 
@@ -4319,18 +4792,21 @@ def drag_between_flow_controls(
     timeout_seconds=3,
     window_title_hint="",
     duration_seconds=0.4,
+    control_map_path=None,
 ):
     source = find_flow_control(
         step_id,
         control_id=source_control_id,
         timeout_seconds=timeout_seconds,
         window_title_hint=window_title_hint,
+        control_map_path=control_map_path,
     )
     target = find_flow_control(
         step_id,
         control_id=target_control_id,
         timeout_seconds=timeout_seconds,
         window_title_hint=window_title_hint,
+        control_map_path=control_map_path,
     )
     if source is None or target is None:
         return False
@@ -4361,6 +4837,7 @@ def mouse_wheel_on_flow_control(
     delta=0,
     timeout_seconds=3,
     window_title_hint="",
+    control_map_path=None,
 ):
     if control_id:
         control = find_flow_control(
@@ -4368,6 +4845,7 @@ def mouse_wheel_on_flow_control(
             control_id=control_id,
             timeout_seconds=timeout_seconds,
             window_title_hint=window_title_hint,
+            control_map_path=control_map_path,
         )
         if control is None:
             return False

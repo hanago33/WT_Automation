@@ -31,6 +31,42 @@ _LOCATE_TEMPLATE_CENTER_BY_PATH = lambda *args, **kwargs: None
 _REPORT_STEP_RESULT = lambda *args, **kwargs: None
 _RUN_AI_INTERVENTION_AFTER_FAILURE = lambda *args, **kwargs: None
 
+# ── 控件库路径（用于激活 JSON 模糊匹配和 bbox 兜底） ──
+_CONTROL_MAP_PATH = None
+
+
+def set_control_map_path(path: str):
+    """设置控件库 JSON 路径，激活 find_flow_control 的 Stage A/B。"""
+    global _CONTROL_MAP_PATH
+    _CONTROL_MAP_PATH = path
+
+
+def get_control_map_path():
+    """获取当前控件库 JSON 路径。"""
+    return _CONTROL_MAP_PATH
+
+
+def _resolve_control_map_path(step_definition=None):
+    """按优先级解析控件库路径：step 定义 > 全局配置 > None"""
+    if step_definition and isinstance(step_definition, dict):
+        step_path = step_definition.get("controlMapPath") or step_definition.get("control_map_path")
+        if step_path:
+            return step_path
+    return _CONTROL_MAP_PATH
+
+
+def _call_with_control_map_path(func, step_definition, *args, **kwargs):
+    """调用回调函数，尝试传入 control_map_path；若回调签名不接受则安全降级。"""
+    cmp = _resolve_control_map_path(step_definition)
+    if cmp is None:
+        return func(*args, **kwargs)
+    try:
+        return func(*args, **kwargs, control_map_path=cmp)
+    except TypeError as exc:
+        if "control_map_path" in str(exc):
+            return func(*args, **kwargs)
+        raise
+
 
 def _write_feedback_to_flow(context, step_id, feedback_data):
     """运行时反馈闭环：将步骤执行反馈回写到 flow_definition.json。
@@ -94,6 +130,7 @@ def configure_flow_executor(
     locate_template_center_by_path=None,
     report_step_result=None,
     run_ai_intervention_after_failure=None,
+    control_map_path=None,
 ):
     global _GET_STEP_DEFINITION, _GET_FLOW_PACKAGE, _GET_STEP_PARAMS
     global _RESOLVE_DYNAMIC_VALUE, _LOG_STEP, _CLICK_FLOW_CONTROL, _CLICK_RELATIVE_REGION
@@ -143,6 +180,8 @@ def configure_flow_executor(
         _REPORT_STEP_RESULT = report_step_result
     if callable(run_ai_intervention_after_failure):
         _RUN_AI_INTERVENTION_AFTER_FAILURE = run_ai_intervention_after_failure
+    if control_map_path is not None:
+        set_control_map_path(control_map_path)
 
 
 def _maybe_run_ai_intervention_after_failure(step_id, context, original_error, fallback_error=None):
@@ -180,7 +219,7 @@ def _resolve_continue_when(action_config):
     }
 
 
-def _wait_for_continue_when(step_id, action_config, phase="action"):
+def _wait_for_continue_when(step_id, action_config, phase="action", step_definition=None):
     continue_when = _resolve_continue_when(action_config if isinstance(action_config, dict) else {})
     if not continue_when:
         return {}
@@ -189,7 +228,8 @@ def _wait_for_continue_when(step_id, action_config, phase="action"):
         f"step={step_id}, phase={phase}, control={continue_when['controlId']}, "
         f"condition={continue_when['condition']}, timeout={continue_when['timeoutSeconds']}"
     )
-    if not _WAIT_FOR_FLOW_CONTROL_CONDITION(
+    if not _call_with_control_map_path(
+        _WAIT_FOR_FLOW_CONTROL_CONDITION, step_definition or {},
         step_id,
         control_id=continue_when["controlId"],
         condition=continue_when["condition"],
@@ -506,7 +546,7 @@ def run_action_step(step_id, context):
     if action_name == "click":
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
-        if not _CLICK_FLOW_CONTROL(step_id, control_id, timeout_seconds=timeout_seconds, window_title_hint=window_title_hint):
+        if not _call_with_control_map_path(_CLICK_FLOW_CONTROL, step_definition, step_id, control_id, timeout_seconds=timeout_seconds, window_title_hint=window_title_hint):
             raise RuntimeError(f"action click 未命中控件: step={step_id}, control={control_id}")
         result = control_id
     elif action_name == "click_relative_region":
@@ -518,7 +558,8 @@ def run_action_step(step_id, context):
         )
         if not has_parent_window_spec and not window_title_hint:
             raise ValueError(f"action click_relative_region 缺少 parentWindow 定位信息或步骤目标窗口: {step_id}")
-        ok, region_meta = _CLICK_RELATIVE_REGION(
+        ok, region_meta = _call_with_control_map_path(
+            _CLICK_RELATIVE_REGION, step_definition,
             step_definition,
             parent_window,
             relative_region,
@@ -538,7 +579,8 @@ def run_action_step(step_id, context):
         except Exception:
             raise ValueError(f"action click_relative_anchor 的 offsetX/offsetY 必须为数字: {step_id}")
         click_kind = "double" if str(action_config.get("clickKind", "")).strip().lower() == "double" else "single"
-        ok, anchor_meta = _CLICK_RELATIVE_ANCHOR(
+        ok, anchor_meta = _call_with_control_map_path(
+            _CLICK_RELATIVE_ANCHOR, step_definition,
             step_id,
             control_id,
             (offset_x, offset_y),
@@ -553,7 +595,8 @@ def run_action_step(step_id, context):
     elif action_name == "double_click":
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
-        if not _CLICK_FLOW_CONTROL(
+        if not _call_with_control_map_path(
+            _CLICK_FLOW_CONTROL, step_definition,
             step_id,
             control_id,
             timeout_seconds=timeout_seconds,
@@ -565,7 +608,8 @@ def run_action_step(step_id, context):
     elif action_name == "double_right_click":
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
-        if not _CLICK_FLOW_CONTROL(
+        if not _call_with_control_map_path(
+            _CLICK_FLOW_CONTROL, step_definition,
             step_id,
             control_id,
             timeout_seconds=timeout_seconds,
@@ -574,7 +618,8 @@ def run_action_step(step_id, context):
         ):
             raise RuntimeError(f"action double_right_click 未命中控件: step={step_id}, control={control_id}")
         time.sleep(0.2)
-        if not _CLICK_FLOW_CONTROL(
+        if not _call_with_control_map_path(
+            _CLICK_FLOW_CONTROL, step_definition,
             step_id,
             control_id,
             timeout_seconds=timeout_seconds,
@@ -586,7 +631,8 @@ def run_action_step(step_id, context):
     elif action_name == "right_click":
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
-        if not _CLICK_FLOW_CONTROL(
+        if not _call_with_control_map_path(
+            _CLICK_FLOW_CONTROL, step_definition,
             step_id,
             control_id,
             timeout_seconds=timeout_seconds,
@@ -598,7 +644,8 @@ def run_action_step(step_id, context):
     elif action_name == "type_text":
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
-        if not _TYPE_TEXT_INTO_FLOW_CONTROL(
+        if not _call_with_control_map_path(
+            _TYPE_TEXT_INTO_FLOW_CONTROL, step_definition,
             step_id,
             control_id,
             text,
@@ -609,7 +656,8 @@ def run_action_step(step_id, context):
         result = text
     elif action_name == "send_keys":
         if control_id:
-            if not _FOCUS_FLOW_CONTROL(
+            if not _call_with_control_map_path(
+                _FOCUS_FLOW_CONTROL, step_definition,
                 step_id,
                 control_id,
                 timeout_seconds=timeout_seconds,
@@ -630,7 +678,8 @@ def run_action_step(step_id, context):
         if not has_parent_window_spec and not window_title_hint:
             raise ValueError(f"action type_text_relative 缺少 parentWindow 定位信息或步骤目标窗口: {step_id}")
         try:
-            ok, region_meta = _TYPE_TEXT_INTO_RELATIVE_REGION(
+            ok, region_meta = _call_with_control_map_path(
+                _TYPE_TEXT_INTO_RELATIVE_REGION, step_definition,
                 step_definition,
                 parent_window,
                 relative_region,
@@ -642,7 +691,8 @@ def run_action_step(step_id, context):
         except TypeError as exc:
             if "post_input_keys" not in str(exc):
                 raise
-            ok, region_meta = _TYPE_TEXT_INTO_RELATIVE_REGION(
+            ok, region_meta = _call_with_control_map_path(
+                _TYPE_TEXT_INTO_RELATIVE_REGION, step_definition,
                 step_definition,
                 parent_window,
                 relative_region,
@@ -659,7 +709,8 @@ def run_action_step(step_id, context):
     elif action_name == "select_dropdown_item_runtime":
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
-        ok, select_meta = _SELECT_DROPDOWN_ITEM_RUNTIME(
+        ok, select_meta = _call_with_control_map_path(
+            _SELECT_DROPDOWN_ITEM_RUNTIME, step_definition,
             step_id,
             control_id,
             timeout_seconds=timeout_seconds,
@@ -678,7 +729,8 @@ def run_action_step(step_id, context):
         drag_duration = sleep_seconds(action_config.get("durationSeconds", 0.4), 0.4)
         if not source_control_id or not target_control_id:
             raise ValueError(f"action drag_and_drop 缺少 sourceControlId/targetControlId: {step_id}")
-        if not _DRAG_BETWEEN_FLOW_CONTROLS(
+        if not _call_with_control_map_path(
+            _DRAG_BETWEEN_FLOW_CONTROLS, step_definition,
             step_id,
             source_control_id,
             target_control_id,
@@ -692,7 +744,8 @@ def run_action_step(step_id, context):
         result = f"{source_control_id}->{target_control_id}"
     elif action_name == "mouse_wheel":
         wheel_delta = action_config.get("delta", text or action_config.get("amount", 0))
-        if not _MOUSE_WHEEL_ON_FLOW_CONTROL(
+        if not _call_with_control_map_path(
+            _MOUSE_WHEEL_ON_FLOW_CONTROL, step_definition,
             step_id,
             control_id=control_id,
             delta=wheel_delta,
@@ -705,7 +758,8 @@ def run_action_step(step_id, context):
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
         condition = str(action_config.get("condition", "exists")).strip().lower() or "exists"
-        if not _WAIT_FOR_FLOW_CONTROL_CONDITION(
+        if not _call_with_control_map_path(
+            _WAIT_FOR_FLOW_CONTROL_CONDITION, step_definition,
             step_id,
             control_id=control_id,
             condition=condition,
@@ -719,7 +773,8 @@ def run_action_step(step_id, context):
         menu_path = str(action_config.get("menuPath", text)).strip()
         if not menu_path:
             raise ValueError(f"action menu_select 缺少 menuPath: {step_id}")
-        if not _MENU_SELECT_FLOW(
+        if not _call_with_control_map_path(
+            _MENU_SELECT_FLOW, step_definition,
             step_id,
             menu_path,
             timeout_seconds=timeout_seconds,
@@ -740,7 +795,7 @@ def run_action_step(step_id, context):
     else:
         raise ValueError(f"不支持的 action 类型: {action_name or '(empty)'}")
 
-    action_extra.update(_wait_for_continue_when(step_id, action_config, phase="action") or {})
+    action_extra.update(_wait_for_continue_when(step_id, action_config, phase="action", step_definition=step_definition) or {})
 
     context.setdefault("step_outputs", {}).setdefault(step_id, {})[save_as] = result
     context["step_outputs"][step_id]["output"] = result
@@ -931,7 +986,7 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
                         run_action_step_with_template_fallback(step_id, context, exc)
                         step_extra["fallbackTemplateUsed"] = fallback_template
                         step_extra["fallbackReason"] = str(exc)
-                        step_extra.update(_wait_for_continue_when(step_id, action_config, phase="template_fallback") or {})
+                        step_extra.update(_wait_for_continue_when(step_id, action_config, phase="template_fallback", step_definition=step_definition) or {})
                         # P3: 反馈闭环 — 记录模板降级恢复
                         _write_feedback_to_flow(context, step_id, {
                             "type": "fallback_template_recovery",
@@ -952,7 +1007,7 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
                     )
                     if ai_extra:
                         step_extra.update(ai_extra)
-                        step_extra.update(_wait_for_continue_when(step_id, action_config, phase="ai_intervention") or {})
+                        step_extra.update(_wait_for_continue_when(step_id, action_config, phase="ai_intervention", step_definition=step_definition) or {})
                         return
                     if fallback_exc is not None:
                         raise RuntimeError(
@@ -972,7 +1027,7 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
                     if ai_extra:
                         step_extra.update(ai_extra)
                         step_extra["onErrorHandled"] = "ask"
-                        step_extra.update(_wait_for_continue_when(step_id, action_config, phase="ai_intervention") or {})
+                        step_extra.update(_wait_for_continue_when(step_id, action_config, phase="ai_intervention", step_definition=step_definition) or {})
                         return
                     raise
                 raise

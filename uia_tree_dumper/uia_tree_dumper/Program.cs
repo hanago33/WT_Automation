@@ -165,6 +165,31 @@ static FlatControl BuildRecord(AutomationElement el, int depth, int parentIdx, i
     }
     catch { }
 
+    // LabeledBy（WPF Label.Target 权威标签关联）
+    string? labeledByName = null;
+    try
+    {
+        var labeledBy = cur.LabeledBy;
+        if (labeledBy is not null)
+            labeledByName = NullIfEmpty(labeledBy.Current.Name);
+    }
+    catch { }
+
+    // RuntimeId（与 pywinauto 侧 _format_runtime_id 对齐的十六进制格式）
+    string? runtimeId = null;
+    try
+    {
+        var rid = el.GetRuntimeId();
+        if (rid is not null && rid.Length > 0)
+            runtimeId = "[" + string.Join(",", rid.Select(v => v.ToString("X"))) + "]";
+    }
+    catch { }
+
+    // 注：LegacyIAccessiblePattern 仅在 .NET Framework 的 UIAutomationClient 中可用，
+    // 现代 .NET（net10.0-windows）未提供该 Pattern 封装；MSAA 信息由 Python 采集端
+    // 通过 COM LegacyIAccessiblePattern 接口直读补齐，dumper 路径不重复采集。
+    string? helpText = NullIfEmpty(cur.HelpText);
+
     return new FlatControl
     {
         Index          = selfIdx,
@@ -174,7 +199,7 @@ static FlatControl BuildRecord(AutomationElement el, int depth, int parentIdx, i
         Name           = NullIfEmpty(cur.Name),
         AutomationId   = NullIfEmpty(cur.AutomationId),
         ClassName      = NullIfEmpty(cur.ClassName),
-        HelpText       = NullIfEmpty(cur.HelpText),
+        HelpText       = helpText,
         IsOffscreen    = cur.IsOffscreen,
         IsEnabled      = cur.IsEnabled,
         IsKeyboardFocusable = cur.IsKeyboardFocusable,
@@ -183,6 +208,20 @@ static FlatControl BuildRecord(AutomationElement el, int depth, int parentIdx, i
         Value          = NullIfEmpty(value),
         Patterns       = NullIfEmpty(patterns),
         ExpandState    = expandState,
+        // ── 对齐 Inspect 的补充属性 ──
+        LocalizedControlType = NullIfEmpty(cur.LocalizedControlType),
+        AccessKey      = NullIfEmpty(cur.AccessKey),
+        AcceleratorKey = NullIfEmpty(cur.AcceleratorKey),
+        ItemType       = NullIfEmpty(cur.ItemType),
+        ItemStatus     = NullIfEmpty(cur.ItemStatus),
+        HasKeyboardFocus = cur.HasKeyboardFocus,
+        IsContentElement = cur.IsContentElement,
+        IsControlElement = cur.IsControlElement,
+        IsPassword     = cur.IsPassword,
+        FrameworkId    = NullIfEmpty(cur.FrameworkId),
+        NativeWindowHandle = cur.NativeWindowHandle != 0 ? "0x" + cur.NativeWindowHandle.ToString("X") : null,
+        LabeledByName  = labeledByName,
+        RuntimeId      = runtimeId,
     };
 }
 
@@ -207,6 +246,19 @@ record FlatControl
     [JsonPropertyName("value")]          public string? Value        { get; init; }
     [JsonPropertyName("patterns")]       public string? Patterns     { get; init; }
     [JsonPropertyName("expandState")]    public string? ExpandState  { get; init; }
+    [JsonPropertyName("localizedControlType")] public string? LocalizedControlType { get; init; }
+    [JsonPropertyName("accessKey")]      public string? AccessKey    { get; init; }
+    [JsonPropertyName("acceleratorKey")] public string? AcceleratorKey { get; init; }
+    [JsonPropertyName("itemType")]       public string? ItemType     { get; init; }
+    [JsonPropertyName("itemStatus")]     public string? ItemStatus   { get; init; }
+    [JsonPropertyName("hasKeyboardFocus")] public bool? HasKeyboardFocus { get; init; }
+    [JsonPropertyName("isContentElement")] public bool? IsContentElement { get; init; }
+    [JsonPropertyName("isControlElement")] public bool? IsControlElement { get; init; }
+    [JsonPropertyName("isPassword")]     public bool?   IsPassword   { get; init; }
+    [JsonPropertyName("frameworkId")]    public string? FrameworkId  { get; init; }
+    [JsonPropertyName("nativeWindowHandle")] public string? NativeWindowHandle { get; init; }
+    [JsonPropertyName("labeledByName")]  public string? LabeledByName { get; init; }
+    [JsonPropertyName("runtimeId")]      public string? RuntimeId    { get; init; }
     [JsonPropertyName("error")]          public string? Error        { get; init; }
 }
 

@@ -1,8 +1,0 @@
-schema_version: 1
-module_path: automation_agent
-title: WT 自动化 Agent 包（自然语言→RPA步骤）
-scope:
-    - WT_AUTOMATION_Agent/
-source_files: []
-depends_on: []
-related_to: []
