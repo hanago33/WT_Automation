@@ -182,10 +182,26 @@ class KnowledgeBase:
         return "\n\n".join(parts)
 
     def status(self) -> dict[str, Any]:
+        # 按顶层区域聚合（repowiki 知识库 / docs / Agent 帮助 / 技能库）。
+        # Windows 下 source 用反斜杠，需同时按 / 与 \ 切分。
+        def _top(src: str) -> str:
+            return re.split(r"[\\/]", src)[0]
+
+        areas: dict[str, int] = {}
+        for c in self.chunks:
+            top = _top(str(c["source"]))
+            area = {
+                ".qoder": "repowiki 知识库",
+                "docs": "项目文档 docs",
+                "WT_AUTOMATION_Agent": "Agent 说明/技能",
+                "skills": "技能库 skills",
+            }.get(top, top)
+            areas[area] = areas.get(area, 0) + 1
         return {
             "built": self.built,
             "sources": len({c["source"] for c in self.chunks}),
             "chunks": len(self.chunks),
+            "areas": dict(sorted(areas.items(), key=lambda x: -x[1])),
         }
 
     def list_sources(self) -> list[dict[str, Any]]:

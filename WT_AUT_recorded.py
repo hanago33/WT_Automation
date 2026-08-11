@@ -1,4 +1,4 @@
-# encoding: utf-8
+﻿# encoding: utf-8
 
 import ctypes
 import io
@@ -24,11 +24,14 @@ import wt_flow_executor
 import wt_flow_locator
 import wt_projection_helpers
 import wt_run_reporting
+import wt_run_status
+import wt_task_queue
 from wt_flow_validation import validate_flow_definition
+from wt_flow_editor_utils import normalize_control_window_title
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-DEFAULT_GM_EXE = ""
+DEFAULT_GM_EXE = r"C:\Program Files\Meteodyn\MeteodynUniverse\MUPSmartClient.exe"
 DEFAULT_SOURCE_FILE_PATH = ""
 DEFAULT_OUTPUT_DIR = ""
 DEFAULT_PROJECTION_FILE_PATH = ""
@@ -38,8 +41,10 @@ SOURCE_FILE_PATH = DEFAULT_SOURCE_FILE_PATH
 OUTPUT_DIR = DEFAULT_OUTPUT_DIR
 PROJECTION_FILE_PATH = DEFAULT_PROJECTION_FILE_PATH
 
-MAIN_WINDOW_TITLE_RE = re.compile(r"Global Mapper v22\.1 .*中文注册版")
-MAIN_WINDOW_UIPATH = u"Global Mapper v22.1 (b082421) [64-bit] [+OTF] [+LIDAR] - 中文注册版||Window"
+# 目标软件：WT Meteodyn Universe（MUPSmartClient.exe）
+# 主窗口标题实测为 "Meteodyn Universe / v1.10.1.0"（窗口类 CASCADIA_HOSTING_WINDOW_CLASS）
+MAIN_WINDOW_TITLE_RE = re.compile(r"Meteodyn Universe")
+MAIN_WINDOW_UIPATH = u"Meteodyn Universe / v1.10.1.0||Window"
 
 PROJECT_CONFIG_RESOURCE = os.path.join(os.path.dirname(__file__), "resources", "project_config.resource")
 UI_TARS_RUNNER = os.path.join(os.path.dirname(__file__), "ui_tars_runner.js")
@@ -84,108 +89,174 @@ pyautogui.FAILSAFE = True
 StageExecutionError = wt_projection_helpers.StageExecutionError
 
 
+MONITOR_THEME = {
+    "bg": "#f4f7fb",
+    "panel": "#ffffff",
+    "panel_soft": "#fbfdff",
+    "toolbar": "#eaf1fb",
+    "border": "#d8e2f0",
+    "primary": "#2563eb",
+    "primary_soft": "#dbeafe",
+    "success": "#059669",
+    "danger": "#dc2626",
+    "warning": "#b45309",
+    "text": "#1f2937",
+    "muted": "#64748b",
+}
+
+
 class MonitorWindow:
-	def __init__(self):
-		wt_dpi.enable_process_dpi_awareness()
-		self.root = tk.Tk()
-		wt_dpi.compute_scale(self.root)
-		self.root.title("WT自动化流程监视器")
-		# 把窗口设为较小尺寸，并动态放在屏幕右下角，尽量不挡住 WT 目标窗口
-		window_width = 320
-		window_height = 190
-		margin = 24
-		screen_width = self.root.winfo_screenwidth()
-		screen_height = self.root.winfo_screenheight()
-		# 尺寸按 DPI 缩放，并用缩放后的尺寸计算右下角位置，避免窗口跑出屏幕右侧
-		sw = wt_dpi.scale(window_width)
-		sh = wt_dpi.scale(window_height)
-		pos_x = max(0, screen_width - sw - margin)
-		pos_y = max(0, screen_height - sh - 80)
-		wt_dpi.raw_geometry(self.root, f"{sw}x{sh}+{pos_x}+{pos_y}")
-		
-		# 默认不置顶，避免遮挡目标父窗口；仅在流程结束需要提示结果时再抬到最前。
-		self._set_topmost(False)
-		self.root.attributes("-alpha", 0.92)
-		try:
-			self.root.after(200, self._send_to_back)
-		except Exception:
-			pass
-		
-		# 创建文本框
-		self.text_widget = tk.Text(self.root, wrap=tk.WORD, state=tk.DISABLED, font=("Arial", 9))
-		self.text_widget.pack(expand=True, fill=tk.BOTH, padx=5, pady=5)
-		
-		# 创建滚动条
-		self.scrollbar = tk.Scrollbar(self.text_widget)
-		self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-		self.text_widget.config(yscrollcommand=self.scrollbar.set)
-		self.scrollbar.config(command=self.text_widget.yview)
-		
-		# 标签显示当前状态
-		self.status_label = tk.Label(self.root, text="状态：准备就绪", font=("Arial", 10))
-		self.status_label.pack(pady=3)
+    def __init__(self):
+        wt_dpi.enable_process_dpi_awareness()
+        self.root = tk.Tk()
+        wt_dpi.compute_scale(self.root)
+        self.root.title("WT自动化流程监视器")
+        # 小窗放在屏幕右下角，尽量不挡住 WT 目标窗口
+        window_width = 340
+        window_height = 210
+        margin = 24
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        sw = wt_dpi.scale(window_width)
+        sh = wt_dpi.scale(window_height)
+        pos_x = max(0, screen_width - sw - margin)
+        pos_y = max(0, screen_height - sh - 80)
+        wt_dpi.raw_geometry(self.root, f"{sw}x{sh}+{pos_x}+{pos_y}")
+        self.root.configure(bg=MONITOR_THEME["toolbar"])
 
-	def _set_topmost(self, enabled):
-		try:
-			self.root.wm_attributes("-topmost", bool(enabled))
-		except Exception:
-			pass
+        # 默认不置顶，避免遮挡目标父窗口；仅在流程结束需要提示结果时再抬到最前。
+        self._set_topmost(False)
+        self.root.attributes("-alpha", 0.92)
+        try:
+            self.root.after(200, self._send_to_back)
+        except Exception:
+            pass
 
-	def _send_to_back(self):
-		self._set_topmost(False)
-		try:
-			self.root.lower()
-		except Exception:
-			pass
+        self.text_widget = tk.Text(
+            self.root, wrap=tk.WORD, state=tk.DISABLED,
+            font=("Microsoft YaHei UI", 9),
+            bg=MONITOR_THEME["panel_soft"], fg=MONITOR_THEME["text"],
+            relief=tk.FLAT, bd=0,
+            highlightthickness=1, highlightbackground=MONITOR_THEME["border"],
+            padx=8, pady=6,
+        )
+        self.text_widget.pack(expand=True, fill=tk.BOTH, padx=6, pady=(6, 0))
+        self.text_widget.tag_configure("time", foreground=MONITOR_THEME["muted"])
+        self.text_widget.tag_configure("info", foreground=MONITOR_THEME["text"])
+        self.text_widget.tag_configure("success", foreground=MONITOR_THEME["success"])
+        self.text_widget.tag_configure("error", foreground=MONITOR_THEME["danger"])
+        self.text_widget.tag_configure("warning", foreground=MONITOR_THEME["warning"])
 
-	def _bring_to_front_for_notice(self):
-		try:
-			self.root.deiconify()
-		except Exception:
-			pass
-		self._set_topmost(True)
-		try:
-			self.root.lift()
-			self.root.focus_force()
-		except Exception:
-			pass
+        self.scrollbar = tk.Scrollbar(
+            self.text_widget, relief=tk.FLAT, bd=0,
+            bg=MONITOR_THEME["panel"], troughcolor=MONITOR_THEME["toolbar"],
+            activebackground=MONITOR_THEME["primary_soft"],
+        )
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.text_widget.config(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.config(command=self.text_widget.yview)
 
-	def log(self, message):
-		self.text_widget.config(state=tk.NORMAL)
-		self.text_widget.insert(tk.END, message + "\n")
-		self.text_widget.see(tk.END)  # 自动滚动到末尾
-		self.text_widget.config(state=tk.DISABLED)
-		self.root.update()
+        self.status_label = tk.Label(
+            self.root, text="状态：准备就绪",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            bg=MONITOR_THEME["toolbar"], fg=MONITOR_THEME["muted"],
+            pady=4,
+        )
+        self.status_label.pack(pady=(2, 4))
 
-	def update_status(self, status):
-		self.status_label.config(text=f"状态：{status}")
-		self.root.update()
+    def _set_topmost(self, enabled):
+        try:
+            self.root.wm_attributes("-topmost", bool(enabled))
+        except Exception:
+            pass
 
-	def set_success(self):
-		self._bring_to_front_for_notice()
-		self.status_label.config(text="状态：流程完成！", fg="green")
-		self.root.bell()
-		self.root.update()
+    def _send_to_back(self):
+        self._set_topmost(False)
+        try:
+            self.root.lower()
+        except Exception:
+            pass
 
-	def set_error(self):
-		self._bring_to_front_for_notice()
-		self.status_label.config(text="状态：流程失败！", fg="red")
-		self.root.bell()
-		self.root.update()
+    def _bring_to_front_for_notice(self):
+        try:
+            self.root.deiconify()
+        except Exception:
+            pass
+        self._set_topmost(True)
+        try:
+            self.root.lift()
+            self.root.focus_force()
+        except Exception:
+            pass
+
+    def log(self, message, kind="info"):
+        if kind not in ("info", "success", "error", "warning"):
+            kind = "info"
+        self.text_widget.config(state=tk.NORMAL)
+        if message.startswith("[") and "] " in message:
+            head, _, tail = message.partition("] ")
+            self.text_widget.insert(tk.END, head + "] ", "time")
+            self.text_widget.insert(tk.END, tail, kind)
+        else:
+            self.text_widget.insert(tk.END, message, kind)
+        self.text_widget.insert(tk.END, "\n")
+        self.text_widget.see(tk.END)
+        self.text_widget.config(state=tk.DISABLED)
+        self.root.update()
+
+    def update_status(self, status):
+        text = "状态：{}".format(status)
+        fg = MONITOR_THEME["muted"]
+        if "失败" in status or "错误" in status:
+            fg = MONITOR_THEME["danger"]
+        elif "完成" in status or "成功" in status:
+            fg = MONITOR_THEME["success"]
+        elif "开始" in status or "执行" in status or "启动" in status:
+            fg = MONITOR_THEME["primary"]
+        elif "警告" in status or "跳过" in status:
+            fg = MONITOR_THEME["warning"]
+        self.status_label.config(text=text, fg=fg)
+        self.root.update()
+
+    def set_success(self):
+        self._bring_to_front_for_notice()
+        self.status_label.config(text="状态：流程完成！", fg=MONITOR_THEME["success"])
+        self.root.bell()
+        self.root.update()
+
+    def set_error(self):
+        self._bring_to_front_for_notice()
+        self.status_label.config(text="状态：流程失败！", fg=MONITOR_THEME["danger"])
+        self.root.bell()
+        self.root.update()
 
 
 def log_step(step_name):
-	global monitor_window
-	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-	log_line = f"[{timestamp}] {step_name}"
-	print(log_line, end="\n")
-	
-	with open(LOG_FILE, "a", encoding="utf-8") as f:
-		f.write(log_line + "\n")
-	
-	if monitor_window:
-		monitor_window.log(log_line)
-		monitor_window.update_status(step_name)
+    global monitor_window
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{timestamp}] {step_name}"
+    print(log_line, end="\n")
+
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(log_line + "\n")
+        try:
+            wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
+        except Exception:
+            pass
+
+    if monitor_window:
+        if any(k in step_name for k in ("失败", "错误")):
+            kind = "error"
+        elif any(k in step_name for k in ("完成", "成功")):
+            kind = "success"
+        elif any(k in step_name for k in ("警告", "跳过")):
+            kind = "warning"
+        else:
+            kind = "info"
+        monitor_window.log(log_line, kind=kind)
+        monitor_window.update_status(step_name)
+
+
 
 
 # ctypes 窗口检测（来自 combine_test_packaged\wait_global_mapper_ready.py）
@@ -218,6 +289,8 @@ user32.SendMessageTimeoutW.argtypes = [
 user32.SendMessageTimeoutW.restype = wintypes.LPARAM
 user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 user32.SetForegroundWindow.restype = wintypes.BOOL
+user32.BringWindowToTop.argtypes = [wintypes.HWND]
+user32.BringWindowToTop.restype = wintypes.BOOL
 user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.ShowWindow.restype = wintypes.BOOL
 SW_RESTORE = 9
@@ -283,10 +356,16 @@ def _load_flow_payload():
 			flow_packages = []
 		if not isinstance(steps, list):
 			steps = []
+		steps = [item for item in steps if isinstance(item, dict)]
+		for step in steps:
+			controls = step.get("controls")
+			if isinstance(controls, list):
+				for control in controls:
+					normalize_control_window_title(control)
 		return {
 			"runtimeConfig": runtime_config,
 			"flowPackages": [item for item in flow_packages if isinstance(item, dict)],
-			"steps": [item for item in steps if isinstance(item, dict)],
+			"steps": steps,
 		}
 
 	def _has_payload_content(payload):
@@ -415,6 +494,7 @@ def _load_runtime_config():
 		"sourceFilePath": _pick_value("sourceFilePath", "SOURCE_FILE_PATH", DEFAULT_SOURCE_FILE_PATH),
 		"outputDir": _pick_value("outputDir", "OUTPUT_DIR", DEFAULT_OUTPUT_DIR),
 		"projectionFilePath": _pick_value("projectionFilePath", "PROJECTION_FILE_PATH", DEFAULT_PROJECTION_FILE_PATH),
+		"controlMapPath": _pick_value("controlMapPath", "CONTROL_MAP_PATH", ""),
 	}
 
 
@@ -467,6 +547,26 @@ def _get_flow_locator():
 	return wt_flow_locator
 
 
+def _resolve_runtime_control_map_path():
+	"""??????????????????flow ?????controlMapPath > runtime_config > ???WT_CONTROL_MAP_PATH??"""
+	flow_payload = _load_flow_payload()
+	if isinstance(flow_payload, dict):
+		root_path = str(flow_payload.get("controlMapPath", "")).strip()
+		if root_path:
+			return root_path
+		packages = flow_payload.get("flowPackages", [])
+		if isinstance(packages, list):
+			for package in packages:
+				if isinstance(package, dict):
+					package_path = str(package.get("controlMapPath", "")).strip()
+					if package_path:
+						return package_path
+	runtime_path = str(_load_runtime_config().get("controlMapPath", "")).strip()
+	if runtime_path:
+		return runtime_path
+	return str(os.environ.get("WT_CONTROL_MAP_PATH", "")).strip() or None
+
+
 def _get_flow_executor():
 	global _FLOW_EXECUTOR_CONFIGURED
 	if not _FLOW_EXECUTOR_CONFIGURED:
@@ -490,6 +590,7 @@ def _get_flow_executor():
 			locate_template_center_by_path=_locate_template_center_by_path,
 			report_step_result=_record_step_result,
 			run_ai_intervention_after_failure=_run_ai_intervention_after_failure,
+			control_map_path=_resolve_runtime_control_map_path(),
 		)
 		_FLOW_EXECUTOR_CONFIGURED = True
 	return wt_flow_executor
@@ -568,6 +669,115 @@ def _get_wt_run_reporting():
 		wt_run_reporting.configure_run_reporting(base_dir=BASE_DIR, log_step=log_step)
 		_WT_RUN_REPORTING_CONFIGURED = True
 	return wt_run_reporting
+
+
+# ── 模块级透传函数（数据驱动生成，替代原先逐条手写的转发包装）──
+# 每个转发名在首次被调用时通过对应的惰性 getter 完成模块配置，
+# 行为与原手写包装完全一致；这里只负责批量生成 `_<name>` 代理。
+def _make_module_proxy(module_getter, name):
+	def _proxy(*args, **kwargs):
+		return getattr(module_getter(), name)(*args, **kwargs)
+	_proxy.__name__ = name
+	return _proxy
+
+
+def _install_module_proxies(module_getter, names):
+	for name in names:
+		globals()["_" + name] = _make_module_proxy(module_getter, name)
+
+
+_FLOW_LOCATOR_FORWARDED = (
+	"normalize_control_type_name",
+	"strip_wrapping_quotes",
+	"normalize_match_text",
+	"build_locator_text",
+	"build_common_locator_candidates",
+	"get_control_definition_match_score",
+	"split_locator_parts",
+	"parse_aux_check_line",
+	"parse_window_title_candidates",
+	"get_wrapper_text",
+	"get_wrapper_class_name",
+	"get_wrapper_control_type",
+	"get_wrapper_localized_control_type",
+	"get_wrapper_automation_id",
+	"get_wrapper_framework_id",
+	"get_wrapper_help_text",
+	"get_wrapper_process_id",
+	"get_wrapper_handle_text",
+	"get_wrapper_is_enabled",
+	"get_wrapper_is_offscreen",
+	"get_wrapper_is_keyboard_focusable",
+	"get_wrapper_has_keyboard_focus",
+	"get_wrapper_parent_signatures",
+	"get_wrapper_child_signatures",
+	"value_matches",
+	"wrapper_matches_locator",
+	"wrapper_matches_control_definition",
+	"score_control_match",
+	"get_control_process_candidates",
+	"get_foreground_window_handle",
+	"iter_flow_search_windows",
+	"find_flow_control",
+	"wait_for_flow_control_condition",
+	"get_flow_control_definition",
+	"click_flow_control",
+	"click_relative_anchor",
+	"click_relative_region",
+	"click_menu_candidate_by_text",
+	"focus_flow_control",
+	"type_text_into_wrapper",
+	"type_text_into_flow_control",
+	"type_text_into_relative_region",
+	"select_dropdown_item_runtime",
+	"menu_select_flow",
+	"get_wrapper_center",
+	"drag_between_flow_controls",
+	"mouse_wheel_on_flow_control",
+)
+_WT_WINDOW_HELPERS_FORWARDED = (
+	"click_unknown_projection_if_present",
+	"find_open_dialog",
+	"confirm_open_file_dialog",
+	"type_path_into_open_dialog",
+)
+_WT_PROJECTION_HELPERS_FORWARDED = (
+	"run_ui_tars",
+	"build_projection_ai_prompt",
+	"build_dwg_projection_confirmation_prompt",
+	"build_dwg_projection_ai_prompt",
+	"get_template_path",
+	"locate_template_center",
+	"locate_template_center_by_path",
+	"capture_debug_screenshot",
+	"log_projection_debug_context",
+	"click_template",
+	"try_click_layer_tree_expand_icon",
+	"find_config_window",
+	"config_window_is_open",
+	"click_button_in_config_window",
+	"configure_projection_by_image",
+)
+_WT_FLOW_EXECUTOR_FORWARDED = (
+	"sleep_seconds",
+	"run_action_step",
+	"resolve_fallback_template_path",
+	"apply_position_offset",
+	"run_action_step_with_template_fallback",
+	"run_flow_ref_step",
+	"is_setup_step",
+	"execute_step_by_id",
+)
+_WT_BUSINESS_STEPS_FORWARDED = (
+	"get_step_registry",
+	"get_step_registry_map",
+)
+
+_install_module_proxies(_get_flow_locator, _FLOW_LOCATOR_FORWARDED)
+_install_module_proxies(_get_wt_window_helpers, _WT_WINDOW_HELPERS_FORWARDED)
+_install_module_proxies(_get_wt_projection_helpers, _WT_PROJECTION_HELPERS_FORWARDED)
+_install_module_proxies(_get_flow_executor, _WT_FLOW_EXECUTOR_FORWARDED)
+_install_module_proxies(_get_wt_business_steps, _WT_BUSINESS_STEPS_FORWARDED)
 
 
 def _record_step_result(run_report, step_id, step_name, status, action_type="", strategy="", elapsed=0.0, error="", extra=None):
@@ -916,313 +1126,6 @@ def _resolve_dynamic_value(value, step_id, context):
 	return re.sub(r"\$\{([^{}]+)\}", _replace, value)
 
 
-def _normalize_control_type_name(control_type, localized_control_type=""):
-	return _get_flow_locator().normalize_control_type_name(control_type, localized_control_type)
-
-
-def _strip_wrapping_quotes(text):
-	return _get_flow_locator().strip_wrapping_quotes(text)
-
-
-def _normalize_match_text(value):
-	return _get_flow_locator().normalize_match_text(value)
-
-
-def _build_locator_text(method, values):
-	return _get_flow_locator().build_locator_text(method, values)
-
-
-def _build_common_locator_candidates(control_definition):
-	return _get_flow_locator().build_common_locator_candidates(control_definition)
-
-
-def _get_control_definition_match_score(wrapper, control_definition):
-	return _get_flow_locator().get_control_definition_match_score(wrapper, control_definition)
-
-
-def _split_locator_parts(text):
-	return _get_flow_locator().split_locator_parts(text)
-
-
-def _parse_aux_check_line(line):
-	return _get_flow_locator().parse_aux_check_line(line)
-
-
-def _parse_window_title_candidates(window_title):
-	return _get_flow_locator().parse_window_title_candidates(window_title)
-
-
-def _get_wrapper_text(wrapper):
-	return _get_flow_locator().get_wrapper_text(wrapper)
-
-
-def _get_wrapper_class_name(wrapper):
-	return _get_flow_locator().get_wrapper_class_name(wrapper)
-
-
-def _get_wrapper_control_type(wrapper):
-	return _get_flow_locator().get_wrapper_control_type(wrapper)
-
-
-def _get_wrapper_localized_control_type(wrapper):
-	return _get_flow_locator().get_wrapper_localized_control_type(wrapper)
-
-
-def _get_wrapper_automation_id(wrapper):
-	return _get_flow_locator().get_wrapper_automation_id(wrapper)
-
-
-def _get_wrapper_framework_id(wrapper):
-	return _get_flow_locator().get_wrapper_framework_id(wrapper)
-
-
-def _get_wrapper_help_text(wrapper):
-	return _get_flow_locator().get_wrapper_help_text(wrapper)
-
-
-def _get_wrapper_process_id(wrapper):
-	return _get_flow_locator().get_wrapper_process_id(wrapper)
-
-
-def _get_wrapper_handle_text(wrapper):
-	return _get_flow_locator().get_wrapper_handle_text(wrapper)
-
-
-def _get_wrapper_is_enabled(wrapper):
-	return _get_flow_locator().get_wrapper_is_enabled(wrapper)
-
-
-def _get_wrapper_is_offscreen(wrapper):
-	return _get_flow_locator().get_wrapper_is_offscreen(wrapper)
-
-
-def _get_wrapper_is_keyboard_focusable(wrapper):
-	return _get_flow_locator().get_wrapper_is_keyboard_focusable(wrapper)
-
-
-def _get_wrapper_has_keyboard_focus(wrapper):
-	return _get_flow_locator().get_wrapper_has_keyboard_focus(wrapper)
-
-
-def _get_wrapper_parent_signatures(wrapper, depth=6):
-	return _get_flow_locator().get_wrapper_parent_signatures(wrapper, depth=depth)
-
-
-def _get_wrapper_child_signatures(wrapper, limit=12):
-	return _get_flow_locator().get_wrapper_child_signatures(wrapper, limit=limit)
-
-
-def _value_matches(actual, expected, regex=False):
-	return _get_flow_locator().value_matches(actual, expected, regex=regex)
-
-
-def _wrapper_matches_locator(wrapper, target_method, target_value):
-	return _get_flow_locator().wrapper_matches_locator(wrapper, target_method, target_value)
-
-
-def _wrapper_matches_control_definition(wrapper, control_definition):
-	return _get_flow_locator().wrapper_matches_control_definition(wrapper, control_definition)
-
-
-def _score_control_match(wrapper, control_definition):
-	return _get_flow_locator().score_control_match(wrapper, control_definition)
-
-
-def _get_control_process_candidates(control_definition):
-	return _get_flow_locator().get_control_process_candidates(control_definition)
-
-
-def _get_foreground_window_handle():
-	return _get_flow_locator().get_foreground_window_handle()
-
-
-def _iter_flow_search_windows(step_definition, window_title_hint="", control_definition=None):
-	return _get_flow_locator().iter_flow_search_windows(
-		step_definition,
-		window_title_hint=window_title_hint,
-		control_definition=control_definition,
-	)
-
-
-def _find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_hint=""):
-	return _get_flow_locator().find_flow_control(
-		step_id,
-		control_id=control_id,
-		timeout_seconds=timeout_seconds,
-		window_title_hint=window_title_hint,
-	)
-
-
-def _wait_for_flow_control_condition(
-	step_id,
-	control_id,
-	condition="exists",
-	timeout_seconds=3,
-	window_title_hint="",
-	poll_interval_seconds=0.4,
-):
-	return _get_flow_locator().wait_for_flow_control_condition(
-		step_id,
-		control_id,
-		condition=condition,
-		timeout_seconds=timeout_seconds,
-		window_title_hint=window_title_hint,
-		poll_interval_seconds=poll_interval_seconds,
-	)
-
-
-def _get_flow_control_definition(step_id, control_id):
-	return _get_flow_locator().get_flow_control_definition(step_id, control_id)
-
-
-def _click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint="", click_kind="left"):
-	return _get_flow_locator().click_flow_control(
-		step_id,
-		control_id,
-		timeout_seconds=timeout_seconds,
-		window_title_hint=window_title_hint,
-		click_kind=click_kind,
-	)
-
-
-def _click_relative_anchor(
-    step_id,
-    anchor_control_id,
-    offset,
-    timeout_seconds=3,
-    window_title_hint="",
-    click_kind="single",
-):
-    return _get_flow_locator().click_relative_anchor(
-        step_id,
-        anchor_control_id,
-        offset,
-        timeout_seconds=timeout_seconds,
-        window_title_hint=window_title_hint,
-        click_kind=click_kind,
-    )
-
-
-def _click_relative_region(
-	step_definition,
-	parent_window,
-	relative_region,
-	timeout_seconds=3,
-	window_title_hint="",
-	click_kind="single",
-):
-	return _get_flow_locator().click_relative_region(
-		step_definition,
-		parent_window,
-		relative_region,
-		timeout_seconds=timeout_seconds,
-		window_title_hint=window_title_hint,
-		click_kind=click_kind,
-	)
-
-
-def _click_menu_candidate_by_text(step_id, control_id):
-	return _get_flow_locator().click_menu_candidate_by_text(step_id, control_id)
-
-
-def _focus_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint=""):
-	return _get_flow_locator().focus_flow_control(
-		step_id,
-		control_id,
-		timeout_seconds=timeout_seconds,
-		window_title_hint=window_title_hint,
-	)
-
-
-def _type_text_into_wrapper(control, text):
-	return _get_flow_locator().type_text_into_wrapper(control, text)
-
-
-def _type_text_into_flow_control(step_id, control_id, text, timeout_seconds=3, window_title_hint=""):
-	return _get_flow_locator().type_text_into_flow_control(
-		step_id,
-		control_id,
-		text,
-		timeout_seconds=timeout_seconds,
-		window_title_hint=window_title_hint,
-	)
-
-
-def _type_text_into_relative_region(
-	step_definition,
-	parent_window,
-	relative_region,
-	text,
-	timeout_seconds=3,
-	window_title_hint="",
-	post_input_keys="",
-):
-	return _get_flow_locator().type_text_into_relative_region(
-		step_definition,
-		parent_window,
-		relative_region,
-		text,
-		timeout_seconds=timeout_seconds,
-		window_title_hint=window_title_hint,
-		post_input_keys=post_input_keys,
-	)
-
-
-def _select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_title_hint="", target_option=""):
-	return _get_flow_locator().select_dropdown_item_runtime(
-		step_id,
-		control_id,
-		timeout_seconds=timeout_seconds,
-		window_title_hint=window_title_hint,
-		target_option=target_option,
-	)
-
-
-def _menu_select_flow(step_id, menu_path, timeout_seconds=3, window_title_hint=""):
-	return _get_flow_locator().menu_select_flow(
-		step_id,
-		menu_path,
-		timeout_seconds=timeout_seconds,
-		window_title_hint=window_title_hint,
-	)
-
-
-def _get_wrapper_center(control):
-	return _get_flow_locator().get_wrapper_center(control)
-
-
-def _drag_between_flow_controls(
-	step_id,
-	source_control_id,
-	target_control_id,
-	timeout_seconds=3,
-	window_title_hint="",
-	duration_seconds=0.4,
-):
-	return _get_flow_locator().drag_between_flow_controls(
-		step_id,
-		source_control_id,
-		target_control_id,
-		timeout_seconds=timeout_seconds,
-		window_title_hint=window_title_hint,
-		duration_seconds=duration_seconds,
-	)
-
-
-def _mouse_wheel_on_flow_control(
-	step_id,
-	control_id="",
-	delta=0,
-	timeout_seconds=3,
-	window_title_hint="",
-):
-	return _get_flow_locator().mouse_wheel_on_flow_control(
-		step_id,
-		control_id=control_id,
-		delta=delta,
-		timeout_seconds=timeout_seconds,
-		window_title_hint=window_title_hint,
-	)
 
 
 def _get_window_text(hwnd):
@@ -1255,21 +1158,6 @@ def _is_window_responsive(hwnd, timeout_ms=1000):
 	return bool(response)
 
 
-def _find_main_windows():
-	return _get_wt_window_helpers().find_main_windows(MAIN_WINDOW_TITLE_RE)
-
-
-def _choose_best_window(windows):
-	return _get_wt_window_helpers().choose_best_window(windows)
-
-
-def _wait_until_main_window_ready(timeout_seconds=30):
-	return _get_wt_window_helpers().wait_until_main_window_ready(
-		MAIN_WINDOW_TITLE_RE,
-		timeout_seconds=timeout_seconds,
-	)
-
-
 def activate_and_maximize_main_window(timeout_seconds=60):
 	return _get_wt_window_helpers().activate_and_maximize_main_window(
 		MAIN_WINDOW_TITLE_RE,
@@ -1277,103 +1165,13 @@ def activate_and_maximize_main_window(timeout_seconds=60):
 	)
 
 
-def _run_ui_tars(prompt, step_name="AI介入操作"):
-	return _get_wt_projection_helpers().run_ui_tars(prompt, step_name=step_name)
-
-
-def _build_projection_ai_prompt(start_stage):
-	return _get_wt_projection_helpers().build_projection_ai_prompt(start_stage)
-
-
-def _build_dwg_projection_confirmation_prompt():
-	return _get_wt_projection_helpers().build_dwg_projection_confirmation_prompt()
-
-
-def _build_dwg_projection_ai_prompt(start_stage):
-	return _get_wt_projection_helpers().build_dwg_projection_ai_prompt(start_stage)
-
-
-def _get_template_path(template_key):
-	return _get_wt_projection_helpers().get_template_path(template_key)
-
-
-def _locate_template_center(template_key, timeout_seconds=8, confidence=0.8):
-	return _get_wt_projection_helpers().locate_template_center(
-		template_key,
+def ensure_main_window_foreground(timeout_seconds=15):
+	"""运行前窗口健康检查 + 置顶（仅恢复+置顶，不改变窗口布局）。"""
+	return _get_wt_window_helpers().ensure_main_window_foreground(
+		MAIN_WINDOW_TITLE_RE,
 		timeout_seconds=timeout_seconds,
-		confidence=confidence,
 	)
 
-
-def _locate_template_center_by_path(template_path, timeout_seconds=8, confidence=0.8):
-	return _get_wt_projection_helpers().locate_template_center_by_path(
-		template_path,
-		timeout_seconds=timeout_seconds,
-		confidence=confidence,
-	)
-
-
-def _capture_debug_screenshot(tag):
-	return _get_wt_projection_helpers().capture_debug_screenshot(tag)
-
-
-def _log_projection_debug_context(stage):
-	return _get_wt_projection_helpers().log_projection_debug_context(stage)
-
-
-def _click_template(template_key, timeout_seconds=8, confidence=0.8):
-	return _get_wt_projection_helpers().click_template(
-		template_key,
-		timeout_seconds=timeout_seconds,
-		confidence=confidence,
-	)
-
-
-def _try_click_layer_tree_expand_icon(timeout_seconds=4, confidence=0.8):
-	return _get_wt_projection_helpers().try_click_layer_tree_expand_icon(
-		timeout_seconds=timeout_seconds,
-		confidence=confidence,
-	)
-
-
-def _find_config_window(timeout_seconds=2):
-	return _get_wt_projection_helpers().find_config_window(timeout_seconds=timeout_seconds)
-
-
-def _config_window_is_open():
-	return _get_wt_projection_helpers().config_window_is_open()
-
-
-def _click_button_in_config_window(button_title, timeout_seconds=6, flow_control_id=None):
-	return _get_wt_projection_helpers().click_button_in_config_window(
-		button_title,
-		timeout_seconds=timeout_seconds,
-		flow_control_id=flow_control_id,
-	)
-
-
-def _configure_projection_by_image(start_stage="config_button"):
-	return _get_wt_projection_helpers().configure_projection_by_image(start_stage=start_stage)
-
-
-def _click_unknown_projection_if_present(timeout_seconds=8):
-	return _get_wt_window_helpers().click_unknown_projection_if_present(timeout_seconds=timeout_seconds)
-
-
-def _find_open_dialog(timeout_seconds=5):
-	return _get_wt_window_helpers().find_open_dialog(timeout_seconds=timeout_seconds)
-
-
-def _confirm_open_file_dialog(timeout_seconds=5):
-	return _get_wt_window_helpers().confirm_open_file_dialog(timeout_seconds=timeout_seconds)
-
-
-def _type_path_into_open_dialog(file_path, step_id="open_source_dwg", control_id="open_dialog_filename"):
-	return _get_wt_window_helpers().type_path_into_open_dialog(
-		file_path,
-		step_id=step_id,
-		control_id=control_id,
-	)
 
 
 def _select_tree_item_by_title_re(title_re, timeout_seconds=20):
@@ -1672,56 +1470,6 @@ def _ensure_output_dir_exists():
 		raise NotADirectoryError(f"Output dir not found: {OUTPUT_DIR}")
 
 
-def _sleep_seconds(value, default_seconds=0.0):
-	return _get_flow_executor().sleep_seconds(value, default_seconds=default_seconds)
-
-
-def _run_action_step(step_id, context):
-	return _get_flow_executor().run_action_step(step_id, context)
-
-
-def _resolve_fallback_template_path(template_path):
-	return _get_flow_executor().resolve_fallback_template_path(template_path)
-
-
-def _apply_position_offset(center_point, action_config):
-	return _get_flow_executor().apply_position_offset(center_point, action_config)
-
-
-def _run_action_step_with_template_fallback(step_id, context, original_error):
-	return _get_flow_executor().run_action_step_with_template_fallback(step_id, context, original_error)
-
-
-def _run_flow_ref_step(step_id, execution_plan_map, context, skip_setup=False):
-	return _get_flow_executor().run_flow_ref_step(
-		step_id,
-		execution_plan_map,
-		context,
-		skip_setup=skip_setup,
-	)
-
-
-def _is_setup_step(step_id):
-	return _get_flow_executor().is_setup_step(step_id)
-
-
-def _execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
-	return _get_flow_executor().execute_step_by_id(
-		step_id,
-		execution_plan_map,
-		context,
-		skip_setup=skip_setup,
-	)
-
-
-def _get_step_registry():
-	return _get_wt_business_steps().get_step_registry()
-
-
-def _get_step_registry_map():
-	return _get_wt_business_steps().get_step_registry_map()
-
-
 def _normalize_step_id(text):
 	return str(text or "").strip()
 
@@ -1824,14 +1572,97 @@ def _validate_runtime_items(steps_to_run):
 		if not os.path.isdir(OUTPUT_DIR):
 			raise NotADirectoryError(f"Output dir not found: {OUTPUT_DIR}")
 
+	# MUP 资产软诊断（不阻塞）：确认安装目录/粗糙度索引文件可读，
+	# 换机后安装路径变化时由 GM_EXE 自动探测，缺失仅记录 warning。
+	_log_mup_assets_status()
 
-def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=False):
+	# 运行前窗口健康检查 + 置顶：
+	# 流程若包含 launch_gm（会自动启动/等待目标软件），则允许窗口未开，跳过检查；
+	# 否则要求主窗口已存在并置顶，避免窗口被遮挡/最小化导致控件定位偏移。
+	if "launch_gm" not in (steps_to_run or []):
+		return _preflight_check_main_window()
+	return None
+
+
+def _log_mup_assets_status():
+	"""运行前 MUP 资产状态日志（缺失不影响流程，仅提示增强不可用）。"""
+	try:
+		from mup_assets import configure_mup_install_dir, status
+		configure_mup_install_dir(GM_EXE)
+		st = status()
+		if st.get("found"):
+			log_step(
+				"[mup-assets] 资产目录可用: {dir}（来源 {src}，{count} 个粗糙度索引文件）".format(
+					dir=st["install_dir"], src=st["detect_source"], count=st["option_count"]
+				)
+			)
+		else:
+			log_step(
+				"[mup-assets] 未找到 MUP 安装目录，粗糙度下拉框增强不可用（不影响主流程）"
+			)
+	except Exception:
+		pass
+
+
+def _attach_mup_data_diff(run_report, context):
+	"""把 MUP 数据目录"运行前后"文件差异写入 run_report["mupDataFiles"]。
+
+	流程开始前由 run_automation 拍了 context["mupDataSnapshotBefore"]，
+	此处对比当前快照，得到导入/计算/合成步骤是否真正落盘的文件级证据
+	（软校验：数据目录不可用时跳过，不阻塞流程）。
+	"""
+	if not isinstance(run_report, dict) or not context:
+		return
+	before = context.get("mupDataSnapshotBefore")
+	try:
+		from mup_data_files import snapshot, diff
+		after = snapshot()
+		if not before:
+			context["mupDataSnapshotBefore"] = after
+			return
+		result = diff(before, after)
+		if result["newCount"] or result["changedCount"]:
+			run_report["mupDataFiles"] = result
+			log_step(
+				"[mup-data] 运行后检测到数据文件变化: 新增{new} 修改{changed} 删除{deleted}".format(
+					new=result["newCount"], changed=result["changedCount"], deleted=result["deletedCount"]
+				)
+			)
+	except Exception:
+		pass
+
+
+def _preflight_check_main_window():
+	"""运行前窗口健康检查：主窗口存在则恢复+置顶，返回窗口信息；不存在则中止启动。"""
+	try:
+		window_info = ensure_main_window_foreground(timeout_seconds=15)
+		log_step(
+			"[mup-preflight] 运行前窗口健康检查通过: "
+			"hwnd={hwnd} title={title} size={width}x{height}".format(**window_info)
+		)
+		return window_info
+	except Exception as exc:
+		raise RuntimeError(
+			"运行前窗口健康检查失败：未找到目标软件主窗口（标题匹配: %s）。"
+			"请先手动打开 %s 主窗口后重新运行。原因: %s"
+			% (MAIN_WINDOW_TITLE_RE.pattern, GM_EXE or "Meteodyn Universe", exc)
+		) from exc
+
+
+def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=False, task_id=None, task_user=None, task_db=None):
 	global running
+	queue_db = task_db or wt_task_queue.DEFAULT_DB_PATH
 	try:
 		_force_utf8_stdio()
 		_refresh_flow_caches()
 		_apply_runtime_config()
 		running = True
+		wt_run_status.publish(
+			status="running",
+			activity="WT自动化流程开始",
+			last_log="WT自动化流程开始",
+			source="WT_AUT_recorded",
+		)
 		log_step("WT自动化流程开始")
 
 		execution_plan = _build_execution_plan()
@@ -1849,30 +1680,101 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 			f"当前运行参数: gmExe={GM_EXE}, sourceFilePath={SOURCE_FILE_PATH}, outputDir={OUTPUT_DIR}, projectionFilePath={PROJECTION_FILE_PATH}"
 		)
 
+		preflight_window = None
 		if not skip_setup:
-			_validate_runtime_items(steps_to_run)
+			preflight_window = _validate_runtime_items(steps_to_run)
 
 		context = _build_execution_context()
+		if preflight_window:
+			context["preflightWindow"] = preflight_window
+		# MUP 数据目录运行前快照（用于流程结束时对比"是否真落盘"）
+		try:
+			from mup_data_files import snapshot
+			context["mupDataSnapshotBefore"] = snapshot()
+		except Exception:
+			context["mupDataSnapshotBefore"] = {}
 		context["run_report"] = _get_wt_run_reporting().start_run_report(
 			steps_to_run,
 			context.get("runtime_config", {}),
 		)
 		context["runId"] = context["run_report"].get("runId", "") if isinstance(context.get("run_report"), dict) else ""
+		if task_id:
+			wt_task_queue.mark_started(task_id, run_id=context.get("runId", ""), db_path=queue_db)
+		wt_run_status.publish(
+			status="running",
+			activity="运行报告已初始化",
+			last_log="运行报告已初始化",
+			run_id=context.get("runId", ""),
+			source="WT_AUT_recorded",
+		)
 		execution_plan_map = {item["id"]: item for item in execution_plan}
+		completed_count = 0
+		total_count = len(steps_to_run)
 		for item in execution_plan:
 			step_id = item["id"]
 			if step_id not in steps_to_run:
 				continue
+			if task_id:
+				task_snapshot = wt_task_queue.get_task(task_id, db_path=queue_db)
+				if task_snapshot:
+					if task_snapshot.get("terminateRequested"):
+						_attach_mup_data_diff(context.get("run_report"), context)
+						_get_wt_run_reporting().finalize_run_report(context.get("run_report"), "terminated", error="任务终止请求已收到")
+						wt_task_queue.mark_terminated(task_id, error="任务终止请求已收到", db_path=queue_db)
+						log_step("任务终止请求已收到，流程退出")
+						return
+					if task_snapshot.get("pauseRequested"):
+						_attach_mup_data_diff(context.get("run_report"), context)
+						_get_wt_run_reporting().finalize_run_report(context.get("run_report"), "paused")
+						wt_task_queue.mark_paused(task_id, resume_from_step=step_id, db_path=queue_db)
+						log_step("任务暂停请求已收到，流程将在当前步骤后暂停")
+						return
+				step_name = item.get("title") or item.get("name") or step_id
+				wt_task_queue.update_progress(
+					task_id,
+					current_step_id=step_id,
+					current_step_name=step_name,
+					progress_current=completed_count,
+					progress_total=total_count,
+					progress_percent=(completed_count / total_count * 100.0) if total_count else 0.0,
+					resume_from_step=step_id,
+					last_log="正在执行步骤: {}".format(step_name),
+					db_path=queue_db,
+				)
 			_execute_step_by_id(step_id, execution_plan_map, context, skip_setup=skip_setup)
+			completed_count += 1
+			if task_id:
+				next_step = steps_to_run[completed_count] if completed_count < total_count else ""
+				wt_task_queue.update_progress(
+					task_id,
+					progress_current=completed_count,
+					progress_percent=(completed_count / total_count * 100.0) if total_count else 100.0,
+					resume_from_step=next_step,
+					db_path=queue_db,
+				)
 
 		log_step("WT自动化流程完成")
+		_attach_mup_data_diff(context.get("run_report"), context)
 		_get_wt_run_reporting().finalize_run_report(context.get("run_report"), "success")
+		wt_run_status.publish(
+			status="success",
+			activity="WT自动化流程完成",
+			last_log="WT自动化流程完成",
+			run_id=context.get("runId", ""),
+			source="WT_AUT_recorded",
+		)
+		if task_id:
+			wt_task_queue.mark_success(task_id, run_id=context.get("runId", ""), last_log="WT自动化流程完成", db_path=queue_db)
 		if monitor_window:
 			monitor_window.set_success()
 	except Exception as e:
 		error_msg = f"错误：{str(e)}"
 		log_step(error_msg)
 		try:
+			_attach_mup_data_diff(
+				context.get("run_report") if "context" in locals() else None,
+				context if "context" in locals() else None,
+			)
 			_get_wt_run_reporting().finalize_run_report(
 				context.get("run_report") if "context" in locals() else None,
 				"failed",
@@ -1880,6 +1782,16 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 			)
 		except Exception:
 			pass
+		wt_run_status.publish(
+			status="failed",
+			activity="WT自动化流程失败",
+			last_log=error_msg,
+			error=error_msg,
+			run_id=context.get("runId", "") if "context" in locals() else "",
+			source="WT_AUT_recorded",
+		)
+		if task_id:
+			wt_task_queue.mark_failed(task_id, error=str(e), run_id=context.get("runId", "") if "context" in locals() else "", db_path=queue_db)
 		if monitor_window:
 			monitor_window.log(error_msg)
 			monitor_window.set_error()
@@ -1900,6 +1812,9 @@ def main():
 	parser.add_argument("--from-step", dest="from_step", default="")
 	parser.add_argument("--to-step", dest="to_step", default="")
 	parser.add_argument("--skip-setup", action="store_true")
+	parser.add_argument("--task-id", dest="task_id", default="")
+	parser.add_argument("--task-user", dest="task_user", default="")
+	parser.add_argument("--task-db", dest="task_db", default="")
 	args = parser.parse_args()
 
 	steps_arg = args.steps.strip() or None
@@ -1907,7 +1822,15 @@ def main():
 	to_step = args.to_step.strip() or None
 
 	if args.no_monitor:
-		run_automation(steps_arg=steps_arg, from_step=from_step, to_step=to_step, skip_setup=bool(args.skip_setup))
+		run_automation(
+			steps_arg=steps_arg,
+			from_step=from_step,
+			to_step=to_step,
+			skip_setup=bool(args.skip_setup),
+			task_id=args.task_id or None,
+			task_user=args.task_user or None,
+			task_db=args.task_db.strip() or None,
+		)
 		return
 
 	monitor_window = MonitorWindow()
@@ -1917,6 +1840,9 @@ def main():
 			from_step=from_step,
 			to_step=to_step,
 			skip_setup=bool(args.skip_setup),
+			task_id=args.task_id or None,
+			task_user=args.task_user or None,
+			task_db=args.task_db.strip() or None,
 		),
 		daemon=True,
 	)

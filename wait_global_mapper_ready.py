@@ -11,7 +11,8 @@ if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
-MAIN_WINDOW_TITLE_RE = re.compile(r"Global Mapper v22\.1 .*中文注册版")
+# 目标软件已切换为 WT Meteodyn Universe（MUPSmartClient.exe）
+MAIN_WINDOW_TITLE_RE = re.compile(r"Meteodyn Universe")
 DEFAULT_TIMEOUT_SECONDS = 180
 POLL_INTERVAL_SECONDS = 2
 READY_CONFIRMATION_COUNT = 3

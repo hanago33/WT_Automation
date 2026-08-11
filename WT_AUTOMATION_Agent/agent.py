@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -148,11 +149,22 @@ class DslContext:
 # Function Calling 工具定义
 # ---------------------------------------------------------------------------
 
+# 执行器（wt_action_schema.py）不识别、仅 Agent 内部编排用的动作，不出现在
+# add_step / add_sequence 的动作枚举里，避免生成执行器拒绝的步骤。
+# （foreach_param / run_flow_package 仍保留在 schemas 中，供 parameter_scan / 流程包专用入口使用。）
+AGENT_ONLY_ACTIONS = frozenset({"foreach_param", "run_flow_package"})
+
+
+def _executor_action_names() -> list[str]:
+    """返回执行器支持、可供 LLM 生成的动作名列表。"""
+    return [name for name in get_action_names() if name not in AGENT_ONLY_ACTIONS]
+
+
 def _build_tools_definition() -> list[dict]:
     """从 ACTION_SCHEMAS 自动生成 Function Calling 定义。"""
-    action_enum = list(get_action_names())
+    action_enum = _executor_action_names()
     action_lines = []
-    for name in get_action_names():
+    for name in action_enum:
         schema = get_action_schema(name)
         action_lines.append(f"  - {name}: {schema.get('label')} - {schema.get('description')}")
 
@@ -475,6 +487,23 @@ def build_system_prompt(context: DslContext | None = None) -> str:
     # 控件库
     if ctx.control_index_text:
         parts.extend(["", "## 可用控件库", ctx.control_index_text])
+    else:
+        # 统一数据源：控件库概览来自 control_search（control_maps/library + standard），
+        # 与 find_control / control_tree 工具一致，避免 flow_definition 等旧索引误导模型。
+        # 只注入窗口/视图层级大纲（轻量），精确检索交给 find_control 工具动态查询。
+        try:
+            overview = control_search.tree_summary(max_depth=3, max_children=40)
+        except Exception:
+            overview = ""
+        if overview and overview.strip() != "应用控件树结构（按 uiPath 层级）：":
+            parts.extend([
+                "",
+                "## 可用控件库概览（来自 control_maps，按窗口/视图层级）",
+                overview,
+                "",
+                "需要找具体控件时，请先调用 find_control（可用 within 限定窗口/视图）拿到真实 "
+                "control_id（targetValue），再填入 add_step / add_sequence 的 control_id 字段。",
+            ])
 
     # 已有步骤
     if ctx.current_step_names:
@@ -654,6 +683,56 @@ def _extract_json_array(text: str | None) -> list | None:
     return None
 
 
+def _try_parse_text_json(content: str | None) -> list[dict] | None:
+    """从不支持 function calling 的模型文本回复中提取步骤 JSON（降级解析）。
+
+    兼容三种形态（并支持 ```json 代码块包裹及前后多余说明文字）：
+    - 数组 [{"action": ...}, ...]
+    - 包装对象 {"steps": [{"action": ...}, ...]}
+    - 单个步骤对象 {"action": ..., "control_id": ...}
+    """
+    if not content or not str(content).strip():
+        return None
+    text = str(content).strip()
+
+    candidates: list[str] = []
+    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if m and m.group(1).strip():
+        candidates.append(m.group(1).strip())
+    candidates.append(text)
+
+    for cand in candidates:
+        try:
+            obj = json.loads(cand)
+        except (json.JSONDecodeError, ValueError):
+            obj = None
+        if isinstance(obj, list):
+            return [d for d in obj if isinstance(d, dict)]
+        if isinstance(obj, dict):
+            if isinstance(obj.get("steps"), list):
+                return [d for d in obj["steps"] if isinstance(d, dict)]
+            if "action" in obj or "control_id" in obj:
+                return [obj]
+        # 截取最外层 { } / [ ] 再解析
+        for opener, closer in (("{", "}"), ("[", "]")):
+            start = cand.find(opener)
+            end = cand.rfind(closer)
+            if start == -1 or end <= start:
+                continue
+            try:
+                obj = json.loads(cand[start:end + 1])
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(obj, list):
+                return [d for d in obj if isinstance(d, dict)]
+            if isinstance(obj, dict):
+                if isinstance(obj.get("steps"), list):
+                    return [d for d in obj["steps"] if isinstance(d, dict)]
+                if "action" in obj or "control_id" in obj:
+                    return [obj]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 步骤生成
 # ---------------------------------------------------------------------------
@@ -674,7 +753,19 @@ def _raw_to_full_step(raw: dict[str, Any]) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     if control_id:
         overrides["controlId"] = control_id
-    if text:
+    # 通用输入映射：按 action 的 input_key 取参（set_combobox→value、menu_select→menuPath、
+    # mouse_wheel→delta、sleep→seconds、log→message、type_text→text 等）。
+    # 模型可能把输入统一填在 text 字段（add_step 描述里 text 覆盖多数输入动作），故 text 作兜底。
+    schema = get_action_schema(action_name)
+    input_key = str(schema.get("input_key", "")).strip()
+    if input_key:
+        input_value = raw.get(input_key)
+        if input_value is None or not str(input_value).strip():
+            input_value = raw.get("text")
+        if input_value is not None and str(input_value).strip():
+            overrides[input_key] = input_value
+    elif text:
+        # 无专用 input_key 的动作（click 等）不写 text；此处保留原有 text 兜底行为
         overrides["text"] = text
     if timeout_seconds is not None:
         overrides["timeoutSeconds"] = float(timeout_seconds)
@@ -688,10 +779,10 @@ def _raw_to_full_step(raw: dict[str, Any]) -> dict[str, Any]:
         overrides["onError"] = on_error
 
     action_config = build_action_default_config(action_name, **overrides)
-    schema = get_action_schema(action_name)
 
     step: dict[str, Any] = {
-        "id": "",
+        # id 必须非空且唯一，否则执行器 wt_flow_validation 会把步骤判为“缺少步骤ID”
+        "id": "step_" + uuid.uuid4().hex[:10],
         "name": step_name or _auto_name(action_name, control_id, text, schema),
         "stage": "converted",
         "strategy": "action",
@@ -785,19 +876,46 @@ def _auto_name(action: str, control_id: str, text: str, schema: dict | None = No
 # ---------------------------------------------------------------------------
 
 def validate_step(step: dict[str, Any]) -> list[str]:
+    """步骤校验，规则与执行器 wt_flow_validation.validate_step_definition 对齐。
+
+    保证 Agent 生成的步骤能被执行器直接接受：
+    - id / name 非空（执行器第一关，缺 id 直接判“缺少步骤ID”）；
+    - action 必须被执行器支持（排除 foreach_param / run_flow_package）；
+    - actionConfig.controlId 必须存在于步骤的 controls 细分清单中。
+    """
     errors: list[str] = []
+    step = step if isinstance(step, dict) else {}
+    label = str(step.get("name", "")).strip() or str(step.get("id", "")).strip() or "<未命名步骤>"
+
+    if not str(step.get("id", "")).strip():
+        errors.append(f"步骤 {label} 缺少步骤ID。")
+    if not str(step.get("name", "")).strip():
+        errors.append(f"步骤 {label} 缺少步骤名称。")
+
+    action_type = str(step.get("actionType", "script")).strip() or "script"
+    if action_type != "action":
+        return errors
+
     ac = step.get("actionConfig", {})
     if not isinstance(ac, dict):
         errors.append("缺少 actionConfig")
         return errors
 
-    action_name = ac.get("action", "")
-    if action_name not in get_action_names():
+    action_name = str(ac.get("action", "")).strip() or "click"
+    if action_name not in _executor_action_names():
         errors.append(f"不支持的 action: {action_name}")
 
     schema = get_action_schema(action_name)
-    if schema.get("target_required") and not ac.get("controlId"):
+    control_id = str(ac.get("controlId", "")).strip()
+    known_control_ids = {
+        str(c.get("id", "")).strip()
+        for c in step.get("controls", [])
+        if isinstance(c, dict) and str(c.get("id", "")).strip()
+    }
+    if schema.get("target_required") and not control_id:
         errors.append(f"'{action_name}' 需要 controlId")
+    if control_id and control_id not in known_control_ids:
+        errors.append(f"步骤 {label} 的目标控件 `{control_id}` 不存在于当前步骤细分控件清单中。")
     if schema.get("input_required") and schema.get("input_key"):
         if not ac.get(schema["input_key"]):
             errors.append(f"'{action_name}' 需要 {schema['input_key']}")
@@ -820,6 +938,9 @@ class DslAgent:
         self.config = config
         self._tools = _TOOLS
         self._max_tool_iterations = max_tool_iterations
+        # 最近一次步骤生成的诊断信息（无 function calls / 降级解析失败等原因），
+        # 由 GUI 等调用方读取后展示给用户，避免“生成结果为空但不知道为什么”。
+        self._last_generation_diagnostic: str | None = None
 
     def _ensure_ready(self):
         if not self.config.is_ready():
@@ -939,49 +1060,86 @@ class DslAgent:
         return steps
 
     def _run(self, messages: list[dict]) -> list[dict]:
-        """调用 LLM 并解析工具调用。
+        """调用 LLM 并解析步骤。
 
         支持工具循环：若模型先调用 find_control（检索控件库），则把检索结果
         作为 tool 消息回灌，再让模型基于真实控件 ID 发出 add_step / add_sequence。
+        若模型不支持 function calling（未返回 tool_calls），降级从回复文本解析
+        步骤 JSON；仍失败则记录 self._last_generation_diagnostic 供调用方提示用户。
         """
         steps: list[dict] = []
+        self._last_generation_diagnostic = None
         for _ in range(getattr(self, "_max_tool_iterations", 4)):
             response = _call_llm(self.config, messages, self._tools)
             message = response.get("choices", [{}])[0].get("message", {})
+            content = str(message.get("content") or "")
             tool_calls = message.get("tool_calls") or []
-            if not tool_calls:
-                logger.warning("LLM 未返回 tool_calls，返回空步骤")
-                break
-            messages.append({
-                "role": "assistant",
-                "content": message.get("content") or "",
-                "tool_calls": tool_calls,
-            })
-            lookup_calls = [
-                tc for tc in tool_calls
-                if tc.get("function", {}).get("name") in ("find_control", "control_tree")
-            ]
-            if lookup_calls:
-                for tc in lookup_calls:
-                    try:
-                        args = json.loads(tc.get("function", {}).get("arguments", "{}") or "{}")
-                    except json.JSONDecodeError:
-                        args = {}
-                    name = tc.get("function", {}).get("name")
-                    if name == "control_tree":
-                        result = self._exec_control_tree(args)
-                        tool_name = "control_tree"
-                    else:
-                        result = self._exec_find_control(args)
-                        tool_name = "find_control"
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.get("id"),
-                        "name": tool_name,
-                        "content": result,
-                    })
+            via_text = False
+            if tool_calls:
+                messages.append({
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls,
+                })
+                lookup_calls = [
+                    tc for tc in tool_calls
+                    if tc.get("function", {}).get("name") in ("find_control", "control_tree")
+                ]
+                if lookup_calls:
+                    for tc in lookup_calls:
+                        try:
+                            args = json.loads(tc.get("function", {}).get("arguments", "{}") or "{}")
+                        except json.JSONDecodeError:
+                            args = {}
+                        name = tc.get("function", {}).get("name")
+                        if name == "control_tree":
+                            result = self._exec_control_tree(args)
+                            tool_name = "control_tree"
+                        else:
+                            result = self._exec_find_control(args)
+                            tool_name = "find_control"
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get("id"),
+                            "name": tool_name,
+                            "content": result,
+                        })
+                    continue
+                raw = _parse_tool_calls(response)
+            else:
+                # 降级：模型未返回 tool_calls（可能不支持 function calling），
+                # 尝试从回复文本中解析 add_step/add_sequence 结构的 JSON。
+                via_text = True
+                raw = _try_parse_text_json(content)
+                if not raw:
+                    self._last_generation_diagnostic = (
+                        "模型未返回 function calls，且无法从回复文本中解析出步骤 JSON。"
+                        "请确认所选模型支持 Function Calling（如 DeepSeek Chat / GLM 等），"
+                        "或更换模型后重试。"
+                    )
+                    logger.warning(self._last_generation_diagnostic)
+                    break
+                messages.append({"role": "assistant", "content": content})
+            # —— 控件库真实性校验：control_id 未命中真实控件时，不直接入列，
+            #    提示模型用 find_control 修正后重发，减少"点击不存在的控件"失败 ——
+            missing = self._collect_missing_control_ids(raw)
+            # 文本降级路径的模型无法再调用 find_control 修正，直接接受步骤（尽力而为）
+            if missing and not via_text:
+                hint_lines = [
+                    f"- control_id=\"{cid}\"（步骤：{name or '(未命名)'}）"
+                    for cid, name in missing.items()
+                ]
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "以下步骤的 control_id 在控件库中不存在，请先调用 find_control "
+                        "检索真实控件，再用 add_step / add_sequence 重新输出修正后的步骤；"
+                        "若确实找不到匹配控件，按 WPF 最佳实践改用相对区域定位"
+                        "（如 click_relative_region / type_text_relative）。\n"
+                        + "\n".join(hint_lines)
+                    ),
+                })
                 continue
-            raw = _parse_tool_calls(response)
             for r in raw:
                 step = _raw_to_full_step(r)
                 errs = validate_step(step)
@@ -991,10 +1149,47 @@ class DslAgent:
             break
         return steps
 
+    def _collect_missing_control_ids(self, raw_steps: list[dict]) -> dict[str, str]:
+        """返回 {control_id: 步骤名} 中控件库不存在的 control_id（仅当库非空时校验）。
+
+        控件库为空/不可用时跳过校验，保持原有“格式有效即接受”的行为；
+        校验异常时放行，避免误拦截正常步骤。
+        """
+        if control_search is None:
+            return {}
+        try:
+            if control_search.stats().get("total", 0) <= 0:
+                return {}
+        except Exception:
+            return {}
+        missing: dict[str, str] = {}
+        for r in raw_steps:
+            if not isinstance(r, dict):
+                continue
+            control_id = str(r.get("control_id", "")).strip()
+            if not control_id:
+                continue
+            try:
+                _rec, exact = control_search.best_control_for_step(
+                    str(r.get("action", "")).strip(),
+                    control_id,
+                    hint=str(r.get("step_name", "") or r.get("action", "")),
+                )
+            except Exception:
+                exact = True  # 校验失败放行
+            if not exact:
+                missing[control_id] = str(r.get("step_name", "") or r.get("action", ""))
+        return missing
+
     def _exec_find_control(self, args: dict) -> str:
         """执行 find_control 工具：在控件库检索真实控件，返回给 LLM 的文本结果。"""
         if control_search is None:
             return "控件检索模块不可用。"
+        # 每次检索前刷新缓存：采集器/维护界面规整控件后无需重启即可生效
+        try:
+            control_search.reload()
+        except Exception:
+            pass
         query = str(args.get("query") or args.get("name") or args.get("control") or "").strip()
         try:
             top_k = int(args.get("top_k") or 5)
@@ -1010,6 +1205,11 @@ class DslAgent:
         """执行 control_tree 工具：返回 WT 应用控件层级树大纲。"""
         if control_search is None:
             return "控件检索模块不可用。"
+        # 每次调用前刷新缓存（与 find_control 保持一致）
+        try:
+            control_search.reload()
+        except Exception:
+            pass
         try:
             max_depth = int(args.get("max_depth") or 3)
         except (TypeError, ValueError):
@@ -1173,6 +1373,79 @@ class DslAgent:
             f"【结构化差异】\n{struct}\n"
         )
         return self.chat(prompt, kb_enabled=False, compress=False)
+
+    # ------------------------------------------------------------------
+    # 流程链路检查审核纠错
+    # ------------------------------------------------------------------
+
+    def audit_flow(self, flow: dict[str, Any] | None) -> dict[str, Any]:
+        """流程链路检查审核：确定性规则检查 + LLM 语义级审核。
+
+        返回 {"rules": 规则检查报告, "llm": 模型语义建议, "total_steps": n, "summary": 汇总}
+        """
+        from WT_AUTOMATION_Agent import flow_audit
+
+        rules = flow_audit.audit_flow(flow)
+        llm_items = self._llm_audit_flow(flow, rules)
+
+        summary = str(rules.get("summary", ""))
+        if llm_items:
+            summary += f"；模型语义建议 {len(llm_items)} 条"
+        return {
+            "rules": rules,
+            "llm": llm_items,
+            "total_steps": rules.get("total_steps", 0),
+            "summary": summary,
+        }
+
+    def _llm_audit_flow(self, flow: dict[str, Any] | None, rules: dict[str, Any]) -> list[dict[str, Any]]:
+        """让模型对流程做语义级审核（动作选型/控件匹配/参数值/顺序），返回建议列表。
+
+        与规则检查互补：规则查"格式与存在性"，这里查"合不合理"。
+        模型不可用时返回空列表，不影响规则检查结果。
+        """
+        try:
+            flow_text = flow_ops.flow_to_text(flow)
+        except Exception:
+            flow_text = ""
+        if not flow_text:
+            return []
+        rule_lines = [
+            f"- 步骤{it.get('step_index', 0)} {it.get('step_name', '')}: {it.get('message', '')}"
+            for it in (rules.get("issues", []) or [])
+        ]
+        prompt = (
+            "你是一名 WT（Meteodyn WT）桌面自动化流程工程师。请审核以下自动化流程链路，"
+            "找出“规则校验之外”的语义级问题：\n"
+            "1. 动作选型不合理（如用 click 选下拉项、用 type_text 去点按钮）；\n"
+            "2. 控件与业务意图不匹配（控件名称/作用与步骤意图对不上）；\n"
+            "3. 输入参数值明显异常（空值、格式/单位错误）；\n"
+            "4. 步骤顺序可能导致失败（未等待控件、窗口未就绪、缺少必要前置）；\n"
+            "5. 明显冗余或缺失的关键步骤。\n"
+            "规则校验已发现的问题（供参考，不必重复）：\n"
+            + ("\n".join(rule_lines) if rule_lines else "（无）")
+            + "\n\n【流程定义】\n" + flow_text
+            + "\n\n请只输出 JSON 数组，每项 {step_index, issue, suggestion}，没有问题则输出 []。"
+        )
+        messages = [
+            {"role": "system", "content": build_system_prompt(DslContext())},
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            response = _call_llm(self.config, messages)
+            content = str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))
+            items = _try_parse_text_json(content) or []
+            return [
+                {
+                    "step_index": int(it.get("step_index", 0) or 0),
+                    "issue": str(it.get("issue", "") or ""),
+                    "suggestion": str(it.get("suggestion", "") or ""),
+                }
+                for it in items if isinstance(it, dict)
+            ]
+        except Exception as exc:
+            logger.warning("LLM 流程语义审核失败: %s", exc)
+            return []
 
     # ------------------------------------------------------------------
     # 执行日志 / 运行报告诊断

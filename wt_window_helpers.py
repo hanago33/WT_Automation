@@ -175,6 +175,58 @@ def activate_and_maximize_main_window(main_window_title_re, timeout_seconds=60):
     return hwnd
 
 
+def ensure_main_window_foreground(main_window_title_re, timeout_seconds=15):
+    """运行前窗口健康检查 + 置顶（bring to front）。
+
+    找到目标主窗口后：若最小化则恢复（SW_RESTORE，保留原窗口布局），
+    再置顶（SetForegroundWindow + BringWindowToTop）。
+    不强制最大化、不改变窗口尺寸/位置，避免引入相对区域定位偏移。
+    找不到则持续重试直到超时并抛异常（供调用方决定是否中止启动）。
+
+    返回窗口信息 dict：
+    {"hwnd": int, "title": str, "minimized": bool, "width": int, "height": int, "rect": {...} | None}
+    """
+    deadline = time.time() + timeout_seconds
+    last_reason = "尚未开始检测"
+    while time.time() < deadline:
+        windows = find_main_windows(main_window_title_re)
+        best = choose_best_window(windows)
+        if best is None:
+            last_reason = "未找到匹配标题的目标软件主窗口"
+            time.sleep(0.5)
+            continue
+        hwnd = best["hwnd"]
+        if best["minimized"]:
+            _USER32.ShowWindow(hwnd, _SW_RESTORE)
+            time.sleep(0.4)
+        _USER32.SetForegroundWindow(hwnd)
+        if hasattr(_USER32, "BringWindowToTop"):
+            _USER32.BringWindowToTop(hwnd)
+        time.sleep(0.4)
+        rect = _GET_WINDOW_RECT(hwnd)
+        info = {
+            "hwnd": hwnd,
+            "title": best["title"],
+            "minimized": bool(_USER32.IsIconic(hwnd)),
+            "width": best["width"],
+            "height": best["height"],
+            "rect": None,
+        }
+        if rect is not None:
+            info["rect"] = {
+                "left": int(rect.left),
+                "top": int(rect.top),
+                "right": int(rect.right),
+                "bottom": int(rect.bottom),
+            }
+        _LOG_STEP(
+            f"[mup-preflight] 窗口健康检查通过，已置顶: hwnd={hwnd} "
+            f"title={best['title']} size={best['width']}x{best['height']}"
+        )
+        return info
+    raise RuntimeError(f"运行前窗口健康检查失败: {last_reason}")
+
+
 def click_unknown_projection_if_present(timeout_seconds=8):
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:

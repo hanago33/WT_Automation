@@ -9,13 +9,14 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import tkinter as tk
 import zipfile
 import ctypes
 import contextlib
 import io
 from datetime import datetime
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import wt_dpi
 from flow_excel_io import (
@@ -29,6 +30,8 @@ from pywinauto import Desktop
 from WT_Flow_Editor import sync_flow_package_registry
 from wt_action_schema import ALLOWED_RELATIVE_REGION_ANCHORS
 from wt_flow_validation import validate_flow_definition
+from wt_flow_editor_utils import normalize_control_window_title
+import wt_task_queue_window
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +58,12 @@ DEFAULT_UI_TARS_CONFIG = os.path.join(os.path.expanduser("~"), ".ui-tars-cli.jso
 MAX_RECENT_MODELS = 8
 DEFAULT_RECORDER_DIR = r"D:\Pywinauto Recorder\pywinauto_recorder"
 DEFAULT_RECORDER_SCRIPT = "pywinauto_recorder.py"
+SERVER_MONITOR_SCRIPT = os.path.join(BASE_DIR, "wt_server_monitor.py")
+SERVER_MONITOR_DEFAULT_URL = "http://127.0.0.1:8767"
+SERVER_MONITOR_PORT = 8767
+TASK_SERVER_SCRIPT = os.path.join(BASE_DIR, "wt_task_server.py")
+TASK_SERVER_DEFAULT_URL = "http://127.0.0.1:8768"
+TASK_SERVER_PORT = 8768
 FLOW_DEFINITION_ENV_KEY = "WT_FLOW_DEFINITION_FILE"
 RECORDER_LAUNCH_CMD_FILE = os.path.join(BASE_DIR, "_launch_pywinauto_recorder.cmd")
 _PYAUTOGUI_MODULE = None
@@ -139,10 +148,16 @@ def _normalize_flow_payload(payload):
         flow_packages = []
     if not isinstance(steps, list):
         steps = []
+    steps = [item for item in steps if isinstance(item, dict)]
+    for step in steps:
+        controls = step.get("controls")
+        if isinstance(controls, list):
+            for control in controls:
+                normalize_control_window_title(control)
     return {
         "runtimeConfig": runtime_config,
         "flowPackages": [item for item in flow_packages if isinstance(item, dict)],
-        "steps": [item for item in steps if isinstance(item, dict)],
+        "steps": steps,
         "sourceDefinitionPath": str(payload.get("sourceDefinitionPath", "")).strip(),
     }
 
@@ -1061,6 +1076,215 @@ class RelativeRegionHelperDialog:
         self._copy_payload(self.build_step_template(), "完整步骤样例")
 
 
+class ServerMonitorWindow:
+    """只读服务器监控窗口。"""
+    def __init__(self, master, initial_url, on_url_change=None):
+        self.on_url_change = on_url_change
+        self.base_url = (initial_url or SERVER_MONITOR_DEFAULT_URL).strip().rstrip("/")
+        self._fetching = False
+        self._after_id = None
+        self._closing = False
+
+        self.window = tk.Toplevel(master)
+        self.window.title("服务器监控（只读）")
+        self.window.configure(bg="#f4f7fb")
+        self.window.geometry("760x620")
+        self.window.minsize(640, 480)
+        self.window.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        top = tk.Frame(self.window, bg="#eaf1fb", padx=10, pady=8)
+        top.pack(fill=tk.X)
+        tk.Label(top, text="服务器地址", bg="#eaf1fb", fg="#1f2937").pack(side=tk.LEFT)
+        self.url_var = tk.StringVar(value=self.base_url)
+        tk.Entry(top, textvariable=self.url_var, width=42).pack(side=tk.LEFT, padx=8)
+        tk.Button(
+            top,
+            text="刷新",
+            command=self._apply_url_and_refresh,
+            bg="#dbeafe",
+            fg="#1f2937",
+            relief=tk.FLAT,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+        self.auto_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            top,
+            text="自动刷新 (2s)",
+            variable=self.auto_var,
+            bg="#eaf1fb",
+            fg="#1f2937",
+            activebackground="#eaf1fb",
+            selectcolor="#ffffff",
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+        status_frame = tk.LabelFrame(
+            self.window,
+            text="运行状态",
+            padx=10,
+            pady=8,
+            bg="#ffffff",
+            fg="#1f2937",
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        status_frame.pack(fill=tk.X, padx=10, pady=8)
+        self.conn_var = tk.StringVar(value="未连接")
+        self.run_status_var = tk.StringVar(value="未知")
+        self.activity_var = tk.StringVar(value="-")
+        self.error_var = tk.StringVar(value="-")
+        self.updated_var = tk.StringVar(value="-")
+        rows = [
+            ("连接状态", self.conn_var),
+            ("运行状态", self.run_status_var),
+            ("当前活动", self.activity_var),
+            ("最后错误", self.error_var),
+            ("更新时间", self.updated_var),
+        ]
+        for row_index, (label, var) in enumerate(rows):
+            tk.Label(status_frame, text=label, bg="#ffffff", fg="#64748b").grid(
+                row=row_index, column=0, sticky="w", padx=(0, 10), pady=2
+            )
+            tk.Label(status_frame, textvariable=var, bg="#ffffff", fg="#1f2937").grid(
+                row=row_index, column=1, sticky="w"
+            )
+
+        log_frame = tk.LabelFrame(
+            self.window,
+            text="运行日志",
+            padx=6,
+            pady=6,
+            bg="#ffffff",
+            fg="#1f2937",
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        text_frame = tk.Frame(log_frame, bg="#111418")
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.log_text = tk.Text(
+            text_frame,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            bg="#111418",
+            fg="#e6edf3",
+            insertbackground="#e6edf3",
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+            padx=8,
+            pady=8,
+        )
+        scrollbar = tk.Scrollbar(text_frame, command=self.log_text.yview, relief=tk.FLAT)
+        self.log_text.config(yscrollcommand=scrollbar.set)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        for tag, color in (
+            ("info", "#e6edf3"),
+            ("error", "#ff7b72"),
+            ("warning", "#e3b341"),
+            ("success", "#7ee787"),
+            ("system", "#79c0ff"),
+        ):
+            self.log_text.tag_configure(tag, foreground=color)
+
+        self._after_id = self.window.after(2000, self._poll_loop)
+
+    def _apply_url_and_refresh(self):
+        url = self.url_var.get().strip().rstrip("/")
+        if url:
+            self.base_url = url
+            if self.on_url_change:
+                self.on_url_change(url)
+        self.refresh()
+
+    def refresh(self):
+        if self._fetching:
+            return
+        self._fetching = True
+        threading.Thread(target=self._fetch_worker, daemon=True).start()
+
+    def _fetch_worker(self):
+        try:
+            status_payload = self._get_json("/api/status")
+            logs_payload = self._get_json("/api/logs?tail=300")
+        except Exception as exc:
+            self._post_ui(lambda: self._mark_offline(str(exc)))
+            self._fetching = False
+            return
+        self._post_ui(lambda: self._apply_payload(status_payload, logs_payload))
+        self._fetching = False
+
+    def _get_json(self, path):
+        url = self.base_url + path
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _post_ui(self, callback):
+        try:
+            self.window.after(0, callback)
+        except Exception:
+            pass
+
+    def _apply_payload(self, status_payload, logs_payload):
+        self.conn_var.set("已连接")
+        status = str(status_payload.get("status", "unknown"))
+        labels = {
+            "idle": "空闲",
+            "running": "运行中",
+            "success": "成功",
+            "failed": "失败",
+            "unknown": "未知",
+        }
+        self.run_status_var.set(labels.get(status, status))
+        self.activity_var.set(str(status_payload.get("activity") or "-"))
+        self.error_var.set(str(status_payload.get("error") or "-"))
+        self.updated_var.set(str(status_payload.get("updatedAt") or "-"))
+        self._render_logs(logs_payload.get("lines", []))
+
+    def _render_logs(self, lines):
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.delete("1.0", tk.END)
+        for line in lines:
+            self.log_text.insert(tk.END, str(line) + "\n", self._classify_line(str(line)))
+        self.log_text.config(state=tk.DISABLED)
+        self.log_text.see(tk.END)
+
+    @staticmethod
+    def _classify_line(line):
+        if any(key in line for key in ("错误", "失败", "ERROR", "Traceback", "Exception")):
+            return "error"
+        if any(key in line for key in ("警告", "WARN", "Warning")):
+            return "warning"
+        if any(key in line for key in ("完成", "成功", "SUCCESS")):
+            return "success"
+        return "info"
+
+    def _mark_offline(self, error_text):
+        self.conn_var.set(f"未连接：{error_text}")
+        self.run_status_var.set("未知")
+        self.activity_var.set("-")
+        self.error_var.set("-")
+        self.updated_var.set("-")
+
+    def _poll_loop(self):
+        if self._closing:
+            return
+        if self.auto_var.get():
+            self.refresh()
+        self._after_id = self.window.after(2000, self._poll_loop)
+
+    def _on_close(self):
+        self._closing = True
+        if self._after_id is not None:
+            try:
+                self.window.after_cancel(self._after_id)
+            except Exception:
+                pass
+        self.window.destroy()
+
+
 class LauncherApp:
     def __init__(self, root):
         self.root = root
@@ -1068,12 +1292,12 @@ class LauncherApp:
         wt_dpi.geometry(self.root, 1320, 860)
         self.root.minsize(wt_dpi.scale(1140), wt_dpi.scale(760))
         self.theme = {
-            "bg": "#eef3f9",
+            "bg": "#f4f7fb",
             "card": "#ffffff",
             "toolbar": "#eaf1fb",
-            "border": "#d7e0ee",
-            "text": "#1f2d3d",
-            "muted": "#5f6f82",
+            "border": "#d8e2f0",
+            "text": "#1f2937",
+            "muted": "#64748b",
             "primary": "#2563eb",
             "primary_soft": "#dbeafe",
             "primary_active": "#1d4ed8",
@@ -1104,6 +1328,7 @@ class LauncherApp:
         self.step_scroll_hint_var = tk.StringVar(value="步骤列表位置：顶部")
         self.flow_definition_path_var = tk.StringVar(value=FLOW_DEFINITION_FILE)
         self.template_categories = []
+        self._task_server_process = None
 
         launcher_state, _state_error = load_json_file(LAUNCHER_STATE_FILE)
         launcher_state = launcher_state or {}
@@ -1111,6 +1336,17 @@ class LauncherApp:
         simple_flows = launcher_state.get("simpleModeFlows", {})
         if isinstance(simple_flows, dict):
             self.simple_mode_flows.update(simple_flows)
+        self.simple_mode_enabled = {}
+        simple_enabled = launcher_state.get("simpleModeEnabled", {})
+        if isinstance(simple_enabled, dict):
+            self.simple_mode_enabled.update(simple_enabled)
+        raw_monitor_url = launcher_state.get("serverMonitorUrl") or SERVER_MONITOR_DEFAULT_URL
+        self.server_monitor_url = str(raw_monitor_url).strip().rstrip("/") or SERVER_MONITOR_DEFAULT_URL
+        raw_task_url = launcher_state.get("taskQueueUrl") or TASK_SERVER_DEFAULT_URL
+        self.task_queue_url = str(raw_task_url).strip().rstrip("/") or TASK_SERVER_DEFAULT_URL
+        self.task_queue_user = str(launcher_state.get("taskQueueUser") or "").strip()
+        self.task_queue_token = str(launcher_state.get("taskQueueToken") or "").strip()
+        self._initial_ui_mode = "simple" if launcher_state.get("uiMode") == "simple" else "advanced"
         self.enable_ai_intervention_var = tk.BooleanVar(value=bool(launcher_state.get("enableAiIntervention", False)))
         self.ui_scale_var = tk.StringVar(value=wt_dpi.scale_to_label(wt_dpi.load_scale_config()))
         self.flow_definition_path_var.set(launcher_state.get("flowDefinitionPath") or FLOW_DEFINITION_FILE)
@@ -1197,7 +1433,7 @@ class LauncherApp:
         # 模式切换按钮（顶部右侧）
         mode_frame = tk.Frame(header, bg=self.theme["primary"])
         mode_frame.grid(row=0, column=1, sticky="e", padx=(20, 0))
-        self.ui_mode_var = tk.StringVar(value="advanced")
+        self.ui_mode_var = tk.StringVar(value=self._initial_ui_mode)
 
         self.btn_simple_mode = tk.Button(
             mode_frame, text="▸ Simple", font=("Microsoft YaHei UI", 10, "bold"),
@@ -1266,8 +1502,12 @@ class LauncherApp:
         self._build_right_panel(right_frame)
 
         # 默认显示 Advanced 模式
-        self.simple_frame.pack_forget()
-        self.advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        if self.ui_mode_var.get() == "simple":
+            self.advanced_frame.pack_forget()
+            self.simple_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        else:
+            self.simple_frame.pack_forget()
+            self.advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
 
     # ── 模式切换 ──────────────────────────────────────────────────────────────
 
@@ -1296,35 +1536,46 @@ class LauncherApp:
             self.simple_frame.pack_forget()
             self.advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
         self.root.update_idletasks()
+        try:
+            self._simple_save_state()
+        except Exception:
+            pass
 
     # ── Simple 模式界面 ──────────────────────────────────────────────────────
 
     SIMPLE_SECTIONS = [
         {"key": "terrain", "title": "新建地形信息数据", "icon": "🗺️"},
         {"key": "weather", "title": "新建气象数据", "icon": "🌤️"},
+        {"key": "element", "title": "新增及配置元素", "icon": "🧩"},
         {"key": "turbine", "title": "新建风机类型", "icon": "🌬️"},
         {"key": "project", "title": "新建工程项目", "icon": "📋"},
         {"key": "cfd", "title": "发送 CFD 计算", "icon": "⚙️"},
         {"key": "comprehensive", "title": "发送综合计算", "icon": "📊"},
+        {"key": "export_result", "title": "导出计算结果", "icon": "📤"},
     ]
 
     def _build_simple_panel(self, parent):
-        """构建 Simple 模式界面：6 个功能板块卡片，2 列 3 行布局。"""
+        """构建 Simple 模式界面：响应式卡片网格 + 顶部操作栏 + 底部状态行。"""
         theme = self.theme
 
         # ── 顶部操作栏 ──
-        toolbar = tk.Frame(parent, bg=theme["bg"])
+        toolbar = tk.Frame(
+            parent, bg=theme["toolbar"], padx=14, pady=10,
+            highlightthickness=1, highlightbackground=theme["border"],
+        )
         toolbar.pack(fill=tk.X, pady=(0, 12))
 
-        tk.Label(toolbar, text="运行流程", font=("Microsoft YaHei UI", 14, "bold"),
-                 bg=theme["bg"], fg=theme["text"]).pack(side=tk.LEFT)
+        tk.Label(toolbar, text="快捷运行", font=("Microsoft YaHei UI", 14, "bold"),
+                 bg=theme["toolbar"], fg=theme["text"]).pack(side=tk.LEFT)
 
         tk.Button(toolbar, text="全选", command=lambda: self._simple_toggle_all(True),
                   bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-                  padx=12, pady=4, cursor="hand2").pack(side=tk.LEFT, padx=(20, 4))
+                  padx=12, pady=4, cursor="hand2",
+                  activebackground=theme["secondary_active"]).pack(side=tk.LEFT, padx=(18, 4))
         tk.Button(toolbar, text="取消全选", command=lambda: self._simple_toggle_all(False),
                   bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-                  padx=12, pady=4, cursor="hand2").pack(side=tk.LEFT, padx=4)
+                  padx=12, pady=4, cursor="hand2",
+                  activebackground=theme["secondary_active"]).pack(side=tk.LEFT, padx=4)
 
         sep = tk.Frame(toolbar, width=1, bg=theme["border"])
         sep.pack(side=tk.LEFT, fill=tk.Y, padx=12)
@@ -1333,14 +1584,39 @@ class LauncherApp:
             toolbar, text="▶ 运行所选板块", command=self._run_simple_mode,
             bg="#059669", fg="white", font=("Microsoft YaHei UI", 10, "bold"),
             relief=tk.FLAT, padx=20, pady=6, cursor="hand2",
+            activebackground="#047857",
         )
         self.btn_simple_run.pack(side=tk.LEFT)
 
-        self.simple_status_var = tk.StringVar(value="就绪")
-        tk.Label(toolbar, textvariable=self.simple_status_var, bg=theme["bg"],
-                 fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.RIGHT)
+        self.btn_simple_stop = tk.Button(
+            toolbar, text="■ 停止排队", command=self._simple_stop_queue,
+            bg=theme["danger"], fg="white", font=("Microsoft YaHei UI", 10, "bold"),
+            relief=tk.FLAT, padx=16, pady=6, cursor="hand2",
+            activebackground=theme["danger_active"], state=tk.DISABLED,
+        )
+        self.btn_simple_stop.pack(side=tk.LEFT, padx=(8, 0))
+        self.btn_task_monitor = tk.Button(
+            toolbar,
+            text="任务与监控",
+            command=self.open_task_queue,
+            bg=theme["secondary"],
+            fg=theme["text"],
+            relief=tk.FLAT,
+            padx=12,
+            pady=6,
+            cursor="hand2",
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_task_monitor.pack(side=tk.LEFT, padx=(8, 0))
 
-        # ── 卡片网格容器（可滚动） ──
+        self.simple_status_var = tk.StringVar(value="就绪")
+        self.simple_status_label = tk.Label(
+            toolbar, textvariable=self.simple_status_var, bg=theme["toolbar"],
+            fg=theme["muted"], font=("Microsoft YaHei UI", 9), anchor="e",
+        )
+        self.simple_status_label.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(12, 0))
+
+        # ── 卡片滚动容器 ──
         canvas_frame = tk.Frame(parent, bg=theme["bg"])
         canvas_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -1348,29 +1624,47 @@ class LauncherApp:
         h_scroll = tk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
         scrollable = tk.Frame(canvas, bg=theme["bg"])
 
-        scrollable.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        def _on_canvas_configure(event):
+            canvas.itemconfigure("inner", width=event.width)
+
+        def _on_scrollable_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            self._simple_relayout_cards(scrollable, event_width=event.width)
+
+        canvas.bind("<Configure>", _on_canvas_configure)
+        scrollable.bind("<Configure>", _on_scrollable_configure)
         canvas.create_window((0, 0), window=scrollable, anchor="nw", tags="inner")
         canvas.configure(yscrollcommand=h_scroll.set)
 
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         h_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # 鼠标滚轮支持
         def _on_mousewheel(event):
-            canvas.yview_scroll(-1 * (event.delta // 120), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel, add="+")
-        # 控件进入/离开 canvas 时绑定/解绑滚轮，避免干扰其他可滚动区域
-        canvas.bind("<Enter>", lambda e: setattr(self, "_simple_scroll_canvas", canvas))
-        canvas.bind("<Leave>", lambda e: setattr(self, "_simple_scroll_canvas", None))
+            try:
+                under = canvas.winfo_containing(event.x_root, event.y_root)
+            except Exception:
+                under = None
+            node = under
+            while node is not None:
+                if node is scrollable or node is canvas:
+                    canvas.yview_scroll(-1 * (event.delta // 120), "units")
+                    return
+                try:
+                    node = node.master
+                except Exception:
+                    return
 
-        # ── 6 个板块卡片 ──
-        self.simple_section_vars = {}  # key -> {"enabled": BooleanVar, "path": str, ...}
-        section_widgets = {}  # key -> {"path_label": Label, "frame": Frame}
+        canvas.bind_all("<MouseWheel>", _on_mousewheel, add="+")
+
+        # ── 板块卡片 ──
+        self.simple_section_vars = {}
+        section_widgets = {}
+        self._simple_cards = []
 
         for i, sec in enumerate(self.SIMPLE_SECTIONS):
             key = sec["key"]
-            enabled_var = tk.BooleanVar(value=True)
-            path_key = f"simple_{key}_path"
+            enabled_var = tk.BooleanVar(value=bool(self.simple_mode_enabled.get(key, True)))
+            path_key = "simple_{}_path".format(key)
             flow_path = getattr(self, path_key, "") or self.simple_mode_flows.get(key, "")
 
             self.simple_section_vars[key] = {
@@ -1378,46 +1672,55 @@ class LauncherApp:
                 "path": flow_path,
             }
 
-            # 卡片外框
             card = tk.Frame(
                 scrollable, bg=theme["card"],
                 highlightthickness=1, highlightbackground=theme["border"],
                 padx=14, pady=12,
             )
-            row = i // 2
-            col = i % 2
-            card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
-            scrollable.columnconfigure(0, weight=1)
-            scrollable.columnconfigure(1, weight=1)
-            scrollable.rowconfigure(row, weight=0)
 
-            # ── 标题行：勾选 + 图标 + 名称 ──
+            # 标题行：勾选 + 图标 + 名称 + 配置徽标
             title_row = tk.Frame(card, bg=theme["card"])
             title_row.pack(fill=tk.X, anchor="w")
 
-            tk.Checkbutton(title_row, variable=enabled_var, bg=theme["card"],
-                           font=("Microsoft YaHei UI", 12, "bold"), cursor="hand2").pack(side=tk.LEFT)
-            tk.Label(title_row, text=f"{sec['icon']} {sec['title']}",
+            tk.Checkbutton(
+                title_row, variable=enabled_var, bg=theme["card"],
+                font=("Microsoft YaHei UI", 12, "bold"), cursor="hand2",
+                command=lambda k=key: self._simple_on_toggle(k),
+            ).pack(side=tk.LEFT)
+            tk.Label(title_row, text="{} {}".format(sec["icon"], sec["title"]),
                      font=("Microsoft YaHei UI", 12, "bold"), bg=theme["card"],
                      fg=theme["text"]).pack(side=tk.LEFT, padx=(4, 0))
 
-            # ── 默认流程路径 ──
-            path_row = tk.Frame(card, bg=theme["card"])
-            path_row.pack(fill=tk.X, anchor="w", pady=(8, 0))
+            badge_label = tk.Label(
+                title_row, text="", font=("Microsoft YaHei UI", 9, "bold"),
+                bg=theme["card"], fg=theme["muted"], padx=8, pady=1,
+            )
+            badge_label.pack(side=tk.RIGHT)
 
-            tk.Label(path_row, text="当前默认:", font=("Microsoft YaHei UI", 9),
+            # 路径行：文件名 + 所在目录
+            path_row = tk.Frame(card, bg=theme["card"])
+            path_row.pack(fill=tk.X, anchor="w", pady=(10, 0))
+
+            tk.Label(path_row, text="流程文件", font=("Microsoft YaHei UI", 9),
                      bg=theme["card"], fg=theme["muted"]).pack(side=tk.LEFT)
             path_label = tk.Label(
-                path_row, text=flow_path or "（未设置）",
-                font=("Consolas", 9), bg=theme["card"],
-                fg=theme["primary"] if flow_path else "#9ca3af",
-                anchor="w",
+                path_row, text="（未设置）",
+                font=("Microsoft YaHei UI", 10, "bold"), bg=theme["card"],
+                fg="#9ca3af", anchor="w",
             )
-            path_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+            path_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
 
-            # ── 按钮行 ──
+            dir_label = tk.Label(
+                card, text="", font=("Consolas", 8), bg=theme["card"],
+                fg=theme["muted"], anchor="w", justify="left",
+            )
+            dir_label.pack(fill=tk.X, anchor="w", pady=(2, 0))
+
+            # 操作行
             btn_row = tk.Frame(card, bg=theme["card"])
-            btn_row.pack(fill=tk.X, anchor="w", pady=(8, 0))
+            btn_row.pack(fill=tk.X, anchor="w", pady=(10, 0))
+            btn_row2 = tk.Frame(card, bg=theme["card"])
+            btn_row2.pack(fill=tk.X, anchor="w", pady=(8, 0))
 
             def _make_import_flow(k=key):
                 return lambda: self._simple_import_flow(k)
@@ -1428,114 +1731,177 @@ class LauncherApp:
             def _make_export(k=key):
                 return lambda: self._simple_export_flow(k)
 
-            ip_btn = tk.Button(btn_row, text="导入流程", command=_make_import_flow(),
-                               bg=theme["primary_soft"], fg=theme["primary"],
-                               relief=tk.FLAT, padx=10, pady=2, cursor="hand2",
-                               font=("Microsoft YaHei UI", 9))
-            ip_btn.pack(side=tk.LEFT, padx=(0, 4))
+            def _make_edit(k=key):
+                return lambda: self._simple_edit_flow(k)
 
-            ie_btn = tk.Button(btn_row, text="导入Excel", command=_make_import_excel(),
-                               bg=theme["primary_soft"], fg=theme["primary"],
-                               relief=tk.FLAT, padx=10, pady=2, cursor="hand2",
-                               font=("Microsoft YaHei UI", 9))
-            ie_btn.pack(side=tk.LEFT, padx=4)
+            def _make_clear(k=key):
+                return lambda: self._simple_clear_flow(k)
 
-            ex_btn = tk.Button(btn_row, text="导出", command=_make_export(),
-                               bg=theme["secondary"], fg=theme["muted"],
-                               relief=tk.FLAT, padx=10, pady=2, cursor="hand2",
-                               font=("Microsoft YaHei UI", 9))
-            ex_btn.pack(side=tk.LEFT, padx=4)
+            def _make_run_one(k=key):
+                return lambda: self._simple_run_one(k)
 
-            section_widgets[key] = {"path_label": path_label, "frame": card}
+            tk.Button(btn_row, text="导入流程", command=_make_import_flow(),
+                      bg=theme["primary_soft"], fg=theme["primary"],
+                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
+                      activebackground=theme["secondary_active"],
+                      font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(0, 4))
+            tk.Button(btn_row, text="导入Excel", command=_make_import_excel(),
+                      bg=theme["primary_soft"], fg=theme["primary"],
+                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
+                      activebackground=theme["secondary_active"],
+                      font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=4)
+            tk.Button(btn_row, text="编辑流程", command=_make_edit(),
+                      bg=theme["secondary"], fg=theme["text"],
+                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
+                      activebackground=theme["secondary_active"],
+                      font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=4)
 
-        # 保存对 widget 的引用供导入后更新
+            tk.Button(btn_row2, text="▶ 运行此板块", command=_make_run_one(),
+                      bg="#059669", fg="white",
+                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
+                      activebackground="#047857",
+                      font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(0, 4))
+            tk.Button(btn_row2, text="导出", command=_make_export(),
+                      bg=theme["secondary"], fg=theme["muted"],
+                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
+                      activebackground=theme["secondary_active"],
+                      font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=4)
+            tk.Button(btn_row2, text="清空", command=_make_clear(),
+                      bg=theme["secondary"], fg=theme["danger"],
+                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
+                      activebackground=theme["secondary_active"],
+                      font=("Microsoft YaHei UI", 9)).pack(side=tk.RIGHT)
+
+            section_widgets[key] = {
+                "frame": card,
+                "path_label": path_label,
+                "dir_label": dir_label,
+                "badge_label": badge_label,
+            }
+            self._simple_cards.append((sec, card))
+
         self._simple_section_widgets = section_widgets
+        for sec in self.SIMPLE_SECTIONS:
+            self._simple_update_path_label(sec["key"])
 
-    def _simple_import_flow(self, section_key):
-        """为某个板块导入流程链路文件（JSON）。"""
-        path = filedialog.askopenfilename(
-            title=f"导入流程链路文件 - {section_key}",
-            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
-        )
-        if not path:
-            return
-        self.simple_section_vars[section_key]["path"] = path
-        self._simple_update_path_label(section_key)
-        self._simple_save_state()
+        # ── 底部状态行 ──
+        footer = tk.Frame(parent, bg=theme["bg"])
+        footer.pack(fill=tk.X, pady=(10, 0))
+        self.simple_summary_var = tk.StringVar(value="")
+        tk.Label(footer, textvariable=self.simple_summary_var, bg=theme["bg"],
+                 fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
+        tk.Label(footer, text="滚轮滚动板块列表", bg=theme["bg"],
+                 fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.RIGHT)
 
-    def _simple_import_excel(self, section_key):
-        """为某个板块导入 Excel 流程定义，自动转换为 flow 并设为默认。"""
-        path = filedialog.askopenfilename(
-            title=f"导入流程 Excel - {section_key}",
-            filetypes=[("Excel 文件", "*.xlsx"), ("所有文件", "*.*")],
-        )
-        if not path:
-            return
-        try:
-            flow_payload = load_flow_payload_from_excel(path)
-            if not flow_payload:
-                messagebox.showwarning("导入失败", "Excel 文件未能解析为有效的流程定义。")
-                return
-            # 保存为 JSON 并设为该板块的默认
-            target_dir = os.path.join(BASE_DIR, "flow_packages")
-            os.makedirs(target_dir, exist_ok=True)
-            base_name = f"simple_{section_key}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            target_path = os.path.join(target_dir, base_name)
-            with open(target_path, "w", encoding="utf-8") as f:
-                json.dump(flow_payload, f, ensure_ascii=False, indent=2)
-            self.simple_section_vars[section_key]["path"] = target_path
-            self._simple_update_path_label(section_key)
-            self._simple_save_state()
-            messagebox.showinfo("导入完成", f"已将 Excel 转换为流程文件并设为默认:\n{target_path}")
-        except Exception as exc:
-            messagebox.showerror("导入失败", f"导入 Excel 时出错:\n{exc}")
+        self._simple_grid_columns = 0
+        self._simple_refresh_summary()
+        self.root.after(80, lambda: self._simple_relayout_cards(scrollable))
 
-    def _simple_export_flow(self, section_key):
-        """导出某个板块的默认流程文件。"""
-        flow_path = self.simple_section_vars[section_key]["path"]
-        if not flow_path:
-            messagebox.showinfo("提示", f"该板块尚未设置默认流程，无法导出。")
-            return
-        out_path = filedialog.asksaveasfilename(
-            title=f"导出流程 - {section_key}",
-            initialfile=os.path.basename(flow_path),
-            defaultextension=".json",
-            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
-        )
-        if not out_path:
-            return
-        try:
-            shutil.copy2(flow_path, out_path)
-            messagebox.showinfo("导出完成", f"已导出到:\n{out_path}")
-        except Exception as exc:
-            messagebox.showerror("导出失败", str(exc))
 
     def _simple_update_path_label(self, section_key):
         w = self._simple_section_widgets.get(section_key)
         if not w:
             return
         path = self.simple_section_vars[section_key]["path"]
+        short, parent_dir = self._simple_short_path(path)
         w["path_label"].config(
-            text=path or "（未设置）",
+            text=short,
             fg=self.theme["primary"] if path else "#9ca3af",
         )
+        w["dir_label"].config(text=parent_dir or "")
+        self._simple_update_badge(section_key)
+        self._simple_refresh_summary()
+
+    def _simple_short_path(self, path):
+        if not path:
+            return "（未设置）", ""
+        base = os.path.basename(path)
+        if len(base) > 42:
+            base = base[:39] + "..."
+        return base, os.path.dirname(path)
+
+    def _simple_update_badge(self, section_key):
+        w = self._simple_section_widgets.get(section_key)
+        if not w:
+            return
+        path = self.simple_section_vars.get(section_key, {}).get("path", "")
+        if path and os.path.isfile(path):
+            w["badge_label"].config(text="已配置", fg="#059669")
+        elif path:
+            w["badge_label"].config(text="文件缺失", fg=self.theme["danger"])
+        else:
+            w["badge_label"].config(text="未配置", fg="#9ca3af")
+
+    def _simple_refresh_summary(self):
+        if not hasattr(self, "simple_summary_var"):
+            return
+        total = len(self.SIMPLE_SECTIONS)
+        configured = 0
+        checked = 0
+        missing = 0
+        for sec in self.SIMPLE_SECTIONS:
+            info = self.simple_section_vars.get(sec["key"], {})
+            path = info.get("path", "")
+            if path:
+                configured += 1
+                if not os.path.isfile(path):
+                    missing += 1
+            enabled_var = info.get("enabled")
+            if enabled_var is not None and enabled_var.get():
+                checked += 1
+        parts = ["已配置 {}/{}".format(configured, total), "勾选 {}/{}".format(checked, total)]
+        if missing:
+            parts.append("文件缺失 {}".format(missing))
+        self.simple_summary_var.set(" · ".join(parts))
+
+    def _simple_enabled_state(self):
+        result = {}
+        for sec in self.SIMPLE_SECTIONS:
+            key = sec["key"]
+            enabled_var = self.simple_section_vars.get(key, {}).get("enabled")
+            result[key] = bool(enabled_var.get()) if enabled_var is not None else True
+        return result
+
+    def _simple_on_toggle(self, section_key):
+        self._simple_save_state()
+        self._simple_refresh_summary()
 
     def _simple_toggle_all(self, checked):
         for sec in self.SIMPLE_SECTIONS:
             self.simple_section_vars[sec["key"]]["enabled"].set(checked)
+        self._simple_refresh_summary()
+        self._simple_save_state()
+
+    def _simple_set_status(self, text, kind="idle"):
+        self.simple_status_var.set(text)
+        colors = {
+            "idle": self.theme["muted"],
+            "running": "#1d4ed8",
+            "success": "#059669",
+            "warning": "#b45309",
+            "error": self.theme["danger"],
+        }
+        self.simple_status_label.config(fg=colors.get(kind, self.theme["muted"]))
 
     def _simple_save_state(self):
-        """将 Simple 模式各板块的流程配置持久化到 launcher_state.json。"""
+        """将 Simple 模式配置持久化到 launcher_state.json。"""
         try:
             state, _ = load_json_file(LAUNCHER_STATE_FILE)
             state = state or {}
             simple_flows = {}
+            simple_enabled = {}
             for sec in self.SIMPLE_SECTIONS:
                 key = sec["key"]
-                path = self.simple_section_vars.get(key, {}).get("path", "")
+                info = self.simple_section_vars.get(key, {})
+                path = info.get("path", "")
                 if path:
                     simple_flows[key] = path
+                enabled_var = info.get("enabled")
+                if enabled_var is not None:
+                    simple_enabled[key] = bool(enabled_var.get())
             state["simpleModeFlows"] = simple_flows
+            state["simpleModeEnabled"] = simple_enabled
+            state["uiMode"] = self.ui_mode_var.get()
             save_json_file(LAUNCHER_STATE_FILE, state)
         except Exception:
             pass
@@ -1543,27 +1909,78 @@ class LauncherApp:
     def _run_simple_mode(self):
         """运行 Simple 模式中勾选的板块（顺序执行，线程安全）。"""
         selected = []
+        missing = []
         for sec in self.SIMPLE_SECTIONS:
             key = sec["key"]
             info = self.simple_section_vars.get(key, {})
-            if info.get("enabled", tk.BooleanVar(value=False)).get() and info.get("path"):
-                selected.append(key)
+            enabled_var = info.get("enabled")
+            enabled = bool(enabled_var.get()) if enabled_var is not None else False
+            if not enabled:
+                continue
+            path = info.get("path", "")
+            if not path or not os.path.isfile(path):
+                missing.append(sec["title"])
+                continue
+            selected.append(key)
 
         if not selected:
-            messagebox.showinfo("提示", "请先勾选要运行的板块，并确保每个板块已设置默认流程文件。")
+            hint = "请先勾选要运行的板块，并确保每个板块已设置流程文件。"
+            if missing:
+                hint += "\n\n未就绪：" + "、".join(missing[:5])
+            messagebox.showinfo("提示", hint)
             return
+        if missing:
+            skip = messagebox.askyesno(
+                "部分板块未就绪",
+                "以下板块缺少流程文件，将跳过：\n- {}\n\n是否继续运行其余板块？".format("\n- ".join(missing[:8])),
+            )
+            if not skip:
+                return
+        self._start_simple_queue(selected)
 
+    def _simple_run_one(self, section_key):
+        info = self.simple_section_vars.get(section_key, {})
+        path = info.get("path", "")
+        if not path or not os.path.isfile(path):
+            messagebox.showinfo("提示", "该板块尚未设置可用的流程文件，请先导入流程或 Excel。")
+            return
+        self._start_simple_queue([section_key])
+
+    def _start_simple_queue(self, keys):
+        if getattr(self, "_simple_run_queue", None):
+            messagebox.showinfo("提示", "Simple 队列正在运行中，请先停止或等待完成。")
+            return False
+        if self.process and self.process.poll() is None:
+            messagebox.showinfo("提示", "已有自动化流程正在运行，请先等待其完成或停止。")
+            return False
         self.btn_simple_run.config(state=tk.DISABLED)
-        self._simple_run_queue = list(selected)
+        self.btn_simple_stop.config(state=tk.NORMAL)
+        self._simple_set_status("准备运行 {} 个板块".format(len(keys)), "running")
+        self._simple_run_queue = list(keys)
         self._simple_run_index = 0
         self._simple_run_next()
+        return True
+
+    def _simple_stop_queue(self):
+        self._simple_run_queue = []
+        self._simple_run_index = 0
+        self.btn_simple_run.config(state=tk.NORMAL)
+        self.btn_simple_stop.config(state=tk.DISABLED)
+        self._simple_set_status("已停止排队", "idle")
 
     def _simple_run_next(self):
         """启动下一个待运行板块（由 after 在主线程中调度，线程安全）。"""
+        if not getattr(self, "_simple_run_queue", None):
+            return
         if self._simple_run_index >= len(self._simple_run_queue):
-            self.simple_status_var.set("全部运行完成 ✓")
-            self.btn_simple_run.config(state=tk.NORMAL)
             self._simple_run_queue = []
+            self._simple_run_index = 0
+            self.btn_simple_run.config(state=tk.NORMAL)
+            self.btn_simple_stop.config(state=tk.DISABLED)
+            self._simple_set_status(
+                "全部运行完成 ✓ {}".format(datetime.now().strftime("%H:%M:%S")),
+                "success",
+            )
             return
 
         key = self._simple_run_queue[self._simple_run_index]
@@ -1572,20 +1989,25 @@ class LauncherApp:
         idx = self._simple_run_index + 1
         total = len(self._simple_run_queue)
 
-        if not flow_path or not os.path.exists(flow_path):
-            self.simple_status_var.set(f"⚠ {idx}/{total} {sec['title']}: 流程文件不存在")
+        if not flow_path or not os.path.isfile(flow_path):
+            self._simple_set_status("⚠ {}/{} {}：流程文件缺失，跳过".format(idx, total, sec["title"]), "warning")
             self._simple_run_index += 1
             self.root.after(500, self._simple_run_next)
             return
 
-        self.simple_status_var.set(f"▶ {idx}/{total}: {sec['title']}")
+        self._simple_set_status("▶ {}/{} {} 启动中".format(idx, total, sec["title"]), "running")
         original_path = self._get_flow_definition_path()
         self.flow_definition_path_var.set(flow_path)
-        self._launch_automation([], banner=f"========== Simple: {sec['title']} ==========")
+        try:
+            self._launch_automation([], banner="========== Simple: {} ==========".format(sec["title"]))
+        except Exception as exc:
+            self._simple_set_status("⚠ {}/{} 启动失败：{}".format(idx, total, exc), "error")
+            self._simple_run_index += 1
+            self.root.after(800, self._simple_run_next)
+            return
         self.flow_definition_path_var.set(original_path)
 
         self._simple_run_index += 1
-        # 启动后台监控线程，等待进程退出后调度下一个
         import threading as _th
         _th.Thread(target=self._simple_wait_for_next, args=(idx, total, sec["title"]), daemon=True).start()
 
@@ -1598,6 +2020,130 @@ class LauncherApp:
             pass
         time.sleep(0.5)
         self.root.after(0, self._simple_run_next)
+
+
+    def _simple_import_flow(self, section_key):
+        """为某个板块导入流程链路文件（JSON）。"""
+        path = filedialog.askopenfilename(
+            title="导入流程链路文件 - {}".format(section_key),
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        info = self.simple_section_vars.get(section_key, {})
+        if info:
+            info["path"] = path
+        self._simple_update_path_label(section_key)
+        self._simple_save_state()
+
+    def _simple_import_excel(self, section_key):
+        """为某个板块导入 Excel 流程定义，自动转换为流程文件并设为默认。"""
+        path = filedialog.askopenfilename(
+            title="导入流程 Excel - {}".format(section_key),
+            filetypes=[("Excel 文件", "*.xlsx"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            flow_payload = load_flow_payload_from_excel(path)
+            if not flow_payload:
+                messagebox.showwarning("导入失败", "Excel 文件未能解析为有效的流程定义。")
+                return
+            target_dir = os.path.join(BASE_DIR, "flow_packages")
+            os.makedirs(target_dir, exist_ok=True)
+            base_name = "simple_{}_{}.json".format(
+                section_key, datetime.now().strftime("%Y%m%d_%H%M%S")
+            )
+            target_path = os.path.join(target_dir, base_name)
+            with open(target_path, "w", encoding="utf-8") as f:
+                json.dump(flow_payload, f, ensure_ascii=False, indent=2)
+            info = self.simple_section_vars.get(section_key, {})
+            if info:
+                info["path"] = target_path
+            self._simple_update_path_label(section_key)
+            self._simple_save_state()
+            messagebox.showinfo("导入完成", "已将 Excel 转换为流程文件并设为默认:\n{}".format(target_path))
+        except Exception as exc:
+            messagebox.showerror("导入失败", "导入 Excel 时出错:\n{}".format(exc))
+
+    def _simple_export_flow(self, section_key):
+        """导出某个板块的默认流程文件。"""
+        flow_path = self.simple_section_vars.get(section_key, {}).get("path", "")
+        if not flow_path:
+            messagebox.showinfo("提示", "该板块尚未设置默认流程，无法导出。")
+            return
+        out_path = filedialog.asksaveasfilename(
+            title="导出流程 - {}".format(section_key),
+            initialfile=os.path.basename(flow_path),
+            defaultextension=".json",
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not out_path:
+            return
+        try:
+            shutil.copy2(flow_path, out_path)
+            messagebox.showinfo("导出完成", "已导出到:\n{}".format(out_path))
+        except Exception as exc:
+            messagebox.showerror("导出失败", str(exc))
+
+    def _simple_edit_flow(self, section_key):
+        flow_path = self.simple_section_vars.get(section_key, {}).get("path", "")
+        if not flow_path or not os.path.isfile(flow_path):
+            messagebox.showinfo("提示", "该板块尚未设置可用的流程文件，请先导入流程或 Excel。")
+            return
+        self.flow_definition_path_var.set(flow_path)
+        try:
+            self._save_launcher_state()
+        except Exception:
+            pass
+        self.open_flow_editor()
+
+    def _simple_clear_flow(self, section_key):
+        info = self.simple_section_vars.get(section_key, {})
+        path = info.get("path", "")
+        if not path:
+            self._simple_set_status("该板块尚未配置流程", "idle")
+            return
+        sec = next(s for s in self.SIMPLE_SECTIONS if s["key"] == section_key)
+        if not messagebox.askyesno(
+            "清空配置",
+            "确定清空 {} 的默认流程配置吗？".format(sec["title"]),
+        ):
+            return
+        info["path"] = ""
+        self.simple_mode_flows.pop(section_key, None)
+        self._simple_update_path_label(section_key)
+        self._simple_save_state()
+        self._simple_set_status("已清空 {} 的流程配置".format(sec["title"]), "idle")
+
+    def _simple_relayout_cards(self, parent, event_width=None):
+        if not hasattr(self, "_simple_cards") or not self._simple_cards:
+            return
+        try:
+            width = event_width or parent.winfo_width()
+        except Exception:
+            width = 0
+        if width <= 680:
+            cols = 1
+        elif width <= 1000:
+            cols = 2
+        else:
+            cols = 3
+        if cols == getattr(self, "_simple_grid_columns", 0) and getattr(self, "_simple_grid_laid_out", False):
+            return
+        for child in parent.winfo_children():
+            child.grid_forget()
+        for idx, (sec, card) in enumerate(self._simple_cards):
+            row, col = divmod(idx, cols)
+            card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+        for col in range(cols):
+            parent.columnconfigure(col, weight=1, uniform="simple_cards")
+        row_count = (len(self._simple_cards) + cols - 1) // cols
+        for row in range(row_count):
+            parent.rowconfigure(row, weight=1)
+        self._simple_grid_columns = cols
+        self._simple_grid_laid_out = True
+
 
     def _configure_styles(self):
         style = ttk.Style()
@@ -1620,7 +2166,9 @@ class LauncherApp:
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
+            padx=10,
             pady=6,
+            font=("Microsoft YaHei UI", 10),
         )
 
     def _build_tool_section(self, parent, title, buttons):
@@ -2125,6 +2673,7 @@ class LauncherApp:
             content,
             "流程设计与转换",
             [
+                ("启动 WT AI Agent（自然语言编排）", self.open_wt_agent),
                 ("启动 pywinauto recorder", self.open_pywinauto_recorder),
                 ("同步录制脚本(增量·最新)", self.sync_recorded_scripts),
                 ("打开流程链路编辑", self.open_flow_editor),
@@ -2152,6 +2701,10 @@ class LauncherApp:
             "检查与日志",
             [
                 ("运行环境检测", self.run_environment_check),
+                ("启动监控服务", self.start_server_monitor_service),
+                ("启动任务队列服务", self.start_task_queue_service),
+                ("停止任务队列服务", self.stop_task_queue_service),
+                ("任务与服务器监控", self.open_task_queue),
                 ("模型配置检查", self.run_model_check),
                 ("打开 UI-TARS 配置", self.open_ui_tars_config),
                 ("打开运行日志", self.open_log_file),
@@ -2172,9 +2725,9 @@ class LauncherApp:
             relief=tk.GROOVE,
         )
         info_frame.pack(fill=tk.X, pady=(18, 0))
-        tk.Label(info_frame, textvariable=self.status_var, justify=tk.LEFT, anchor="w", wraplength=370).pack(fill=tk.X, anchor="w")
-        tk.Label(info_frame, textvariable=self.current_step_var, justify=tk.LEFT, anchor="w", wraplength=370, pady=6).pack(fill=tk.X, anchor="w")
-        tk.Label(info_frame, textvariable=self.process_var, justify=tk.LEFT, anchor="w", wraplength=370).pack(fill=tk.X, anchor="w")
+        tk.Label(info_frame, textvariable=self.status_var, justify=tk.LEFT, anchor="w", wraplength=370, fg=self.theme["muted"]).pack(fill=tk.X, anchor="w")
+        tk.Label(info_frame, textvariable=self.current_step_var, justify=tk.LEFT, anchor="w", wraplength=370, pady=6, fg=self.theme["muted"]).pack(fill=tk.X, anchor="w")
+        tk.Label(info_frame, textvariable=self.process_var, justify=tk.LEFT, anchor="w", wraplength=370, fg=self.theme["muted"]).pack(fill=tk.X, anchor="w")
 
         for child in info_frame.winfo_children():
             child.configure(bg=self.theme["card"], fg=self.theme["text"])
@@ -2896,6 +3449,12 @@ class LauncherApp:
                 "stepOrderByFlowPath": self.step_order_by_flow_path,
                 "recentModels": self.recent_models,
                 "simpleModeFlows": simple_flows,
+                "simpleModeEnabled": self._simple_enabled_state() if hasattr(self, "simple_section_vars") else {},
+                "serverMonitorUrl": getattr(self, "server_monitor_url", SERVER_MONITOR_DEFAULT_URL),
+                "taskQueueUrl": getattr(self, "task_queue_url", TASK_SERVER_DEFAULT_URL),
+                "taskQueueUser": getattr(self, "task_queue_user", ""),
+                "taskQueueToken": getattr(self, "task_queue_token", ""),
+                "uiMode": self.ui_mode_var.get() if hasattr(self, "ui_mode_var") else "advanced",
                 "updatedAt": datetime.now().isoformat(timespec="seconds"),
             },
         )
@@ -4754,6 +5313,20 @@ class LauncherApp:
             ("UI-TARS 仓库", values["repoRoot"], bool(values["repoRoot"] and os.path.isdir(values["repoRoot"]))),
             ("UI-TARS 配置", values["configPath"], bool(values["configPath"] and os.path.exists(values["configPath"]))),
         ]
+        # MUP 资产目录（粗糙度索引文件选项源）—— 自动探测，缺失时仅提示增强不可用
+        try:
+            from mup_assets import configure_mup_install_dir, status
+            configure_mup_install_dir(runtime_config.get("gmExe", ""))
+            mup_status = status()
+        except Exception:
+            mup_status = {"found": False, "install_dir": "", "option_count": 0, "detect_source": ""}
+        checks.append(
+            (
+                "MUP 资产目录(粗糙度索引)",
+                mup_status.get("install_dir", "") or "未探测到",
+                bool(mup_status.get("found")),
+            )
+        )
         ok_count = 0
         for label, path, passed in checks:
             lines.append((f"[{'OK' if passed else '缺失'}] {label}: {path or '未配置'}", "success" if passed else "error"))
@@ -4980,6 +5553,254 @@ class LauncherApp:
             messagebox.showinfo("提示", "当前还没有生成运行日志。")
             return
         os.startfile(LOG_FILE)
+
+    def start_server_monitor_service(self):
+        if not os.path.exists(SERVER_MONITOR_SCRIPT):
+            messagebox.showerror(
+                "启动失败",
+                f"未找到服务器监控脚本：\n{SERVER_MONITOR_SCRIPT}",
+            )
+            return
+        try:
+            subprocess.Popen(
+                [sys.executable, SERVER_MONITOR_SCRIPT, "--host", "0.0.0.0", "--port", str(SERVER_MONITOR_PORT)],
+                cwd=BASE_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            self._append_log("已启动服务器监控服务（只读，端口 8767）。", tag="success")
+            self.status_var.set("状态：服务器监控服务已启动")
+            self.current_step_var.set("当前步骤：可打开“任务与服务器监控”窗口查看")
+            messagebox.showinfo("服务器监控", "服务器监控服务已启动，默认监听 0.0.0.0:8767。")
+        except Exception as exc:
+            messagebox.showerror("启动失败", f"启动服务器监控服务失败：\n{exc}")
+            self._append_log(f"启动服务器监控服务失败：{exc}", tag="error")
+
+    def open_server_monitor(self):
+        existing = getattr(self, "_server_monitor_window", None)
+        if existing is not None:
+            try:
+                if existing.window.winfo_exists():
+                    existing.window.deiconify()
+                    existing.window.lift()
+                    return
+            except Exception:
+                self._server_monitor_window = None
+        self._server_monitor_window = ServerMonitorWindow(
+            self.root,
+            getattr(self, "server_monitor_url", SERVER_MONITOR_DEFAULT_URL),
+            on_url_change=self._save_server_monitor_url,
+        )
+
+    def _save_server_monitor_url(self, url):
+        url = (url or SERVER_MONITOR_DEFAULT_URL).strip().rstrip("/")
+        self.server_monitor_url = url
+        try:
+            self._save_launcher_state()
+        except Exception:
+            pass
+
+    def start_task_queue_service(self):
+        self.start_task_monitor_service("task")
+
+    def stop_task_queue_service(self):
+        self.stop_task_monitor_service("task")
+
+    def start_task_monitor_service(self, service):
+        if service == "monitor":
+            script, port, label = SERVER_MONITOR_SCRIPT, SERVER_MONITOR_PORT, "监控服务"
+        else:
+            script, port, label = TASK_SERVER_SCRIPT, TASK_SERVER_PORT, "任务队列服务"
+        if not os.path.exists(script):
+            messagebox.showerror(
+                "启动失败",
+                "未找到{}脚本：\n{}".format(label, script),
+            )
+            return
+        token = str(getattr(self, "task_queue_token", "") or "").strip()
+        if service == "task" and not token:
+            token = simpledialog.askstring(
+                "任务队列服务",
+                "请输入服务令牌（--auth-token）：",
+                parent=self.root,
+            )
+            if not token:
+                return
+            self.task_queue_token = token.strip()
+            self._save_launcher_state()
+        attr = "_task_server_process" if service == "task" else "_monitor_server_process"
+        existing = getattr(self, attr, None)
+        if existing is not None and existing.poll() is None:
+            messagebox.showinfo(label, "{}已在运行（端口 {}）。".format(label, port))
+            return
+        command = [sys.executable, script, "--host", "0.0.0.0", "--port", str(port)]
+        if service == "task":
+            command += ["--auth-token", self.task_queue_token]
+        try:
+            proc = subprocess.Popen(
+                command,
+                cwd=BASE_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            setattr(self, attr, proc)
+            self._append_log("已启动{}（端口 {}）。".format(label, port), tag="success")
+            self.status_var.set("状态：{}已启动".format(label))
+            self.current_step_var.set("当前步骤：可打开“任务与服务器监控”窗口查看")
+            messagebox.showinfo(label, "{}已启动，默认监听 0.0.0.0:{}。".format(label, port))
+        except Exception as exc:
+            setattr(self, attr, None)
+            messagebox.showerror("启动失败", "启动{}失败：\n{}".format(label, exc))
+            self._append_log("启动{}失败：{}".format(label, exc), tag="error")
+
+    def stop_task_monitor_service(self, service):
+        if service == "monitor":
+            attr, port, label = "_monitor_server_process", SERVER_MONITOR_PORT, "监控服务"
+        else:
+            attr, port, label = "_task_server_process", TASK_SERVER_PORT, "任务队列服务"
+        proc = getattr(self, attr, None)
+        if proc is None or proc.poll() is not None:
+            messagebox.showinfo("停止{}".format(label), "当前没有由本控制台启动的{}。".format(label))
+            return
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception as exc:
+                messagebox.showerror("停止失败", "停止{}失败：\n{}".format(label, exc))
+                self._append_log("停止{}失败：{}".format(label, exc), tag="error")
+                return
+        setattr(self, attr, None)
+        self._append_log("已停止{}（端口 {}）。".format(label, port), tag="warning")
+        self.status_var.set("状态：{}已停止".format(label))
+        messagebox.showinfo("停止{}".format(label), "{}已停止。".format(label))
+
+    def open_task_queue(self):
+        existing = getattr(self, "_task_queue_window", None)
+        if existing is not None:
+            try:
+                if existing.window.winfo_exists():
+                    existing.window.deiconify()
+                    existing.window.lift()
+                    return
+            except Exception:
+                self._task_queue_window = None
+        self._task_queue_window = wt_task_queue_window.TaskQueueWindow(
+            self.root,
+            getattr(self, "task_queue_url", TASK_SERVER_DEFAULT_URL),
+            getattr(self, "task_queue_user", ""),
+            getattr(self, "task_queue_token", ""),
+            on_settings_change=self._save_task_queue_settings,
+            initial_monitor_url=getattr(self, "server_monitor_url", SERVER_MONITOR_DEFAULT_URL),
+            on_monitor_url_change=self._save_server_monitor_url,
+            on_start_service=self.start_task_monitor_service,
+            on_stop_service=self.stop_task_monitor_service,
+        )
+
+    def _save_task_queue_settings(self, url, user, token):
+        url = (url or TASK_SERVER_DEFAULT_URL).strip().rstrip("/")
+        self.task_queue_url = url
+        self.task_queue_user = user
+        self.task_queue_token = token
+        try:
+            self._save_launcher_state()
+        except Exception:
+            pass
+
+
+    def open_wt_agent(self):
+        """启动 WT AI Agent（自然语言 → 自动化步骤的对话式 GUI）。
+
+        以独立进程运行 `python -m WT_AUTOMATION_Agent.cli --gui`，
+        GUI 服务器自动选择空闲端口并打开浏览器，不影响总控台。
+        启动前会用当前解释器探测 Agent 第三方依赖，缺失时自动 pip 安装，
+        避免因 Python 环境缺 requests 等依赖导致"测试连接/调用 LLM 失败"。
+        """
+        agent_script = os.path.join(BASE_DIR, "WT_AUTOMATION_Agent", "gui.py")
+        if not os.path.exists(agent_script):
+            messagebox.showerror(
+                "打开失败",
+                f"未找到 WT AI Agent 脚本：\n{agent_script}\n"
+                "请确认 WT_AUTOMATION_Agent 目录完整。",
+            )
+            return
+        try:
+            ok, dep_msg = self._ensure_agent_dependencies()
+            if not ok:
+                messagebox.showerror(
+                    "依赖检查失败",
+                    f"WT AI Agent 所需依赖未就绪：\n{dep_msg}\n"
+                    "请手动执行：pip install requests",
+                )
+                return
+            self._append_log(f"WT AI Agent 依赖检查：{dep_msg}", tag="success" if "就绪" in dep_msg else "system")
+            subprocess.Popen(
+                [sys.executable, "-m", "WT_AUTOMATION_Agent.cli", "--gui"],
+                cwd=BASE_DIR,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            )
+            self._append_log(
+                "已启动 WT AI Agent（自然语言流程编排 GUI），浏览器将自动打开。",
+                tag="success",
+            )
+            self.status_var.set("状态：WT AI Agent 已启动")
+            self.current_step_var.set("当前步骤：WT AI Agent 界面已打开")
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"启动 WT AI Agent 失败：\n{exc}")
+            self._append_log(f"启动 WT AI Agent 失败：{exc}", tag="error")
+
+    def _ensure_agent_dependencies(self):
+        """检查 WT AI Agent 所需第三方依赖，缺失时用当前解释器自动安装。
+
+        用与启动子进程相同的 sys.executable 探测（总控台可能跑在 py-3.11、
+        而其他方式可能用不同 Python，探测必须与最终启动一致），
+        返回 (ok, message)。
+        """
+        required = ("requests",)  # Agent 调用 LLM 的核心依赖
+        probe = (
+            "import importlib.util;"
+            "mods=%r;"
+            "miss=[m for m in mods if importlib.util.find_spec(m) is None];"
+            "print('MISSING:' + ','.join(miss))" % (list(required),)
+        )
+        try:
+            r = subprocess.run(
+                [sys.executable, "-c", probe],
+                capture_output=True, text=True, cwd=BASE_DIR, timeout=60,
+            )
+        except Exception as exc:
+            return False, f"依赖探测失败：{exc}"
+        out = (r.stdout or "").strip()
+        missing = [m for m in out.replace("MISSING:", "").split(",") if m] if out.startswith("MISSING:") else []
+        if not missing:
+            return True, "依赖就绪"
+        self._append_log(
+            f"WT AI Agent 依赖缺失：{', '.join(missing)}，正在自动安装…",
+            tag="system",
+        )
+        try:
+            inst = subprocess.run(
+                [sys.executable, "-m", "pip", "install", *missing],
+                capture_output=True, text=True, cwd=BASE_DIR, timeout=300,
+            )
+        except Exception as exc:
+            return False, f"自动安装依赖失败：{exc}"
+        if inst.returncode != 0:
+            tail = (inst.stderr or inst.stdout or "").strip().splitlines()[-3:]
+            return False, "自动安装依赖失败：\n" + "\n".join(tail)
+        self._append_log(f"已自动安装依赖：{', '.join(missing)}", tag="success")
+        return True, f"依赖已自动安装：{', '.join(missing)}"
 
     def open_pywinauto_recorder(self):
         recorder_dir = DEFAULT_RECORDER_DIR

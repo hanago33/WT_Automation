@@ -19,8 +19,10 @@ import json
 import os
 import sys
 import time
+import uuid
 import webbrowser
 import threading
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
@@ -108,8 +110,11 @@ def _build_context(flow_path: str = "", project_desc: str = ""):
     from WT_AUTOMATION_Agent.skill_bridge import load_all_skills_text
 
     skill_text = load_all_skills_text()
+    # 注意：不再把 flow_definition.json 作为“可用控件库”注入 —— 那套索引只有
+    # 4 个字段且与 find_control 工具的数据源（control_maps）不一致，会误导模型。
+    # 控件库信息统一由 control_search（tree_summary 概览 + find_control 工具）提供。
     return build_context_for_agent(
-        flow_path=flow_path or None,
+        flow_path=None,
         project_description=project_desc,
         skill_text=skill_text,
     )
@@ -239,6 +244,26 @@ def handle_api(path: str, handler) -> None:
             from WT_AUTOMATION_Agent import control_search
             return _json_response(handler, control_search.stats())
 
+        # ── 项目资产总览（控件库 / 流程包 / 知识库 / 技能）──
+        if route == "/api/overview" and handler.command == "GET":
+            import glob
+            from WT_AUTOMATION_Agent import control_search
+            from WT_AUTOMATION_Agent.knowledge_base import get_knowledge_base
+            from WT_AUTOMATION_Agent.skill_bridge import get_builtin_skills
+            flow_packages = glob.glob(
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "flow_packages", "*.json")
+            )
+            kb = get_knowledge_base().status()
+            return _json_response(handler, {
+                "controls": control_search.stats().get("total", 0),
+                "flows": len(flow_packages),
+                "kb_sources": kb.get("sources", 0),
+                "kb_chunks": kb.get("chunks", 0),
+                "kb_areas": kb.get("areas", {}),
+                "skills": len(get_builtin_skills()),
+            })
+
         # ── 流程解释 / 编辑 / 比对 ──
         if route == "/api/flow/explain" and handler.command == "POST":
             from WT_AUTOMATION_Agent import flow_ops
@@ -270,6 +295,111 @@ def handle_api(path: str, handler) -> None:
             agent = _build_agent(data.get("config", {}))
             answer = agent.diff_flows(flow_a, flow_b)
             return _json_response(handler, {"status": "ok", "answer": answer})
+
+        # ── 流程链路检查审核纠错（确定性规则 + LLM 语义审核） ──
+        if route == "/api/flow/audit" and handler.command == "POST":
+            from WT_AUTOMATION_Agent import flow_ops
+            data = _read_body(handler)
+            flow_path = (data.get("flow_path") or "").strip()
+            flow = flow_ops.load_flow(flow_path)
+            if not flow:
+                return _json_response(handler, {"status": "error", "message": "流程文件不存在或解析失败"}, 400)
+            agent = _build_agent(data.get("config", {}))
+            try:
+                report = agent.audit_flow(flow)
+            except Exception as exc:
+                return _json_response(handler, {"status": "error", "message": f"审核失败：{exc}"}, 500)
+            return _json_response(handler, {"status": "ok", **report})
+
+        # ── 自然语言生成 → 保存为流程文件（组装完整 flow_definition + 执行器校验 + 落盘） ──
+        if route == "/api/flow/save" and handler.command == "POST":
+            data = _read_body(handler)
+            steps = data.get("steps")
+            if not isinstance(steps, list):
+                return _json_response(handler, {"status": "error", "message": "缺少 steps 列表"}, 400)
+
+            # 默认保存为另存新文件（带时间戳），不覆盖链路编辑器现有的 flow_definition.json
+            flow_path = (data.get("flow_path") or "").strip()
+            if not flow_path:
+                _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                _stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                flow_path = os.path.join(_project_root, "workspace", f"flow_definition_agent_{_stamp}.json")
+
+            # 清洗步骤：去除前端临时字段、补空 id
+            clean: list[dict] = []
+            for s in steps:
+                if not isinstance(s, dict):
+                    continue
+                s = {k: v for k, v in s.items() if not str(k).startswith("__")}
+                if not str(s.get("id", "")).strip():
+                    s["id"] = "step_" + uuid.uuid4().hex[:10]
+                clean.append(s)
+            if not clean:
+                return _json_response(handler, {"status": "error", "message": "没有可保存的步骤"}, 400)
+
+            # 组装顶层结构；目标文件已存在则沿用其 runtimeConfig / flowPackages / aiAgentConfig
+            flow: dict[str, Any] = {
+                "version": "1.0",
+                "project": "WT_Automation",
+                "description": "由 WT Agent 自然语言生成",
+                "lastUpdated": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                "runtimeConfig": {"gmExe": "", "sourceFilePath": "", "outputDir": "", "projectionFilePath": ""},
+                "flowPackages": [],
+                "steps": clean,
+            }
+            try:
+                if os.path.exists(flow_path):
+                    with open(flow_path, "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                    if isinstance(existing, dict):
+                        for k in ("version", "project", "description", "runtimeConfig", "flowPackages", "aiAgentConfig"):
+                            if existing.get(k):
+                                flow[k] = existing[k]
+            except (OSError, json.JSONDecodeError):
+                pass
+            flow["steps"] = clean
+
+            # 用执行器同源校验（与链路编辑器加载时一致），不通过也能保存但会返回错误清单
+            errors: list[str] = []
+            try:
+                _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                if _project_root not in sys.path:
+                    sys.path.insert(0, _project_root)
+                from wt_flow_validation import validate_step_definition
+                for i, st in enumerate(clean, 1):
+                    for e in validate_step_definition(st):
+                        errors.append(f"步骤{i}: {e}")
+            except ImportError:
+                errors.append("警告：未能加载执行器校验模块 wt_flow_validation，已跳过校验。")
+
+            try:
+                os.makedirs(os.path.dirname(flow_path), exist_ok=True)
+                with open(flow_path, "w", encoding="utf-8") as f:
+                    json.dump(flow, f, ensure_ascii=False, indent=2)
+            except OSError as exc:
+                return _json_response(handler, {"status": "error", "message": f"保存失败：{exc}"}, 500)
+
+            return _json_response(handler, {
+                "status": "ok" if not errors else "warning",
+                "saved": True,
+                "path": flow_path,
+                "step_count": len(clean),
+                "errors": errors,
+            })
+
+        # 打开已保存流程文件所在目录（Windows）
+        if route == "/api/flow/open-dir" and handler.command == "POST":
+            data = _read_body(handler)
+            path = (data.get("path") or "").strip()
+            if not path or not os.path.exists(path):
+                return _json_response(handler, {"status": "error", "message": "路径不存在"}, 400)
+            try:
+                if not hasattr(os, "startfile"):
+                    return _json_response(handler, {"status": "error", "message": "当前系统不支持打开目录"}, 400)
+                os.startfile(os.path.dirname(os.path.abspath(path)))  # type: ignore[attr-defined]
+            except OSError as exc:
+                return _json_response(handler, {"status": "error", "message": str(exc)}, 500)
+            return _json_response(handler, {"status": "ok"})
 
         # ── 执行日志 / 运行报告诊断 ──
         if route == "/api/log/diagnose" and handler.command == "POST":
@@ -306,12 +436,17 @@ def handle_api(path: str, handler) -> None:
 
             # 判断是对话还是转换
             mode = data.get("mode", "chat")
-            if mode == "sequence":
-                steps = agent.nl_to_sequence(message, context, conversation_id=conversation_id, compress=compress)
-                return _json_response(handler, {"type": "steps", "steps": steps, "mode": "sequence"})
-            elif mode == "step":
-                steps = agent.nl_to_step(message, context, conversation_id=conversation_id, compress=compress)
-                return _json_response(handler, {"type": "steps", "steps": steps, "mode": "step"})
+            if mode in ("sequence", "step"):
+                if mode == "sequence":
+                    steps = agent.nl_to_sequence(message, context, conversation_id=conversation_id, compress=compress)
+                else:
+                    steps = agent.nl_to_step(message, context, conversation_id=conversation_id, compress=compress)
+                resp: dict[str, Any] = {"type": "steps", "steps": steps, "mode": mode}
+                # 生成失败时返回诊断信息（如模型不支持 function calling），供前端提示
+                diag = getattr(agent, "_last_generation_diagnostic", None)
+                if not steps and diag:
+                    resp["warning"] = diag
+                return _json_response(handler, resp)
             else:
                 reply = agent.chat(message, context, conversation_id=conversation_id,
                                    kb_enabled=kb_enabled, compress=compress)
@@ -374,44 +509,93 @@ HTML_TEMPLATE = r'''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WT_AUTOMATION Agent - 自然语言 RPA 对话助手</title>
+<title>CRRC 中车 · WT 智能流程构建助手</title>
 <style>
 :root {
-  --bg: #f8f9fb;
-  --sidebar-bg: #1e1f2b;
-  --sidebar-text: #c8c9d4;
-  --sidebar-hover: #2a2b3d;
-  --sidebar-active: #32334a;
-  --input-bg: #2a2b3d;
-  --input-border: #3d3e55;
-  --input-text: #e0e0f0;
-  --accent: #6c5ce7;
-  --accent-hover: #7d6ff0;
-  --accent-light: #a29bfe;
-  --user-bubble: #6c5ce7;
+  --bg: #F6F3F1;
+  --sidebar-bg: #2A0A10;
+  --sidebar-text: #EFD9DC;
+  --sidebar-hover: rgba(255,255,255,0.09);
+  --sidebar-active: rgba(200,16,46,0.32);
+  --input-bg: rgba(255,255,255,0.10);
+  --input-border: rgba(255,255,255,0.20);
+  --input-text: #FCEDEF;
+  --accent: #C8102E;
+  --accent-hover: #9F0D23;
+  --accent-light: #E9A5AD;
+  --accent2: #3A4553;
+  --gold: #C7A24B;
+  --user-bubble: #C8102E;
   --user-bubble-text: #fff;
   --agent-bubble: #fff;
-  --agent-bubble-text: #2d2d3f;
-  --chat-bg: #f0f1f5;
-  --border: #e2e3e9;
-  --text: #2d2d3f;
-  --text-secondary: #6b6d7f;
-  --danger: #e74c3c;
-  --success: #27ae60;
-  --warning: #f39c12;
-  --radius: 12px;
+  --agent-bubble-text: #2F2A2B;
+  --chat-bg: #F1ECEC;
+  --border: #E6D9DB;
+  --text: #2F2A2B;
+  --text-secondary: #8A7E80;
+  --danger: #E04545;
+  --success: #1BBF73;
+  --warning: #F5A623;
+  --radius: 14px;
   --radius-sm: 8px;
-  --shadow: 0 2px 8px rgba(0,0,0,0.06);
-  --shadow-lg: 0 8px 32px rgba(0,0,0,0.1);
+  --shadow: 0 2px 8px rgba(42,10,16,0.07);
+  --shadow-lg: 0 10px 34px rgba(42,10,16,0.16);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:var(--font); background:var(--bg); height:100vh; display:flex; overflow:hidden; color:var(--text); }
 
+/* ── CRRC 中车品牌 ── */
+.brand { display:flex; align-items:center; gap:10px; }
+.brand-text { display:flex; flex-direction:column; min-width:0; }
+.brand-logo {
+  width:40px; height:40px; border-radius:10px; flex-shrink:0;
+  background:linear-gradient(135deg,#D71920 0%,#7A0F1B 60%,#2A0A10 100%);
+  color:#fff; display:flex; align-items:center; justify-content:center;
+  font-size:11px; font-weight:800; letter-spacing:0.5px;
+  box-shadow:0 3px 10px rgba(200,16,46,0.38);
+}
+.brand-logo-sm {
+  width:32px; height:32px; border-radius:8px; flex-shrink:0;
+  background:linear-gradient(135deg,#D71920 0%,#7A0F1B 60%,#2A0A10 100%);
+  color:#fff; display:flex; align-items:center; justify-content:center;
+  font-size:9px; font-weight:800; letter-spacing:0.5px;
+}
+.brand-title { font-size:15px; font-weight:800; color:#fff; line-height:1.25; }
+.brand-sub { font-size:11px; color:rgba(255,255,255,0.66); margin-top:2px; letter-spacing:0.3px; }
+.brand-badge {
+  display:inline-flex; align-items:center; gap:4px; margin-left:8px;
+  font-size:9px; font-weight:700; letter-spacing:0.6px;
+  color:#F4E3C5; background:rgba(199,162,75,0.16);
+  border:1px solid rgba(199,162,75,0.4); padding:2px 8px; border-radius:999px;
+}
+.brand-dark .brand-title { color:var(--text); }
+.brand-dark .brand-sub { color:var(--text-secondary); }
+
+/* 快捷指令 */
+.quick-chips { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin-top:20px; max-width:480px; }
+.quick-chip {
+  padding:7px 15px; border-radius:999px; border:1px solid #F1C1C8;
+  background:#fff; color:var(--accent); font-size:12px; font-weight:600; cursor:pointer;
+  font-family:var(--font); transition:all .18s; box-shadow:0 1px 3px rgba(92,10,18,0.08);
+}
+.quick-chip:hover { background:var(--accent); color:#fff; border-color:var(--accent); transform:translateY(-1px); box-shadow:0 5px 14px rgba(200,16,46,0.30); }
+.quick-chip:active { transform:translateY(0); }
+
+/* 连接状态胶囊 */
+.conn-pill {
+  display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:999px;
+  font-size:11px; font-weight:700; background:#FBEEF0; border:1px solid var(--border); color:var(--text-secondary);
+}
+.conn-pill .dot { width:7px; height:7px; border-radius:50%; background:#CDB3B8; }
+.conn-pill.on { color:#0B7A45; border-color:#A9DFC4; background:#EAF7F0; }
+.conn-pill.on .dot { background:#1BBF73; box-shadow:0 0 0 3px rgba(27,191,115,0.18); }
+
 /* Sidebar */
 .sidebar {
-  width:280px; min-width:280px; background:var(--sidebar-bg); color:var(--sidebar-text);
-  display:flex; flex-direction:column; border-right:1px solid rgba(255,255,255,0.06);
+  width:280px; min-width:280px; background:linear-gradient(180deg,#8E111F 0%,#5C0A12 45%,#2A0A10 100%);
+  color:var(--sidebar-text); display:flex; flex-direction:column;
+  border-right:1px solid rgba(255,255,255,0.08);
 }
 .sidebar-header {
   padding:20px 18px 14px; border-bottom:1px solid rgba(255,255,255,0.06);
@@ -470,6 +654,7 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
 .main { flex:1; display:flex; flex-direction:column; min-width:0; }
 .chat-header {
   padding:14px 20px; background:#fff; border-bottom:1px solid var(--border);
+  border-top:3px solid var(--accent);
   display:flex; align-items:center; justify-content:space-between;
 }
 .chat-header h3 { font-size:15px; font-weight:600; color:var(--text); }
@@ -485,12 +670,18 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
 .messages {
   flex:1; overflow-y:auto; padding:20px;
   display:flex; flex-direction:column; gap:16px; background:var(--chat-bg);
+  background:radial-gradient(1200px 320px at 50% -80px, rgba(200,16,46,0.06) 0%, rgba(200,16,46,0) 70%), var(--chat-bg);
 }
 .messages::-webkit-scrollbar { width:5px; }
 .messages::-webkit-scrollbar-thumb { background:rgba(0,0,0,0.12); border-radius:4px; }
 
 .empty-state { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; color:var(--text-secondary); text-align:center; padding:40px; }
-.empty-state .icon { font-size:48px; margin-bottom:16px; opacity:0.5; }
+.empty-state .icon {
+  width:72px; height:72px; font-size:34px; margin-bottom:18px; opacity:1;
+  background:linear-gradient(135deg,#D71920,#C8102E); color:#fff; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:0 10px 26px rgba(200,16,46,0.32);
+}
 .empty-state p { font-size:14px; margin-bottom:4px; }
 .empty-state .hint { font-size:12px; opacity:0.6; max-width:400px; line-height:1.6; }
 
@@ -523,7 +714,7 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
 }
 .copy-btn:hover { opacity:1; background:rgba(0,0,0,0.05); }
 .steps-summary {
-  background:rgba(108,92,231,0.06); padding:8px 12px; border-radius:var(--radius-sm);
+  background:rgba(200,16,46,0.06); padding:8px 12px; border-radius:var(--radius-sm);
   font-size:12px; margin-top:6px; display:flex; align-items:center; gap:8px;
 }
 .steps-summary .badge { background:var(--accent); color:#fff; font-size:10px; padding:2px 8px; border-radius:10px; font-weight:600; }
@@ -533,7 +724,7 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
   display:flex; align-items:center; gap:8px; cursor:pointer; transition:background 0.15s;
 }
 .step-detail .step-item:last-child { border-bottom:none; }
-.step-detail .step-item:hover { background:rgba(108,92,231,0.04); }
+.step-detail .step-item:hover { background:rgba(200,16,46,0.04); }
 .step-detail .step-item .step-action { color:var(--accent); font-weight:600; min-width:50px; }
 
 /* 序列模式：可拖拽排序 / 可展开步骤清单 */
@@ -544,7 +735,7 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
   transition:background 0.15s; cursor:default;
 }
 .seq-step:last-child { border-bottom:none; }
-.seq-step.expanded { background:rgba(108,92,231,0.05); }
+.seq-step.expanded { background:rgba(200,16,46,0.05); }
 .seq-step.dragging { opacity:0.45; }
 .seq-step.drag-before { box-shadow:inset 0 2px 0 0 var(--accent); }
 .seq-step.drag-after { box-shadow:inset 0 -2px 0 0 var(--accent); }
@@ -564,21 +755,26 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
   border:1px solid var(--border); background:#fff; border-radius:4px; cursor:pointer;
   font-size:11px; padding:2px 8px; color:#555; flex:none;
 }
-.seq-step .seq-copy:hover { background:rgba(108,92,231,0.08); }
+.seq-step .seq-copy:hover { background:rgba(200,16,46,0.08); }
 .seq-step .seq-detail {
   flex-basis:100%; order:9; margin:6px 0 0; padding:8px 10px; background:#f7f7fb;
   border-radius:var(--radius-sm); font-size:11px; line-height:1.5; max-height:240px; overflow:auto;
   white-space:pre-wrap; word-break:break-all;
 }
-.seq-footer { margin-top:8px; }
+.seq-footer { margin-top:8px; display:flex; gap:6px; }
+.seq-footer .btn { width:auto; flex:1; }
 .seq-footer .btn-sm { font-size:12px; padding:4px 12px; }
 .seq-step:focus { outline:2px solid var(--accent); outline-offset:-2px; }
-.seq-step:focus:not(.expanded) { background:rgba(108,92,231,0.06); }
+.seq-step:focus:not(.expanded) { background:rgba(200,16,46,0.06); }
 
 /* Input area */
 .input-area {
   padding:14px 20px; background:#fff; border-top:1px solid var(--border);
-  display:flex; gap:10px; align-items:flex-end;
+  display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;
+}
+.mode-banner {
+  flex-basis:100%; padding:6px 12px; margin-bottom:2px; border-radius:8px;
+  background:#FFF7E6; border:1px solid #F2D29A; color:#8A5B10; font-size:12px;
 }
 .input-area textarea {
   flex:1; padding:12px 16px; border:1px solid var(--border); border-radius:var(--radius);
@@ -587,9 +783,11 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
 }
 .input-area textarea:focus { border-color:var(--accent); }
 .input-area .send-btn {
-  width:42px; height:42px; border-radius:50%; border:none; background:var(--accent);
+  width:42px; height:42px; border-radius:50%; border:none;
+  background:linear-gradient(135deg,#D71920,#A00D24);
   color:#fff; font-size:18px; cursor:pointer; display:flex; align-items:center;
   justify-content:center; transition:all 0.2s; flex-shrink:0;
+  box-shadow:0 4px 12px rgba(200,16,46,0.30);
 }
 .input-area .send-btn:hover { background:var(--accent-hover); transform:scale(1.04); }
 .input-area .send-btn:disabled { background:#ccc; cursor:not-allowed; transform:none; }
@@ -633,6 +831,48 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
 .typing-indicator span:nth-child(3) { animation-delay:0.3s; }
 @keyframes bounce { 0%,60%,100%{transform:translateY(0);opacity:0.4;} 30%{transform:translateY(-6px);opacity:1;} }
 
+/* 悬浮知识问答球 + 独立会话面板 */
+.kb-fab {
+  position:fixed; top:76px; right:18px; z-index:900;
+  width:46px; height:46px; border-radius:50%; border:none; cursor:pointer;
+  background:linear-gradient(135deg,#C8102E,#7A0F1B);
+  color:#fff; font-size:19px; display:flex; align-items:center; justify-content:center;
+  box-shadow:0 6px 18px rgba(200,16,46,0.32); transition:transform .18s, box-shadow .18s;
+}
+.kb-fab:hover { transform:scale(1.08); box-shadow:0 8px 24px rgba(200,16,46,0.45); }
+.kb-fab.hidden { display:none; }
+.kb-fab-panel {
+  position:fixed; top:132px; right:18px; z-index:899;
+  width:382px; max-height:calc(100vh - 160px); display:flex; flex-direction:column;
+  background:#fff; border:1px solid var(--border); border-radius:16px;
+  box-shadow:var(--shadow-lg); overflow:hidden; animation:fadeIn .18s ease;
+}
+.kb-fab-panel.hidden { display:none; }
+.kb-fab-head {
+  display:flex; align-items:center; gap:8px; padding:11px 14px;
+  background:linear-gradient(135deg,#C8102E 0%,#7A0F1B 100%);
+  color:#fff; font-weight:700; font-size:13px;
+}
+.kb-fab-head .spacer { flex:1; }
+.kb-fab-head button {
+  background:rgba(255,255,255,0.16); border:none; color:#fff; border-radius:6px;
+  width:24px; height:24px; cursor:pointer; font-size:12px; line-height:1;
+}
+.kb-fab-head button:hover { background:rgba(255,255,255,0.32); }
+.kb-fab-body { padding:12px 14px; display:flex; flex-direction:column; gap:8px; overflow:auto; }
+.kb-fab-body input {
+  padding:8px 12px; border:1px solid var(--border); border-radius:8px;
+  font-size:12px; font-family:var(--font); outline:none; color:var(--text);
+}
+.kb-fab-body input:focus { border-color:var(--accent); }
+.kb-fab-body .btn { width:100%; }
+.kb-fab-results { font-size:12px; line-height:1.6; overflow:auto; }
+.kb-fab-results .kbf-item { padding:8px 10px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px; background:#FBF7F7; }
+.kb-fab-results .kbf-title { font-weight:700; color:var(--accent); margin-bottom:2px; }
+.kb-fab-results .kbf-src { font-size:10px; color:var(--text-secondary); word-break:break-all; }
+.kb-fab-results .kbf-text { margin-top:4px; color:var(--text); }
+.kb-fab-results .kbf-empty { color:var(--text-secondary); text-align:center; padding:16px 0; }
+
 /* Responsive toggle */
 .sidebar-toggle {
   display:none; position:fixed; top:12px; left:12px; z-index:100;
@@ -645,6 +885,41 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
   .sidebar-toggle { display:flex; }
   .message { max-width:95%; }
 }
+
+/* 步骤编辑弹窗 */
+.modal-overlay {
+  position:fixed; inset:0; z-index:1200; background:rgba(20,6,8,0.45);
+  display:flex; align-items:center; justify-content:center; animation:fadeIn .15s ease;
+}
+.modal {
+  width:420px; max-width:calc(100vw - 40px); background:#fff; border-radius:14px;
+  box-shadow:var(--shadow-lg); overflow:hidden;
+}
+.modal-head {
+  display:flex; align-items:center; gap:8px; padding:12px 16px; font-weight:700; font-size:13px;
+  background:linear-gradient(135deg,#C8102E 0%,#7A0F1B 100%); color:#fff;
+}
+.modal-head .spacer { flex:1; }
+.modal-head button { background:rgba(255,255,255,0.16); border:none; color:#fff; border-radius:6px; width:24px; height:24px; cursor:pointer; font-size:12px; }
+.modal-head button:hover { background:rgba(255,255,255,0.32); }
+.modal-body { padding:14px 16px; display:flex; flex-direction:column; gap:10px; max-height:60vh; overflow:auto; }
+.modal-body label { font-size:11px; font-weight:600; color:var(--text-secondary); margin-bottom:-6px; }
+.modal-body input, .modal-body select {
+  width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:8px;
+  font-size:12px; font-family:var(--font); outline:none; color:var(--text); background:#fff;
+}
+.modal-body input:focus, .modal-body select:focus { border-color:var(--accent); }
+.modal-foot { padding:12px 16px; border-top:1px solid var(--border); display:flex; justify-content:flex-end; gap:8px; }
+.modal-foot .btn { width:auto; }
+
+/* 保存路径条 */
+.seq-saved {
+  display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap;
+  padding:8px 12px; background:#EAF7F0; border:1px solid #A9DFC4; border-radius:8px;
+  font-size:12px; color:#0B7A45;
+}
+.seq-saved code { word-break:break-all; color:#085c34; font-family:Consolas,monospace; font-size:11px; }
+.seq-saved .btn { width:auto; margin-left:auto; }
 </style>
 </head>
 <body>
@@ -652,8 +927,13 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
 <!-- Sidebar -->
 <div class="sidebar" id="sidebar">
   <div class="sidebar-header">
-    <h2>⚡ WT Agent</h2>
-    <div class="sub">自然语言 RPA 流程构建助手</div>
+    <div class="brand">
+      <div class="brand-logo">CRRC</div>
+      <div class="brand-text">
+        <div class="brand-title">WT Agent</div>
+        <div class="brand-sub">中国中车 · 智能流程构建平台</div>
+      </div>
+    </div>
   </div>
   <div class="sidebar-body">
     <div class="config-section">
@@ -759,8 +1039,12 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
         <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--sidebar-text); margin-bottom:8px; cursor:pointer;">
           <input type="checkbox" id="opt-compress" checked> 启用长对话记忆压缩
         </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:12px; color:var(--sidebar-text); margin-bottom:8px; cursor:pointer;">
+          <input type="checkbox" id="opt-kb-fab" checked onchange="onKbFabToggle()"> 启用右上角悬浮知识问答
+        </label>
         <button class="btn btn-secondary btn-sm" style="width:100%;" onclick="buildKb()">📚 构建/刷新知识库索引</button>
         <div id="kb-status" style="font-size:11px; color:var(--text-secondary); margin-top:6px;">未构建</div>
+        <div id="kb-areas" style="font-size:11px; color:var(--text-secondary); margin-top:4px; line-height:1.7;"></div>
       </div>
     </div>
 
@@ -793,6 +1077,17 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
           <button class="btn btn-secondary btn-sm" onclick="flowDiff()">🔀 比对</button>
           <button class="btn btn-secondary btn-sm" onclick="logDiagnose()">🩺 日志诊断</button>
         </div>
+        <button class="btn btn-secondary btn-sm" style="width:100%; margin-top:6px; background:#8B5CF6; color:#fff;" onclick="auditFlow()" title="确定性规则 + 模型语义审核，检查动作/控件/参数并给出纠错建议">🧹 流程检查纠错</button>
+      </div>
+    </div>
+
+    <!-- 项目资产总览 -->
+    <div style="margin-top:16px; border-top:1px solid rgba(255,255,255,0.06); padding-top:12px;">
+      <div class="collapsible-header" onclick="toggleOverview()" id="ov-header">
+        <span>📊 项目资产总览</span><span class="arrow">▶</span>
+      </div>
+      <div class="collapsible-body" id="ov-body">
+        <div id="ov-stats" style="font-size:11px; color:var(--text-secondary); line-height:1.8;">加载中…</div>
       </div>
     </div>
 
@@ -812,13 +1107,20 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
 <!-- Main -->
 <div class="main">
   <div class="chat-header">
-    <div style="display:flex; align-items:center; gap:12px; flex:1;">
-      <h3>💬 对话</h3>
-      <div id="current-conversation-info" style="font-size:11px; color:var(--text-muted); padding:3px 8px; background:rgba(255,255,255,0.05); border-radius:12px; display:none;">
+    <div style="display:flex; align-items:center; gap:12px; flex:1; min-width:0;">
+      <div class="brand brand-dark">
+        <div class="brand-logo-sm">CRRC</div>
+        <div class="brand-text">
+          <div class="brand-title">WT 智能流程构建助手</div>
+          <div class="brand-sub">中国中车 · 自然语言 RPA 流程编排</div>
+        </div>
+      </div>
+      <div id="current-conversation-info" style="font-size:11px; color:var(--text-secondary); padding:3px 10px; background:var(--chat-bg); border:1px solid var(--border); border-radius:999px; display:none;">
         <span id="current-conv-title">新会话</span>
       </div>
     </div>
     <div class="actions">
+      <div class="conn-pill" id="conn-pill"><span class="dot"></span><span id="conn-pill-text">未连接</span></div>
       <div class="mode-toggle">
         <button class="mode-btn active" data-mode="chat" onclick="setMode('chat')">💬 对话</button>
         <button class="mode-btn" data-mode="step" onclick="setMode('step')">📝 单步转换</button>
@@ -830,19 +1132,43 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
   <div class="messages" id="messages">
     <div class="empty-state" id="empty-state">
       <div class="icon">🤖</div>
-      <p>你好！我是 WT RPA 流程构建助手</p>
+      <p>你好，我是 WT 智能流程构建助手</p>
       <div class="hint">
-        配置好 LLM 连接后，你可以：<br>
-        • 用自然语言描述要执行的 UI 操作<br>
-        • 切换模式进行单步/序列转换<br>
-        • 在侧边栏加载控件库文件获得更精准的匹配
+        配置好 LLM 连接后，你可以用自然语言描述要执行的 UI 操作，<br>
+        或点击下方快捷指令快速开始 —— 支持单步 / 序列转换与控件库精准匹配
+      </div>
+      <div class="quick-chips">
+        <button class="quick-chip" data-t="请新建一个风机类型" onclick="fillQuick(this.dataset.t)">新建风机类型</button>
+        <button class="quick-chip" data-t="导入一份地形图文件" onclick="fillQuick(this.dataset.t)">导入地形图</button>
+        <button class="quick-chip" data-t="录入测风塔数据" onclick="fillQuick(this.dataset.t)">录入测风塔数据</button>
+        <button class="quick-chip" data-t="设置风机类型下拉框并确认保存" onclick="fillQuick(this.dataset.t)">风机类型下拉框</button>
       </div>
     </div>
   </div>
   <div class="input-area">
+    <div class="mode-banner" id="mode-banner" style="display:none;"></div>
     <textarea id="user-input" rows="1" placeholder="输入你的 RPA 操作指令..."
       onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
     <button class="send-btn" id="send-btn" onclick="sendMessage()" title="发送">▶</button>
+  </div>
+</div>
+
+<!-- 右上角悬浮知识问答（独立会话，不影响主对话） -->
+<button class="kb-fab" id="kb-fab" onclick="toggleKbFabPanel()" title="本地知识问答（不消耗 Token）">📖</button>
+<div class="kb-fab-panel hidden" id="kb-fab-panel">
+  <div class="kb-fab-head">
+    <span>📖 本地知识问答</span>
+    <span class="spacer"></span>
+    <button onclick="toggleKbFabPanel()" title="收起面板">−</button>
+    <button onclick="closeKbFabPanel()" title="关闭面板">✕</button>
+  </div>
+  <div class="kb-fab-body">
+    <input type="text" id="kb-fab-query" placeholder="问 repowiki / docs，如：控件库如何采集？"
+      onkeydown="if(event.key==='Enter'){kbAskFloating();}">
+    <button class="btn btn-primary" onclick="kbAskFloating()">🔎 检索知识片段</button>
+    <div class="kb-fab-results" id="kb-fab-results">
+      <div class="kbf-empty">输入问题检索 repowiki / docs 等知识库，不消耗 Token。</div>
+    </div>
   </div>
 </div>
 
@@ -854,6 +1180,8 @@ let emptyState = document.getElementById('empty-state');
 let isLoading = false;
 let _currentConversationId = null;  // 当前会话 ID
 let _editingConvId = null;  // 正在编辑标题的会话 ID
+let ACTION_SCHEMAS = {};   // action 名 → schema（含 input_key），用于步骤编辑弹窗
+let ACTION_NAMES = [];     // 动作名列表
 
 // ── Sidebar ──
 function toggleSidebar() {
@@ -875,6 +1203,23 @@ function setMode(mode) {
   currentMode = mode;
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`[data-mode="${mode}"]`).classList.add('active');
+  updateModeBanner();
+}
+
+// 按当前模式更新输入区提示条与占位符，避免误以为还在普通对话
+function updateModeBanner() {
+  let banner = document.getElementById('mode-banner');
+  let input = document.getElementById('user-input');
+  if (!banner || !input) return;
+  let map = {
+    chat:      {banner: '', placeholder: '输入你的 RPA 操作指令...'},
+    step:      {banner: '📝 单步转换：输入将转换为 1 个动作步骤，生成后可直接编辑 / 重新生成 / 保存', placeholder: '描述一步操作，如：点击风机类型下拉框'},
+    sequence:  {banner: '📋 序列转换：输入将转换为步骤序列，可拖拽排序、逐行编辑、重新生成并保存为流程文件', placeholder: '描述一个流程，如：新建风机类型并导入地形图'},
+  };
+  let m = map[currentMode] || map.chat;
+  if (m.banner) { banner.textContent = m.banner; banner.style.display = 'block'; }
+  else { banner.style.display = 'none'; }
+  input.placeholder = m.placeholder;
 }
 
 // ── Messages ──
@@ -923,6 +1268,7 @@ function addStepsMessage(steps, mode) {
   div.appendChild(buildSeqBlock(steps, drag));
 
   div.__steps = steps;
+  div.__mode = mode;
   messagesContainer.appendChild(div);
   scrollToBottom();
   return div;
@@ -953,6 +1299,18 @@ function buildSeqBlock(steps, drag) {
   copyBtn.textContent = drag ? '📋 复制排序后 JSON' : '📋 复制 JSON';
   copyBtn.onclick = function () { copySeqJson(this); };
   footer.appendChild(copyBtn);
+  let exportBtn = document.createElement('button');
+  exportBtn.className = 'btn btn-primary btn-sm';
+  exportBtn.textContent = '📤 导出 flow_definition';
+  exportBtn.title = '按执行器格式 {"steps":[...]} 复制到剪贴板';
+  exportBtn.onclick = function () { exportFlowDef(this); };
+  footer.appendChild(exportBtn);
+  let saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-secondary btn-sm';
+  saveBtn.textContent = '💾 保存为流程文件';
+  saveBtn.title = '组装完整 flow_definition.json 保存到 workspace（执行器同源校验）';
+  saveBtn.onclick = function () { saveFlowDef(this); };
+  footer.appendChild(saveBtn);
   bubble.appendChild(footer);
 
   return bubble;
@@ -976,6 +1334,8 @@ function buildSeqRow(s, i, drag) {
     '<span class="seq-num">' + (i + 1) + '</span>' +
     '<span class="seq-action">' + escapeHtml(ac.action || '?') + '</span>' +
     '<span class="seq-name">' + escapeHtml(s.name || ('Step ' + (i + 1))) + '</span>' +
+    '<button class="seq-copy" onclick="editSeqStep(this)">编辑</button>' +
+    '<button class="seq-copy" onclick="regenSeqStep(this)" title="让模型按此步骤意图重新生成">🔄</button>' +
     '<button class="seq-copy" onclick="copySeqStep(this)">复制</button>' +
     '<pre class="seq-detail"' + (s.__expanded ? '' : ' style="display:none"') + '>' +
       escapeHtml(JSON.stringify(s, null, 2)) + '</pre>';
@@ -1012,6 +1372,131 @@ function copySeqStep(btn) {
   navigator.clipboard.writeText(JSON.stringify(clean, null, 2)).then(() => {
     let old = btn.textContent; btn.textContent = '已复制'; setTimeout(() => btn.textContent = old, 1200);
   });
+}
+
+// ── 步骤行内编辑：打开弹窗修改名称 / 动作 / control_id / 输入参数 ──
+function editSeqStep(btn) {
+  let row = btn.closest('.seq-step');
+  let msgEl = row.closest('.message');
+  let step = msgEl.__steps.find(s => s.__seqKey === row.dataset.key);
+  if (!step) return;
+  let ac = step.actionConfig = step.actionConfig || {};
+  let inputKey = (ACTION_SCHEMAS[ac.action] || {}).input_key || 'text';
+  let actionOpts = ACTION_NAMES.length
+    ? ACTION_NAMES.map(n => '<option value="' + n + '"' + (n === ac.action ? ' selected' : '') + '>' + n + '</option>').join('')
+    : '<option value="' + escapeHtml(ac.action || 'click') + '">' + escapeHtml(ac.action || 'click') + '</option>';
+
+  let overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<div class="modal-head"><span>✏️ 编辑步骤</span><span class="spacer"></span>' +
+        '<button onclick="this.closest(\'.modal-overlay\').remove()">✕</button></div>' +
+      '<div class="modal-body">' +
+        '<label>步骤名称</label>' +
+        '<input id="med-name" value="' + escapeHtml(step.name || '') + '">' +
+        '<label>动作</label>' +
+        '<select id="med-action">' + actionOpts + '</select>' +
+        '<label>目标控件 control_id</label>' +
+        '<input id="med-control" value="' + escapeHtml(ac.controlId || '') + '" placeholder="留空=相对区域/无控件动作">' +
+        '<label>输入 / 参数</label>' +
+        '<input id="med-input" value="' + escapeHtml(String(ac[inputKey] != null ? ac[inputKey] : ac.text || '')) + '" placeholder="按所选动作的输入字段填写">' +
+      '</div>' +
+      '<div class="modal-foot">' +
+        '<button class="btn btn-secondary btn-sm" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>' +
+        '<button class="btn btn-primary btn-sm" onclick="saveSeqStepEdit(this)">保存</button>' +
+      '</div>' +
+    '</div>';
+  overlay.__msgEl = msgEl;
+  overlay.__seqKey = step.__seqKey;
+  document.body.appendChild(overlay);
+  document.getElementById('med-name').focus();
+}
+
+function saveSeqStepEdit(btn) {
+  let overlay = btn.closest('.modal-overlay');
+  let msgEl = overlay.__msgEl;
+  let step = msgEl.__steps.find(s => s.__seqKey === overlay.__seqKey);
+  if (!step) return;
+  let ac = step.actionConfig = step.actionConfig || {};
+  let name = document.getElementById('med-name').value.trim();
+  let action = document.getElementById('med-action').value.trim();
+  let controlId = document.getElementById('med-control').value.trim();
+  let inputVal = document.getElementById('med-input').value;
+  if (!name) { showToast('步骤名称不能为空', 'error'); return; }
+
+  step.name = name;
+  ac.action = action || 'click';
+  if (controlId) ac.controlId = controlId; else delete ac.controlId;
+  // 输入值映射到新动作的 input_key（type_text→text、set_combobox→value、menu_select→menuPath…）
+  let inputKey = (ACTION_SCHEMAS[action] || {}).input_key || 'text';
+  if (inputVal !== '') ac[inputKey] = inputVal; else delete ac[inputKey];
+  // 同步控件细分清单，保证 control_id 存在于 controls（执行器校验要求）
+  let controls = Array.isArray(step.controls) ? step.controls : [];
+  if (controlId) {
+    if (controls.length && controls[0] && controls[0].id) {
+      controls[0].id = controlId;
+      controls[0].targetValue = controlId;
+      if (controls[0].name && !step.name) controls[0].name = name;
+    } else {
+      step.controls = [{id: controlId, name: name, enabled: true, targetMethod: 'automation_id', targetValue: controlId}];
+    }
+  } else if (controls.length && controls[0] && !controls[0].id) {
+    delete step.controls;
+  }
+  overlay.remove();
+  refreshSeqMessage(msgEl);
+  showToast('步骤已更新', 'success');
+}
+
+// 重建整条消息的步骤区块（编辑/重新生成后同步显示与 __steps 数据）
+function refreshSeqMessage(msgEl) {
+  let steps = msgEl.__steps;
+  let bubble = msgEl.querySelector('.bubble');
+  if (!bubble || !steps) return;
+  let drag = (msgEl.__mode === 'sequence' && steps.length > 1);
+  let fresh = buildSeqBlock(steps, drag);
+  bubble.replaceWith(fresh);
+}
+
+// ── 单步重新生成：让模型按该步骤意图重做（修正动作/控件/参数） ──
+async function regenSeqStep(btn) {
+  let row = btn.closest('.seq-step');
+  let msgEl = row.closest('.message');
+  let step = msgEl.__steps.find(s => s.__seqKey === row.dataset.key);
+  if (!step) return;
+  let cfg = getConfig();
+  if (!cfg.base_url || !cfg.api_key) { showToast('请先配置 LLM 连接', 'error'); return; }
+  let ac = step.actionConfig || {};
+  let inputKey = (ACTION_SCHEMAS[ac.action] || {}).input_key || 'text';
+  let inputVal = ac[inputKey] != null ? ac[inputKey] : (ac.text || '');
+  let desc = '重新生成以下自动化步骤（保持原意图，修正动作、控件与参数）：\n' +
+    '步骤名称：' + (step.name || '') + '\n' +
+    '动作：' + (ac.action || '') + '\n' +
+    '目标控件：' + (ac.controlId || '') + '\n' +
+    '输入参数：' + String(inputVal || '') + '\n' +
+    (step.description ? '说明：' + step.description + '\n' : '');
+  let old = btn.textContent; btn.textContent = '⏳'; btn.disabled = true;
+  try {
+    let result = await apiCall('/api/chat', {config: cfg, message: desc, mode: 'step'});
+    if (result.type === 'steps' && result.steps && result.steps.length) {
+      let idx = msgEl.__steps.indexOf(step);
+      if (idx >= 0) {
+        let fresh = result.steps[0];
+        fresh.__seqKey = step.__seqKey;
+        fresh.__expanded = step.__expanded;
+        msgEl.__steps[idx] = fresh;
+        refreshSeqMessage(msgEl);
+        showToast('步骤已重新生成', 'success');
+      }
+    } else {
+      showToast('重新生成失败：' + (result.warning || '模型未返回步骤'), 'error');
+    }
+  } catch (e) {
+    showToast('重新生成出错：' + e, 'error');
+  } finally {
+    btn.textContent = old; btn.disabled = false;
+  }
 }
 
 function copySeqJson(btn) {
@@ -1112,12 +1597,104 @@ function clearChat() {
   emptyState = document.createElement('div');
   emptyState.className = 'empty-state';
   emptyState.id = 'empty-state';
-  emptyState.innerHTML = '<div class="icon">🤖</div><p>聊天已清空</p>';
+  emptyState.innerHTML = emptyStateHTML();
   messagesContainer.appendChild(emptyState);
 }
 
 function scrollToBottom() {
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+// 快捷指令：把示例填入输入框
+function fillQuick(text) {
+  let input = document.getElementById('user-input');
+  input.value = text || '';
+  input.focus();
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 150) + 'px';
+}
+
+// 按执行器格式导出：{"steps":[...]}（与 WT_AUT_recorded.py 可消费的结构一致）
+function exportFlowDef(btn) {
+  let msgEl = btn.closest('.message');
+  let clean = msgEl.__steps.map(s => _cleanStep(s));
+  let flow = {steps: clean};
+  navigator.clipboard.writeText(JSON.stringify(flow, null, 2)).then(() => {
+    let old = btn.textContent;
+    btn.textContent = '已复制 flow_definition ✓';
+    setTimeout(() => btn.textContent = old, 1800);
+  });
+}
+
+// 保存为流程文件：后端组装完整 flow_definition 并用执行器同源规则校验后落盘
+async function saveFlowDef(btn) {
+  let msgEl = btn.closest('.message');
+  let clean = msgEl.__steps.map(s => _cleanStep(s));
+  let old = btn.textContent;
+  btn.textContent = '保存中...';
+  btn.disabled = true;
+  try {
+    let cfg = getConfig();
+    let resp = await apiCall('/api/flow/save', {steps: clean, config: cfg});
+    if (resp.status === 'error') {
+      showToast('保存失败：' + (resp.message || '未知错误'), 'error');
+    } else if (resp.status === 'warning') {
+      let list = (resp.errors || []).join('\n');
+      alert('已保存到：' + resp.path + '\n\n存在校验警告（请修正后重试）：\n' + list);
+    } else {
+      showSavedPath(msgEl, resp.path);
+      showToast('已保存 ' + resp.step_count + ' 个步骤', 'success');
+    }
+  } catch (e) {
+    showToast('保存失败：' + e, 'error');
+  } finally {
+    btn.textContent = old;
+    btn.disabled = false;
+  }
+}
+
+// 保存成功后展示路径条（含「打开目录」）
+function showSavedPath(msgEl, path) {
+  let old = msgEl.querySelector('.seq-saved');
+  if (old) old.remove();
+  let bar = document.createElement('div');
+  bar.className = 'seq-saved';
+  bar.innerHTML = '💾 已保存：<code>' + escapeHtml(path) + '</code>' +
+    '<button class="btn btn-secondary btn-sm" onclick="openSavedDir(this)">打开目录</button>';
+  bar.__path = path;
+  let bubble = msgEl.querySelector('.bubble');
+  if (bubble && bubble.nextSibling) msgEl.insertBefore(bar, bubble.nextSibling);
+  else msgEl.appendChild(bar);
+}
+
+function openSavedDir(btn) {
+  let bar = btn.closest('.seq-saved');
+  let path = bar && bar.__path;
+  if (!path) return;
+  fetch('/api/flow/open-dir', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({path: path}),
+  }).then(r => r.json()).then(d => {
+    if (d.status === 'error') showToast('打开目录失败：' + d.message, 'error');
+  }).catch(() => {});
+}
+
+// 空状态统一模板（含快捷指令）
+function emptyStateHTML() {
+  const chips = [
+    ['请新建一个风机类型', '新建风机类型'],
+    ['导入一份地形图文件', '导入地形图'],
+    ['录入测风塔数据', '录入测风塔数据'],
+    ['设置风机类型下拉框并确认保存', '风机类型下拉框'],
+  ];
+  let chipHtml = chips.map(c =>
+    '<button class="quick-chip" data-t="' + c[0] + '" onclick="fillQuick(this.dataset.t)">' + c[1] + '</button>'
+  ).join('');
+  return '<div class="icon">🤖</div>' +
+    '<p>聊天已清空</p>' +
+    '<div class="hint">用自然语言描述要执行的 UI 操作，或点击快捷指令快速开始：</div>' +
+    '<div class="quick-chips">' + chipHtml + '</div>';
 }
 
 // ── API calls ──
@@ -1128,6 +1705,18 @@ async function apiCall(url, body) {
     body: JSON.stringify(body),
   });
   return resp.json();
+}
+
+// 加载动作 schema 缓存（供步骤编辑弹窗使用）
+async function loadSchemas() {
+  try {
+    let resp = await fetch('/api/schemas');
+    let data = await resp.json();
+    if (data && typeof data === 'object') {
+      ACTION_SCHEMAS = data;
+      ACTION_NAMES = Object.keys(data);
+    }
+  } catch (e) { /* 静默，编辑弹窗回退为文本输入 */ }
 }
 
 function getConfig() {
@@ -1190,6 +1779,9 @@ async function sendMessage() {
       updateStatus(false);
     } else if (result.type === 'steps') {
       addStepsMessage(result.steps, result.mode);
+      if (result.warning) {
+        addMessage('agent', '⚠️ ' + escapeHtml(result.warning));
+      }
       updateStatus(true);
     } else {
       addMessage('agent', result.reply || '(无响应)');
@@ -1237,6 +1829,10 @@ function updateStatus(connected) {
   let text = document.getElementById('status-text');
   dot.className = 'status-dot ' + (connected ? 'connected' : 'disconnected');
   text.textContent = connected ? '已连接' : '未连接';
+  let pill = document.getElementById('conn-pill');
+  let pillText = document.getElementById('conn-pill-text');
+  if (pill) pill.classList.toggle('on', connected);
+  if (pillText) pillText.textContent = connected ? '已连接' : '未连接';
 }
 
 async function saveConfig() {
@@ -1355,7 +1951,9 @@ async function buildKb() {
     let resp = await fetch('/api/kb/build', {method: 'POST'});
     let data = await resp.json();
     document.getElementById('kb-status').textContent =
-      '已索引 ' + (data.sources||0) + ' 个源 / ' + (data.chunks||0) + ' 个片段';
+      '✅ 已索引 ' + (data.sources||0) + ' 个源 / ' + (data.chunks||0) + ' 个片段';
+    loadKbStatus();
+    loadOverview();
     showToast('知识库索引已构建', 'success');
   } catch (e) {
     showToast('构建失败: ' + e.message, 'error');
@@ -1375,11 +1973,105 @@ async function loadKbStatus() {
   try {
     let resp = await fetch('/api/kb/status');
     let data = await resp.json();
+    let statusEl = document.getElementById('kb-status');
     if (data.built) {
-      document.getElementById('kb-status').textContent =
-        '已索引 ' + (data.sources||0) + ' 个源 / ' + (data.chunks||0) + ' 个片段';
+      statusEl.textContent = '✅ 已索引 ' + (data.sources||0) + ' 个源 / ' + (data.chunks||0) + ' 个片段';
+    }
+    let areasEl = document.getElementById('kb-areas');
+    if (areasEl && data.areas) {
+      areasEl.innerHTML = Object.entries(data.areas).map(([k, v]) =>
+        '<span style="display:inline-block; background:rgba(255,255,255,0.08); padding:1px 8px; border-radius:8px; margin:2px 4px 0 0;">' +
+        escapeHtml(k) + ' ' + v + '</span>'
+      ).join('');
     }
   } catch (e) {}
+}
+
+// 悬浮知识问答（不消耗 LLM Token）：检索 repowiki/docs 等知识库片段，
+// 结果渲染在独立悬浮面板内，不影响主对话区。
+async function kbAskFloating() {
+  let input = document.getElementById('kb-fab-query');
+  let q = (input.value || '').trim();
+  if (!q) { showToast('请输入知识问题', 'error'); return; }
+  let box = document.getElementById('kb-fab-results');
+  box.innerHTML = '<div class="kbf-empty">⏳ 检索中…</div>';
+  try {
+    let resp = await fetch('/api/kb/search', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query: q, top_k: 3}),
+    });
+    let data = await resp.json();
+    if (!data || !data.length) {
+      box.innerHTML = '<div class="kbf-empty">未在知识库中检索到相关内容。可点击"📚 构建/刷新知识库索引"后再试。</div>';
+      return;
+    }
+    box.innerHTML = data.map(h =>
+      '<div class="kbf-item">' +
+        '<div class="kbf-title">' + escapeHtml(h.title || '(无标题)') + '</div>' +
+        '<div class="kbf-src">' + escapeHtml(h.source || '') + '</div>' +
+        '<div class="kbf-text">' + escapeHtml((h.text || '').slice(0, 260)) + '</div>' +
+      '</div>'
+    ).join('');
+    box.scrollTop = 0;
+  } catch (e) {
+    box.innerHTML = '<div class="kbf-empty">❌ ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+// ── 悬浮球开关（偏好存 localStorage，默认启用）──
+function isKbFabEnabled() {
+  let v = localStorage.getItem('wt_kb_fab');
+  return v === null ? true : v === '1';
+}
+function applyKbFab() {
+  let on = isKbFabEnabled();
+  document.getElementById('kb-fab').classList.toggle('hidden', !on);
+  if (!on) closeKbFabPanel();
+}
+function onKbFabToggle() {
+  localStorage.setItem('wt_kb_fab', document.getElementById('opt-kb-fab').checked ? '1' : '0');
+  applyKbFab();
+}
+function toggleKbFabPanel() {
+  let p = document.getElementById('kb-fab-panel');
+  p.classList.toggle('hidden');
+  if (!p.classList.contains('hidden')) document.getElementById('kb-fab-query').focus();
+}
+function closeKbFabPanel() {
+  document.getElementById('kb-fab-panel').classList.add('hidden');
+}
+function initKbFab() {
+  let on = isKbFabEnabled();
+  document.getElementById('opt-kb-fab').checked = on;
+  applyKbFab();
+}
+
+// 项目资产总览：控件库 / 流程包 / 知识库 / 技能
+async function loadOverview() {
+  try {
+    let resp = await fetch('/api/overview');
+    let d = await resp.json();
+    let el = document.getElementById('ov-stats');
+    if (!el) return;
+    let rows = [
+      ['🧩 控件库控件', d.controls || 0],
+      ['📦 流程包', d.flows || 0],
+      ['📚 知识库片段', (d.kb_chunks || 0) + ' / ' + (d.kb_sources || 0) + ' 源'],
+      ['🔧 内置技能', d.skills || 0],
+    ];
+    el.innerHTML = rows.map(r =>
+      '<div style="display:flex; justify-content:space-between; border-bottom:1px dashed rgba(255,255,255,0.08); padding:3px 0;">' +
+      '<span>' + r[0] + '</span><span style="font-weight:700; color:#fff;">' + r[1] + '</span></div>'
+    ).join('') +
+    (d.kb_areas && Object.keys(d.kb_areas).length ? '\n<div style="margin-top:4px; opacity:0.85;">' +
+      Object.entries(d.kb_areas).map(([k, v]) => k + ' ' + v).join(' · ') + '</div>' : '');
+  } catch (e) {}
+}
+
+function toggleOverview() {
+  document.getElementById('ov-header').classList.toggle('open');
+  document.getElementById('ov-body').classList.toggle('open');
 }
 
 function onKbToggle() {}
@@ -1480,6 +2172,47 @@ async function logDiagnose() {
   addMessage('user', '🩺 日志诊断');
   let data = await _flowPost('/api/log/diagnose', {log_input: instr, flow_path: flow});
   if (data) addMessage('agent', data.answer || '(无响应)');
+}
+
+// 流程链路检查审核纠错：确定性规则（动作/控件/类型匹配/参数）+ 模型语义审核
+async function auditFlow() {
+  let path = document.getElementById('ft-flow').value.trim();
+  if (!path) { showToast('请输入流程文件路径', 'error'); return; }
+  if (!getConfig().base_url) { showToast('语义审核需要配置 LLM 连接', 'error'); return; }
+  addMessage('user', '🧹 流程检查纠错：' + path);
+  addLoadingMessage();
+  try {
+    let cfg = getConfig();
+    let resp = await fetch('/api/flow/audit', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({flow_path: path, config: cfg}),
+    });
+    let data = await resp.json();
+    removeLoadingMessage();
+    if (data.status === 'error') { addMessage('agent', '❌ ' + data.message); return; }
+
+    let issues = (data.rules && data.rules.issues) || [];
+    let llmItems = data.llm || [];
+    let lines = ['## 流程检查报告'];
+    lines.push(data.summary || '');
+    if (!issues.length && !llmItems.length) {
+      lines.push('✅ 未发现问题');
+    }
+    issues.forEach((it, i) => {
+      let mark = it.level === 'error' ? '❌' : '⚠️';
+      lines.push((i + 1) + '. ' + mark + ' [' + it.category + '] 步骤' + it.step_index + ' ' + (it.step_name || '') + '：' + it.message);
+      if (it.suggestion) lines.push('   建议：' + it.suggestion);
+    });
+    llmItems.forEach((it) => {
+      lines.push('🔎 [模型语义] 步骤' + it.step_index + '：' + it.issue);
+      if (it.suggestion) lines.push('   建议：' + it.suggestion);
+    });
+    addMessage('agent', lines.join('\n'));
+  } catch (e) {
+    removeLoadingMessage();
+    addMessage('agent', '❌ 检查出错：' + escapeHtml(e.message));
+  }
 }
 
 async function loadControlStats() {
@@ -1615,11 +2348,8 @@ function showEmptyState() {
   if (!document.getElementById('empty-state')) {
     let div = document.createElement('div');
     div.id = 'empty-state';
-    div.innerHTML = `
-      <div class="empty-icon">💬</div>
-      <div class="empty-title">开始对话</div>
-      <div class="empty-hint">输入自然语言指令，或选择转换模式</div>
-    `;
+    div.className = 'empty-state';
+    div.innerHTML = emptyStateHTML();
     messagesContainer.appendChild(div);
   }
 }
@@ -1660,6 +2390,9 @@ loadConversations();
 loadProfiles();
 loadKbStatus();
 loadControlStats();
+loadOverview();
+initKbFab();
+loadSchemas();
 
 // ── Conversation Info Bar ──
 function updateConversationInfo(title) {

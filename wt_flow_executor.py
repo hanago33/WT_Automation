@@ -64,6 +64,14 @@ def _call_with_control_map_path(func, step_definition, *args, **kwargs):
         return func(*args, **kwargs, control_map_path=cmp)
     except TypeError as exc:
         if "control_map_path" in str(exc):
+            try:
+                _LOG_STEP(
+                    "Warning: callback does not accept control_map_path, degraded call: func={}, path={}".format(
+                        getattr(func, "__name__", repr(func)), cmp
+                    )
+                )
+            except Exception:
+                pass
             return func(*args, **kwargs)
         raise
 
@@ -81,7 +89,7 @@ def _write_feedback_to_flow(context, step_id, feedback_data):
         with open(flow_path, "r", encoding="utf-8") as f:
             flow_def = json.load(f)
     except Exception as e:
-        _LOG_STEP(context, f"Warning: Failed to load flow definition for feedback: {e}", step_id)
+        _LOG_STEP(f"Warning: Failed to load flow definition for feedback: {e} (step={step_id})")
         return
 
     if not isinstance(flow_def, dict):
@@ -107,7 +115,7 @@ def _write_feedback_to_flow(context, step_id, feedback_data):
         with open(flow_path, "w", encoding="utf-8") as f:
             json.dump(flow_def, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        _LOG_STEP(context, f"Warning: Failed to save flow definition for feedback: {e}", step_id)
+        _LOG_STEP(f"Warning: Failed to save flow definition for feedback: {e} (step={step_id})")
 
 
 def configure_flow_executor(
@@ -396,7 +404,15 @@ def _try_fallback_chain(step_id, context, original_error):
 
             if center:
                 center = apply_position_offset(center, action_config)
-                result = _execute_fallback_action(action_name, center, text)
+                result = _execute_fallback_action(
+                    action_name,
+                    center,
+                    text,
+                    step_id=step_id,
+                    action_config=action_config,
+                    step_definition=step_definition,
+                    timeout_seconds=timeout_seconds,
+                )
                 context.setdefault("step_outputs", {}).setdefault(step_id, {})[save_as] = result
                 context["step_outputs"][step_id]["output"] = result
                 result["_fallback_level"] = level
@@ -473,39 +489,102 @@ def _locate_by_uipath_fallback(uipath, timeout_seconds=3):
     return None
 
 
-def _execute_fallback_action(action_name, center, text=""):
-    """在指定屏幕坐标执行 fallback 动作，返回 result 值。"""
-    import pyautogui
+def _perform_coordinate_action(action_name, center, text=""):
+    """在屏幕坐标 center 上执行与 action_name 对应的鼠标/键盘动作。
+
+    供 fallback 链与模板兜底共用，避免两份近似的点击分发逻辑。
+    """
+    if action_name == "select_dropdown_item_runtime":
+        _LOG_STEP("Warning: refusing raw coordinate click for select_dropdown_item_runtime")
+        return
     if action_name in {"click", "wait_for_control"}:
         pyautogui.click(center[0], center[1])
-        return f"fallback_coord_{center[0]}_{center[1]}"
     elif action_name == "double_click":
         pyautogui.doubleClick(center[0], center[1])
-        return f"fallback_coord_{center[0]}_{center[1]}"
     elif action_name == "right_click":
         pyautogui.click(center[0], center[1], button="right")
-        return f"fallback_coord_{center[0]}_{center[1]}"
     elif action_name == "double_right_click":
         pyautogui.click(center[0], center[1], button="right")
         time.sleep(0.2)
         pyautogui.click(center[0], center[1], button="right")
-        return f"fallback_coord_{center[0]}_{center[1]}"
     elif action_name in {"type_text", "send_keys"}:
         pyautogui.click(center[0], center[1])
         time.sleep(0.2)
         if text:
             send_keys(text)
-        return text
     elif action_name == "mouse_wheel":
         pyautogui.moveTo(center[0], center[1])
-        return f"fallback_coord_{center[0]}_{center[1]}"
-    elif action_name == "select_dropdown_item_runtime":
-        pyautogui.click(center[0], center[1])
-        return f"fallback_coord_{center[0]}_{center[1]}"
     else:
         # 默认：尝试点击
         pyautogui.click(center[0], center[1])
-        return f"fallback_coord_{center[0]}_{center[1]}"
+
+
+def _execute_fallback_action(action_name, center, text="", step_id=None, action_config=None, step_definition=None, timeout_seconds=3):
+    """Execute a fallback action at screen coordinates and return a result dict.
+
+    The legacy string result is preserved in the ``detail`` field. Dropdown
+    actions prefer the latest runtime locator and never emit a raw coordinate
+    click; unconfirmed coordinate-only results carry explicit metadata.
+    """
+    if action_name == "select_dropdown_item_runtime":
+        dropdown_meta = _try_dropdown_runtime_fallback(
+            step_id=step_id,
+            action_config=action_config,
+            step_definition=step_definition,
+            timeout_seconds=timeout_seconds,
+        )
+        if dropdown_meta is not None:
+            return dropdown_meta
+        return {
+            "method": action_name,
+            "point": [int(center[0]), int(center[1])],
+            "fallback": True,
+            "detail": "fallback_coord_{}_{}".format(int(center[0]), int(center[1])),
+            "valueConfirmed": False,
+            "warning": "dropdown fallback locates coordinates only; selected value unconfirmed",
+        }
+    _perform_coordinate_action(action_name, center, text)
+    detail = text if action_name in {"type_text", "send_keys"} else "fallback_coord_{}_{}".format(int(center[0]), int(center[1]))
+    return {
+        "method": action_name,
+        "point": [int(center[0]), int(center[1])],
+        "fallback": True,
+        "detail": detail,
+    }
+
+
+def _try_dropdown_runtime_fallback(step_id=None, action_config=None, step_definition=None, timeout_seconds=3):
+    """Retry the latest dropdown runtime locator during fallback execution."""
+    if not step_id or not isinstance(action_config, dict):
+        return None
+    control_id = str(action_config.get("controlId", "")).strip()
+    target_option = str(action_config.get("text", action_config.get("value", ""))).strip()
+    if not control_id:
+        return None
+    try:
+        ok, select_meta = _call_with_control_map_path(
+            _SELECT_DROPDOWN_ITEM_RUNTIME,
+            step_definition,
+            step_id,
+            control_id,
+            timeout_seconds=timeout_seconds,
+            window_title_hint=str(action_config.get("windowTitleHint", "")).strip(),
+            target_option=target_option,
+        )
+    except Exception as exc:
+        _LOG_STEP("dropdown fallback retry failed: step={}, error={}".format(step_id, exc))
+        return None
+    if not ok:
+        return None
+    return {
+        "method": "select_dropdown_item_runtime",
+        "controlId": control_id,
+        "targetOption": target_option,
+        "fallback": True,
+        "valueConfirmed": True,
+        "detail": select_meta or target_option,
+    }
+
 
 
 def apply_position_offset(center_point, action_config):
@@ -543,11 +622,31 @@ def run_action_step(step_id, context):
         time.sleep(wait_before)
 
     result = None
-    if action_name == "click":
+    click_kind_by_action = {
+        "click": "left",
+        "double_click": "double",
+        "right_click": "right",
+        "double_right_click": "right",
+    }
+    if action_name in click_kind_by_action:
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
-        if not _call_with_control_map_path(_CLICK_FLOW_CONTROL, step_definition, step_id, control_id, timeout_seconds=timeout_seconds, window_title_hint=window_title_hint):
-            raise RuntimeError(f"action click 未命中控件: step={step_id}, control={control_id}")
+        click_kind = click_kind_by_action[action_name]
+        click_count = 2 if action_name == "double_right_click" else 1
+        for click_index in range(click_count):
+            if click_index > 0:
+                time.sleep(0.2)
+            if not _call_with_control_map_path(
+                _CLICK_FLOW_CONTROL,
+                step_definition,
+                step_id,
+                control_id,
+                timeout_seconds=timeout_seconds,
+                window_title_hint=window_title_hint,
+                click_kind=click_kind,
+            ):
+                failure_note = "第二次右击失败" if click_index > 0 else "未命中控件"
+                raise RuntimeError(f"action {action_name} {failure_note}: step={step_id}, control={control_id}")
         result = control_id
     elif action_name == "click_relative_region":
         parent_window = action_config.get("parentWindow", {}) if isinstance(action_config.get("parentWindow"), dict) else {}
@@ -592,55 +691,6 @@ def run_action_step(step_id, context):
             raise RuntimeError(f"action click_relative_anchor 未命中锚点控件: {step_id}")
         action_extra["anchorMeta"] = anchor_meta
         result = anchor_meta.get("clickPoint", {})
-    elif action_name == "double_click":
-        if not control_id:
-            raise ValueError(f"action 步骤缺少 controlId: {step_id}")
-        if not _call_with_control_map_path(
-            _CLICK_FLOW_CONTROL, step_definition,
-            step_id,
-            control_id,
-            timeout_seconds=timeout_seconds,
-            window_title_hint=window_title_hint,
-            click_kind="double",
-        ):
-            raise RuntimeError(f"action double_click 未命中控件: step={step_id}, control={control_id}")
-        result = control_id
-    elif action_name == "double_right_click":
-        if not control_id:
-            raise ValueError(f"action 步骤缺少 controlId: {step_id}")
-        if not _call_with_control_map_path(
-            _CLICK_FLOW_CONTROL, step_definition,
-            step_id,
-            control_id,
-            timeout_seconds=timeout_seconds,
-            window_title_hint=window_title_hint,
-            click_kind="right",
-        ):
-            raise RuntimeError(f"action double_right_click 未命中控件: step={step_id}, control={control_id}")
-        time.sleep(0.2)
-        if not _call_with_control_map_path(
-            _CLICK_FLOW_CONTROL, step_definition,
-            step_id,
-            control_id,
-            timeout_seconds=timeout_seconds,
-            window_title_hint=window_title_hint,
-            click_kind="right",
-        ):
-            raise RuntimeError(f"action double_right_click 第二次右击失败: step={step_id}, control={control_id}")
-        result = control_id
-    elif action_name == "right_click":
-        if not control_id:
-            raise ValueError(f"action 步骤缺少 controlId: {step_id}")
-        if not _call_with_control_map_path(
-            _CLICK_FLOW_CONTROL, step_definition,
-            step_id,
-            control_id,
-            timeout_seconds=timeout_seconds,
-            window_title_hint=window_title_hint,
-            click_kind="right",
-        ):
-            raise RuntimeError(f"action right_click 未命中控件: step={step_id}, control={control_id}")
-        result = control_id
     elif action_name == "type_text":
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
@@ -805,7 +855,7 @@ def run_action_step(step_id, context):
     return action_extra
 
 
-def run_action_step_with_template_fallback(step_id, context, original_error):
+def run_action_step_with_template_fallback(step_id, context, original_error=None, on_miss="raise"):
     step_definition = _GET_STEP_DEFINITION(step_id)
     action_config = step_definition.get("actionConfig", {})
     if not isinstance(action_config, dict):
@@ -821,17 +871,34 @@ def run_action_step_with_template_fallback(step_id, context, original_error):
     save_as = str(action_config.get("saveAs", "output")).strip() or "output"
 
     if fallback_mode != "template_match":
-        raise original_error
+        if original_error is not None:
+            raise original_error
+        raise RuntimeError(
+            f"fallbackMode 非 template_match: step={step_id}, mode={fallback_mode}"
+        )
     if not fallback_template:
-        raise original_error
+        if original_error is not None:
+            raise original_error
+        raise RuntimeError(f"缺少 fallbackTemplate: step={step_id}")
 
-    _LOG_STEP(
-        f"步骤执行失败，尝试模板兜底: step={step_id}, action={action_name}, "
-        f"template={fallback_template}, error={original_error}"
-    )
+    if original_error is None:
+        _LOG_STEP(
+            f"步骤优先模板识别: step={step_id}, action={action_name}, "
+            f"template={fallback_template}"
+        )
+    else:
+        _LOG_STEP(
+            f"步骤执行失败，尝试模板兜底: step={step_id}, action={action_name}, "
+            f"template={fallback_template}, error={original_error}"
+        )
 
     center = _LOCATE_TEMPLATE_CENTER_BY_PATH(fallback_template, timeout_seconds=timeout_seconds)
     if not center:
+        if on_miss == "return_none":
+            _LOG_STEP(
+                f"模板优先未命中，回退主流程: step={step_id}, template={fallback_template}"
+            )
+            return None
         raise RuntimeError(
             f"模板兜底未命中: step={step_id}, action={action_name}, "
             f"template={fallback_template}, timeout={timeout_seconds}"
@@ -839,50 +906,110 @@ def run_action_step_with_template_fallback(step_id, context, original_error):
     center = apply_position_offset(center, action_config)
     result = None
 
-    if action_name == "click":
-        pyautogui.click(center[0], center[1])
+    if action_name == "wait_for_control":
         result = fallback_template
-    elif action_name == "double_click":
-        pyautogui.doubleClick(center[0], center[1])
-        result = fallback_template
-    elif action_name == "right_click":
-        pyautogui.click(center[0], center[1], button="right")
-        result = fallback_template
-    elif action_name == "double_right_click":
-        pyautogui.click(center[0], center[1], button="right")
-        time.sleep(0.2)
-        pyautogui.click(center[0], center[1], button="right")
-        result = fallback_template
-    elif action_name in {"type_text", "send_keys"}:
-        pyautogui.click(center[0], center[1])
-        time.sleep(0.2)
-        send_keys(text)
-        result = text
     elif action_name == "mouse_wheel":
-        pyautogui.moveTo(center[0], center[1])
+        _perform_coordinate_action("mouse_wheel", center)
         wheel_delta = action_config.get("delta", text or action_config.get("amount", 0))
         try:
             pyautogui.scroll(int(float(wheel_delta)))
         except Exception:
             pyautogui.scroll(0)
         result = wheel_delta
-    elif action_name == "wait_for_control":
-        result = fallback_template
+    elif action_name in {
+        "click",
+        "double_click",
+        "right_click",
+        "double_right_click",
+        "type_text",
+        "send_keys",
+    }:
+        _perform_coordinate_action(action_name, center, text)
+        result = text if action_name in {"type_text", "send_keys"} else fallback_template
+    elif action_name == "click_relative_anchor":
+        # 模板模式下：模板命中点即目标点击点，不再叠加 click_relative_anchor 的
+        # offsetX/offsetY（截图本身已包含目标位置，叠加会导致点偏）。
+        # 若确需额外偏移，可用通用 positionOffset 字段。
+        target_point = (int(center[0]), int(center[1]))
+        if str(action_config.get("clickKind", "")).strip().lower() == "double":
+            pyautogui.doubleClick(target_point[0], target_point[1])
+        else:
+            pyautogui.click(target_point[0], target_point[1])
+        result = {
+            "method": action_name,
+            "clickPoint": {"x": target_point[0], "y": target_point[1]},
+            "fallback": True,
+            "template": fallback_template,
+        }
     elif action_name == "select_dropdown_item_runtime":
-        pyautogui.click(center[0], center[1])
-        result = fallback_template
+        dropdown_meta = _try_dropdown_runtime_fallback(
+            step_id=step_id,
+            action_config=action_config,
+            step_definition=step_definition,
+            timeout_seconds=timeout_seconds,
+        )
+        if dropdown_meta is not None:
+            result = dropdown_meta
+        else:
+            result = {
+                "method": action_name,
+                "point": [int(center[0]), int(center[1])],
+                "targetOption": text,
+                "fallback": True,
+                "valueConfirmed": False,
+                "warning": "template fallback locates coordinates only; selected value unconfirmed",
+            }
     else:
         raise RuntimeError(
             f"当前 action 暂不支持模板兜底执行: step={step_id}, action={action_name}, "
             f"template={fallback_template}"
         ) from original_error
 
-    _LOG_STEP(f"模板兜底执行成功: step={step_id}, action={action_name}, template={fallback_template}")
+    if original_error is None:
+        _LOG_STEP(f"模板优先执行成功: step={step_id}, action={action_name}, template={fallback_template}")
+    else:
+        _LOG_STEP(f"模板兜底执行成功: step={step_id}, action={action_name}, template={fallback_template}")
     context.setdefault("step_outputs", {}).setdefault(step_id, {})[save_as] = result
     context["step_outputs"][step_id]["output"] = result
 
     if wait_after > 0:
         time.sleep(wait_after)
+    return True
+
+
+def _as_bool_flag(value):
+    """宽松布尔解析：兼容布尔 / 数字 / 常见字符串表示。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def try_run_action_step_template_first(step_id, context):
+    """模板优先识别（preferTemplate）：命中并执行成功返回 True；未命中/不支持返回 False。
+
+    供 execute_step_by_id 在进入主流程 UIA 定位前调用；返回 False 时由主流程接管，
+    保证勾选“优先模板”不会因模板未命中而让原本可用的步骤失败。
+    """
+    step_definition = _GET_STEP_DEFINITION(step_id)
+    action_config = step_definition.get("actionConfig", {})
+    if not isinstance(action_config, dict):
+        action_config = {}
+    action_config = _RESOLVE_DYNAMIC_VALUE(action_config, step_id, context)
+    fallback_template = resolve_fallback_template_path(action_config.get("fallbackTemplate", ""))
+    if not fallback_template:
+        return False
+    try:
+        hit = run_action_step_with_template_fallback(
+            step_id, context, original_error=None, on_miss="return_none"
+        )
+        return bool(hit)
+    except Exception as exc:
+        _LOG_STEP(
+            f"模板优先未命中，回退主流程: step={step_id}, reason={exc}"
+        )
+        return False
 
 
 def run_flow_ref_step(step_id, execution_plan_map, context, skip_setup=False):
@@ -917,6 +1044,69 @@ def run_flow_ref_step(step_id, execution_plan_map, context, skip_setup=False):
 
 def is_setup_step(step_id):
     return step_id in {"launch_gm", "configure_projection", "open_source_dwg", "close_unknown_projection", "dwg_projection_confirm"}
+
+
+# ── 投影选择后置校验 ──
+# 用 MUP user.config 的投影历史/预置（mup_user_config.resolve_projection）
+# 确认"选择投影"步骤所选投影是否在最近使用/预置中，结果写入 step_extra（软校验，
+# 未命中不阻塞——首次使用新投影属正常，仅记 warning 供人工核对）。
+_PROJECTION_SELECT_KEYWORDS = ("选择投影", "select projection", "choose projection")
+_PROJECTION_NAME_KEYWORDS = (
+    "Gauss-Kruger", "Gauss Kruger", "Gauss-Krüger", "CGCS2000", "CGCS 2000",
+    "Web Mercator", "WGS 84", "WGS84", "UTM", "GEOGCS", "PROJCS", "Lambert",
+    "Albers", "Mercator", "Beijing 1954", "Xian 1980", "China 2000", "投影",
+)
+
+
+def _get_projection_verify_target(step_definition):
+    """从步骤定义提取投影后置校验的目标文本；非投影选择步骤返回 None。
+
+    只对"选择投影"类步骤校验（如 step_10 点击-选择投影坐标系），
+    "键入-查找投影坐标系"等搜索类步骤不校验，避免把搜索词误当投影名。
+    目标文本优先取 inspectHints.controlName（完整投影名），其次 controls[0].name。
+    """
+    if not isinstance(step_definition, dict):
+        return None
+    name = str(step_definition.get("name") or "").strip()
+    low_name = name.lower()
+    is_select = any(k in low_name for k in _PROJECTION_SELECT_KEYWORDS)
+    if not is_select:
+        return None
+    hints = step_definition.get("inspectHints") or {}
+    target = str(hints.get("controlName") or "").strip()
+    if not target:
+        controls = step_definition.get("controls") or []
+        if controls and isinstance(controls[0], dict):
+            target = str(controls[0].get("name") or "").strip()
+    if not target:
+        return None
+    # 目标文本须含投影命名特征，避免"选择投影"类步骤的控件名不是投影本身
+    low_target = target.lower()
+    if not any(k.lower() in low_target for k in _PROJECTION_NAME_KEYWORDS):
+        return None
+    return target
+
+
+def _verify_projection_choice(target_text):
+    """用 mup_user_config.resolve_projection 校验投影是否在历史/预置中。
+
+    返回写入 step_extra 的 dict（命中记录名称/EPSG，未命中记 warning）。
+    """
+    try:
+        from mup_user_config import resolve_projection
+        matched = resolve_projection(target_text)
+    except Exception:
+        return {}
+    if matched:
+        return {
+            "projectionVerified": True,
+            "projectionName": matched.get("name", ""),
+            "projectionEpsg": matched.get("epsg", ""),
+        }
+    return {
+        "projectionWarning": "所选投影未在 MUP 历史/预置中出现，可能为首次使用或名称不一致",
+        "projectionTarget": target_text,
+    }
 
 
 def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
@@ -977,7 +1167,15 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
             _resolve_step_policy(action_config)  # stepPolicy → 旧字段归一化（无 stepPolicy 时零副作用）
             on_error = str(action_config.get("onError", "")).strip().lower() or "stop"
             fallback_template = str(action_config.get("fallbackTemplate", "")).strip()
+            prefer_template = _as_bool_flag(action_config.get("preferTemplate", False))
+            template_preferred_tried = bool(prefer_template and fallback_template)
             try:
+                if template_preferred_tried:
+                    step_extra["templatePreferredAttempted"] = fallback_template
+                    if try_run_action_step_template_first(step_id, context):
+                        step_extra["templatePreferred"] = fallback_template
+                        step_extra.update(_wait_for_continue_when(step_id, action_config, phase="template_preferred", step_definition=step_definition) or {})
+                        return
                 step_extra.update(_run_action_step_with_retry(step_id, context, action_config, step_extra) or {})
             except Exception as exc:
                 if on_error == "fallback" and fallback_template:
@@ -1055,6 +1253,29 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
         raise
     finally:
         elapsed = time.time() - step_started
+        # 投影选择后置校验：仅对成功的选择投影步骤，用 MUP 投影历史/预置确认
+        if step_status == "success":
+            proj_target = _get_projection_verify_target(step_definition)
+            if proj_target:
+                proj_result = _verify_projection_choice(proj_target)
+                if proj_result:
+                    step_extra.update(proj_result)
+                    if proj_result.get("projectionVerified"):
+                        _LOG_STEP(
+                            "投影后置校验通过: step={step_id}, projection={name} (EPSG {epsg})".format(
+                                step_id=step_id,
+                                name=proj_result.get("projectionName", ""),
+                                epsg=proj_result.get("projectionEpsg", "?"),
+                            )
+                        )
+                    else:
+                        _LOG_STEP(
+                            "投影后置校验警告: step={step_id}, target={target}（{msg}）".format(
+                                step_id=step_id,
+                                target=proj_target,
+                                msg=proj_result.get("projectionWarning", ""),
+                            )
+                        )
         summary_parts = [
             f"step={step_id}",
             f"name={step_name}",
@@ -1065,6 +1286,10 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
             summary_parts.append(f"error={step_error}")
         if step_extra.get("fallbackTemplateUsed"):
             summary_parts.append(f"fallback={step_extra.get('fallbackTemplateUsed')}")
+        if step_extra.get("templatePreferred"):
+            summary_parts.append(f"templatePreferred={step_extra.get('templatePreferred')}")
+        elif step_extra.get("templatePreferredAttempted"):
+            summary_parts.append("templatePreferredMissed")
         if step_extra.get("attemptCount"):
             configured_retry_count = int(step_extra.get("retryCountConfigured", 0) or 0)
             total_attempts = configured_retry_count + 1
