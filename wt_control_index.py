@@ -124,31 +124,69 @@ def _collect_controls_from_master(master_path: str) -> dict[str, dict]:
 
 
 def _collect_controls_from_catalog(catalog_path: str) -> dict[str, dict]:
-    """从 standard_control_catalog.json 收集标准化控件信息。"""
+    """从 standard_control_catalog.json 的 groups schema 收集标准化控件信息。
+
+    兼容旧版 {control_id: control_info} 扁平结构；新版按
+    group.windowTitle/frameworkId 下钻 controls，并保留 targetMethod/targetValue。
+    """
     payload = _load_json(catalog_path)
     if not isinstance(payload, dict):
         return {}
 
+    groups = payload.get("groups")
+    if not isinstance(groups, list):
+        groups = [
+            {
+                "windowTitle": "",
+                "frameworkId": "",
+                "controls": [
+                    dict(value, _catalogKey=key)
+                    for key, value in payload.items()
+                    if isinstance(value, dict)
+                ],
+            }
+        ]
+
     controls: dict[str, dict] = {}
-    for key, value in payload.items():
-        if not isinstance(value, dict):
+    for group in groups:
+        if not isinstance(group, dict):
             continue
-        cid = str(key).strip()
-        if not cid:
-            continue
-        controls[cid] = {
-            "id": cid,
-            "name": str(value.get("name", "")).strip(),
-            "className": str(value.get("className", "")).strip(),
-            "controlType": str(value.get("controlType", "")).strip(),
-            "source": "standard_catalog",
-        }
+        group_window = str(group.get("windowTitle", "")).strip()
+        group_framework = str(group.get("frameworkId", "")).strip()
+        group_controls = group.get("controls", [])
+        if not isinstance(group_controls, list):
+            group_controls = [group]
+        for ctrl in group_controls:
+            if not isinstance(ctrl, dict):
+                continue
+            target_value = str(ctrl.get("targetValue", "")).strip()
+            automation_id = str(ctrl.get("automationId", "")).strip()
+            legacy_key = str(ctrl.get("_catalogKey", "")).strip()
+            cid = (
+                target_value
+                or automation_id
+                or legacy_key
+                or str(ctrl.get("id", "")).strip()
+                or str(ctrl.get("name", "")).strip()
+            )
+            if not cid:
+                continue
+            if cid not in controls:
+                controls[cid] = {
+                    "id": cid,
+                    "name": str(ctrl.get("name", "")).strip(),
+                    "className": str(ctrl.get("className", "")).strip(),
+                    "controlType": str(ctrl.get("controlType", "")).strip(),
+                    "targetMethod": str(ctrl.get("targetMethod", "")).strip(),
+                    "targetValue": target_value,
+                    "automationId": automation_id,
+                    "windowTitle": str(ctrl.get("windowTitle", "")).strip() or group_window,
+                    "frameworkId": str(ctrl.get("frameworkId", "")).strip() or group_framework,
+                    "authority": str(ctrl.get("authority", "")).strip(),
+                    "source": "standard_catalog",
+                }
     return controls
 
-
-# ---------------------------------------------------------------------------
-# 生成索引文本
-# ---------------------------------------------------------------------------
 
 def build_control_index_text(
     flow_path: str | None = None,
@@ -215,6 +253,10 @@ def build_control_index_text(
             parts.append(f"  类名={info['className']}")
         if info.get("controlType"):
             parts.append(f"  类型={info['controlType']}")
+        if info.get("targetMethod"):
+            parts.append(f"  定位方式={info['targetMethod']}")
+        if info.get("targetValue"):
+            parts.append(f"  定位值={info['targetValue']}")
         if info.get("role"):
             parts.append(f"  角色={info['role']}")
         if info.get("windowTitle"):

@@ -31,7 +31,45 @@ def load_flow(path: str) -> dict[str, Any] | None:
     return data
 
 
-def _step_summary(step: dict[str, Any], idx: int) -> str:
+def _control_summary(control: dict[str, Any], idx: int) -> str:
+    """把步骤内嵌控件压成一行摘要，供 LLM 语义审核识别控件与动作是否匹配。"""
+    ins = control.get("inspectData", {}) if isinstance(control.get("inspectData"), dict) else {}
+    name = control.get("name", "") or ins.get("name", "") or ""
+    function_text = control.get("functionText", "") or ins.get("functionText", "") or ""
+    help_text = control.get("helpText", "") or ins.get("helpText", "") or ""
+    ctype = control.get("controlType", "") or ins.get("controlType", "") or ""
+    aid = control.get("automationId", "") or ins.get("automationId", "") or ""
+    target_value = (
+        control.get("targetValue", "")
+        or control.get("recommendedTargetValue", "")
+        or ins.get("recommendedTargetValue", "")
+        or ""
+    )
+    window_title = control.get("windowTitle", "") or ""
+    raw_hint = " ".join([
+        str(control.get("name", "") or ""),
+        str(control.get("notes", "") or ""),
+        str(ins.get("rawInspectText", "") or ""),
+    ])
+    fields = [f"控件[{idx}] 名称={name}"]
+    if function_text:
+        fields.append(f"functionText={function_text}")
+    if help_text:
+        fields.append(f"helpText={help_text}")
+    if ctype:
+        fields.append(f"类型={ctype}")
+    if aid:
+        fields.append(f"automationId={aid}")
+    if target_value:
+        fields.append(f"targetValue={target_value}")
+    if window_title:
+        fields.append(f"windowTitle={window_title}")
+    if "待确认" in raw_hint or "#[" in raw_hint or "%(" in raw_hint:
+        fields.append("待确认=是")
+    return "  ".join(fields)
+
+
+def _step_summary(step: dict[str, Any], idx: int, include_controls: bool = False) -> str:
     ac = step.get("actionConfig", {}) or {}
     action = ac.get("action", "?")
     control_id = ac.get("controlId", "")
@@ -45,10 +83,16 @@ def _step_summary(step: dict[str, Any], idx: int) -> str:
     desc = step.get("description", "")
     if desc:
         parts.append(f"说明={desc}")
+    if include_controls:
+        controls = step.get("controls", [])
+        if isinstance(controls, list):
+            for ci, control in enumerate(controls):
+                if isinstance(control, dict):
+                    parts.append(_control_summary(control, ci))
     return "  ".join(parts)
 
 
-def flow_to_text(flow: dict[str, Any], max_steps: int = 300) -> str:
+def flow_to_text(flow: dict[str, Any], max_steps: int = 300, include_controls: bool = False) -> str:
     """把流程定义压成紧凑文本，便于注入 LLM 上下文。"""
     lines: list[str] = []
     desc = flow.get("description", "")
@@ -63,7 +107,7 @@ def flow_to_text(flow: dict[str, Any], max_steps: int = 300) -> str:
     for i, s in enumerate(steps[:max_steps], 1):
         if not isinstance(s, dict):
             continue
-        lines.append(_step_summary(s, i))
+        lines.append(_step_summary(s, i, include_controls=include_controls))
     if len(steps) > max_steps:
         lines.append(f"  ...（其余 {len(steps) - max_steps} 步已省略）")
     return "\n".join(lines)

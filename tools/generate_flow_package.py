@@ -18,6 +18,26 @@ generate_flow_package.py
 import os
 import sys
 import json
+import time
+
+
+def _now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def build_source_info_catalog(aid):
+    """标准目录导入的来源标记。"""
+    return {
+        "origin": "standard_catalog",
+        "libraryControlId": str(aid or ""),
+        "libraryFileName": "standard_control_catalog.json",
+        "importedBy": "标准目录导入",
+        "importedAt": _now_iso(),
+        "edited": False,
+        "editedAt": "",
+        "sourceDeleted": False,
+        "sourceDeletedAt": "",
+    }
 import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -162,6 +182,7 @@ def build_control_from_catalog(aid, cat_ctrl, window_title):
         "rawInspectText": "",
         "auxChecks": aux,
         "inspectData": base_inspect,
+        "sourceInfo": build_source_info_catalog(aid),
     }
 
 

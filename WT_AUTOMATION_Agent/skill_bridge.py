@@ -305,6 +305,39 @@ WT_AUTOMATION_LESSONS_SKILL_CONTENT = """
 """
 
 
+WT_CONTROL_SEMANTICS_SKILL_CONTENT = """
+## WT 折叠面板与参数控件语义速查（Agent 生成步骤必读）
+
+1. **"XX参数"多为折叠面板切换按钮，不是输入控件。**
+   WT 中"求解器参数""风电场参数""建模区域参数"等名称通常是可折叠面板的切换按钮
+   （automationId 形如 MTDTileView_Button_ToggleState / ExpanderWithToolBar_Button_ToggleState，
+   controlType=Button），点击后才展开对应的 View（如 MUPDASSolverParametersView），
+   面板**内部**才是真正的参数输入框/下拉框。
+   → 用户说"把 XX 参数设置为 Y"时，应输出两个步骤：
+     ① click 折叠面板切换按钮（展开面板）；
+     ② 在面板内对具体参数控件做 type_text / set_combobox / click。
+
+2. **求解器参数面板（MUPDASSolverParametersView，位于 CFD 新建流程 MUPDASCreatorView 内）映射：**
+   - 展开按钮：`求解器参数` → targetValue 形如 `MTDTileView_Button_ToggleState,Button`
+   - 最大迭代次数（默认 25）→ `DASParameters_NumericUpDownWithWarning_NbIterations,Custom`（Edit）
+   - 收敛阈值（默认 0.98 等）→ `DASParameters_NumericUpDownWithWarning_ConvergenceThreshold,Custom`（Edit）
+   - 并行线程数 → `DASParameters_NumericUpDownWithWarning_NumberThreads,...`（Edit）
+   - 用户说"求解器参数设置为 4"时，默认按"最大迭代次数=4"解释；
+     若上下文无提示具体参数，可先给出该默认解释并在描述中注明。
+
+3. **NumericUpDown（className MUPNumericUpDownWithWarning）输入后必须提交失焦：**
+   type_text 之后追加一个 send_keys 步骤（text 填 {TAB} 或 {ENTER}），
+   或用 type_text_relative 的 postInputKeys，否则值可能未写入。
+
+4. **控件检索选型规则：**
+   交互动作（click / type_text / set_combobox / select_dropdown_item_runtime）必须选中
+   Button / Edit / ComboBox / ListBoxItem 等可交互类型；**禁止选 Text / TextBlock 文字展示层**
+   （名称完全相同的文字层往往排在控件子节点里，点击会"假成功"）。
+   同名控件（同一 automationId 多实例）优先选 labelText / uiPath 与当前视图匹配的候选，
+   必要时用 find_control 的 within 参数限定窗口/视图。
+"""
+
+
 def get_builtin_skills() -> list[SkillInfo]:
     """获取内置 Skill 列表（无需加载文件）。"""
     return [
@@ -317,6 +350,11 @@ def get_builtin_skills() -> list[SkillInfo]:
             name="WT Automation Lessons",
             description="WT 自动化调试根因与工程改进经验（假成功/定位/降级/字段契约）",
             content=WT_AUTOMATION_LESSONS_SKILL_CONTENT,
+        ),
+        SkillInfo(
+            name="WT Control Semantics",
+            description="WT 折叠面板与参数控件语义速查（求解器参数面板映射、NumericUpDown 提交、控件选型）",
+            content=WT_CONTROL_SEMANTICS_SKILL_CONTENT,
         ),
     ]
 

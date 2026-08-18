@@ -142,19 +142,23 @@ def _extract_segment_found_index(segment_text):
 
 
 def _parse_segment(segment_text):
-    segment_text = _strip_segment_index(segment_text)
-    base_segment, coords = _split_coordinate_suffix(segment_text)
+    raw_segment = str(segment_text or "").strip()
+    base_segment, coords = _split_coordinate_suffix(raw_segment)
+    base_segment = _strip_segment_index(base_segment)
     if "||" not in base_segment:
-        return {"raw": segment_text, "name": base_segment, "controlType": "", "coords": coords}
+        return {"raw": raw_segment, "name": base_segment, "controlType": "", "coords": coords}
     name, control_type = base_segment.rsplit("||", 1)
-    return {"raw": segment_text, "name": name.strip(), "controlType": control_type.strip(), "coords": coords}
+    return {"raw": raw_segment, "name": name.strip(), "controlType": control_type.strip(), "coords": coords}
 
 
 def _find_window_title(path_text):
     for segment in reversed(_split_uipath(path_text)):
         parsed = _parse_segment(segment)
         if parsed.get("controlType") == "Window" and parsed.get("name", ""):
-            return parsed.get("name", "")
+            name = parsed.get("name", "")
+            if wt_flow_editor_utils.uipath_is_main_window_root(f"{name}||Window"):
+                return ""
+            return name
     return ""
 
 
@@ -212,10 +216,13 @@ def _clean_control_definition(control_definition, fallback_window_title="", sour
     control_definition["inspectData"] = cleaned_inspect
     control_definition["id"] = _sanitize_control_id(control_definition.get("id", ""), "target_control")
     control_definition["name"] = _normalize_match_text(control_definition.get("name", "")) or cleaned_inspect.get("name", "") or control_definition["id"]
-    control_definition["windowTitle"] = _normalize_match_text(control_definition.get("windowTitle", "")) or _normalize_match_text(fallback_window_title)
     control_definition["targetMethod"] = _normalize_match_text(control_definition.get("targetMethod", ""))
     control_definition["targetValue"] = _normalize_match_text(control_definition.get("targetValue", ""))
     control_definition["uiPath"] = _normalize_match_text(control_definition.get("uiPath", ""))
+    control_definition["windowTitle"] = wt_flow_editor_utils.normalize_window_title_for_uipath(
+        _normalize_match_text(control_definition.get("windowTitle", "")) or _normalize_match_text(fallback_window_title),
+        control_definition["uiPath"],
+    )
     control_definition["templateKey"] = _normalize_match_text(control_definition.get("templateKey", ""))
     control_definition["notes"] = _normalize_match_text(control_definition.get("notes", ""))
     control_definition["auxChecks"] = [_normalize_match_text(item) for item in control_definition.get("auxChecks", []) if _normalize_match_text(item)]
@@ -423,6 +430,15 @@ def _match_control_from_library(full_path, step_action, control_library):
     if best_match is None or best_score < 32:
         return None
     matched = copy.deepcopy(best_match["definition"])
+    matched_ins = matched.get("inspectData", {}) if isinstance(matched.get("inspectData"), dict) else {}
+    display_name = str(
+        matched.get("functionText", "")
+        or matched.get("helpText", "")
+        or matched_ins.get("functionText", "")
+        or matched_ins.get("helpText", "")
+    ).strip()
+    if display_name:
+        matched["name"] = display_name
     matched["notes"] = (
         (matched.get("notes", "") + " | " if matched.get("notes", "") else "")
         + f"recorder 自动匹配命中，评分={best_score}，置信度={best_confidence:.2f}，依据={'; '.join(best_reasons) or '综合相似度'}。"
@@ -699,6 +715,9 @@ def _build_control_definition(control_id, full_path, window_title, stats=None, s
     """
     target_method, target_value = _build_target_method_and_value(full_path)
     leaf = _get_leaf_segment(full_path)
+    if wt_flow_editor_utils.uipath_is_main_window_root(full_path):
+        # 主窗口根路径内录制的 windowTitle 是控件库分类名伪标题，不写入真实标题约束
+        window_title = "*"
     path_depth = len(_split_uipath(full_path))
     # 路径足够深时，推荐用完整 UIA 路径作为唯一选择器（#7）
     use_ui_path = path_depth >= 2 and bool(_normalize_match_text(full_path))
@@ -803,8 +822,38 @@ def _build_control_definition(control_id, full_path, window_title, stats=None, s
     return control_definition
 
 
+def _supplement_control_definition_fields(control_definition):
+    """补齐控件定义中的 inspectData 字段与顶层语义字段（录制器经常缺失）。"""
+    control_definition = control_definition if isinstance(control_definition, dict) else {}
+    inspect_data = control_definition.setdefault("inspectData", {})
+    if not isinstance(inspect_data, dict):
+        inspect_data = {}
+        control_definition["inspectData"] = inspect_data
+    top_level_scalar = ("labelText", "relatedLabelName", "rawInspectText", "optionValues")
+    for field in top_level_scalar:
+        if field not in control_definition:
+            control_definition[field] = [] if field == "optionValues" else ""
+    if "tabNavigation" not in control_definition:
+        control_definition["tabNavigation"] = {}
+    if "preferTabNavigation" not in control_definition:
+        control_definition["preferTabNavigation"] = False
+    inspect_scalar = (
+        "processId", "runtimeId", "legacyName", "legacyRole", "legacyState",
+        "helpText", "isControlElement", "isContentElement", "isVisible",
+        "labelText", "relatedLabelName",
+    )
+    for field in inspect_scalar:
+        if field not in inspect_data:
+            inspect_data[field] = ""
+    for field in ("optionValues", "availablePatterns"):
+        if field not in inspect_data:
+            inspect_data[field] = []
+    return control_definition
+
+
 def _apply_control_definition_to_step(step, control_definition, line_no, match_meta=None):
     control_definition = copy.deepcopy(control_definition if isinstance(control_definition, dict) else {})
+    control_definition = _supplement_control_definition_fields(control_definition)
     control_definition["id"] = _sanitize_control_id(control_definition.get("id", ""), "target_control")
     step["controls"] = [control_definition]
     step["actionConfig"]["controlId"] = control_definition["id"]
@@ -1825,7 +1874,20 @@ _PRESERVED_ACTION_FIELDS = {
 }
 _PRESERVED_CONTROL_FIELDS = {
     "targetMethod", "targetValue", "recommendedTargetMethod", "recommendedTargetValue",
+    "labelText", "relatedLabelName", "rawInspectText", "optionValues",
+    "tabNavigation", "preferTabNavigation",
+    "processId", "runtimeId", "availablePatterns",
+    "legacyName", "legacyRole", "legacyState", "helpText",
+    "isControlElement", "isContentElement", "isVisible",
 }
+
+
+def _normalized_json(value):
+    """Return a stable normalized JSON string for content comparison, or None."""
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        return None
 
 
 def _merge_with_previous(new_steps, previous_steps):
@@ -1872,15 +1934,24 @@ def _merge_with_previous(new_steps, previous_steps):
             old_ctrls = old_step.get("controls", []) if isinstance(old_step.get("controls"), list) else []
             new_ctrls = step.get("controls", []) if isinstance(step.get("controls"), list) else []
             for i in range(min(len(old_ctrls), len(new_ctrls))):
+                old_ctrl = old_ctrls[i] if isinstance(old_ctrls[i], dict) else {}
+                new_ctrl = new_ctrls[i] if isinstance(new_ctrls[i], dict) else {}
+                old_inspect = old_ctrl.get("inspectData", {}) if isinstance(old_ctrl.get("inspectData"), dict) else {}
+                new_inspect = new_ctrl.setdefault("inspectData", {}) if isinstance(new_ctrl, dict) else {}
+                if not isinstance(new_inspect, dict):
+                    new_inspect = {}
+                    new_ctrl["inspectData"] = new_inspect
                 for field in _PRESERVED_CONTROL_FIELDS:
-                    if field in old_ctrls[i] and old_ctrls[i][field] != new_ctrls[i].get(field):
-                        new_ctrls[i][field] = old_ctrls[i][field]
+                    if field in old_ctrl and old_ctrl[field] != new_ctrl.get(field):
+                        new_ctrl[field] = old_ctrl[field]
+                    elif field in old_inspect and old_inspect[field] != new_inspect.get(field):
+                        new_inspect[field] = old_inspect[field]
 
             # 保留用户自定义的 fallbackChain（如果旧的有更多/不同的降级策略）
             old_fbs = old_step.get("fallbackChain", []) if isinstance(old_step.get("fallbackChain"), list) else []
             new_fbs = step.get("fallbackChain", []) if isinstance(step.get("fallbackChain"), list) else []
-            if old_fbs and len(old_fbs) != len(new_fbs):
-                # 保留旧版 fallbackChain（用户可能手动调整过）
+            if old_fbs and _normalized_json(old_fbs) != _normalized_json(new_fbs):
+                # Preserve a manually adjusted older fallbackChain.
                 step["fallbackChain"] = old_fbs
 
             # 保留 enabled 状态
@@ -2183,7 +2254,7 @@ tr.conf-none {{ border-left:4px solid #BDBDBD; }}
     return report_path
 
 
-def convert_recorder_script_to_flow(script_path, output_json_path=None, control_map_dir=CONTROL_MAP_DIR, screenshot_dir=None, previous_flow_path=None):
+def convert_recorder_script_to_flow(script_path, output_json_path=None, control_map_dir=CONTROL_MAP_DIR, screenshot_dir=None, previous_flow_path=None, repair=True):
     """将 pywinauto_recorder 脚本转换为 flow_definition JSON。
     
     Args:
@@ -2357,6 +2428,20 @@ def convert_recorder_script_to_flow(script_path, output_json_path=None, control_
     }
     
     # P2: 生成视觉质量 HTML 报告（在写入 JSON 之前，确保路径回写到 payload）
+    # 一键修复：清洗步骤后调用共享修复层，并把统计写回 conversionMeta
+    if repair:
+        try:
+            from WT_AUTOMATION_Agent import flow_repair
+
+            repaired_payload, repair_report = flow_repair.repair_flow_definition(payload)
+            payload = repaired_payload
+            payload["conversionMeta"]["autoFixedCount"] = repair_report.get("auto_fixed_count", 0)
+            payload["conversionMeta"]["pendingConfirmCount"] = repair_report.get("pending_confirm_count", 0)
+            payload["conversionMeta"]["pendingConfirm"] = repair_report.get("pending_confirm", [])
+            payload["conversionMeta"]["repairSummary"] = repair_report.get("summary", "")
+        except Exception:
+            pass
+
     if output_json_path:
         report_path = _generate_quality_report(payload, output_json_path)
         if report_path:

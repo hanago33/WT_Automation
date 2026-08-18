@@ -1,8 +1,0 @@
-schema_version: 1
-module_path: automation_agent
-title: WT Automation Agent — 自然语言到 RPA 步骤的 DSL 转换层
-scope:
-    - WT_AUTOMATION_Agent/
-source_files: []
-depends_on: []
-related_to: []

@@ -68,15 +68,30 @@ def is_window_responsive(hwnd, timeout_ms=1000):
     return bool(response)
 
 
-def find_main_windows(main_window_title_re):
+def find_main_windows(main_window_title_re, class_name_keywords=()):
+    """枚举目标软件主窗口候选。
+
+    - 默认按标题正则匹配（`main_window_title_re`），保持既有行为。
+    - 传入 `class_name_keywords`（如 ("MUPSmartClient",)）时，标题为空或
+      不匹配正则的可见窗口，若其窗口类名包含任一关键词（不区分大小写）
+      也纳入候选——用于 MUP 主窗口标题为空、仅靠类名可识别的场景。
+    """
     windows = []
+    keywords = tuple(str(k) for k in (class_name_keywords or ()) if str(k).strip())
 
     @_ENUM_WINDOWS_PROC
     def callback(hwnd, _lparam):
         if not _USER32.IsWindowVisible(hwnd):
             return True
         title = _GET_WINDOW_TEXT(hwnd)
-        if not title or not main_window_title_re.search(title):
+        title_matched = bool(title) and main_window_title_re.search(title)
+        class_matched = False
+        if not title_matched and keywords:
+            class_buf = ctypes.create_unicode_buffer(256)
+            if _USER32.GetClassNameW(hwnd, class_buf, 256):
+                class_name = class_buf.value or ""
+                class_matched = any(k.lower() in class_name.lower() for k in keywords)
+        if not title_matched and not class_matched:
             return True
         rect = _GET_WINDOW_RECT(hwnd)
         width = (rect.right - rect.left) if rect else 0
@@ -88,6 +103,7 @@ def find_main_windows(main_window_title_re):
                 "minimized": bool(_USER32.IsIconic(hwnd)),
                 "width": width,
                 "height": height,
+                "classMatch": class_matched and not title_matched,
             }
         )
         return True
@@ -112,7 +128,23 @@ def choose_best_window(windows):
     return max(windows, key=sort_key)
 
 
-def wait_until_main_window_ready(main_window_title_re, timeout_seconds=30):
+def _restore_if_minimized(hwnd):
+    """若窗口处于最小化状态则恢复（SW_RESTORE），返回是否执行了恢复。
+
+    就绪判定要求"未最小化"，若恢复动作放在就绪判定之后，最小化窗口永远等不到就绪
+    （恢复分支被门槛挡住）。必须在就绪判定前完成恢复。
+    """
+    try:
+        if _USER32.IsIconic(hwnd):
+            _USER32.ShowWindow(hwnd, _SW_RESTORE)
+            time.sleep(0.4)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def wait_until_main_window_ready(main_window_title_re, timeout_seconds=30, class_name_keywords=()):
     deadline = time.time() + timeout_seconds
     consecutive_ready = 0
     ready_confirmation_count = 3
@@ -121,13 +153,18 @@ def wait_until_main_window_ready(main_window_title_re, timeout_seconds=30):
     last_logged_reason = ""
 
     while time.time() < deadline:
-        windows = find_main_windows(main_window_title_re)
+        windows = find_main_windows(main_window_title_re, class_name_keywords=class_name_keywords)
         best = choose_best_window(windows)
         if best is None:
             consecutive_ready = 0
             last_reason = "未找到匹配标题的目标软件主窗口"
         else:
             responsive = is_window_responsive(best["hwnd"])
+            # 最小化窗口必须先恢复：就绪判定要求"未最小化"，若等它就绪再恢复，
+            # 恢复动作永远执行不到（死锁），activate_and_maximize 也会空等超时。
+            if best["minimized"]:
+                _restore_if_minimized(best["hwnd"])
+                best["minimized"] = bool(_USER32.IsIconic(best["hwnd"]))
             ready = responsive and not best["minimized"] and best["width"] > 0 and best["height"] > 0
             if ready:
                 consecutive_ready += 1
@@ -159,8 +196,12 @@ def wait_until_main_window_ready(main_window_title_re, timeout_seconds=30):
     raise RuntimeError(f"等待目标软件恢复响应超时: {last_reason}")
 
 
-def activate_and_maximize_main_window(main_window_title_re, timeout_seconds=60):
-    hwnd = wait_until_main_window_ready(main_window_title_re, timeout_seconds=timeout_seconds)
+def activate_and_maximize_main_window(main_window_title_re, timeout_seconds=60, class_name_keywords=()):
+    hwnd = wait_until_main_window_ready(
+        main_window_title_re,
+        timeout_seconds=timeout_seconds,
+        class_name_keywords=class_name_keywords,
+    )
     if _USER32.IsIconic(hwnd):
         _USER32.ShowWindow(hwnd, _SW_RESTORE)
         time.sleep(0.5)
@@ -175,7 +216,7 @@ def activate_and_maximize_main_window(main_window_title_re, timeout_seconds=60):
     return hwnd
 
 
-def ensure_main_window_foreground(main_window_title_re, timeout_seconds=15):
+def ensure_main_window_foreground(main_window_title_re, timeout_seconds=15, class_name_keywords=()):
     """运行前窗口健康检查 + 置顶（bring to front）。
 
     找到目标主窗口后：若最小化则恢复（SW_RESTORE，保留原窗口布局），
@@ -189,7 +230,7 @@ def ensure_main_window_foreground(main_window_title_re, timeout_seconds=15):
     deadline = time.time() + timeout_seconds
     last_reason = "尚未开始检测"
     while time.time() < deadline:
-        windows = find_main_windows(main_window_title_re)
+        windows = find_main_windows(main_window_title_re, class_name_keywords=class_name_keywords)
         best = choose_best_window(windows)
         if best is None:
             last_reason = "未找到匹配标题的目标软件主窗口"
@@ -258,20 +299,24 @@ def find_open_dialog(timeout_seconds=5):
 
 def confirm_open_file_dialog(timeout_seconds=5):
     dialog = find_open_dialog(timeout_seconds=timeout_seconds)
-    if dialog is not None:
-        try:
-            if _CLICK_FLOW_CONTROL("dwg_projection_confirm", "dwg_open_ok", timeout_seconds=1.0, window_title_hint="打开"):
-                _LOG_STEP("打开文件对话框确认成功: method=flow_control")
-                return
-            dialog.set_focus()
-            open_button = dialog.child_window(title="打开(O)", control_type="Button")
-            if open_button.exists(timeout=0.5):
-                open_button.click_input()
-                _LOG_STEP("打开文件对话框确认成功: method=pywinauto_button")
-                time.sleep(0.8)
-                return
-        except Exception as exc:
-            _LOG_STEP(f"打开文件对话框确认失败，准备回退到 Enter: error={exc}")
+    if dialog is None:
+        # 防误触发：没有找到对话框时绝不能盲发 ENTER——回车会落到当前焦点窗口的按钮上，
+        # 可能确认了无关对话框。抛错交外层处理（type_path_into_open_dialog 的 pywinauto 兜底）。
+        raise RuntimeError("未找到打开文件对话框，已放弃确认（避免盲发 ENTER）")
+    try:
+        if _CLICK_FLOW_CONTROL("dwg_projection_confirm", "dwg_open_ok", timeout_seconds=1.0, window_title_hint="打开"):
+            _LOG_STEP("打开文件对话框确认成功: method=flow_control")
+            return
+        dialog.set_focus()
+        open_button = dialog.child_window(title="打开(O)", control_type="Button")
+        if open_button.exists(timeout=0.5):
+            open_button.click_input()
+            _LOG_STEP("打开文件对话框确认成功: method=pywinauto_button")
+            time.sleep(0.8)
+            return
+    except Exception as exc:
+        _LOG_STEP(f"打开文件对话框确认失败，准备回退到 Enter: error={exc}")
+    # 对话框已确认存在：ENTER 落在该对话框的默认按钮（打开/确定）上是安全的
     send_keys("{ENTER}")
     _LOG_STEP("打开文件对话框确认成功: method=send_keys_enter")
     time.sleep(0.8)

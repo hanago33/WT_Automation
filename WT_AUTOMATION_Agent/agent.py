@@ -525,6 +525,19 @@ def build_system_prompt(context: DslContext | None = None) -> str:
         "6. 使用 snake_case 字段名（control_id, step_name）。",
     ])
 
+    # 步骤生成要点（折叠面板/输入提交/控件选型）
+    parts.extend([
+        "",
+        "## 步骤生成要点",
+        "1. 目标控件位于折叠面板内时（如'求解器参数''风电场参数'等切换按钮展开的 View），",
+        "   必须先输出'点击折叠面板切换按钮'的步骤展开面板，再输出面板内参数的设置步骤。",
+        "2. NumericUpDown 数值输入框（如最大迭代次数）type_text 后应追加 send_keys",
+        "   （text 为 {TAB} 或 {ENTER}）提交失焦，避免值未写入。",
+        "3. 控件选型：交互动作必须选 Button/Edit/ComboBox/ListBoxItem 等可交互类型，",
+        "   禁止选 Text/TextBlock 文字展示层（点击会假成功）；",
+        "   同名控件优先选 labelText/uiPath 与当前视图匹配的候选。",
+    ])
+
     # 参数扫描与 Excel 联动知识（关键）
     parts.extend([
         "",
@@ -852,6 +865,10 @@ def _build_step_control(action_name: str, control_id: str) -> dict[str, Any]:
     }
     if rec.get("uiPath"):
         control["uiPath"] = rec["uiPath"]
+    # 回填模板引用：控件库记录若带 templateKey（采集器/伴随拾取已关联截图），
+    # 让生成/保存时能自动关联 actionConfig.fallbackTemplate 模板兜底。
+    if rec.get("templateKey"):
+        control["templateKey"] = rec["templateKey"]
     if notes_parts:
         control["notes"] = "；".join(notes_parts)
     return control
@@ -1405,7 +1422,7 @@ class DslAgent:
         模型不可用时返回空列表，不影响规则检查结果。
         """
         try:
-            flow_text = flow_ops.flow_to_text(flow)
+            flow_text = flow_ops.flow_to_text(flow, include_controls=True)
         except Exception:
             flow_text = ""
         if not flow_text:
@@ -1451,6 +1468,64 @@ class DslAgent:
     # 执行日志 / 运行报告诊断
     # ------------------------------------------------------------------
 
+
+    def repair_flow_suggestions(self, flow: dict[str, Any] | None, report: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return LLM semantic repair suggestions with per-step proposed patches.
+
+        Items: [{step_index, issue, suggestion, proposed_patch}].
+        Returns [] when the LLM is unavailable or flow text is empty.
+        """
+        try:
+            flow_text = flow_ops.flow_to_text(flow, include_controls=True)
+        except Exception:
+            flow_text = ""
+        if not flow_text:
+            return []
+        pending_lines = [
+            f"- step {it.get('step_index', 0)} {it.get('step_name', '')}: {it.get('message', '')} -> {it.get('suggestion', '')}"
+            for it in (report.get("pending_confirm", []) or [])
+        ]
+        prompt = (
+            "You are a WT (Meteodyn WT) desktop automation flow engineer. "
+            "The flow below was already repaired with deterministic rules; the pending list still needs semantic fixes. "
+            "For each item output {step_index, issue, suggestion, proposed_patch} where proposed_patch is a JSON object "
+            "of top-level step fields to replace (only name, windowTitle, description, notes, actionConfig, controls, inspectHints). "
+            "actionConfig must be complete (action, controlId, text/value). When unsure, use an empty proposed_patch. "
+            "Return only a JSON array; return [] when no fixes are needed.\n\n"
+            "[Pending]\n" + ("\n".join(pending_lines) if pending_lines else "(none)")
+            + "\n\n[Flow]\n" + flow_text
+        )
+        messages = [
+            {"role": "system", "content": build_system_prompt(DslContext())},
+            {"role": "user", "content": prompt},
+        ]
+        try:
+            response = _call_llm(self.config, messages)
+            content = str(response.get("choices", [{}])[0].get("message", {}).get("content", ""))
+            items = _try_parse_text_json(content) or []
+            allowed_keys = {"name", "windowTitle", "description", "notes", "actionConfig", "controls", "inspectHints"}
+            result = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                patch = it.get("proposed_patch")
+                if not isinstance(patch, dict):
+                    patch = {}
+                patch = {k: v for k, v in patch.items() if k in allowed_keys}
+                if "actionConfig" in patch and not isinstance(patch["actionConfig"], dict):
+                    patch.pop("actionConfig", None)
+                if "controls" in patch and not isinstance(patch["controls"], list):
+                    patch.pop("controls", None)
+                result.append({
+                    "step_index": int(it.get("step_index", 0) or 0),
+                    "issue": str(it.get("issue", "") or ""),
+                    "suggestion": str(it.get("suggestion", "") or ""),
+                    "proposed_patch": patch,
+                })
+            return result
+        except Exception as exc:
+            logger.warning("LLM flow repair suggestions failed: %s", exc)
+            return []
     def diagnose_log(self, log_input: str, flow_steps: list[dict[str, Any]] | None = None) -> str:
         """诊断一段执行日志或运行报告，定位失败步骤并给出修复建议。
 

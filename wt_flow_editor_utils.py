@@ -1,6 +1,81 @@
 # encoding: utf-8
 
 import re
+import time
+
+
+def _now_iso():
+    """生成 ISO 8601 时间戳（本地时间，无时区后缀）。"""
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def build_source_info(origin="control_library", library_control_id="", library_file_name="", imported_by=""):
+    """构建控件来源标记 sourceInfo。
+
+    origin 取值：
+      - control_library : 从控件库(单文件/library)导入
+      - standard_catalog: 从标准控件库目录导入
+      - anchor_library  : 锚点控件从控件库导入
+      - recorder        : 录制器自动转换
+      - manual          : 用户手写/新建
+    后续「用户编辑」「源库删除」由 mark_source_edited / mark_source_deleted 联动标记。
+    """
+    return {
+        "origin": str(origin or "control_library"),
+        "libraryControlId": str(library_control_id or ""),
+        "libraryFileName": str(library_file_name or ""),
+        "importedBy": str(imported_by or ""),
+        "importedAt": _now_iso(),
+        "edited": False,
+        "editedAt": "",
+        "sourceDeleted": False,
+        "sourceDeletedAt": "",
+    }
+
+
+def mark_source_edited(control, edited=True):
+    """用户编辑控件后打上 edited 标记（保留原来源信息）。"""
+    if not isinstance(control, dict):
+        return control
+    src = control.get("sourceInfo")
+    if not isinstance(src, dict):
+        src = build_source_info(origin=control.get("role", ""), library_control_id=control.get("id", ""))
+        control["sourceInfo"] = src
+    src["edited"] = bool(edited)
+    if edited:
+        src["editedAt"] = _now_iso()
+    return control
+
+
+def mark_source_deleted(control, deleted=True):
+    """源库删除控件后，把流程步骤里引用该来源的控件打上 sourceDeleted 标记。"""
+    if not isinstance(control, dict):
+        return control
+    src = control.get("sourceInfo")
+    if not isinstance(src, dict):
+        src = build_source_info(origin="control_library", library_control_id=control.get("id", ""))
+        control["sourceInfo"] = src
+    src["sourceDeleted"] = bool(deleted)
+    if deleted:
+        src["sourceDeletedAt"] = _now_iso()
+    return control
+
+
+def normalize_source_info(source_info):
+    """规范化 sourceInfo 字段（缺失字段补默认值）。"""
+    if not isinstance(source_info, dict):
+        return {}
+    return {
+        "origin": str(source_info.get("origin", "")).strip(),
+        "libraryControlId": str(source_info.get("libraryControlId", "")).strip(),
+        "libraryFileName": str(source_info.get("libraryFileName", "")).strip(),
+        "importedBy": str(source_info.get("importedBy", "")).strip(),
+        "importedAt": str(source_info.get("importedAt", "")).strip(),
+        "edited": bool(source_info.get("edited", False)),
+        "editedAt": str(source_info.get("editedAt", "")).strip(),
+        "sourceDeleted": bool(source_info.get("sourceDeleted", False)),
+        "sourceDeletedAt": str(source_info.get("sourceDeletedAt", "")).strip(),
+    }
 
 
 def normalize_control_type_name(control_type, localized_control_type=""):
@@ -36,6 +111,67 @@ def slugify_filename(text, fallback="window"):
     text = re.sub(r"\s+", "_", text)
     text = re.sub(r"_+", "_", text).strip("._")
     return text[:80] or fallback
+
+
+GENERIC_MAIN_WINDOW_ROOT_NAMES = {"window", "window_main", "mainwindow", "main_window"}
+
+
+def parse_uipath_root_segment(ui_path):
+    """解析录制路径首段，返回 (name, control_type)。
+
+    兼容 pywinauto_recorder 的 `>`/`->`/`/` 分隔与段尾坐标后缀，
+    例如 `Window > MicroScaleMainView_View_Main` -> ("Window", "")。
+    """
+    text = str(ui_path or "").strip()
+    if not text:
+        return "", ""
+    for sep in ("->", ">", "/"):
+        if sep in text:
+            root_text = text.split(sep, 1)[0]
+            break
+    else:
+        root_text = text
+    root_text = re.sub(r"%\(\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\)$", "", root_text).strip()
+    if "||" in root_text:
+        name, control_type = root_text.rsplit("||", 1)
+    else:
+        name, control_type = root_text, ""
+    return str(name).strip(), str(control_type).strip()
+
+
+def uipath_is_main_window_root(ui_path):
+    """判断录制路径是否以通用主窗口根节点开头。
+
+    录制器在主应用窗口内采集时，路径首段常写成 `Window` / `Window_Main`，
+    此时控件位于真实顶层窗口内部，录制路径本身不携带真实窗口标题。
+    这类控件的 windowTitle 若写成控件库分类名（如“创建新的粗糙度数据”），
+    运行时按标题过滤必然 -160 判负，应视为伪标题并改为不约束。
+    """
+    name, control_type = parse_uipath_root_segment(ui_path)
+    name_lower = str(name).lower()
+    if name_lower in GENERIC_MAIN_WINDOW_ROOT_NAMES:
+        return True
+    return str(control_type).lower() == "window" and name_lower in {"window", "window_main"}
+
+
+def normalize_window_title_for_uipath(window_title, ui_path=""):
+    """按 uiPath 根节点规范化 windowTitle。
+
+    主窗口根路径下返回 "*"（不约束标题），其余情况原样返回规范化文本。
+    转换器与编辑器共用此规则，避免同类伪标题问题反复出现。
+    """
+    if uipath_is_main_window_root(ui_path):
+        return "*"
+    return str(window_title or "").strip()
+
+
+def normalize_control_window_title(control):
+    """Fix per-control windowTitle for generic main-window roots."""
+    if isinstance(control, dict) and str(control.get("windowTitle", "")).strip():
+        control["windowTitle"] = normalize_window_title_for_uipath(
+            control["windowTitle"], control.get("uiPath", "")
+        )
+    return control
 
 
 def normalize_inspect_scalar(value):
@@ -207,22 +343,29 @@ def parse_inspect_text(raw_text):
 def normalize_control(control, index):
     inspect_data = control.get("inspectData") if isinstance(control.get("inspectData"), dict) else {}
     raw_inspect_text = str(control.get("rawInspectText", "")).strip()
+    ui_path = str(control.get("uiPath", "")).strip()
     normalized = {
         "id": str(control.get("id", f"control_{index + 1}")).strip() or f"control_{index + 1}",
         "name": str(control.get("name", f"控件 {index + 1}")).strip() or f"控件 {index + 1}",
         "role": str(control.get("role", "")).strip(),
         "enabled": bool(control.get("enabled", True)),
-        "windowTitle": str(control.get("windowTitle", "")).strip(),
+        "windowTitle": normalize_window_title_for_uipath(control.get("windowTitle", ""), ui_path),
         "targetMethod": str(control.get("targetMethod", "")).strip(),
         "targetValue": str(control.get("targetValue", "")).strip(),
         "templateKey": str(control.get("templateKey", "")).strip(),
-        "uiPath": str(control.get("uiPath", "")).strip(),
+        "uiPath": ui_path,
         "notes": str(control.get("notes", "")).strip(),
         # labelText/relatedLabelName 是多实例判别核心字段（如“半径/X/载入”旁的 Edit），
         # 白名单构建必须显式透传，否则编辑器过滤/显示管线拿不到标签
         "labelText": str(control.get("labelText") or "").strip(),
         "relatedLabelName": str(control.get("relatedLabelName") or "").strip(),
+        # helpText/functionText：运行时 helpText 消歧加分依赖快照内字段
+        # （图标按钮 UIA Name 是 SVG path，helpText 是软件真实操作语义），
+        # 顶层透传与 inspectData 双保险，避免已导入步骤享受不到 helpText 消歧。
+        "helpText": str(control.get("helpText") or "").strip(),
+        "functionText": str(control.get("functionText") or "").strip(),
         "rawInspectText": raw_inspect_text,
+        "optionValues": [normalize_inspect_scalar(item) for item in control.get("optionValues", []) if normalize_inspect_scalar(item)],
         "auxChecks": [str(item).strip() for item in control.get("auxChecks", []) if str(item).strip()],
         "inspectData": {
             "howFound": normalize_inspect_scalar(inspect_data.get("howFound", "")),
@@ -262,6 +405,10 @@ def normalize_control(control, index):
             "textContent": normalize_inspect_scalar(inspect_data.get("textContent", "")),
             "recommendedTargetMethod": str(inspect_data.get("recommendedTargetMethod", "")).strip(),
             "recommendedTargetValue": str(inspect_data.get("recommendedTargetValue", "")).strip(),
+            "labelText": normalize_inspect_scalar(inspect_data.get("labelText", "")),
+            "relatedLabelName": normalize_inspect_scalar(inspect_data.get("relatedLabelName", "")),
+            "helpText": normalize_inspect_scalar(inspect_data.get("helpText", "")),
+            "optionValues": [normalize_inspect_scalar(item) for item in inspect_data.get("optionValues", []) if normalize_inspect_scalar(item)],
         },
     }
     if raw_inspect_text and not has_meaningful_inspect_value(normalized["inspectData"]["name"]):
@@ -275,6 +422,10 @@ def normalize_control(control, index):
             normalized["auxChecks"] = parsed.get("suggestedAuxChecks", [])
         if not normalized["uiPath"]:
             normalized["uiPath"] = normalized["inspectData"].get("name", "")
+    if normalized["uiPath"] and normalized["windowTitle"]:
+        normalized["windowTitle"] = normalize_window_title_for_uipath(
+            normalized["windowTitle"], normalized["uiPath"]
+        )
     # 保留 tabNavigation 配置（Tab 导航降级定位）
     tab_nav = control.get("tabNavigation")
     if isinstance(tab_nav, dict) and tab_nav:
@@ -283,10 +434,15 @@ def normalize_control(control, index):
             "direction": str(tab_nav.get("direction", "forward")).strip() or "forward",
             "steps": int(tab_nav.get("steps", 0)) if str(tab_nav.get("steps", "")).strip() else 0,
             "verify": tab_nav.get("verify", {}) if isinstance(tab_nav.get("verify"), dict) else {},
+            **({"clickTwiceToExpand": True} if tab_nav.get("clickTwiceToExpand") else {}),
         }
     # 保留 preferTabNavigation 配置（优先 Tab 导航，跳过常规降级链）
     if control.get("preferTabNavigation"):
         normalized["preferTabNavigation"] = True
+    # 保留控件来源标记 sourceInfo（来源库/导入时间/编辑与删除联动标记）
+    source_info = control.get("sourceInfo")
+    if isinstance(source_info, dict) and source_info:
+        normalized["sourceInfo"] = normalize_source_info(source_info)
     return normalized
 
 

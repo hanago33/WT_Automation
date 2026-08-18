@@ -81,11 +81,31 @@ def roughness_pairs():
     """官方"粗糙度源 ↔ 索引文件"配对列表（按 Config_N 出现顺序）。
 
     返回 [(source, correspondance_file), ...]；source 形如 "rough:WC10_2020"。
+
+    配对按配置段（键前缀，如 Config_0 / MTDSiteGeoServer）进行，而不是把两个独立
+    列表按序号对齐——后者在某个段仅出现一个键（RoughnessSourceName 或
+    CorrespondanceFileName 缺失）时，后续所有配对会整体错位且无任何告警。
     """
-    sources = [v for k, v in _merged_lines() if k.endswith("_RoughnessSourceName")]
-    files = [v for k, v in _merged_lines() if k.endswith("_CorrespondanceFileName")]
-    n = min(len(sources), len(files))
-    return [(sources[i], files[i]) for i in range(n)]
+    pairs = []
+    seen_sections = set()
+    for key, _ in _merged_lines():
+        suffix = None
+        if key.endswith("_RoughnessSourceName"):
+            suffix = "_RoughnessSourceName"
+        elif key.endswith("_CorrespondanceFileName"):
+            suffix = "_CorrespondanceFileName"
+        if suffix is None:
+            continue
+        section = key[: -len(suffix)]
+        if section in seen_sections:
+            continue
+        seen_sections.add(section)
+        source = get_parameter(section + "_RoughnessSourceName")
+        file_name = get_parameter(section + "_CorrespondanceFileName")
+        # 段内任一键缺失/为空即跳过该段（避免错位），不静默凑数
+        if source and file_name:
+            pairs.append((source, file_name))
+    return pairs
 
 
 def roughness_default():

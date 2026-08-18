@@ -30,6 +30,19 @@ FLOW_CONTROL_CACHE = {}
 FLOW_PARENT_CACHE = {}
 _UIPI_BLOCK_CACHE = {}
 _UIPI_BLOCK_DETECTED = {"timestamp": 0.0, "diagnostic": None}
+# UIPI 锁存有效时长：一次误检（UIA 瞬时枚举失败/辅助进程窗口）不应影响后续所有迭代
+_UIPI_BLOCK_TTL_SECONDS = 30.0
+
+
+def _uipi_block_active(marker_before):
+    """UIPI 锁存是否仍有效（TTL 内且晚于本轮 marker），有效返回 diagnostic dict，否则 None。"""
+    entry = _UIPI_BLOCK_DETECTED
+    ts = float(entry.get("timestamp", 0.0) or 0.0)
+    if ts <= float(marker_before or 0.0):
+        return None
+    if time.time() - ts > _UIPI_BLOCK_TTL_SECONDS:
+        return None
+    return entry.get("diagnostic") or {}
 _control_map_cache = {}
 
 _GET_STEP_DEFINITION = lambda step_id: {}
@@ -38,184 +51,124 @@ _LOG_STEP = lambda message: None
 
 # #region debug-point fan-type-create-error:report
 
-def _emit_fan_type_create_debug_event(hypothesis_id, location, msg, data=None):
+_DEBUG_EVENTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dbg")
+
+
+def _debug_events_enabled():
+    """调试事件默认关闭，设置 WT_DEBUG_EVENTS=1 时恢复 .dbg/*.ndjson 写入。"""
+    return os.environ.get("WT_DEBUG_EVENTS") == "1"
+
+
+def _write_ndjson_debug_event(debug_file, session_id, hypothesis_id, location, msg, data=None, run_id="post-fix-v3", prefix_debug=True):
+    if not _debug_events_enabled():
+        return
     try:
-        debug_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dbg", "trae-debug-log-fan-type-create-error.ndjson")
         os.makedirs(os.path.dirname(debug_file), exist_ok=True)
+        text = str(msg)
+        if prefix_debug:
+            text = "[DEBUG] " + text
         with open(debug_file, "a", encoding="utf-8") as file_obj:
-            file_obj.write(json.dumps({"sessionId": "fan-type-create-error", "runId": "pre-fix", "hypothesisId": hypothesis_id, "location": location, "msg": "[DEBUG] " + str(msg), "data": data or {}, "ts": int(time.time() * 1000)}, ensure_ascii=False) + "\n")
+            file_obj.write(
+                json.dumps(
+                    {
+                        "sessionId": session_id,
+                        "runId": run_id,
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "msg": text,
+                        "data": data or {},
+                        "ts": int(time.time() * 1000),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
     except Exception:
         pass
 
-# #endregion
+
+def _emit_fan_type_create_debug_event(hypothesis_id, location, msg, data=None):
+    _write_ndjson_debug_event(
+        os.path.join(_DEBUG_EVENTS_DIR, "trae-debug-log-fan-type-create-error.ndjson"),
+        "fan-type-create-error",
+        hypothesis_id,
+        location,
+        msg,
+        data=data,
+        run_id="pre-fix",
+    )
 
 
 def _emit_debug_event(hypothesis_id, location, msg, data=None):
-    try:
-        debug_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            ".dbg",
-            "trae-debug-log-private-group-click.ndjson",
-        )
-        os.makedirs(os.path.dirname(debug_file), exist_ok=True)
-        with open(debug_file, "a", encoding="utf-8") as file_obj:
-            file_obj.write(
-                json.dumps(
-                    {
-                        "sessionId": "private-group-click",
-                        "runId": "post-fix-v3",
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "msg": msg,
-                        "data": data or {},
-                        "ts": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
+    _write_ndjson_debug_event(
+        os.path.join(_DEBUG_EVENTS_DIR, "trae-debug-log-private-group-click.ndjson"),
+        "private-group-click",
+        hypothesis_id,
+        location,
+        msg,
+        data=data,
+        prefix_debug=False,
+    )
 
 
 def _emit_time_series_debug_event(hypothesis_id, location, msg, data=None):
-    try:
-        debug_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            ".dbg",
-            "trae-debug-log-time-series-path-input.ndjson",
-        )
-        os.makedirs(os.path.dirname(debug_file), exist_ok=True)
-        with open(debug_file, "a", encoding="utf-8") as file_obj:
-            file_obj.write(
-                json.dumps(
-                    {
-                        "sessionId": "time-series-path-input",
-                        "runId": "pre-fix",
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "msg": msg,
-                        "data": data or {},
-                        "ts": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
+    _write_ndjson_debug_event(
+        os.path.join(_DEBUG_EVENTS_DIR, "trae-debug-log-time-series-path-input.ndjson"),
+        "time-series-path-input",
+        hypothesis_id,
+        location,
+        msg,
+        data=data,
+        run_id="pre-fix",
+    )
 
 
 def _emit_post_type_click_debug_event(hypothesis_id, location, msg, data=None):
-    try:
-        debug_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            ".dbg",
-            "trae-debug-log-post-type-click-failure.ndjson",
-        )
-        os.makedirs(os.path.dirname(debug_file), exist_ok=True)
-        with open(debug_file, "a", encoding="utf-8") as file_obj:
-            file_obj.write(
-                json.dumps(
-                    {
-                        "sessionId": "post-type-click-failure",
-                        "runId": "pre-fix",
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "msg": msg,
-                        "data": data or {},
-                        "ts": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
+    _write_ndjson_debug_event(
+        os.path.join(_DEBUG_EVENTS_DIR, "trae-debug-log-post-type-click-failure.ndjson"),
+        "post-type-click-failure",
+        hypothesis_id,
+        location,
+        msg,
+        data=data,
+        run_id="pre-fix",
+    )
 
 
 def _emit_default_height_debug_event(hypothesis_id, location, msg, data=None):
-    try:
-        debug_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            ".dbg",
-            "trae-debug-log-default-height-relative-input.ndjson",
-        )
-        os.makedirs(os.path.dirname(debug_file), exist_ok=True)
-        with open(debug_file, "a", encoding="utf-8") as file_obj:
-            file_obj.write(
-                json.dumps(
-                    {
-                        "sessionId": "default-height-relative-input",
-                        "runId": "pre-fix",
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "msg": msg,
-                        "data": data or {},
-                        "ts": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
+    _write_ndjson_debug_event(
+        os.path.join(_DEBUG_EVENTS_DIR, "trae-debug-log-default-height-relative-input.ndjson"),
+        "default-height-relative-input",
+        hypothesis_id,
+        location,
+        msg,
+        data=data,
+        run_id="pre-fix",
+    )
 
 
 def _emit_add_data_false_hit_debug_event(hypothesis_id, location, msg, data=None):
-    try:
-        debug_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            ".dbg",
-            "trae-debug-log-add-data-false-hit.ndjson",
-        )
-        os.makedirs(os.path.dirname(debug_file), exist_ok=True)
-        with open(debug_file, "a", encoding="utf-8") as file_obj:
-            file_obj.write(
-                json.dumps(
-                    {
-                        "sessionId": "add-data-false-hit",
-                        "runId": "pre-fix",
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "msg": msg,
-                        "data": data or {},
-                        "ts": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
+    _write_ndjson_debug_event(
+        os.path.join(_DEBUG_EVENTS_DIR, "trae-debug-log-add-data-false-hit.ndjson"),
+        "add-data-false-hit",
+        hypothesis_id,
+        location,
+        msg,
+        data=data,
+        run_id="pre-fix",
+    )
 
 
 def _emit_start_validation_regression_debug_event(hypothesis_id, location, msg, data=None):
-    try:
-        debug_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            ".dbg",
-            "trae-debug-log-start-validation-regression.ndjson",
-        )
-        os.makedirs(os.path.dirname(debug_file), exist_ok=True)
-        with open(debug_file, "a", encoding="utf-8") as file_obj:
-            file_obj.write(
-                json.dumps(
-                    {
-                        "sessionId": "start-validation-regression",
-                        "runId": "pre-fix",
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "msg": msg,
-                        "data": data or {},
-                        "ts": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
+    _write_ndjson_debug_event(
+        os.path.join(_DEBUG_EVENTS_DIR, "trae-debug-log-start-validation-regression.ndjson"),
+        "start-validation-regression",
+        hypothesis_id,
+        location,
+        msg,
+        data=data,
+        run_id="pre-fix",
+    )
 
 
 def _emit_relative_region_rect_trace(step_id, location, msg, data=None):
@@ -227,31 +180,36 @@ def _emit_relative_region_rect_trace(step_id, location, msg, data=None):
 
 
 def _emit_step37_add_data_miss_debug_event(hypothesis_id, location, msg, data=None):
-    try:
-        debug_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            ".dbg",
-            "trae-debug-log-step37-add-data-miss.ndjson",
-        )
-        os.makedirs(os.path.dirname(debug_file), exist_ok=True)
-        with open(debug_file, "a", encoding="utf-8") as file_obj:
-            file_obj.write(
-                json.dumps(
-                    {
-                        "sessionId": "step37-add-data-miss",
-                        "runId": "pre-fix",
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "msg": msg,
-                        "data": data or {},
-                        "ts": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
+    _write_ndjson_debug_event(
+        os.path.join(_DEBUG_EVENTS_DIR, "trae-debug-log-step37-add-data-miss.ndjson"),
+        "step37-add-data-miss",
+        hypothesis_id,
+        location,
+        msg,
+        data=data,
+        run_id="pre-fix",
+    )
+
+
+# #endregion
+
+_SILENT_EXCEPTION_COUNTS = {}
+_SILENT_EXCEPTION_LOCK = threading.Lock()
+
+
+def _record_silent_exception(phase, exc=None):
+    with _SILENT_EXCEPTION_LOCK:
+        _SILENT_EXCEPTION_COUNTS[phase] = _SILENT_EXCEPTION_COUNTS.get(phase, 0) + 1
+
+
+def _reset_silent_exception_counts():
+    with _SILENT_EXCEPTION_LOCK:
+        _SILENT_EXCEPTION_COUNTS.clear()
+
+
+def _snapshot_silent_exception_counts():
+    with _SILENT_EXCEPTION_LOCK:
+        return dict(_SILENT_EXCEPTION_COUNTS)
 
 
 def configure_flow_locator(get_step_definition=None, log_step=None):
@@ -300,13 +258,21 @@ def _load_self_heal_store():
     return {}
 
 
+# 自愈存储写盘锁：守护线程（相对点击/悬停补采）与主线程并发都会读写 _self_heal_overrides，
+# 不加锁时 json 序列化迭代中 dict 被改会抛 RuntimeError（被吞后静默丢数据）
+_SELF_HEAL_LOCK = threading.Lock()
+
+
 def save_self_heal_store():
     try:
-        parent_dir = os.path.dirname(SELF_HEAL_STORE_PATH) or "."
-        os.makedirs(parent_dir, exist_ok=True)
+        with _SELF_HEAL_LOCK:
+            parent_dir = os.path.dirname(SELF_HEAL_STORE_PATH) or "."
+            os.makedirs(parent_dir, exist_ok=True)
+            snapshot = dict(_self_heal_overrides)
+        # 持锁期间只做快照复制，串行化开销最小化，写盘在锁外进行
         with open(SELF_HEAL_STORE_PATH, "w", encoding="utf-8") as file_obj:
             json.dump(
-                {"overrides": _self_heal_overrides, "updatedAt": int(time.time())},
+                {"overrides": snapshot, "updatedAt": int(time.time())},
                 file_obj,
                 ensure_ascii=False,
                 indent=2,
@@ -323,11 +289,12 @@ def record_self_heal(step_id, control_id, method, value, score=None):
     """把实际生效的定位器记录下来（覆盖式学习）。"""
     if not SELF_HEAL_ENABLED:
         return
-    _self_heal_overrides[_self_heal_key(step_id, control_id)] = {
-        "method": method,
-        "value": value,
-        "score": score,
-    }
+    with _SELF_HEAL_LOCK:
+        _self_heal_overrides[_self_heal_key(step_id, control_id)] = {
+            "method": method,
+            "value": value,
+            "score": score,
+        }
     save_self_heal_store()
 
 
@@ -735,6 +702,36 @@ def _label_rect_matches_control(label_rect, control_rect):
     return False
 
 
+_LABEL_RECT_CACHE = threading.local()
+
+def _label_rect_cache_reset():
+    """清空 label 矩形缓存（find_flow_control 每次调用开始时调用）。
+
+    label 矩形按 (顶层窗口句柄, labelText) 缓存：同一窗口下枚举出的候选越多，
+    越需要避免每个候选都做一次 parent/top_window 全子树扫描（O(N·T) 热点）。
+    单次定位调用内窗口内容基本不变，缓存跨候选复用安全；调用间由 reset 失效。
+    """
+    _LABEL_RECT_CACHE.rects = {}
+
+
+def _label_rect_cache_get(top_window, label_text):
+    cache = getattr(_LABEL_RECT_CACHE, "rects", None)
+    if cache is None:
+        return None
+    handle = _safe_get_value(lambda: get_wrapper_handle(top_window), 0) or id(top_window)
+    return cache.get((handle, label_text))
+
+
+def _label_rect_cache_put(top_window, label_text, rects):
+    cache = getattr(_LABEL_RECT_CACHE, "rects", None)
+    if cache is None:
+        cache = {}
+        _LABEL_RECT_CACHE.rects = cache
+    handle = _safe_get_value(lambda: get_wrapper_handle(top_window), 0) or id(top_window)
+    if len(cache) < 64:  # 有界，防异常路径缓存无限膨胀
+        cache[(handle, label_text)] = list(rects or [])
+
+
 def _find_label_rects_for_wrapper(wrapper, label_text):
     expected = normalize_match_text(label_text)
     if not expected:
@@ -748,6 +745,11 @@ def _find_label_rects_for_wrapper(wrapper, label_text):
         top_window = get_wrapper_top_level_window(wrapper)
         if top_window is not None and not _is_same_wrapper(top_window, parent):
             scopes.append(top_window)
+        # 缓存命中：同窗口下此前已扫描过该标签的全部矩形，直接复用。
+        # （parent 子树是 top_window 子树的子集，按 top_window 缓存不遗漏、不重复。）
+        cached = _label_rect_cache_get(top_window, expected)
+        if cached is not None:
+            return list(cached)
         seen_rects = set()
         for scope in scopes:
             for candidate in scope.descendants():
@@ -768,8 +770,9 @@ def _find_label_rects_for_wrapper(wrapper, label_text):
                     continue
                 seen_rects.add(rect_key)
                 rects.append(rect)
-    except Exception:
-        pass
+        _label_rect_cache_put(top_window, expected, rects)
+    except Exception as exc:
+        _record_silent_exception("find_label_rects", exc)
     return rects
 
 
@@ -810,8 +813,8 @@ def _match_sibling_text_block_label(wrapper, expected):
                 continue
             if normalize_match_text(get_wrapper_text(sibling)) == expected:
                 return True
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_silent_exception("match_sibling_text_block", exc)
     return False
 
 
@@ -857,14 +860,15 @@ def _get_focused_element():
         focused = IUIA().iuia.GetFocusedElement()
         if focused is not None:
             return UIAWrapper(UIAElementInfo(focused))
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_silent_exception("get_focused_uia", exc)
     try:
         foreground = _try_get_window_by_handle(get_foreground_window_handle())
         if foreground is None:
             return None
         return foreground.focused()
-    except Exception:
+    except Exception as exc:
+        _record_silent_exception("get_focused_foreground", exc)
         return None
 
 
@@ -903,7 +907,8 @@ def _try_label_to_input_fallback(windows, control_definition, step_id=""):
     for window in windows:
         try:
             candidates = window.descendants()
-        except Exception:
+        except Exception as exc:
+            _record_silent_exception("label_input_descendants", exc)
             continue
         for candidate in candidates:
             control_type = get_wrapper_control_type(candidate)
@@ -1222,11 +1227,18 @@ def _try_tab_navigation_fallback(windows, control_definition, step_id="", max_ta
             return None
         direction = str(tab_navigation.get("direction", "")).strip().lower()
         send_key = "+{TAB}" if direction in {"backward", "back", "shift_tab"} else "{TAB}"
-        configured_steps = int(tab_navigation.get("steps", 0) or 0)
+        # steps 解析容错：非法值（如 "3.5"/None）默认 0，避免 int() 抛错炸穿整个定位
+        try:
+            configured_steps = int(tab_navigation.get("steps", 0) or 0)
+        except (TypeError, ValueError):
+            configured_steps = 0
         if max_tab_steps is None:
             max_tab_steps = configured_steps or 8
         else:
-            max_tab_steps = int(max_tab_steps or 0) or configured_steps or 8
+            try:
+                max_tab_steps = int(max_tab_steps or 0) or configured_steps or 8
+            except (TypeError, ValueError):
+                max_tab_steps = configured_steps or 8
         max_tab_steps = max(1, max_tab_steps)
         # 两级锚点查找：先在主流程已枚举的 windows 里轻量 fast 查询（毫秒级，
         # 避免递归完整定位的窗枚举+整树耗时），未命中再回退完整递归定位兜底。
@@ -1300,7 +1312,10 @@ def _try_tab_navigation_fallback(windows, control_definition, step_id="", max_ta
             )
             if best_score >= 70:
                 return best_match, best_score
-        if best_match is not None:
+        # 循环正常结束后兜底：必须是达标分数才判命中，否则返回 None——
+        # 任意正分（10-69 的弱匹配/仅 control_type 命中的无关控件）不得当作成功，
+        # 避免误定位并污染控件缓存。
+        if best_match is not None and best_score >= 70:
             return best_match, best_score
         return None
     finally:
@@ -1881,6 +1896,107 @@ def _read_dropdown_display_text(dropdown_wrapper):
     return ""
 
 
+def _escape_send_keys_text(text):
+    """转义 send_keys 特殊字符，防止输入文本被解释成按键指令。
+
+    pywinauto_recorder.player.send_keys 把 { } + ^ % ~ 当键码/修饰键：
+    选项/输入文本含 "C++"、"100%"、"路径{xxx}" 时会被改写或触发组合键。
+    """
+    escape_map = {"{": "{{}", "}": "{}}", "+": "{+}", "^": "{^}", "%": "{%}", "~": "{~}"}
+    return "".join(escape_map.get(ch, ch) for ch in str(text or ""))
+
+
+def _dropdown_nav_delta(option_values, current_display, target_index):
+    """计算下拉框键盘导航的目标位移。
+
+    返回 (downs, needs_home)：
+    - current_display 能在 option_values 中解析到下标时，downs = 目标与当前下标之差
+      （>0 向下、<0 向上），needs_home=False —— 从当前选中项相对导航，防重跑错位；
+    - 解析不到时，downs = target_index，needs_home=True —— 调用方先 HOME 归零再绝对导航。
+    """
+    current_index = -1
+    if current_display:
+        current_norm = normalize_match_text(current_display).lower()
+        for idx, opt in enumerate(option_values):
+            if normalize_match_text(opt).lower() == current_norm:
+                current_index = idx
+                break
+    if current_index >= 0:
+        return target_index - current_index, False
+    return target_index, True
+
+
+def _wrapper_identity_key(wrapper):
+    """返回候选控件的稳定身份键（用于剔除已确认点错的候选，避免重复点击同一错误项）。"""
+    if wrapper is None:
+        return ""
+    try:
+        aid = get_wrapper_automation_id(wrapper)
+        name = get_wrapper_text(wrapper)
+        ctype = get_wrapper_control_type(wrapper)
+        runtime_id = _safe_get_value(lambda: getattr(wrapper.element_info, "runtime_id", ""), "")
+        return "{}\u0001{}\u0001{}\u0001{}".format(aid, ctype, name, runtime_id)
+    except Exception:
+        return ""
+
+
+def _dropdown_currently_expanded(dropdown_wrapper):
+    """判定下拉框是否处于展开态；两种状态都不可读时返回 None（未知）。
+
+    Telerik RadComboBox 的 TogglePattern 挂在 PART_DropDownButton 子元素上，
+    ComboBox 根读取 ToggleState 常返回 ""；此时改读 ExpandCollapsePattern 的
+    展开态，避免"枚举+点击"路径被整体静默禁用。
+    """
+    if dropdown_wrapper is None:
+        return None
+    toggle = get_wrapper_toggle_state(dropdown_wrapper)
+    if toggle in {"1", "On", "on", "1.0"}:
+        return True
+    if toggle in {"0", "Off", "off", "0.0"}:
+        return False
+    state = None
+    for read_fn in (
+        lambda: str(dropdown_wrapper.element_info.element.CurrentExpandCollapseState),
+        lambda: str(dropdown_wrapper.get_expand_state()),
+    ):
+        try:
+            value = read_fn()
+        except Exception:
+            continue
+        if value:
+            state = str(value).strip().lower()
+            break
+    if not state:
+        return None
+    name = state.rsplit(".", 1)[-1]
+    if name in {"expanded", "partiallyexpanded", "1", "1.0", "2", "2.0"}:
+        return True
+    if name in {"collapsed", "leafnode", "leaf", "0", "0.0"}:
+        return False
+    return None
+
+
+def _candidate_has_visible_rect(wrapper):
+    """候选元素是否具有可见屏幕矩形（宽高均 > 0）。
+
+    收起状态下 UIA-to-MSAA bridge 暴露的离屏/未渲染选项矩形为空，
+    无有效矩形即不可安全点击，用该信号兜底判定。
+    """
+    if wrapper is None:
+        return False
+    try:
+        rect = get_wrapper_rectangle(wrapper)
+        if isinstance(rect, dict):
+            width = int(rect.get("width", 0) or 0)
+            height = int(rect.get("height", 0) or 0)
+        else:
+            width = int(getattr(rect, "width", 0) or 0)
+            height = int(getattr(rect, "height", 0) or 0)
+        return width > 0 and height > 0
+    except Exception:
+        return False
+
+
 def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_title_hint="", target_option="", control_map_path=None):
     step_definition = _GET_STEP_DEFINITION(step_id)
     control_definition = get_flow_control_definition(step_id, control_id)
@@ -1942,6 +2058,8 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
     last_ranked_candidates = []
     expanded_attempted = False
     dropdown_wrapper = None
+    # 已确认点错的候选身份键：点击后显示值校验失败即剔除，避免每轮重复点击同一个错误项
+    failed_option_keys = set()
     # 诊断探针：记录 Raw View 枚举到的下拉类候选数量与文本样例，失败时可定位
     # "没枚举到"还是"枚举到但文本/分数不匹配"。
     raw_probe = {"count": 0, "samples": []}
@@ -2021,6 +2139,8 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
             # 内层超时退出：枚举目标窗口 UIA 子树可能较慢，超时提前中断
             if time.time() > deadline:
                 break
+            if failed_option_keys and _wrapper_identity_key(candidate) in failed_option_keys:
+                continue
             score = score_dropdown_runtime_candidate(
                 candidate,
                 target_texts,
@@ -2035,6 +2155,8 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
             for candidate in _iter_dropdown_raw_view_candidates(dropdown_windows):
                 if time.time() > deadline:
                     break
+                if failed_option_keys and _wrapper_identity_key(candidate) in failed_option_keys:
+                    continue
                 raw_probe["count"] += 1
                 if len(raw_probe["samples"]) < 5:
                     raw_probe["samples"].append(
@@ -2058,12 +2180,28 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
         ranked_candidates.sort(key=lambda item: item[0], reverse=True)
         last_ranked_candidates = ranked_candidates[:5]
         if ranked_candidates and ranked_candidates[0][0] >= 70:
-            # 仅当下拉框确已展开时才点击选项：收起状态下点击 bridge 离屏选项无效
-            dropdown_expanded = (
-                dropdown_wrapper is not None
-                and get_wrapper_toggle_state(dropdown_wrapper) in {"1", "On", "on", "1.0"}
-            )
-            if not dropdown_expanded:
+            best_candidate = ranked_candidates[0][1]
+            # 仅当下拉框确已展开时才点击选项：收起状态下点击 bridge 离屏选项无效。
+            # TogglePattern 在 Telerik 上常挂在 PART_DropDownButton 子元素，ComboBox 根
+            # 读取失败返回 ""——此时不再简单禁用整条"枚举+点击"路径：
+            #   1) 用 Toggle / ExpandCollapse 状态判定（_dropdown_currently_expanded）；
+            #   2) 状态未知且候选已有可见矩形时，视为已展开可点（离屏/未渲染选项矩形为空）；
+            #   3) 状态未知且候选无可见矩形时，补一次幂等展开点击后重判。
+            dropdown_expanded = _dropdown_currently_expanded(dropdown_wrapper)
+            if dropdown_expanded is None and dropdown_wrapper is not None:
+                if _candidate_has_visible_rect(best_candidate):
+                    dropdown_expanded = True
+                else:
+                    _exp_clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
+                    if _exp_clicked:
+                        time.sleep(0.3)
+                        dropdown_expanded = _dropdown_currently_expanded(dropdown_wrapper)
+                        if dropdown_expanded is not True and _candidate_has_visible_rect(best_candidate):
+                            dropdown_expanded = True
+            if dropdown_expanded is not True and dropdown_wrapper is None and _candidate_has_visible_rect(best_candidate):
+                # 下拉框本体不可得但选项已渲染在屏（如焦点已在下拉内）：同样允许点击
+                dropdown_expanded = True
+            if dropdown_expanded is not True:
                 time.sleep(0.15)
                 continue
             best_score, best_candidate = ranked_candidates[0]
@@ -2071,8 +2209,54 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
             clicked, click_meta = click_dropdown_runtime_candidate(best_candidate)
             if clicked:
                 time.sleep(0.12)
+                verify_value = ""
+                if dropdown_wrapper is not None:
+                    try:
+                        verify_value = _read_dropdown_display_text(dropdown_wrapper)
+                    except Exception:
+                        verify_value = ""
+                if verify_value:
+                    verify_norm = normalize_match_text(verify_value).lower()
+                    matched_target = False
+                    if explicit_target and not is_placeholder_text(explicit_target):
+                        matched_target = normalize_match_text(explicit_target).lower() == verify_norm
+                    if not matched_target:
+                        for target in target_texts:
+                            if target and normalize_match_text(target).lower() == verify_norm:
+                                matched_target = True
+                                break
+                    if not matched_target:
+                        _LOG_STEP(
+                            "候选点击后显示值未确认: step={step_id}, control={control_id}, expected={expected}, actual={actual}".format(
+                                step_id=step_id,
+                                control_id=control_id,
+                                expected=" / ".join(target_texts) or "(empty)",
+                                actual=verify_value,
+                            )
+                        )
+                        # 该候选已确认点错：剔除后重新展开，避免下一轮重复点击同一个错误项
+                        failed_key = _wrapper_identity_key(best_candidate)
+                        if failed_key:
+                            failed_option_keys.add(failed_key)
+                        expanded_attempted = False
+                        continue
+                    _LOG_STEP(
+                        "已通过运行时下拉候选点击控件并校验显示值: step={step_id}, control={control_id}, score={score}, value={value}".format(
+                            step_id=step_id,
+                            control_id=control_id,
+                            score=best_score,
+                            value=verify_value,
+                        )
+                    )
+                    return True, {
+                        "score": best_score,
+                        "targetTexts": target_texts,
+                        "clickMeta": click_meta,
+                        "bestCandidate": best_candidate_snapshot,
+                        "valueVerified": verify_value,
+                    }
                 _LOG_STEP(
-                    "已通过运行时下拉候选点击控件: step={step_id}, control={control_id}, score={score}, texts={texts}".format(
+                    "已通过运行时下拉候选点击控件（显示值不可读，保留点击证据）: step={step_id}, control={control_id}, score={score}, texts={texts}".format(
                         step_id=step_id,
                         control_id=control_id,
                         score=best_score,
@@ -2084,6 +2268,7 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                     "targetTexts": target_texts,
                     "clickMeta": click_meta,
                     "bestCandidate": best_candidate_snapshot,
+                    "valueVerification": "unreadable",
                 }
         time.sleep(0.15)
 
@@ -2126,15 +2311,58 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
             if target_index >= 0:
                 break
         if target_index >= 0:
-            for _ in range(target_index):
-                send_keys("{DOWN}")
-                time.sleep(0.06)
-            send_keys("{ENTER}")
-            time.sleep(0.15)
-            # 注入来源（安装目录文件名）顺序不一定与 UI 下拉框一致，
-            # 导航后读一次显示值验证；读到且不匹配则转键入搜索，避免点错。
-            navigate_ok = True
-            if option_values_injected:
+            # 防错位前置：发方向键/回车前确保下拉框确已展开且获得键盘焦点。
+            # 未展开/未定位到下拉框时会盲发按键、落到当前焦点控件，可能误触发无关按钮。
+            nav_ready = dropdown_wrapper is not None
+            downs = target_index
+            if nav_ready:
+                if _dropdown_currently_expanded(dropdown_wrapper) is not True:
+                    _exp_clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
+                    if _exp_clicked:
+                        time.sleep(0.3)
+                        for _wait_t in range(4):
+                            if _dropdown_currently_expanded(dropdown_wrapper) is True:
+                                break
+                            time.sleep(0.2)
+                try:
+                    dropdown_wrapper.set_focus()
+                except Exception:
+                    pass
+                if _dropdown_currently_expanded(dropdown_wrapper) is not True:
+                    _LOG_STEP(
+                        "键盘导航前置：下拉框未确认展开，跳过盲发按键转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
+                            step_id=step_id,
+                            control_id=control_id,
+                            option=option_values[target_index],
+                        )
+                    )
+                    nav_ready = False
+                else:
+                    # 从当前选中项出发做相对导航：重跑流程时下拉框当前值可能已落在目标
+                    # 之前的某项，若每次都从固定起点 DOWN N 次会选到第 2N 项导致错位。
+                    try:
+                        current_display = _read_dropdown_display_text(dropdown_wrapper)
+                    except Exception:
+                        current_display = ""
+                    downs, needs_home = _dropdown_nav_delta(option_values, current_display, target_index)
+                    if needs_home:
+                        # 当前值无法在候选列表中解析：先 HOME 归零再绝对导航
+                        send_keys("{HOME}")
+                        time.sleep(0.08)
+            if nav_ready:
+                if downs > 0:
+                    for _ in range(downs):
+                        send_keys("{DOWN}")
+                        time.sleep(0.06)
+                elif downs < 0:
+                    for _ in range(-downs):
+                        send_keys("{UP}")
+                        time.sleep(0.06)
+                send_keys("{ENTER}")
+                time.sleep(0.15)
+                # 键盘导航后统一读显示值验证（对全部选项来源生效，不限于注入的安装目录
+                # 名单）：读到且不匹配，或读不到（不可验证），都不判定成功，转键入搜索，
+                # 避免"防错位"被绕过导致点错。
                 navigate_ok = False
                 try:
                     display = _read_dropdown_display_text(dropdown_wrapper) if dropdown_wrapper is not None else ""
@@ -2148,29 +2376,30 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                     )
                 if not navigate_ok:
                     _LOG_STEP(
-                        "键盘导航后显示值未确认(注入顺序可能不一致)，转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
+                        "键盘导航后显示值未确认，转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
                             step_id=step_id,
                             control_id=control_id,
                             option=option_values[target_index],
                         )
                     )
-            if navigate_ok:
-                _LOG_STEP(
-                    "键盘导航选中下拉项: step={step_id}, control={control_id}, option={option}, index={idx}, totalOptions={total}".format(
-                        step_id=step_id,
-                        control_id=control_id,
-                        option=option_values[target_index],
-                        idx=target_index,
-                        total=len(option_values),
+                else:
+                    _LOG_STEP(
+                        "键盘导航选中下拉项并通过显示值校验: step={step_id}, control={control_id}, option={option}, index={idx}, totalOptions={total}".format(
+                            step_id=step_id,
+                            control_id=control_id,
+                            option=option_values[target_index],
+                            idx=target_index,
+                            total=len(option_values),
+                        )
                     )
-                )
-                return True, {
-                    "method": "keyboard_navigate",
-                    "targetIndex": target_index,
-                    "targetOption": option_values[target_index],
-                    "optionValues": option_values,
-                    "targetTexts": target_texts,
-                }
+                    return True, {
+                        "method": "keyboard_navigate",
+                        "targetIndex": target_index,
+                        "targetOption": option_values[target_index],
+                        "optionValues": option_values,
+                        "targetTexts": target_texts,
+                        "valueVerified": display,
+                    }
     # ---- 键盘导航兜底结束 ----
 
     # ---- 值检查 + 键入搜索兜底（不依赖 optionValues / 下拉项 UIA 可见性）----
@@ -2218,7 +2447,7 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                 except Exception:
                     pass
                 try:
-                    send_keys(str(search_text))
+                    send_keys(_escape_send_keys_text(search_text))
                     time.sleep(0.35)
 
                     # Telerik 键入过滤只是"高亮/过滤"，直接 ENTER 常只收起不选中
@@ -2845,7 +3074,12 @@ def _try_get_window_by_handle(handle):
     try:
         if not handle:
             return None
-        return Desktop(backend="uia").window(handle=int(handle))
+        # 句柄可能来自两种来源：int（GetForegroundWindow / element_info.handle）或
+        # "0x…" 十六进制字符串（_enum_visible_mup_win32_windows 枚举侧 hex() 格式化）。
+        # int(x, 0) 同时兼容十进制与 0x 前缀，修复"严格标题无命中 → 回退 MUP 可见窗口
+        # 候选"分支因 int("0x…") 抛 ValueError 被吞而恒为空（回退永远只剩前台窗口单候选）。
+        handle_num = int(handle, 0) if isinstance(handle, str) else int(handle)
+        return Desktop(backend="uia").window(handle=handle_num)
     except Exception:
         return None
 
@@ -3035,7 +3269,13 @@ def is_wrapper_alive(wrapper):
     try:
         handle = _safe_get_value(lambda: getattr(wrapper.element_info, "handle", 0), 0)
         if handle:
-            return True
+            # 句柄非空不代表窗口仍存活：窗口关闭后 element_info.handle 会保留旧句柄，
+            # 若只看句柄会谎报存活——导致 "gone" 条件永远不满足、死控件继续被点击/键入。
+            # 用 IsWindow 做一次廉价的真实性校验（毫秒级 Win32 调用）。
+            try:
+                return bool(ctypes.windll.user32.IsWindow(int(handle)))
+            except Exception:
+                return True  # IsWindow 调用异常时保守按原逻辑（句柄存在即视为存活）
         rectangle = wrapper.rectangle()
         return bool(rectangle)
     except Exception:
@@ -3252,14 +3492,20 @@ def detect_uia_content_blocked(uia_windows):
             {w["processId"] for w in mup_windows if w["processId"] not in uia_process_ids}
         )
         if missing_pids:
-            blocked = True
-            diagnostic = {
-                "reason": "uipi_uia_content_blocked",
-                "uiaWindowCount": len(uia_windows or []),
-                "uiaProcessIds": sorted(uia_process_ids),
-                "missingProcessIds": missing_pids,
-                "win32MupWindows": win32_windows[:8],
-            }
+            # 误检面收窄：仅当"缺失 PID 的 MUP 窗口"占多数才判隔离，避免 UIA 瞬时
+            # 枚举失败或存在辅助进程窗口（托盘/崩溃框）时把正常状态误判为 UIPI 隔离
+            missing_window_count = sum(
+                1 for w in mup_windows if w["processId"] not in uia_process_ids
+            )
+            if missing_window_count > len(mup_windows) / 2:
+                blocked = True
+                diagnostic = {
+                    "reason": "uipi_uia_content_blocked",
+                    "uiaWindowCount": len(uia_windows or []),
+                    "uiaProcessIds": sorted(uia_process_ids),
+                    "missingProcessIds": missing_pids,
+                    "win32MupWindows": win32_windows[:8],
+                }
     _UIPI_BLOCK_CACHE["last"] = {"timestamp": now, "blocked": blocked, "diagnostic": diagnostic}
     return blocked, diagnostic
 
@@ -3468,21 +3714,48 @@ def build_fast_locator_queries(control_definition):
     return query_candidates
 
 
+def _release_com_pointer(ptr):
+    """释放 UIA COM 接口指针（IUnknown.Release，vtable 第 3 槽），失败静默。
+
+    原始 ctypes 层拿到的 COM 指针（CreatePropertyCondition / FindAll 的结果）不会
+    被 Python 自动释放，长流程数百步×重试会累积泄漏。此处按标准 IUnknown vtable
+    布局调用 Release；任何异常静默，不影响主流程。
+    """
+    if not ptr:
+        return
+    try:
+        import ctypes as _ct
+        # ptr 是接口指针；ptr[0] 指向 vtable（函数指针数组）；vtable[2] 即 Release
+        _iface = _ct.cast(ptr, _ct.POINTER(_ct.POINTER(_ct.c_void_p)))
+        _release_addr = _iface[0][2]
+        if not _release_addr:
+            return
+        _Release = _ct.cast(_release_addr, _ct.CFUNCTYPE(_ct.c_ulong, _ct.c_void_p))
+        _Release(ptr)
+    except Exception:
+        pass
+
+
 def _iter_uia_findall_by_automation_id(window, automation_id, max_results=256):
     """UIA 原生 FindAll(Subtree, AutomationId) 快速定位。
 
     pywinauto 0.6.9 的 descendants 不支持 automation_id 参数（build_condition 只认
     process/class_name/title/control_type），传它会抛 TypeError 被吞，导致 fast 定位空。
     UIA 原生 FindAll 用 AutomationId 条件直接枚举，兼容所有控件。
+    返回 list（非生成器），以便 in-flight 立即释放 FindAll 的 COM 指针。
     """
+    results = []
     if window is None or not automation_id:
-        return
+        return results
     try:
         from pywinauto.uia_defines import IUIA
         from pywinauto.controls.uiawrapper import UIAWrapper
         from pywinauto.uia_element_info import UIAElementInfo
-    except Exception:
-        return
+    except Exception as exc:
+        _record_silent_exception("uia_findall_import", exc)
+        return results
+    condition = None
+    found = None
     try:
         root_element = window.element_info.element
         iuia = IUIA().iuia
@@ -3490,18 +3763,23 @@ def _iter_uia_findall_by_automation_id(window, automation_id, max_results=256):
         automation_id_prop = getattr(uia_dll, "UIA_AutomationIdPropertyId", 30011)
         condition = iuia.CreatePropertyCondition(automation_id_prop, str(automation_id))
         found = root_element.FindAll(5, condition)
-    except Exception:
-        return
-    try:
-        count = int(found.Length)
-    except Exception:
-        count = 0
-    for i in range(min(count, max_results)):
         try:
-            element = found.GetElement(i)
-            yield UIAWrapper(UIAElementInfo(element))
-        except Exception:
-            continue
+            count = int(found.Length)
+        except Exception as exc:
+            _record_silent_exception("uia_findall_count", exc)
+            count = 0
+        for i in range(min(count, max_results)):
+            try:
+                element = found.GetElement(i)
+                results.append(UIAWrapper(UIAElementInfo(element)))
+            except Exception as exc:
+                _record_silent_exception("uia_findall_element", exc)
+    except Exception as exc:
+        _record_silent_exception("uia_findall_root", exc)
+    finally:
+        _release_com_pointer(found)
+        _release_com_pointer(condition)
+    return results
 
 
 def iter_fast_locator_candidates(window, control_definition):
@@ -3538,21 +3816,21 @@ def iter_fast_locator_candidates(window, control_definition):
             kwargs["class_name"] = query["class_name"]
         if query.get("control_type"):
             kwargs["control_type"] = query["control_type"]
-        if query.get("framework_id"):
-            kwargs["framework_id"] = query["framework_id"]
+        # 注意：build_fast_locator_queries 的 query 只含 name/control_type/automation_id/class_name，
+        # framework_id 从不进入 fast 查询（pywinauto descendants 也不支持），故此处不传。
         if not kwargs:
             continue
         for root in unique_roots:
             candidates = []
             try:
                 candidates.extend(root.children(**kwargs))
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_silent_exception("fast_locator_children", exc)
             if root is window or not candidates:
                 try:
                     candidates.extend(root.descendants(**kwargs))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _record_silent_exception("fast_locator_descendants", exc)
             for candidate in candidates:
                 handle = _safe_get_value(lambda: getattr(candidate.element_info, "handle", None), None)
                 handle_key = handle if handle not in (None, 0, "") else id(candidate)
@@ -3673,13 +3951,16 @@ def _iter_raw_view_findall_candidates(window, control_definition, max_results=12
         from pywinauto.uia_defines import IUIA
         from pywinauto.controls.uiawrapper import UIAWrapper
         from pywinauto.uia_element_info import UIAElementInfo
-    except Exception:
+    except Exception as exc:
+        _record_silent_exception("raw_findall_import", exc)
         return
     normalized = normalize_control_definition(control_definition)
     inspect_data = normalized.get("inspectData", {}) or {}
     target_automation_id = normalize_match_text(inspect_data.get("automationId", ""))
     if not target_automation_id:
         return
+    condition = None
+    found = None
     try:
         root_element = window.element_info.element
         iuia = IUIA().iuia
@@ -3688,51 +3969,55 @@ def _iter_raw_view_findall_candidates(window, control_definition, max_results=12
         condition = iuia.CreatePropertyCondition(automation_id_prop, target_automation_id)
         # TreeScope_Subtree = 5：自 root 起包含全部后代
         found = root_element.FindAll(5, condition)
-    except Exception:
-        return
-    try:
-        count = int(found.Length)
-    except Exception:
-        count = 0
-    seen = set()
-    label_hits = []
-    plain_hits = []
-    try:
-        walker = IUIA().iuia.RawViewWalker
-    except Exception:
-        walker = None
-    props = _raw_view_filter_props()
-    label_expected = normalize_match_text(
-        normalized.get("labelText", "")
-        or inspect_data.get("labelText", "")
-        or normalized.get("relatedLabelName", "")
-        or inspect_data.get("relatedLabelName", "")
-    )
-    budget_deadline = time.time() + 8.0  # 评分预算：巨大窗口海量候选时避免评分阶段拖垮
-    for i in range(min(count, max_results)):
-        if time.time() > budget_deadline:
-            break
         try:
-            element = found.GetElement(i)
-            wrapper = UIAWrapper(UIAElementInfo(element))
-        except Exception:
-            continue
-        if not wrapper_matches_control_definition(wrapper, normalized):
-            continue
-        key = get_wrapper_handle(wrapper) or normalize_match_text(
-            _safe_get_value(lambda: str(wrapper.element_info.runtime_id), "")
-        ) or id(wrapper)
-        if key in seen:
-            continue
-        seen.add(key)
-        if label_expected and walker is not None and _raw_sibling_label_matches(element, label_expected, walker, props):
-            label_hits.append(wrapper)
-        else:
-            plain_hits.append(wrapper)
-    for wrapper in label_hits:
-        yield wrapper
-    for wrapper in plain_hits:
-        yield wrapper
+            count = int(found.Length)
+        except Exception as exc:
+            _record_silent_exception("raw_findall_count", exc)
+            count = 0
+        seen = set()
+        label_hits = []
+        plain_hits = []
+        try:
+            walker = IUIA().iuia.RawViewWalker
+        except Exception as exc:
+            _record_silent_exception("raw_findall_walker", exc)
+            walker = None
+        props = _raw_view_filter_props()
+        label_expected = normalize_match_text(
+            normalized.get("labelText", "")
+            or inspect_data.get("labelText", "")
+            or normalized.get("relatedLabelName", "")
+            or inspect_data.get("relatedLabelName", "")
+        )
+        budget_deadline = time.time() + 8.0  # 评分预算：巨大窗口海量候选时避免评分阶段拖垮
+        for i in range(min(count, max_results)):
+            if time.time() > budget_deadline:
+                break
+            try:
+                element = found.GetElement(i)
+                wrapper = UIAWrapper(UIAElementInfo(element))
+            except Exception as exc:
+                _record_silent_exception("raw_findall_element", exc)
+                continue
+            if not wrapper_matches_control_definition(wrapper, normalized):
+                continue
+            key = get_wrapper_handle(wrapper) or normalize_match_text(
+                _safe_get_value(lambda: str(wrapper.element_info.runtime_id), "")
+            ) or id(wrapper)
+            if key in seen:
+                continue
+            seen.add(key)
+            if label_expected and walker is not None and _raw_sibling_label_matches(element, label_expected, walker, props):
+                label_hits.append(wrapper)
+            else:
+                plain_hits.append(wrapper)
+    except Exception as exc:
+        _record_silent_exception("raw_findall_root", exc)
+    finally:
+        # 及时释放 FindAll/Condition 的 COM 指针，避免长流程泄漏
+        _release_com_pointer(found)
+        _release_com_pointer(condition)
+    return label_hits + plain_hits
 
 
 def _raw_sibling_label_matches(element, label_text, walker, props):
@@ -3746,7 +4031,8 @@ def _raw_sibling_label_matches(element, label_text, walker, props):
         return False
     try:
         parent = walker.GetParentElement(element)
-    except Exception:
+    except Exception as exc:
+        _record_silent_exception("raw_sibling_parent", exc)
         return False
     try:
         sibling = walker.GetFirstChildElement(parent)
@@ -3760,8 +4046,8 @@ def _raw_sibling_label_matches(element, label_text, walker, props):
             if normalize_match_text(name) == expected:
                 return True
             sibling = walker.GetNextSiblingElement(sibling)
-    except Exception:
-        pass
+    except Exception as exc:
+        _record_silent_exception("raw_sibling_walk", exc)
     return False
 
 
@@ -3783,7 +4069,8 @@ def _iter_raw_view_guided_candidates(window, control_definition, max_depth=6, ma
         from pywinauto.uia_defines import IUIA
         from pywinauto.controls.uiawrapper import UIAWrapper
         from pywinauto.uia_element_info import UIAElementInfo
-    except Exception:
+    except Exception as exc:
+        _record_silent_exception("raw_guided_import", exc)
         return
     if window is None:
         return
@@ -3815,13 +4102,15 @@ def _iter_raw_view_guided_candidates(window, control_definition, max_depth=6, ma
         for cand in window.descendants():
             if normalize_match_text(get_wrapper_class_name(cand)) in ancestor_names:
                 containers.append(cand)
-    except Exception:
+    except Exception as exc:
+        _record_silent_exception("raw_guided_containers", exc)
         containers = []
     if not containers:
         return
     try:
         walker = IUIA().iuia.RawViewWalker
-    except Exception:
+    except Exception as exc:
+        _record_silent_exception("raw_guided_walker", exc)
         return
     props = _raw_view_filter_props()
     seen = set()
@@ -3837,7 +4126,8 @@ def _iter_raw_view_guided_candidates(window, control_definition, max_depth=6, ma
     for container in containers:
         try:
             root_element = container.element_info.element
-        except Exception:
+        except Exception as exc:
+            _record_silent_exception("raw_guided_container_element", exc)
             continue
         queue = []
         try:
@@ -3845,7 +4135,8 @@ def _iter_raw_view_guided_candidates(window, control_definition, max_depth=6, ma
             while child:
                 queue.append((child, 1))
                 child = walker.GetNextSiblingElement(child)
-        except Exception:
+        except Exception as exc:
+            _record_silent_exception("raw_guided_queue_init", exc)
             continue
         visited = 0
         index = 0
@@ -3860,19 +4151,21 @@ def _iter_raw_view_guided_candidates(window, control_definition, max_depth=6, ma
                 while child:
                     queue.append((child, depth + 1))
                     child = walker.GetNextSiblingElement(child)
-            except Exception:
-                pass
+            except Exception as exc:
+                _record_silent_exception("raw_guided_children", exc)
             try:
                 actual_aid = str(
                     element.GetCurrentPropertyValue(props.get("automation_id", 30011)) or ""
                 ).strip()
-            except Exception:
+            except Exception as exc:
+                _record_silent_exception("raw_guided_aid", exc)
                 continue
             if normalize_match_text(actual_aid) != target_automation_id:
                 continue
             try:
                 wrapper = UIAWrapper(UIAElementInfo(element))
-            except Exception:
+            except Exception as exc:
+                _record_silent_exception("raw_guided_wrapper", exc)
                 wrapper = None
             if wrapper is None or not wrapper_matches_control_definition(wrapper, normalized):
                 continue
@@ -4051,6 +4344,34 @@ def iter_flow_search_windows(step_definition, window_title_hint="", control_defi
         ranked_windows.append((score, window))
     if not ranked_windows:
         if title_candidates and not allow_soften:
+            # 严格标题过滤无命中：不直接放弃，回退到"前置窗口 + MUP 可见窗口"候选。
+            # 场景：WPF 单窗口应用的模态弹窗不改变窗口标题（实际标题可能与配置的
+            # windowTitle 不一致），或空标题 MUP 主窗口被严格标题过滤排除，或句柄
+            # 体系差异导致 UIA 顶层枚举漏掉 MUP 窗口。候选合并去重，后续控件匹配
+            # 阶段仍有类型/评分把关，避免误命中。
+            result = []
+            seen_handles = set()
+            for candidate in _enum_visible_mup_win32_windows():
+                wrapped = _try_get_window_by_handle(candidate.get("hwnd"))
+                if wrapped is None:
+                    continue
+                handle = _safe_get_value(lambda: getattr(wrapped.element_info, "handle", 0), 0)
+                if handle in seen_handles:
+                    continue
+                seen_handles.add(handle)
+                result.append(wrapped)
+            if not result:
+                fg_wrapper = _try_get_window_by_handle(foreground_handle)
+                if fg_wrapper is not None:
+                    _LOG_STEP("[FlowLocator] 窗口过滤严格无命中，回退前置窗口单候选")
+                    result = [fg_wrapper]
+            if result:
+                _LOG_STEP(
+                    "[FlowLocator] 窗口过滤严格无命中，回退候选窗口 {} 个".format(len(result))
+                )
+                if use_window_cache:
+                    cache_flow_windows(cache_key, result)
+                return result
             _LOG_STEP("[FlowLocator] 窗口过滤严格: 标题无命中且控件非低丰富度，跳过全窗口软化")
             return []
         if title_candidates:
@@ -4241,6 +4562,11 @@ def find_flow_window_for_relative_region(step_definition=None, parent_window=Non
             )
             foreground_handle_key = get_wrapper_handle(foreground_wrapper) or id(foreground_wrapper)
             seen_handles.add(foreground_handle_key)
+            # 前台窗口只有在“匹配或可能匹配目标窗口”时才参与候选（score>=0）：
+            # 标题不匹配且非空标题的前台窗口（如用户当前操作的其他应用）不得作为
+            # 相对区域父窗口，否则会在目标窗口缺失时对错误窗口“假成功”点击。
+            if foreground_score < 0:
+                continue
             ranked_candidates.append((foreground_score, foreground_wrapper))
             if should_replace_flow_window_candidate(
                 foreground_wrapper,
@@ -5490,13 +5816,42 @@ def type_text_into_relative_region(
             # #endregion
         return False, {}
     center = (region_meta.get("clickPoint", {}) or {}).get("x"), (region_meta.get("clickPoint", {}) or {}).get("y")
+    # 防误清空：点击"成功"只代表坐标点击已发出，不代表输入框获得了焦点。若窗口未激活
+    # 或点击偏移，Ctrl+A+Backspace 会清空当前真实焦点控件的内容（可能是上一个编辑框）。
+    # 键入前做一次焦点落点校验：前台窗口不是目标窗口时，重新点击区域一次再键入。
+    try:
+        _fg_wrapper = _try_get_window_by_handle(get_foreground_window_handle())
+        _fg_title = normalize_match_text(get_wrapper_text(_fg_wrapper)) if _fg_wrapper is not None else ""
+        _region_title = normalize_match_text(str(region_meta.get("windowTitle") or ""))
+        if _fg_wrapper is not None and _region_title and not value_matches(_fg_title, _region_title):
+            _LOG_STEP(
+                "相对区域输入前焦点校验未通过，重新点击区域: step={step_id}, fg={fg}, region={region}".format(
+                    step_id=step_id,
+                    fg=_fg_title or "(unknown)",
+                    region=_region_title,
+                )
+            )
+            _reclick_ok, _ = click_relative_region(
+                step_definition,
+                parent_window,
+                relative_region,
+                timeout_seconds=timeout_seconds,
+                window_title_hint=window_title_hint,
+                click_kind="single",
+            )
+            if not _reclick_ok:
+                return False, {}
+            time.sleep(0.15)
+    except Exception:
+        pass
     try:
         time.sleep(0.15)
         send_keys("^a")
         time.sleep(0.05)
         send_keys("{BACKSPACE}")
         time.sleep(0.05)
-        send_keys(str(text or ""))
+        # 转义特殊字符，防止文本被 send_keys 解释成按键指令（如 "C++"、"100%"）
+        send_keys(_escape_send_keys_text(text))
         if str(post_input_keys or "").strip():
             time.sleep(0.05)
             send_keys(str(post_input_keys))
@@ -5918,6 +6273,9 @@ def _get_adaptive_threshold(richness: str) -> int:
 def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_hint="", control_map_path=None):
     # ── 阶段计时初始化 ──────────────────────────────────────────────────────
     _t0 = time.perf_counter()
+    _reset_silent_exception_counts()
+    # label 矩形缓存仅在本调用内有效：窗口内容/候选跨调用会变，必须每次清空防陈旧
+    _label_rect_cache_reset()
     _t1 = _t2 = _t3 = _t4 = _t0
     step_definition = _GET_STEP_DEFINITION(step_id)
     controls = step_definition.get("controls", []) if isinstance(step_definition, dict) else []
@@ -5934,28 +6292,35 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
     # 优先 Tab 导航降级：控件配置 preferTabNavigation 时，先尝试 Tab 定位再回退常规。
     # （编辑器里“优先使用 Tab 导航（跳过常规定位尝试）”的运行时语义）
     if any(bool(ctrl.get("preferTabNavigation")) for ctrl in controls):
-        for _prefer_raw_cd in controls:
-            _prefer_tab_cd = normalize_control_definition(
-                _apply_self_heal_override(step_id, control_id, _prefer_raw_cd)
-            )
-            _prefer_tab_windows = list(iter_flow_search_windows(
-                step_definition,
-                window_title_hint=window_title_hint,
-                control_definition=_prefer_tab_cd,
-            ))
-            _prefer_tab_result = _try_tab_navigation_fallback(
-                _prefer_tab_windows, _prefer_tab_cd, step_id=step_id
-            )
-            if _prefer_tab_result is not None:
-                _prefer_best, _prefer_score = _prefer_tab_result
-                for _cd in controls:
-                    cache_flow_control(step_id, _cd, _prefer_best, window_title_hint=window_title_hint)
-                _t4 = time.perf_counter()
-                _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
-                _LOG_STEP(
-                    f"优先 Tab 导航定位命中: step={step_id}, control={control_id or '(first)'}, score={_prefer_score}"
+        # 整个 preferTab 块包异常兜底：配置异常（steps 非法等）或底层 UIA 挂起时
+        # 记录日志并回退常规定位链，而不是把异常直接炸穿 find_flow_control。
+        try:
+            for _prefer_raw_cd in controls:
+                _prefer_tab_cd = normalize_control_definition(
+                    _apply_self_heal_override(step_id, control_id, _prefer_raw_cd)
                 )
-                return _prefer_best
+                _prefer_tab_windows = list(iter_flow_search_windows(
+                    step_definition,
+                    window_title_hint=window_title_hint,
+                    control_definition=_prefer_tab_cd,
+                ))
+                _prefer_tab_result = _try_tab_navigation_fallback(
+                    _prefer_tab_windows, _prefer_tab_cd, step_id=step_id
+                )
+                if _prefer_tab_result is not None:
+                    _prefer_best, _prefer_score = _prefer_tab_result
+                    for _cd in controls:
+                        cache_flow_control(step_id, _cd, _prefer_best, window_title_hint=window_title_hint)
+                    _t4 = time.perf_counter()
+                    _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
+                    _LOG_STEP(
+                        f"优先 Tab 导航定位命中: step={step_id}, control={control_id or '(first)'}, score={_prefer_score}"
+                    )
+                    return _prefer_best
+        except Exception as _prefer_tab_exc:
+            _LOG_STEP(
+                f"优先 Tab 导航异常，回退常规定位: step={step_id}, control={control_id or '(first)'}, error={_prefer_tab_exc}"
+            )
         # Tab 导航未命中：继续常规定位
 
     deadline = time.time() + timeout_seconds
@@ -5997,8 +6362,8 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                     foreground_title = normalize_match_text(get_wrapper_text(foreground_wrapper))
                     if expected_window_title and value_matches(foreground_title, expected_window_title):
                         windows = [foreground_wrapper]
-                if not windows and _UIPI_BLOCK_DETECTED.get("timestamp", 0.0) > _uipi_marker_before:
-                    _uipi_diag = _UIPI_BLOCK_DETECTED.get("diagnostic") or {}
+                if not windows and _uipi_block_active(_uipi_marker_before):
+                    _uipi_diag = _uipi_block_active(_uipi_marker_before) or {}
                     _LOG_STEP(
                         "[FlowLocator] UIPI 快速短路: step={}, control={}, UIA 内容树被隔离，"
                         "跳过整树/JSON/重试; diagnostic={}".format(
@@ -6118,7 +6483,11 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                             _low_confidence_match = best_match
                             _low_confidence_score = best_score
                 # --- 阈值放宽：fast+descendants 不足自适应阈值时，取最高正分 ---
-                if _low_confidence_match is not None and (best_match is None or best_score < _adaptive_threshold):
+                # 仅 mid/low 丰富度允许放宽；high（阈值 100，有 automationId/uiPath 可精确定位）
+                # 必须维持精确匹配，任何正分低置信命中都不得当作成功。
+                if (_low_confidence_match is not None
+                        and _adaptive_threshold < 100
+                        and (best_match is None or best_score < _adaptive_threshold)):
                     best_match = _low_confidence_match
                     best_score = _low_confidence_score
                     _LOG_STEP(
@@ -6242,6 +6611,8 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                                 _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
                                 return _json_wrapper
             # --- 新阶段 B：bbox 空间距离兜底 ---
+            # 说明：此阶段只在 fuzzy 命中后的二级降级，且必须依赖 JSON 条目自身的 bbox/expectedX/Y；
+            # 当前流程定义没有独立的坐标来源，因此不改变现有语义，仅作定位证据记录。
             if _json_fallback_entry is not None and best_match is None:
                 _bbox = _json_fallback_entry.get("boundingBox") or _json_fallback_entry.get("bbox") or {}
                 _exp_x = _json_fallback_entry.get("expectedX") or _bbox.get("left", 0)
@@ -6334,17 +6705,29 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                 round(elapsed * 1000, 2),
             )
         )
+    silent_counts = _snapshot_silent_exception_counts()
+    silent_suffix = ""
+    if silent_counts:
+        silent_suffix = ", silent_exception_counts={}".format(json.dumps(silent_counts, ensure_ascii=False, sort_keys=True))
     if last_error is None:
         _LOG_STEP(
             f"流程控件定位失败: step={step_id}, control={control_id or '(first)'}, "
-            f"seconds={elapsed:.2f}, reason=timeout_no_match"
+            f"seconds={elapsed:.2f}, reason=timeout_no_match{silent_suffix}"
         )
     else:
         _LOG_STEP(
             f"流程控件定位失败: step={step_id}, control={control_id or '(first)'}, "
-            f"seconds={elapsed:.2f}, last_error={last_error}"
+            f"seconds={elapsed:.2f}, last_error={last_error}{silent_suffix}"
         )
     return None
+
+
+def _normalize_compare_value(value):
+    """值断言比较前归一化：去空白、统一大小写，容忍输入框尾随换行/空格。"""
+    try:
+        return str(value or "").strip().casefold()
+    except Exception:
+        return str(value or "")
 
 
 def wait_for_flow_control_condition(
@@ -6355,6 +6738,7 @@ def wait_for_flow_control_condition(
     window_title_hint="",
     poll_interval_seconds=0.4,
     control_map_path=None,
+    expected_value="",
 ):
     target_condition = str(condition or "exists").strip().lower() or "exists"
     deadline = time.time() + max(0.1, float(timeout_seconds))
@@ -6378,6 +6762,18 @@ def wait_for_flow_control_condition(
         elif target_condition == "gone":
             if control is None:
                 return True
+        elif target_condition in {"nonempty", "value_equals"}:
+            actual_value = _safe_get_value(lambda: get_wrapper_value(control), "")
+            if target_condition == "nonempty":
+                if actual_value not in (None, ""):
+                    return True
+            else:  # value_equals
+                expected = str(expected_value or "").strip()
+                if expected == "":
+                    if actual_value not in (None, ""):
+                        return True
+                elif _normalize_compare_value(actual_value) == _normalize_compare_value(expected):
+                    return True
         else:
             raise ValueError(f"不支持的 wait_for_control condition: {condition}")
         time.sleep(max(0.1, float(poll_interval_seconds)))
@@ -6480,6 +6876,8 @@ def click_relative_anchor(
 
     result_box = {}
     done_evt = threading.Event()
+    # 看门狗超时共享标志：线程解除挂起后必须检查，超时则跳过点击（防幽灵点击）
+    timed_out = {"value": False}
 
     def _do_click():
         try:
@@ -6493,7 +6891,6 @@ def click_relative_anchor(
             if anchor is None:
                 result_box["reason"] = "anchor_not_found"
                 return
-
             # 双保险窗口激活：先按类名找 MUP 窗口激活（win32，毫秒级），
             # 再从锚点控件获取顶层窗口激活（UIA），互补提高前台命中率。
             _activate_process_main_window("MUPSmartClient")
@@ -6525,6 +6922,15 @@ def click_relative_anchor(
             py = cy + offset_y
 
             kind = str(click_kind or "single").strip().lower()
+            if timed_out["value"]:
+                # 看门狗已判定超时、线程此刻才解除挂起：必须跳过点击，防"幽灵点击"
+                # 落在数秒后用户正在操作的任意位置
+                result_box["ok"] = False
+                result_box["reason"] = "watchdog_timeout_skip_click"
+                _LOG_STEP(
+                    f"锚点相对点击看门狗已超时，跳过延迟点击: step={step_id}, anchor={anchor_control_id}"
+                )
+                return
             if kind == "double":
                 pyautogui.doubleClick(px, py)
             else:
@@ -6552,6 +6958,7 @@ def click_relative_anchor(
 
     watchdog = max(30.0, float(timeout_seconds) + 24.0)
     if not done_evt.wait(watchdog):
+        timed_out["value"] = True
         _LOG_STEP(
             f"锚点相对点击超时(看门狗 {watchdog:.0f}s): step={step_id}, anchor={anchor_control_id}"
         )
@@ -6679,18 +7086,43 @@ def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
         control.set_focus()
     except Exception:
         pass
-    if click_kind == "right":
-        control.right_click_input()
-    elif click_kind == "double":
-        try:
-            control.double_click_input()
-        except Exception:
-            control.click_input(double=True)
-    else:
-        control.click_input()
+    click_ok = True
+    try:
+        if click_kind == "right":
+            control.right_click_input()
+        elif click_kind == "double":
+            try:
+                control.double_click_input()
+            except Exception:
+                control.click_input(double=True)
+        else:
+            control.click_input()
+    except Exception as click_exc:
+        # 点击瞬间控件销毁/窗口无响应：改用坐标点击兜底，避免步骤以"崩溃"收场
+        click_ok = False
+        _LOG_STEP(
+            f"控件点击异常，尝试坐标兜底: step={step_id}, control={control_id}, error={click_exc}"
+        )
+    if not click_ok:
+        fallback_ok, fallback_point = click_wrapper_center(control, click_kind=click_kind)
+        if not fallback_ok:
+            _LOG_STEP(
+                f"控件点击失败且坐标兜底不可用: step={step_id}, control={control_id}"
+            )
+            _finalize_step_timing(step_id, control_id, _t_act)
+            return False
+        _LOG_STEP(
+            f"控件点击异常，坐标兜底成功: step={step_id}, control={control_id}"
+        )
     time.sleep(0.12)
     foreground_after = _try_get_window_by_handle(get_foreground_window_handle())
     refined_click = {}
+    if not click_ok:
+        refined_click = {
+            "performed": True,
+            "reason": "click-exception-center-fallback",
+            "clickPoint": fallback_point or {},
+        }
     if should_retry_click_after_focus_switch(control, foreground_before, foreground_after):
         ok, click_point = click_wrapper_center(control, click_kind=click_kind)
         if ok:

@@ -1,6 +1,7 @@
 # encoding: utf-8
 
 import os
+import re
 import subprocess
 import time
 from datetime import datetime
@@ -68,6 +69,18 @@ def configure_wt_projection_helpers(
         _GET_IMAGE_TEMPLATES = get_image_templates
 
 
+def _safe_log_filename_component(value):
+    text = re.sub(r"[^0-9A-Za-z_\-\u4e00-\u9fff]+", "_", str(value or ""))
+    return text.strip("_") or "AI介入操作"
+
+
+def _write_ui_tars_output(log_path, output):
+    if not output:
+        return
+    with open(log_path, "w", encoding="utf-8", errors="ignore") as file_obj:
+        file_obj.write(output)
+
+
 def run_ui_tars(prompt, step_name="AI介入操作"):
     api_key = os.environ.get("VOLC_API_KEY") or os.environ.get("UI_TARS_API_KEY")
     if not api_key:
@@ -77,37 +90,51 @@ def run_ui_tars(prompt, step_name="AI介入操作"):
         raise FileNotFoundError(f"UI-TARS Runner not found: {ui_tars_runner}")
 
     _LOG_STEP(f"开始{step_name}")
-    ui_tars_stdout = os.path.join(os.path.dirname(__file__), f"ui_tars_{step_name}_stdout.log")
-    ui_tars_stderr = os.path.join(os.path.dirname(__file__), f"ui_tars_{step_name}_stderr.log")
-
-    for log_file in [ui_tars_stdout, ui_tars_stderr]:
-        if os.path.exists(log_file):
-            os.remove(log_file)
-
-    result = subprocess.run(
-        ["node", ui_tars_runner, prompt],
-        cwd=os.path.dirname(__file__),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        encoding="utf-8",
-        errors="ignore",
-        text=True,
-        env={
-            **os.environ,
-            "VOLC_API_KEY": api_key,
-            "UI_TARS_VLM_BASE_URL": os.environ.get("UI_TARS_VLM_BASE_URL", ""),
-            "MODEL_NAME": os.environ.get("MODEL_NAME", ""),
-            "UI_TARS_REPO_ROOT": os.environ.get("UI_TARS_REPO_ROOT", ""),
-            "UI_TARS_CLI_CONFIG": os.environ.get("UI_TARS_CLI_CONFIG", ""),
-        },
+    safe_step_name = _safe_log_filename_component(step_name)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    log_base = os.path.join(
+        os.path.dirname(__file__),
+        "ui_tars_{}_{}".format(safe_step_name, timestamp),
     )
+    ui_tars_stdout = log_base + "_stdout.log"
+    ui_tars_stderr = log_base + "_stderr.log"
 
-    with open(ui_tars_stdout, "w", encoding="utf-8", errors="ignore") as file_obj:
-        if result.stdout:
-            file_obj.write(result.stdout)
-    with open(ui_tars_stderr, "w", encoding="utf-8", errors="ignore") as file_obj:
-        if result.stderr:
-            file_obj.write(result.stderr)
+    timeout_seconds = float(os.environ.get("WT_UI_TARS_TIMEOUT_SECONDS") or 600)
+    try:
+        result = subprocess.run(
+            ["node", ui_tars_runner, prompt],
+            cwd=os.path.dirname(__file__),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="ignore",
+            text=True,
+            timeout=timeout_seconds,
+            env={
+                **os.environ,
+                "VOLC_API_KEY": api_key,
+                "UI_TARS_VLM_BASE_URL": os.environ.get("UI_TARS_VLM_BASE_URL", ""),
+                "MODEL_NAME": os.environ.get("MODEL_NAME", ""),
+                "UI_TARS_REPO_ROOT": os.environ.get("UI_TARS_REPO_ROOT", ""),
+                "UI_TARS_CLI_CONFIG": os.environ.get("UI_TARS_CLI_CONFIG", ""),
+            },
+        )
+    except subprocess.TimeoutExpired as exc:
+        _write_ui_tars_output(ui_tars_stdout, getattr(exc, "stdout", None))
+        _write_ui_tars_output(ui_tars_stderr, getattr(exc, "stderr", None))
+        _LOG_STEP(
+            "UI-TARS 执行超时: step={}, timeout={}s, logs={}, {}".format(
+                step_name, timeout_seconds, ui_tars_stdout, ui_tars_stderr
+            )
+        )
+        raise RuntimeError(
+            "UI-TARS 执行超时(>{}s): step={}, rc=未完成, 日志已保存到: {}, {}".format(
+                timeout_seconds, step_name, ui_tars_stdout, ui_tars_stderr
+            )
+        )
+
+    _write_ui_tars_output(ui_tars_stdout, result.stdout)
+    _write_ui_tars_output(ui_tars_stderr, result.stderr)
 
     _LOG_STEP(f"{step_name}完成，UI-TARS日志已保存到: {ui_tars_stdout}, {ui_tars_stderr}")
 
@@ -281,7 +308,14 @@ def _match_template_multiscale(template_path, confidence, region, scales):
     screenshot = pyautogui.screenshot(region=region)
     screen_gray = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2GRAY)
 
-    template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+    # cv2.imread 对中文/非 ASCII 路径在 Windows 上不可靠（ANSI 窄字符编码），
+    # 用 np.fromfile 读字节 + imdecode 解码，保证 draw_down/私有.png 等中文模板可读取。
+    try:
+        template = cv2.imdecode(
+            np.fromfile(template_path, dtype=np.uint8), cv2.IMREAD_COLOR
+        )
+    except Exception:
+        template = None
     if template is None:
         raise RuntimeError(f"无法读取模板图片: {template_path}")
     template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)

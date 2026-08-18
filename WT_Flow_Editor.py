@@ -27,6 +27,11 @@ from wt_action_schema import (
 from wt_action_defaults import build_action_default_config
 from wt_flow_validation import validate_flow_definition, validate_step_definition
 import wt_flow_editor_utils
+from wt_flow_editor_utils import build_source_info, mark_source_edited, mark_source_deleted
+try:
+    import image_template_index
+except Exception:
+    image_template_index = None
 
 from WT_AUTOMATION_Agent import DslAgent, DslAgentConfig
 from WT_AUTOMATION_Agent.control_index import build_context_for_agent, build_index_from_json
@@ -56,6 +61,86 @@ def _safe_destroy(window):
             window.destroy()
     except Exception:
         pass
+
+
+# ── 通用 Tkinter UI 构建辅助（供各 Dialog 类与主编辑器复用）──
+
+def _make_dialog_window(parent, title, width=0, height=0, min_width=0, min_height=0, on_close=None, grab=True):
+    """创建标准模态对话框窗口并返回 Toplevel。
+
+    统一处理标题、transient、grab、DPI 缩放尺寸、最小尺寸与关闭协议。
+    """
+    window = tk.Toplevel(parent)
+    window.title(title)
+    window.transient(parent)
+    if grab:
+        window.grab_set()
+    if width and height:
+        wt_dpi.geometry(window, width, height)
+    if min_width and min_height:
+        window.minsize(wt_dpi.scale(min_width), wt_dpi.scale(min_height))
+    if callable(on_close):
+        window.protocol("WM_DELETE_WINDOW", on_close)
+    return window
+
+
+def _set_text(widget, value):
+    """清空并写入 Text 控件。"""
+    widget.delete("1.0", tk.END)
+    widget.insert("1.0", value or "")
+
+
+def _get_text(widget):
+    """读取 Text 控件全文并去除首尾空白。"""
+    return widget.get("1.0", tk.END).strip()
+
+
+def _grid_label_entry(parent, label, variable, row, column, colspan=1):
+    """在网格中构建一行 label + entry。"""
+    tk.Label(parent, text=label).grid(row=row, column=column, sticky="w", pady=4)
+    tk.Entry(parent, textvariable=variable).grid(
+        row=row, column=column + 1, columnspan=colspan, sticky="ew", padx=(8, 12), pady=4
+    )
+
+
+def _make_treeview(parent, columns, headings, widths=None, selectmode="browse", height=None, show="headings"):
+    """构建带纵向滚动条的 Treeview，返回 (tree, scrollbar)。
+
+    默认按 headings 显示列标题，滚动条已与树绑定。
+    """
+    tree = ttk.Treeview(parent, columns=columns, show=show, selectmode=selectmode, height=height)
+    for col in columns:
+        tree.heading(col, text=headings.get(col, col))
+        if widths and col in widths:
+            tree.column(col, width=widths[col])
+    scrollbar = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=scrollbar.set)
+    return tree, scrollbar
+
+
+def _populate_treeview(tree, rows):
+    """清空并填充 Treeview（每行一个 values 元组/列表）。"""
+    tree.delete(*tree.get_children())
+    for values in rows:
+        tree.insert("", tk.END, values=values)
+
+
+def _make_button_row(parent, buttons, padx=8, pady=8):
+    """构建一行按钮并返回其 Frame。
+
+    buttons: [(text, command, options)]；options 中可含 'side'（默认 left）
+    与 'pack_padx'（按钮间距，默认 4），其余参数透传给 tk.Button。
+    padx/pady 作为 pack 的外部间距传入（接受标量或二元组）。
+    """
+    frame = tk.Frame(parent)
+    frame.pack(fill=tk.X, padx=padx, pady=pady)
+    for text, command, options in buttons:
+        opts = dict(options or {})
+        side = opts.pop("side", tk.LEFT)
+        pack_padx = opts.pop("pack_padx", 4)
+        opts.setdefault("command", command)
+        tk.Button(frame, text=text, **opts).pack(side=side, padx=pack_padx)
+    return frame
 
 
 EDITOR_THEME = {
@@ -821,18 +906,6 @@ def normalize_control_type_name(control_type, localized_control_type=""):
     return wt_flow_editor_utils.normalize_control_type_name(control_type, localized_control_type)
 
 
-def _strip_wrapping_quotes(text):
-    return wt_flow_editor_utils.strip_wrapping_quotes(text)
-
-
-def _normalize_inspect_scalar(value):
-    return wt_flow_editor_utils.normalize_inspect_scalar(value)
-
-
-def _has_meaningful_inspect_value(value):
-    return wt_flow_editor_utils.has_meaningful_inspect_value(value)
-
-
 def build_locator_recommendation(parsed):
     from build_control_map_library import build_locator_recommendation as advanced_build_locator
     return advanced_build_locator(parsed)
@@ -886,12 +959,17 @@ def _build_control_library_category(control, step=None):
     control = control if isinstance(control, dict) else {}
     step = step if isinstance(step, dict) else {}
     inspect_data = control.get("inspectData", {}) if isinstance(control.get("inspectData"), dict) else {}
+    ui_path = str(control.get("uiPath", "")).strip() or str(step.get("inspectHints", {}).get("uiPath", "")).strip()
+    main_window_root = wt_flow_editor_utils.uipath_is_main_window_root(ui_path)
     window_title = (
         str(control.get("windowTitle", "")).strip()
         or str(step.get("windowTitle", "")).strip()
         or str(inspect_data.get("name", "")).strip()
         or "未分类窗口"
     )
+    if main_window_root:
+        # 主窗口内控件统一归入“主窗口”分类，避免用控件库分类名冒充真实顶层窗口标题
+        window_title = "主窗口"
     framework_id = (
         str(inspect_data.get("frameworkId", "")).strip()
         or str(step.get("actionConfig", {}).get("parentWindow", {}).get("frameworkId", "")).strip()
@@ -900,6 +978,7 @@ def _build_control_library_category(control, step=None):
     return {
         "windowTitle": window_title,
         "frameworkId": framework_id,
+        "mainWindowRoot": bool(main_window_root),
         "fileName": "library_{window}_{framework}_controls.json".format(
             window=_slugify_control_library_part(window_title, "window"),
             framework=_slugify_control_library_part(framework_id, "unknown"),
@@ -920,7 +999,10 @@ def _build_control_library_control_entry(control, step=None):
         "stepId": str(step.get("id", "")).strip(),
         "stepName": str(step.get("name", "")).strip(),
     }
-    if not entry.get("windowTitle"):
+    if category.get("mainWindowRoot"):
+        # 主窗口根路径内控件的真实窗口标题不在录制路径中，控件定义统一写 * 不约束
+        entry["windowTitle"] = "*"
+    elif not entry.get("windowTitle"):
         entry["windowTitle"] = category["windowTitle"]
     if inspect_data and not str(inspect_data.get("frameworkId", "")).strip() and category["frameworkId"] != "unknown":
         inspect_data["frameworkId"] = category["frameworkId"]
@@ -938,7 +1020,7 @@ def _build_control_library_payload(category, existing_payload=None):
     payload["schemaVersion"] = str(payload.get("schemaVersion", "")).strip() or "1.0"
     payload["description"] = "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。"
     payload["targetWindow"] = {
-        "title": category["windowTitle"],
+        "title": "*" if category.get("mainWindowRoot") else category["windowTitle"],
         "className": str((payload.get("targetWindow", {}) or {}).get("className", "")).strip(),
         "processId": str((payload.get("targetWindow", {}) or {}).get("processId", "")).strip(),
         "handle": str((payload.get("targetWindow", {}) or {}).get("handle", "")).strip(),
@@ -948,7 +1030,7 @@ def _build_control_library_payload(category, existing_payload=None):
     payload["scanMeta"]["scanTime"] = datetime.now().isoformat(timespec="seconds")
     payload["scanMeta"]["backend"] = str(payload["scanMeta"].get("backend", "")).strip() or "editor"
     payload["scanMeta"]["mode"] = "editor_library"
-    payload["scanMeta"]["categoryWindowTitle"] = category["windowTitle"]
+    payload["scanMeta"]["categoryWindowTitle"] = "*" if category.get("mainWindowRoot") else category["windowTitle"]
     payload["scanMeta"]["categoryFrameworkId"] = category["frameworkId"]
     payload["controlDefinitions"] = payload.get("controlDefinitions", []) if isinstance(payload.get("controlDefinitions"), list) else []
     return payload
@@ -1119,19 +1201,19 @@ class NewDefaultChainDialog:
 
 
 class ControlPickerDialog:
-    """弹窗：从当前流程所有步骤的控件列表中选择锚点控件。"""
+    """弹窗：选择锚点控件。来源为当前流程全部步骤的控件 + 控件库（control_maps）控件。"""
 
-    def __init__(self, parent, controls=None):
+    def __init__(self, parent, controls=None, library_controls=None):
         self.parent = parent
         self.result = None
-        self._all_controls = list(controls or [])
+        self.selected_control = None
+        self.selected_source = "flow"
+        self._flow_controls = list(controls or [])
+        self._library_controls = list(library_controls or [])
+        self._displayed_controls = []
+        self._displayed_sources = []
 
-        self.window = tk.Toplevel(parent)
-        self.window.title("选择锚点控件")
-        wt_dpi.geometry(self.window, 600, 500)
-        self.window.minsize(wt_dpi.scale(480), wt_dpi.scale(380))
-        self.window.transient(parent)
-        self.window.grab_set()
+        self.window = _make_dialog_window(parent, "选择锚点控件", 700, 500, min_width=560, min_height=380)
 
         # ── 搜索框 ──
         search_frame = tk.Frame(self.window, padx=8, pady=6)
@@ -1142,57 +1224,84 @@ class ControlPickerDialog:
         self._search_entry = tk.Entry(search_frame, textvariable=self._search_var, width=40)
         self._search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
 
+        # ── 来源开关 ──
+        include_frame = tk.Frame(self.window, padx=8)
+        include_frame.pack(fill=tk.X)
+        self._include_library_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            include_frame,
+            text="同时显示控件库控件（选中控件库控件会自动导入当前步骤）",
+            variable=self._include_library_var,
+            command=self._refresh_display,
+            cursor="hand2",
+        ).pack(side=tk.LEFT, pady=(2, 4))
+
         # ── 控件列表 ──
         list_frame = tk.Frame(self.window, padx=8)
         list_frame.pack(fill=tk.BOTH, expand=True)
-        columns = ("id", "name", "control_type", "label_text")
-        self._tree = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse")
-        self._tree.heading("id", text="ID")
-        self._tree.heading("name", text="名称")
-        self._tree.heading("control_type", text="控件类型")
-        self._tree.heading("label_text", text="labelText")
-        self._tree.column("id", width=140)
-        self._tree.column("name", width=140)
-        self._tree.column("control_type", width=100)
-        self._tree.column("label_text", width=160)
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self._tree.yview)
-        self._tree.configure(yscrollcommand=scrollbar.set)
+        columns = ("id", "name", "control_type", "label_text", "source")
+        self._tree, _scrollbar = _make_treeview(
+            list_frame,
+            columns,
+            headings={"id": "ID", "name": "名称", "control_type": "控件类型", "label_text": "labelText", "source": "来源"},
+            widths={"id": 140, "name": 140, "control_type": 100, "label_text": 160, "source": 70},
+        )
         self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        _scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self._tree.bind("<Double-1>", self._on_double_click)
 
         # ── 按钮 ──
-        btn_frame = tk.Frame(self.window, padx=8, pady=8)
-        btn_frame.pack(fill=tk.X)
-        tk.Button(btn_frame, text="确定", command=self._on_confirm, bg="#d1fae5").pack(side=tk.LEFT, padx=4)
-        tk.Button(btn_frame, text="取消", command=self._on_cancel).pack(side=tk.LEFT, padx=4)
+        _make_button_row(self.window, [
+            ("确定", self._on_confirm, {"bg": "#d1fae5"}),
+            ("取消", self._on_cancel, {}),
+        ])
 
-        self._populate(self._all_controls)
+        self._refresh_display()
         self._search_entry.focus_set()
 
     # ── 内部方法 ──
 
-    def _populate(self, controls):
+    def _all_control_pairs(self):
+        pairs = [(ctrl, "流程") for ctrl in self._flow_controls]
+        if self._include_library_var.get():
+            pairs.extend((ctrl, "控件库") for ctrl in self._library_controls)
+        return pairs
+
+    def _refresh_display(self, *_args):
+        keyword = self._search_var.get().strip().lower()
+        visible_controls = []
+        visible_sources = []
+        for ctrl, source in self._all_control_pairs():
+            if not keyword:
+                visible_controls.append(ctrl)
+                visible_sources.append(source)
+                continue
+            if (
+                keyword in str(ctrl.get("id", "")).lower()
+                or keyword in str(ctrl.get("name", "")).lower()
+                or keyword in str((ctrl.get("inspectData") or {}).get("name", "")).lower()
+            ):
+                visible_controls.append(ctrl)
+                visible_sources.append(source)
+        self._displayed_controls = visible_controls
+        self._displayed_sources = visible_sources
         self._tree.delete(*self._tree.get_children())
-        for ctrl in controls:
-            ctrl_id = ctrl.get("id", "")
-            ctrl_name = ctrl.get("name", "")
-            ctrl_type = (ctrl.get("inspectData") or {}).get("controlType", "")
-            label = (ctrl.get("inspectData") or {}).get("name", "")
-            self._tree.insert("", tk.END, values=(ctrl_id, ctrl_name, ctrl_type, label))
+        for index, (ctrl, source) in enumerate(zip(visible_controls, visible_sources)):
+            self._tree.insert(
+                "",
+                tk.END,
+                iid=str(index),
+                values=(
+                    ctrl.get("id", ""),
+                    ctrl.get("name", ""),
+                    (ctrl.get("inspectData") or {}).get("controlType", ""),
+                    (ctrl.get("inspectData") or {}).get("name", ""),
+                    source,
+                ),
+            )
 
     def _on_search_changed(self, *_args):
-        keyword = self._search_var.get().strip().lower()
-        if not keyword:
-            self._populate(self._all_controls)
-            return
-        filtered = [
-            c for c in self._all_controls
-            if keyword in c.get("id", "").lower()
-            or keyword in c.get("name", "").lower()
-            or keyword in ((c.get("inspectData") or {}).get("name", "")).lower()
-        ]
-        self._populate(filtered)
+        self._refresh_display()
 
     def _on_double_click(self, _event):
         self._on_confirm()
@@ -1202,31 +1311,75 @@ class ControlPickerDialog:
         if not sel:
             messagebox.showinfo("提示", "请先选择一个控件。", parent=self.window)
             return
-        values = self._tree.item(sel[0], "values")
-        self.result = values[0]  # control ID
+        index = int(sel[0])
+        if not (0 <= index < len(self._displayed_controls)):
+            return
+        self.selected_control = self._displayed_controls[index]
+        self.selected_source = self._displayed_sources[index]
+        self.result = str(self.selected_control.get("id", "")).strip()
         self.window.destroy()
 
     def _on_cancel(self):
         self.result = None
+        self.selected_control = None
         self.window.destroy()
 
 
+_CONTROL_LIBRARY_CONTROLS_CACHE = None
+
+
+def _load_control_library_controls(refresh=False):
+    """枚举控件库目录下全部 JSON 的 controlDefinitions，合并返回控件列表（供锚点选择弹窗使用）。
+
+    以 (id, windowTitle) 作为去重键，避免不同窗口下同名控件互相覆盖。
+    """
+    global _CONTROL_LIBRARY_CONTROLS_CACHE
+    if _CONTROL_LIBRARY_CONTROLS_CACHE is not None and not refresh:
+        return _CONTROL_LIBRARY_CONTROLS_CACHE
+    os.makedirs(CONTROL_MAP_DIR, exist_ok=True)
+    merged = {}
+    for root_dir, _sub_dirs, dir_file_names in os.walk(CONTROL_MAP_DIR):
+        for file_name in dir_file_names:
+            if not file_name.lower().endswith(".json"):
+                continue
+            payload = load_json_file(os.path.join(root_dir, file_name))
+            if not isinstance(payload, dict):
+                continue
+            control_definitions = payload.get("controlDefinitions")
+            if not isinstance(control_definitions, list):
+                continue
+            for raw in control_definitions:
+                if not isinstance(raw, dict):
+                    continue
+                control = normalize_control(raw, len(merged))
+                dedup_key = "{}|{}".format(
+                    str(control.get("id", "")).strip(),
+                    str(control.get("windowTitle", "")).strip(),
+                )
+                if dedup_key and dedup_key not in merged:
+                    merged[dedup_key] = control
+    result = list(merged.values())
+    _CONTROL_LIBRARY_CONTROLS_CACHE = result
+    return result
+
+
 class ControlEditorDialog:
-    def __init__(self, parent, control=None, step_name="", default_window_title="", control_library=None):
+    def __init__(self, parent, control=None, step_name="", default_window_title="", control_library=None, on_import_anchor_control=None):
         self.parent = parent
         self.result = None
         self.control = normalize_control(control or {}, 0)
         self.dirty = False
         self.applied = False
         self._loading = True
+        self.on_import_anchor_control = on_import_anchor_control
 
-        self.window = tk.Toplevel(parent)
-        self.window.title(f"细分控件编辑 - {step_name or '未命名步骤'}")
-        wt_dpi.geometry(self.window, 1180, 860)
-        self.window.minsize(wt_dpi.scale(980), wt_dpi.scale(720))
-        self.window.transient(parent)
-        self.window.grab_set()
-        self.window.protocol("WM_DELETE_WINDOW", self.on_cancel)
+        self.window = _make_dialog_window(
+            parent,
+            f"细分控件编辑 - {step_name or '未命名步骤'}",
+            1180, 860,
+            min_width=980, min_height=720,
+            on_close=self.on_cancel,
+        )
 
         self.var_id = tk.StringVar(value=self.control.get("id", ""))
         self.var_name = tk.StringVar(value=self.control.get("name", ""))
@@ -1237,6 +1390,8 @@ class ControlEditorDialog:
         self.var_target_value = tk.StringVar(value=self.control.get("targetValue", ""))
         self.var_template_key = tk.StringVar(value=self.control.get("templateKey", ""))
         self.var_ui_path = tk.StringVar(value=self.control.get("uiPath", ""))
+        self.var_label_text = tk.StringVar(value=str(self.control.get("labelText", "")).strip())
+        self.var_related_label_name = tk.StringVar(value=str(self.control.get("relatedLabelName", "")).strip())
 
         inspect_data = self.control.get("inspectData", {})
         self.var_how_found = tk.StringVar(value=inspect_data.get("howFound", ""))
@@ -1269,6 +1424,7 @@ class ControlEditorDialog:
         self.var_tab_direction = tk.StringVar(value=tab_nav.get("direction", "forward"))
         self.var_tab_steps = tk.StringVar(value=str(tab_nav.get("steps", "")))
         self.var_prefer_tab_nav = tk.BooleanVar(value=bool(self.control.get("preferTabNavigation", False)))
+        self.var_tab_click_twice = tk.BooleanVar(value=bool(tab_nav.get("clickTwiceToExpand", False)))
 
         self.status_var = tk.StringVar(value="可粘贴 Inspect 原始文本后自动解析。")
 
@@ -1285,7 +1441,7 @@ class ControlEditorDialog:
         self._loading = False
 
     def _build_ui(self):
-        toolbar = tk.Frame(self.window, padx=10, pady=8, bg="#eef2f7")
+        toolbar = tk.Frame(self.window, padx=10, pady=8, bg=EDITOR_THEME["toolbar"])
         toolbar.pack(fill=tk.X)
         tk.Button(toolbar, text="从剪贴板解析 Inspect", command=self.import_from_clipboard).pack(side=tk.LEFT, padx=3)
         tk.Button(toolbar, text="从文本文件导入", command=self.import_from_file).pack(side=tk.LEFT, padx=3)
@@ -1293,7 +1449,7 @@ class ControlEditorDialog:
         tk.Button(toolbar, text="生成推荐定位", command=self.apply_recommended_locator).pack(side=tk.LEFT, padx=3)
         tk.Button(toolbar, text="保存当前控件", command=self.apply_changes, bg="#eff6ff").pack(side=tk.LEFT, padx=3)
         tk.Button(toolbar, text="保存并关闭", command=self.on_confirm, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Label(toolbar, textvariable=self.status_var, bg="#eef2f7", fg="#555555").pack(side=tk.RIGHT)
+        tk.Label(toolbar, textvariable=self.status_var, bg=EDITOR_THEME["toolbar"], fg=EDITOR_THEME["muted"]).pack(side=tk.RIGHT)
 
         body = tk.Frame(self.window, padx=10, pady=10)
         body.pack(fill=tk.BOTH, expand=True)
@@ -1325,6 +1481,9 @@ class ControlEditorDialog:
         self._grid_label_entry(basic, "templateKey", self.var_template_key, row, 0)
         self._grid_label_entry(basic, "UIPath", self.var_ui_path, row, 2)
         row += 1
+        self._grid_label_entry(basic, "labelText", self.var_label_text, row, 0)
+        self._grid_label_entry(basic, "relatedLabelName", self.var_related_label_name, row, 2)
+        row += 1
         tk.Checkbutton(basic, text="启用该控件", variable=self.var_enabled).grid(row=row, column=0, sticky="w", pady=4)
         tk.Label(
             basic,
@@ -1338,10 +1497,10 @@ class ControlEditorDialog:
         tab_nav_frame = tk.LabelFrame(basic, text="Tab 导航降级（可选，用于 WPF 不可见输入框）", padx=8, pady=6)
         tab_nav_frame.grid(row=row + 2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         tab_nav_frame.columnconfigure(1, weight=1)
-        tab_nav_frame.columnconfigure(3, weight=1)
+        tab_nav_frame.columnconfigure(4, weight=1)
         self._grid_label_entry(tab_nav_frame, "锚点控件ID", self.var_tab_anchor_id, 0, 0)
-        tk.Button(tab_nav_frame, text="选择...", command=self._pick_anchor_control, width=8).grid(row=0, column=1, sticky="w", padx=(4, 8), pady=4)
-        self._grid_label_entry(tab_nav_frame, "Tab步数", self.var_tab_steps, 0, 2)
+        tk.Button(tab_nav_frame, text="选择...", command=self._pick_anchor_control, width=8).grid(row=0, column=2, sticky="w", padx=(4, 8), pady=4)
+        self._grid_label_entry(tab_nav_frame, "Tab步数", self.var_tab_steps, 0, 3)
         tk.Label(tab_nav_frame, text="方向").grid(row=1, column=0, sticky="w", pady=2)
         ttk.Combobox(
             tab_nav_frame,
@@ -1355,6 +1514,11 @@ class ControlEditorDialog:
             text="优先使用 Tab 导航（跳过常规定位尝试）",
             variable=self.var_prefer_tab_nav,
         ).grid(row=2, column=0, columnspan=4, sticky="w", padx=4, pady=(4, 0))
+        ttk.Checkbutton(
+            tab_nav_frame,
+            text="锚点点击会折叠，需再点一次展开",
+            variable=self.var_tab_click_twice,
+        ).grid(row=3, column=0, columnspan=4, sticky="w", padx=4, pady=(2, 0))
         inspect_tab.columnconfigure(0, weight=1)
         inspect_tab.columnconfigure(1, weight=1)
         inspect_tab.rowconfigure(0, weight=1)
@@ -1447,32 +1611,45 @@ class ControlEditorDialog:
         detail.rowconfigure(1, weight=1)
         detail.rowconfigure(3, weight=1)
 
-        action_row = tk.Frame(self.window, padx=10, pady=10)
-        action_row.pack(fill=tk.X)
-        tk.Button(action_row, text="应用", command=self.apply_changes, bg="#eff6ff").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row, text="应用并关闭", command=self.on_confirm, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row, text="取消", command=self.on_cancel).pack(side=tk.LEFT, padx=3)
+        _make_button_row(self.window, [
+            ("应用", self.apply_changes, {"bg": "#eff6ff", "pack_padx": 3}),
+            ("应用并关闭", self.on_confirm, {"bg": "#d1fae5", "pack_padx": 3}),
+            ("取消", self.on_cancel, {"pack_padx": 3}),
+        ], padx=10, pady=10)
 
     def _pick_anchor_control(self):
-        """弹出控件选择弹窗，将选中 ID 填入锚点控件ID。"""
-        picker = ControlPickerDialog(self.window, controls=self.control_library)
+        """弹出锚点选择弹窗；选中控件库控件时先导入当前流程步骤再填入锚点ID。"""
+        picker = ControlPickerDialog(
+            self.window,
+            controls=self.control_library,
+            library_controls=_load_control_library_controls(),
+        )
         self.window.wait_window(picker.window)
+        if picker.selected_control is None:
+            return
+        if picker.selected_source == "控件库":
+            if not self.on_import_anchor_control:
+                messagebox.showwarning("提示", "当前上下文不支持将控件库控件导入为锚点。", parent=self.window)
+                return
+            imported = self.on_import_anchor_control(picker.selected_control)
+            if not imported:
+                return
+            picker.selected_control = imported
+            picker.result = str(imported.get("id", "")).strip()
         if picker.result:
             self.var_tab_anchor_id.set(picker.result)
             self._mark_dirty(f"已选择锚点控件：{picker.result}")
 
     def _grid_label_entry(self, parent, label, variable, row, column, colspan=1):
-        tk.Label(parent, text=label).grid(row=row, column=column, sticky="w", pady=4)
-        tk.Entry(parent, textvariable=variable).grid(row=row, column=column + 1, columnspan=colspan, sticky="ew", padx=(8, 12), pady=4)
+        _grid_label_entry(parent, label, variable, row, column, colspan=colspan)
 
     @staticmethod
     def _set_text(widget, value):
-        widget.delete("1.0", tk.END)
-        widget.insert("1.0", value or "")
+        _set_text(widget, value)
 
     @staticmethod
     def _get_text(widget):
-        return widget.get("1.0", tk.END).strip()
+        return _get_text(widget)
 
     def import_from_clipboard(self):
         try:
@@ -1612,6 +1789,8 @@ class ControlEditorDialog:
                 "targetValue": target_value,
                 "templateKey": self.var_template_key.get().strip(),
                 "uiPath": self.var_ui_path.get().strip(),
+                "labelText": self.var_label_text.get().strip(),
+                "relatedLabelName": self.var_related_label_name.get().strip(),
                 "notes": self._get_text(self.notes_text),
                 "rawInspectText": raw_inspect_text,
                 "auxChecks": [line.strip() for line in self._get_text(self.aux_checks_text).splitlines() if line.strip()],
@@ -1624,6 +1803,7 @@ class ControlEditorDialog:
                             {"steps": int(self.var_tab_steps.get().strip())}
                             if self.var_tab_steps.get().strip().isdigit() else {}
                         ),
+                        **({"clickTwiceToExpand": True} if self.var_tab_click_twice.get() else {}),
                     }}
                     if self.var_tab_anchor_id.get().strip() else {}
                 ),
@@ -1695,12 +1875,7 @@ class SemiAutoInspectCollectorDialog:
         self.var_target_window = tk.StringVar(value=self.default_window_title or "目标软件")
         self.var_backend = tk.StringVar(value="uia")
 
-        self.window = tk.Toplevel(parent)
-        self.window.title(f"半自动采集 - {step_name or '未命名步骤'}")
-        wt_dpi.geometry(self.window, 980, 760)
-        self.window.minsize(wt_dpi.scale(860), wt_dpi.scale(640))
-        self.window.transient(parent)
-        self.window.grab_set()
+        self.window = _make_dialog_window(parent, f"半自动采集 - {step_name or '未命名步骤'}", 980, 760, min_width=860, min_height=640)
 
         self.status_var = tk.StringVar(
             value="推荐操作：使用“交互采集”，直接点击目标软件控件即可抓取（不依赖复制）。"
@@ -1710,7 +1885,7 @@ class SemiAutoInspectCollectorDialog:
         self.window.protocol("WM_DELETE_WINDOW", self.on_cancel)
 
     def _build_ui(self):
-        toolbar = tk.Frame(self.window, padx=10, pady=8, bg="#eef2f7")
+        toolbar = tk.Frame(self.window, padx=10, pady=8, bg=EDITOR_THEME["toolbar"])
         toolbar.pack(fill=tk.X)
         tk.Button(toolbar, text="开始监听剪贴板", command=self.start_monitor).pack(side=tk.LEFT, padx=3)
         tk.Button(toolbar, text="停止监听", command=self.stop_monitor).pack(side=tk.LEFT, padx=3)
@@ -1719,7 +1894,7 @@ class SemiAutoInspectCollectorDialog:
         tk.Button(toolbar, text="停止交互点击", command=self.stop_interactive_monitor).pack(side=tk.LEFT, padx=3)
         tk.Button(toolbar, text="编辑选中候选", command=self.edit_selected).pack(side=tk.LEFT, padx=3)
         tk.Button(toolbar, text="删除选中候选", command=self.delete_selected).pack(side=tk.LEFT, padx=3)
-        tk.Label(toolbar, textvariable=self.status_var, bg="#eef2f7", fg="#555555").pack(side=tk.RIGHT)
+        tk.Label(toolbar, textvariable=self.status_var, bg=EDITOR_THEME["toolbar"], fg=EDITOR_THEME["muted"]).pack(side=tk.RIGHT)
 
         tips = tk.LabelFrame(self.window, text="采集说明", padx=10, pady=10)
         tips.pack(fill=tk.X, padx=10, pady=(10, 0))
@@ -1738,7 +1913,7 @@ class SemiAutoInspectCollectorDialog:
             ),
             justify=tk.LEFT,
             anchor="w",
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
         ).pack(fill=tk.X)
 
         config_row = tk.Frame(self.window, padx=10, pady=8)
@@ -2300,11 +2475,7 @@ class ControlEditDialog:
     def __init__(self, parent, control):
         self.result = None
         self.control = dict(control)
-        self.window = tk.Toplevel(parent)
-        self.window.title("编辑控件")
-        wt_dpi.geometry(self.window, 680, 620)
-        self.window.minsize(wt_dpi.scale(600), wt_dpi.scale(550))
-        self.window.transient(parent)
+        self.window = _make_dialog_window(parent, "编辑控件", 680, 620, min_width=600, min_height=550)
 
         container = tk.Frame(self.window, padx=15, pady=15)
         container.pack(fill=tk.BOTH, expand=True)
@@ -2323,7 +2494,7 @@ class ControlEditDialog:
         row += 1
 
         tk.Label(basic_frame, text="控制类型").grid(row=row, column=0, sticky="nw", pady=3)
-        tk.Label(basic_frame, textvariable=self.var_control_type, fg="#555555", anchor="w").grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=3)
+        tk.Label(basic_frame, textvariable=self.var_control_type, fg=EDITOR_THEME["muted"], anchor="w").grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=3)
         row += 1
 
         tk.Label(basic_frame, text="角色/说明").grid(row=row, column=0, sticky="nw", pady=3)
@@ -2388,10 +2559,10 @@ class ControlEditDialog:
         self.notes_text = tk.Text(notes_frame, height=5, wrap=tk.WORD)
         self.notes_text.pack(fill=tk.BOTH, expand=True)
 
-        btn_frame = tk.Frame(container)
-        btn_frame.pack(fill=tk.X)
-        tk.Button(btn_frame, text="保存", command=self.on_save, bg="#d1fae5", width=12).pack(side=tk.RIGHT)
-        tk.Button(btn_frame, text="取消", command=self.window.destroy, width=12).pack(side=tk.RIGHT, padx=(0, 10))
+        _make_button_row(container, [
+            ("保存", self.on_save, {"bg": "#d1fae5", "width": 12, "side": tk.RIGHT}),
+            ("取消", self.window.destroy, {"width": 12, "side": tk.RIGHT, "pack_padx": (0, 10)}),
+        ], padx=0, pady=0)
 
         self._load_control_data()
 
@@ -2486,11 +2657,7 @@ class ControlLocatorTesterDialog:
     def __init__(self, parent, initial_control=None):
         self.result = None
         self.initial_control = initial_control if isinstance(initial_control, dict) else None
-        self.window = tk.Toplevel(parent)
-        self.window.title("控件定位检验器")
-        wt_dpi.geometry(self.window, 1000, 700)
-        self.window.minsize(wt_dpi.scale(800), wt_dpi.scale(500))
-        self.window.transient(parent)
+        self.window = _make_dialog_window(parent, "控件定位检验器", 1000, 700, min_width=800, min_height=500)
 
         # 尝试导入 pywinauto
         self.pywinauto_available = False
@@ -2566,7 +2733,7 @@ class ControlLocatorTesterDialog:
         self.result_text = scrolledtext.ScrolledText(result_frame, height=12, wrap=tk.WORD, font=("Consolas", 10))
         self.result_text.pack(fill=tk.BOTH, expand=True)
 
-        tk.Label(result_frame, textvariable=self.var_test_result, fg="#555555", anchor="w").pack(fill=tk.X, pady=(5, 0))
+        tk.Label(result_frame, textvariable=self.var_test_result, fg=EDITOR_THEME["muted"], anchor="w").pack(fill=tk.X, pady=(5, 0))
 
         tk.Label(result_frame, textvariable=self.var_status, fg="#6b7280", anchor="w").pack(fill=tk.X, pady=(5, 0))
 
@@ -2880,13 +3047,6 @@ class ControlLocatorTesterDialog:
             self.var_test_result.set("检验出错")
 
 
-def _safe_destroy(widget):
-    try:
-        if widget and widget.winfo_exists():
-            widget.destroy()
-    except Exception:
-        pass
-
 class ControlMapImportDialog:
     def __init__(self, parent, default_window_title="", initial_filter="", external_window=None):
         self.default_window_title = str(default_window_title or "").strip()
@@ -2902,11 +3062,7 @@ class ControlMapImportDialog:
             self.window.title("控件库维护")
             self._owns_window = False
         else:
-            self.window = tk.Toplevel(parent)
-            self.window.title("从控件库导入")
-            wt_dpi.geometry(self.window, 1480, 860)
-            self.window.minsize(wt_dpi.scale(1320), wt_dpi.scale(760))
-            self.window.transient(parent)
+            self.window = _make_dialog_window(parent, "从控件库导入", 1480, 860, min_width=1320, min_height=760)
             self._owns_window = True
 
         self.var_filter = tk.StringVar(value=str(initial_filter or "").strip())
@@ -2933,43 +3089,53 @@ class ControlMapImportDialog:
             ),
             justify=tk.LEFT,
             anchor="w",
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
         ).pack(fill=tk.X)
 
         toolbar = tk.Frame(self.window, padx=10, pady=8)
         toolbar.pack(fill=tk.X)
-        tk.Label(toolbar, text="过滤关键字").pack(side=tk.LEFT)
-        tk.Entry(toolbar, textvariable=self.var_filter).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
-        tk.Label(toolbar, text="排序方式").pack(side=tk.LEFT)
+        # 顶部操作分两排排布，避免窗口缩小时单排控件被遮挡：
+        # 第一排：过滤筛选区；第二排：文件/视图模式区
+        toolbar_row1 = tk.Frame(toolbar)
+        toolbar_row1.pack(fill=tk.X)
+        tk.Label(toolbar_row1, text="过滤关键字").pack(side=tk.LEFT)
+        tk.Entry(toolbar_row1, textvariable=self.var_filter).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+        tk.Label(toolbar_row1, text="排序方式").pack(side=tk.LEFT)
         ttk.Combobox(
-            toolbar,
+            toolbar_row1,
             textvariable=self.var_sort,
             values=("添加时间-新到旧", "添加时间-旧到新", "质量优先"),
             width=16,
             state="readonly",
         ).pack(side=tk.LEFT, padx=(8, 8))
-        tk.Label(toolbar, text="时间筛选").pack(side=tk.LEFT)
+        tk.Label(toolbar_row1, text="时间筛选").pack(side=tk.LEFT)
         ttk.Combobox(
-            toolbar,
+            toolbar_row1,
             textvariable=self.var_time_filter,
             values=("全部时间", "最近7天", "最近30天"),
             width=12,
             state="readonly",
         ).pack(side=tk.LEFT, padx=(8, 8))
-        tk.Button(toolbar, text="刷新控件库", command=self._refresh_file_list).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="打开控件库目录", command=self._open_control_map_dir).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="打开控件库采集器", command=self._open_control_map_builder).pack(side=tk.LEFT, padx=2)
-        tk.Label(toolbar, text="|").pack(side=tk.LEFT, padx=6)
-        tk.Radiobutton(toolbar, text="单文件", variable=self.var_file_scope, value="single", command=self._on_file_scope_change).pack(side=tk.LEFT, padx=(0, 2))
-        tk.Radiobutton(toolbar, text="总控件信息", variable=self.var_file_scope, value="master", command=self._on_file_scope_change).pack(side=tk.LEFT, padx=2)
-        tk.Radiobutton(toolbar, text="标准目录", variable=self.var_file_scope, value="catalog", command=self._on_file_scope_change).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="合并去重并保存", command=self._merge_and_save_master, bg="#d1fae5").pack(side=tk.LEFT, padx=(8, 2))
+        tk.Button(toolbar_row1, text="刷新控件库", command=self._refresh_file_list).pack(side=tk.LEFT, padx=2)
+        tk.Button(toolbar_row1, text="打开控件库目录", command=self._open_control_map_dir).pack(side=tk.LEFT, padx=2)
+        tk.Button(toolbar_row1, text="打开控件库采集器", command=self._open_control_map_builder).pack(side=tk.LEFT, padx=2)
+
+        toolbar_row2 = tk.Frame(toolbar)
+        toolbar_row2.pack(fill=tk.X, pady=(6, 0))
+        tk.Label(toolbar_row2, text="|").pack(side=tk.LEFT, padx=(0, 6))
+        tk.Radiobutton(toolbar_row2, text="单文件", variable=self.var_file_scope, value="single", command=self._on_file_scope_change).pack(side=tk.LEFT, padx=(0, 2))
+        tk.Radiobutton(toolbar_row2, text="总控件信息", variable=self.var_file_scope, value="master", command=self._on_file_scope_change).pack(side=tk.LEFT, padx=2)
+        tk.Radiobutton(toolbar_row2, text="标准目录", variable=self.var_file_scope, value="catalog", command=self._on_file_scope_change).pack(side=tk.LEFT, padx=2)
+        tk.Button(toolbar_row2, text="合并去重并保存", command=self._merge_and_save_master, bg="#d1fae5").pack(side=tk.LEFT, padx=(8, 2))
+        tk.Button(toolbar_row2, text="批量刷新步骤定位", command=self.cmd_refresh_step_controls_from_library, bg="#bfdbfe").pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(toolbar_row2, text="一键修复审核问题", command=self.cmd_repair_flow_audit_issues, bg="#fde68a").pack(side=tk.LEFT, padx=(0, 2))
+        tk.Label(toolbar_row2, text="|").pack(side=tk.LEFT, padx=(8, 6))
         self.var_view_mode = tk.StringVar(value="flat")
-        tk.Radiobutton(toolbar, text="树形视图", variable=self.var_view_mode, value="tree", command=self._on_view_mode_change).pack(side=tk.LEFT, padx=(8, 2))
-        tk.Radiobutton(toolbar, text="列表视图", variable=self.var_view_mode, value="flat", command=self._on_view_mode_change).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar, text="展开全部", command=self._cmd_expand_all,
+        tk.Radiobutton(toolbar_row2, text="树形视图", variable=self.var_view_mode, value="tree", command=self._on_view_mode_change).pack(side=tk.LEFT, padx=(0, 2))
+        tk.Radiobutton(toolbar_row2, text="列表视图", variable=self.var_view_mode, value="flat", command=self._on_view_mode_change).pack(side=tk.LEFT, padx=2)
+        tk.Button(toolbar_row2, text="展开全部", command=self._cmd_expand_all,
                   font=("Microsoft YaHei UI", 9), padx=6, pady=0).pack(side=tk.LEFT, padx=(12, 2))
-        tk.Button(toolbar, text="折叠全部", command=self._cmd_collapse_all,
+        tk.Button(toolbar_row2, text="折叠全部", command=self._cmd_collapse_all,
                   font=("Microsoft YaHei UI", 9), padx=6, pady=0).pack(side=tk.LEFT, padx=2)
         self.var_filter.trace_add("write", lambda *_args: self._refresh_controls_tree())
         self.var_sort.trace_add("write", lambda *_args: self._refresh_file_list())
@@ -2988,7 +3154,7 @@ class ControlMapImportDialog:
         tk.Label(
             left,
             textvariable=self.var_file_summary,
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
             anchor="w",
             justify=tk.LEFT,
         ).pack(fill=tk.X, pady=(0, 8))
@@ -3003,7 +3169,7 @@ class ControlMapImportDialog:
         tk.Label(
             middle,
             textvariable=self.var_candidate_summary,
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
             anchor="w",
             justify=tk.LEFT,
         ).pack(fill=tk.X, pady=(0, 8))
@@ -3038,7 +3204,7 @@ class ControlMapImportDialog:
         tk.Label(
             right,
             text="右侧显示当前选中控件的完整详情，便于确认业务名称、质量分级和推荐定位。",
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
             justify=tk.LEFT,
             anchor="w",
         ).pack(fill=tk.X)
@@ -3047,23 +3213,30 @@ class ControlMapImportDialog:
 
         action_row = tk.Frame(self.window, padx=10, pady=10)
         action_row.pack(fill=tk.X)
-        tk.Button(action_row, text="展开全部", command=self._cmd_expand_all,
+        # 底部操作分两排排布，避免窗口缩小时单排按钮被遮挡：
+        # 第一排：导入/编辑/检验操作；第二排：视图切换 + 状态信息
+        action_row1 = tk.Frame(action_row)
+        action_row1.pack(fill=tk.X)
+        tk.Button(action_row1, text="导入所选控件", command=self.import_selected, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
+        tk.Button(action_row1, text="导入推荐控件", command=self.import_recommended, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
+        tk.Button(action_row1, text="导入当前文件全部控件", command=self.import_all, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
+        tk.Button(action_row1, text="编辑所选控件", command=self.edit_selected_control, bg="#fef3c7").pack(side=tk.LEFT, padx=3)
+        tk.Button(action_row1, text="删除所选控件", command=self.delete_selected_controls, bg="#fee2e2").pack(side=tk.LEFT, padx=3)
+        tk.Button(action_row1, text="检验定位", command=self.test_selected_locator, bg="#e0e7ff").pack(side=tk.LEFT, padx=3)
+        tk.Button(action_row1, text="取消", command=self.on_cancel).pack(side=tk.LEFT, padx=3)
+
+        action_row2 = tk.Frame(action_row)
+        action_row2.pack(fill=tk.X, pady=(6, 0))
+        tk.Button(action_row2, text="展开全部", command=self._cmd_expand_all,
                   font=("Microsoft YaHei UI", 9), padx=6, pady=2).pack(side=tk.LEFT, padx=2)
-        tk.Button(action_row, text="折叠全部", command=self._cmd_collapse_all,
+        tk.Button(action_row2, text="折叠全部", command=self._cmd_collapse_all,
                   font=("Microsoft YaHei UI", 9), padx=6, pady=2).pack(side=tk.LEFT, padx=2)
-        ttk.Separator(action_row, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=8)
-        tk.Button(action_row, text="导入所选控件", command=self.import_selected, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row, text="导入推荐控件", command=self.import_recommended, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row, text="导入当前文件全部控件", command=self.import_all, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row, text="编辑所选控件", command=self.edit_selected_control, bg="#fef3c7").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row, text="删除所选控件", command=self.delete_selected_controls, bg="#fee2e2").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row, text="检验定位", command=self.test_selected_locator, bg="#e0e7ff").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row, text="取消", command=self.on_cancel).pack(side=tk.LEFT, padx=3)
-        tk.Label(action_row, textvariable=self.var_status, fg="#555555").pack(side=tk.RIGHT)
+        ttk.Separator(action_row2, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=8)
+        tk.Label(action_row2, textvariable=self.var_status, fg=EDITOR_THEME["muted"]).pack(side=tk.RIGHT)
         
         # 定位结果状态标签（用于显示检验定位结果而不弹窗）
         self.var_locator_result = tk.StringVar(value="")
-        self.locator_result_label = tk.Label(action_row, textvariable=self.var_locator_result, fg="#0066cc", font=("Microsoft YaHei", 9))
+        self.locator_result_label = tk.Label(action_row2, textvariable=self.var_locator_result, fg="#0066cc", font=("Microsoft YaHei", 9))
         self.locator_result_label.pack(side=tk.LEFT, padx=(20, 0))
 
     def _refresh_file_list(self):
@@ -3319,6 +3492,8 @@ class ControlMapImportDialog:
                         # labelText 是多实例判别核心字段，需透传给 normalize_control 供过滤/显示
                         "labelText": item.get("labelText", ""),
                         "relatedLabelName": item.get("relatedLabelName", ""),
+                        "tabNavigation": item.get("tabNavigation", {}),
+                        "optionValues": item.get("optionValues", []),
                         "notes": f"由控件库扫描导入，定位评分={item.get('locatorScore', 0)}",
                         "rawInspectText": item.get("rawInspectText", ""),
                         "auxChecks": item.get("auxChecks", []),
@@ -3943,6 +4118,9 @@ class ControlMapImportDialog:
     def _convert_flat_to_control(self, flat_item, index):
         """将 flat_control 转换为可用于导入的控件格式"""
         inspect_data = flat_item.get("inspectData", {}) if isinstance(flat_item, dict) else {}
+        origin = "control_library"
+        if isinstance(flat_item, dict) and (flat_item.get("_sourceFile") or flat_item.get("sources")):
+            origin = "standard_catalog"
         return {
             "id": f"control_map_{index + 1}",
             "name": flat_item.get("savedControlName", "") or flat_item.get("suggestedControlName", "") or flat_item.get("displayName", "") or inspect_data.get("name", "") or f"控件 {index + 1}",
@@ -3952,10 +4130,25 @@ class ControlMapImportDialog:
             "targetMethod": flat_item.get("recommendedTargetMethod", "") or flat_item.get("targetMethod", ""),
             "targetValue": flat_item.get("recommendedTargetValue", "") or flat_item.get("targetValue", ""),
             "uiPath": flat_item.get("uiPath", ""),
+            "labelText": flat_item.get("labelText", ""),
+            "relatedLabelName": flat_item.get("relatedLabelName", ""),
+            # 携带 helpText/functionText：运行时 label_text 消歧的 helpText 加分
+            # 依赖快照内该字段（图标按钮 UIA Name 是 SVG path，helpText 是软件真实
+            # 操作语义，如"添加新配置"），不携带则已导入步骤享受不到 helpText 消歧。
+            "helpText": flat_item.get("helpText", "") or inspect_data.get("helpText", ""),
+            "functionText": flat_item.get("functionText", "") or inspect_data.get("functionText", ""),
+            "tabNavigation": flat_item.get("tabNavigation", {}),
+            "optionValues": flat_item.get("optionValues", []),
             "notes": f"由控件库扫描导入，定位评分={flat_item.get('locatorScore', 0)}",
             "rawInspectText": flat_item.get("rawInspectText", ""),
             "auxChecks": flat_item.get("auxChecks", []),
             "inspectData": inspect_data,
+            "sourceInfo": build_source_info(
+                origin=origin,
+                library_control_id=str(flat_item.get("id", "") or ""),
+                library_file_name=str(flat_item.get("_sourceFile", "") or flat_item.get("windowTitle", "") or ""),
+                imported_by="控件库导入",
+            ),
             "_qualityTier": flat_item.get("qualityTier", ""),
             "_qualityReason": flat_item.get("qualityReason", ""),
         }
@@ -4187,11 +4380,10 @@ class ControlMapImportDialog:
             return False
 
     def test_selected_locator(self):
-        """使用流程执行器同一套定位规则检验并指向实际命中控件。
-        
+        """使用流程执行器同一套定位规则检验并指向实际命中控件（后台线程，不阻塞 UI）。
+
         只在窗口内状态栏显示结果，绝不弹窗夺取焦点。
         """
-        use_dialog = False
         selection = self.control_tree.selection()
         if len(selection) != 1:
             self.var_locator_result.set("⚠ 请只选择一个控件进行检验")
@@ -4202,61 +4394,86 @@ class ControlMapImportDialog:
             self.var_locator_result.set("⚠ 无法读取选中控件的信息")
             return
 
-        inspect_data = control.get("inspectData", {}) if isinstance(control.get("inspectData"), dict) else {}
         control_definition = dict(control)
-
-        if not control_definition["targetMethod"] and not inspect_data:
-            self.var_locator_result.set("⚠ 该控件没有可用于定位的属性")
-            return
+        # 与控件库采集器的检验一致：条目缺 windowTitle 时回退到文件级 targetWindow.title，
+        # 避免老控件库文件因缺窗口标题而找不到目标窗口。
+        if not str(control_definition.get("windowTitle", "")).strip():
+            target_window = self.current_payload.get("targetWindow", {}) if isinstance(self.current_payload, dict) else {}
+            if isinstance(target_window, dict) and str(target_window.get("title", "")).strip():
+                control_definition["windowTitle"] = str(target_window.get("title", "")).strip()
 
         try:
-            import pyautogui
             import wt_flow_locator as flow_locator
         except ImportError as exc:
             self.var_locator_result.set(f"⚠ 缺少定位依赖：{exc}")
             return
 
         try:
+            # normalize 内部会回退 recommendedTargetMethod / recommendedTargetValue，
+            # 因此“是否有可用于定位的属性”必须在 normalize 之后判断，
+            # 否则只有推荐定位（无顶层 targetMethod、无 inspectData）的控件会被误拒。
             control_definition = flow_locator.normalize_control_definition(control_definition)
-            # 与 find_flow_control 相同：查找候选窗口，快速定位后再遍历全部后代控件并评分。
-            windows = flow_locator.iter_flow_search_windows(
+        except Exception as exc:
+            self.var_locator_result.set(f"⚠ 定位参数解析失败：{exc}")
+            return
+        if not control_definition.get("targetMethod"):
+            self.var_locator_result.set("⚠ 该控件没有可用于定位的属性")
+            return
+
+        self.var_locator_result.set("⏳ 正在检验定位（后台执行中）...")
+
+        import threading
+        t = threading.Thread(
+            target=self._run_locator_test_background,
+            args=(control_definition,),
+            daemon=True,
+        )
+        t.start()
+
+    def _run_locator_test_background(self, control_definition):
+        """后台线程执行定位检验（匹配逻辑与控件库采集器/流程执行器同源）。"""
+        import pythoncom
+        pythoncom.CoInitialize()
+        try:
+            import wt_flow_locator as flow_locator
+
+            windows = list(flow_locator.iter_flow_search_windows(
                 {},
-                window_title_hint=control_definition["windowTitle"],
+                window_title_hint=str(control_definition.get("windowTitle", "")).strip(),
                 control_definition=control_definition,
-            )
+            ))
             if not windows:
-                title = control_definition["windowTitle"] or "当前应用窗口"
-                if not use_dialog:
-                    self.var_locator_result.set(f"⚠ 未找到目标窗口：{title}")
-                else:
-                    messagebox.showwarning("定位检验结果", f"未找到目标窗口：{title}\n\n请确认目标软件窗口已打开且未被最小化。", parent=self.window)
+                title = control_definition.get("windowTitle") or "当前应用窗口"
+                self.window.after(0, lambda t=title: self.var_locator_result.set(f"⚠ 未找到目标窗口：{t}"))
                 return
 
-            # 两阶段提速：先跑 UIA 引擎侧条件过滤的快速候选（毫秒级），命中即用；
-            # 只有快速候选全部落空才退回全量 descendants 遍历（大 WPF 窗口可达数十秒），
-            # 且尽量带 control_type 让 UIA 引擎侧先缩小返回集。
             matched = []
             seen = set()
 
-            def _match_candidates(candidate_iter):
+            def _match_candidates(candidate_iter, _window):
                 for candidate in candidate_iter:
                     handle = flow_locator.get_wrapper_handle(candidate) or id(candidate)
                     if handle in seen:
                         continue
                     seen.add(handle)
-                    if not flow_locator.wrapper_matches_control_definition(candidate, control_definition):
-                        continue
                     score = flow_locator.score_control_match(candidate, control_definition)
                     if score >= 0:
-                        matched.append((score, candidate, window))
+                        matched.append((score, candidate, _window))
 
+            # 阶段1：UIA 引擎侧条件过滤的快速候选（毫秒级）
             for window in windows:
-                _match_candidates(flow_locator.iter_fast_locator_candidates(window, control_definition))
+                _match_candidates(flow_locator.iter_fast_locator_candidates(window, control_definition), window)
 
+            # 阶段2：RawView 兜底（IsControlElement=False 的孤儿控件，与执行器 find_flow_control 一致）
+            if not matched and flow_locator.control_definition_expects_raw_view(control_definition):
+                for window in windows:
+                    _match_candidates(flow_locator.iter_raw_view_fallback_candidates(window, control_definition), window)
+
+            # 阶段3：descendants 全量遍历兜底（最慢，大 WPF 窗口可达数十秒）
             if not matched:
                 expected_type = str(
                     control_definition.get("controlType", "")
-                    or inspect_data.get("controlType", "")
+                    or control_definition.get("inspectData", {}).get("controlType", "")
                 ).strip()
                 for window in windows:
                     descendants = []
@@ -4270,77 +4487,53 @@ class ControlMapImportDialog:
                             descendants = window.descendants()
                         except Exception:
                             descendants = []
-                    _match_candidates(descendants)
-
-            # Raw 视图兜底：IsControlElement=False 的控件（孤儿 PART_ContentHost
-            # 编辑面等）Control 视图枚举不到，与执行器 find_flow_control 同样
-            # 转 RawViewWalker 找回，保证检验结果与步骤执行行为一致。
-            if not matched and flow_locator.control_definition_expects_raw_view(control_definition):
-                for window in windows:
-                    _match_candidates(flow_locator.iter_raw_view_fallback_candidates(window, control_definition))
+                    _match_candidates(descendants, window)
 
             if not matched:
-                detail = (
-                    f"未找到匹配控件。\n\n"
-                    f"控件库定位：{control_definition['targetMethod']} = {control_definition['targetValue']}\n"
-                    f"目标窗口：{control_definition['windowTitle'] or '自动识别'}\n\n"
-                    "说明：本检验已使用与步骤执行相同的窗口筛选、后代控件遍历和评分规则。"
-                )
-                if not use_dialog:
-                    self.var_locator_result.set("⚠ 未找到匹配控件")
-                else:
-                    messagebox.showwarning("定位检验结果", detail, parent=self.window)
+                self.window.after(0, lambda: self.var_locator_result.set(
+                    f"⚠ 未找到匹配控件（{control_definition.get('targetMethod', '')}={control_definition.get('targetValue', '')}）"
+                ))
                 return
 
             matched.sort(key=lambda item: item[0], reverse=True)
             best_score, found, target_window = matched[0]
-            rect = found.rectangle()
-            center_x = (rect.left + rect.right) // 2
-            center_y = (rect.top + rect.bottom) // 2
+            rect = None
+            center_x = center_y = 0
+            try:
+                rect = found.rectangle()
+                center_x = (rect.left + rect.right) // 2
+                center_y = (rect.top + rect.bottom) // 2
+            except Exception:
+                pass
 
-            outline_drawn = self._show_locator_highlight(rect)
-            if not outline_drawn:
-                try:
-                    found.draw_outline(colour="red", thickness=3)
-                    outline_drawn = True
-                except Exception:
-                    pass
-
-            snapshot = flow_locator.get_wrapper_debug_snapshot(found)
-            parent_signatures = flow_locator.get_wrapper_parent_signatures(found, depth=5)
+            snapshot = {}
+            try:
+                snapshot = flow_locator.get_wrapper_debug_snapshot(found)
+            except Exception:
+                pass
             exact_matches = len(matched)
-            
-            if use_dialog:
-                result_lines = [
-                    "定位成功：已高亮实际命中控件。",
-                    f"匹配评分：{best_score}",
-                    f"候选数量：{exact_matches}" + ("（存在多个匹配项，当前指向评分最高项）" if exact_matches > 1 else "（唯一匹配）"),
-                    "",
-                    f"实际名称：{snapshot.get('name', '') or '(无名称)'}",
-                    f"实际类型：{snapshot.get('controlType', '') or snapshot.get('className', '') or '(未知)'}",
-                    f"实际 AutomationId：{snapshot.get('automationId', '') or '(无)'}",
-                    f"实际位置：({rect.left}, {rect.top}) - ({rect.right}, {rect.bottom})",
-                    f"控件中心：({center_x}, {center_y})",
-                    f"红框高亮：{'已请求绘制' if outline_drawn else '不可用'}",
-                ]
-                if parent_signatures:
-                    result_lines.append("")
-                    result_lines.append("父级路径：")
-                    result_lines.extend(f"  {item}" for item in reversed(parent_signatures))
-                messagebox.showinfo("定位检验结果", "\n".join(result_lines), parent=self.window)
-            else:
-                status_parts = [
-                    f"✓ 定位成功 (评分:{best_score})",
-                    f"名称:{snapshot.get('name', '') or '(无)'}",
-                    f"类型:{snapshot.get('controlType', '') or snapshot.get('className', '') or '(未知)'}",
-                    f"AID:{snapshot.get('automationId', '') or '(无)'}",
-                    f"位置:({center_x},{center_y})",
-                    f"{'(红框已绘制)' if outline_drawn else ''}",
-                    f"{'(多匹配)' if exact_matches > 1 else '(唯一)'}",
-                ]
-                self.var_locator_result.set(" ".join(status_parts))
+
+            status_text = " ".join([
+                f"✓ 定位成功 (评分:{best_score})",
+                f"名称:{snapshot.get('name', '') or '(无)'}",
+                f"类型:{snapshot.get('controlType', '') or snapshot.get('className', '') or '(未知)'}",
+                f"AID:{snapshot.get('automationId', '') or '(无)'}",
+                f"位置:({center_x},{center_y})",
+                f"{'(多匹配)' if exact_matches > 1 else '(唯一)'}",
+            ])
+
+            def _show_result():
+                self.var_locator_result.set(status_text)
+                # 高亮涉及 Tk 覆盖层与 pywinauto 绘制，须回主线程执行
+                if rect is not None and not self._show_locator_highlight(rect):
+                    try:
+                        found.draw_outline(colour="red", thickness=3)
+                    except Exception:
+                        pass
+
+            self.window.after(0, _show_result)
         except Exception as exc:
-            messagebox.showerror("检验出错", f"定位检验过程中出错：\n{exc}", parent=self.window)
+            self.window.after(0, lambda e=exc: self.var_locator_result.set(f"⚠ 检验出错：{e}"))
 
 
     def delete_selected_controls(self):
@@ -4397,7 +4590,29 @@ class ControlMapImportDialog:
         
         if not messagebox.askyesno("确认删除", f"确定从控件库中删除以下控件？\n{names_str}", parent=self.window):
             return
-        
+
+        # 收集被删控件的标识（id / automationId / name），删除后用于流程来源联动标记
+        deleted_keys = set()
+        for idx in selected_indexes:
+            try:
+                int_idx = int(idx)
+            except (ValueError, TypeError):
+                int_idx = -1
+            if 0 <= int_idx < len(flat_controls):
+                _item = flat_controls[int_idx]
+                if isinstance(_item, dict):
+                    for _k in ("id", "automationId", "displayName", "name"):
+                        _v = str(_item.get(_k, "")).strip()
+                        if _v:
+                            deleted_keys.add(_v)
+            if 0 <= int_idx < len(control_defs):
+                _item = control_defs[int_idx]
+                if isinstance(_item, dict):
+                    for _k in ("id", "automationId", "displayName", "name"):
+                        _v = str(_item.get(_k, "")).strip()
+                        if _v:
+                            deleted_keys.add(_v)
+
         # 从 flatControls 删除
         try:
             flat_controls = payload.get("flatControls", [])
@@ -4448,11 +4663,69 @@ class ControlMapImportDialog:
             return
         save_json_file(file_path, payload)
         self._refresh_file_list()
-        self.var_status.set(f"已删除 {len(selected_indexes)} 个控件。")
+        # 源库删除联动：扫描流程定义，标记引用被删控件的控件 sourceDeleted=True
+        marked_flows = self._mark_flow_controls_source_deleted(deleted_keys)
+        if marked_flows:
+            self.var_status.set(f"已删除 {len(selected_indexes)} 个控件，并在 {marked_flows} 个流程中标记来源失效。")
+        else:
+            self.var_status.set(f"已删除 {len(selected_indexes)} 个控件。")
 
     def on_cancel(self):
         self.result = None
         self.window.destroy()
+
+    def _mark_flow_controls_source_deleted(self, deleted_keys):
+        """源库删除控件后，扫描 flow_packages 下所有流程定义，
+        对步骤中引用了被删控件来源的控件打上 sourceDeleted 标记。
+
+        匹配依据（任一并集命中即可）：
+          - sourceInfo.libraryControlId == 被删控件 id
+          - 控件 id == 被删控件 id / automationId / name
+          - inspectData.automationId == 被删控件 automationId
+        返回标记了控件数目的流程文件数量。
+        """
+        if not deleted_keys:
+            return 0
+        flow_dir = os.path.join(BASE_DIR, "flow_packages")
+        if not os.path.isdir(flow_dir):
+            return 0
+        affected_flows = 0
+        for fname in sorted(os.listdir(flow_dir)):
+            if not (fname.startswith("flow_definition_") and fname.endswith(".json")):
+                continue
+            fpath = os.path.join(flow_dir, fname)
+            try:
+                payload = load_json_file(fpath)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            changed = False
+            for step in payload.get("steps", []) or []:
+                if not isinstance(step, dict):
+                    continue
+                for ctrl in step.get("controls", []) or []:
+                    if not isinstance(ctrl, dict):
+                        continue
+                    src = ctrl.get("sourceInfo")
+                    src_id = str((src or {}).get("libraryControlId", "")).strip()
+                    cid = str(ctrl.get("id", "")).strip()
+                    aid = str(((ctrl.get("inspectData") or {}).get("automationId", ""))).strip()
+                    name = str(ctrl.get("name", "")).strip()
+                    hit = bool({cid, aid, name, src_id} & deleted_keys)
+                    if not hit:
+                        continue
+                    src = ctrl.get("sourceInfo")
+                    if not isinstance(src, dict) or not src.get("sourceDeleted"):
+                        mark_source_deleted(ctrl)
+                        changed = True
+            if changed:
+                try:
+                    save_json_file(fpath, payload)
+                    affected_flows += 1
+                except Exception:
+                    pass
+        return affected_flows
 
     def _cmd_expand_all(self):
         """展开控件树全部节点。"""
@@ -4508,10 +4781,7 @@ class FlowPackageDialog:
                 seen_selected_ids.add(step_id)
         self.selected_step_ids.sort(key=_natural_sort_key)
 
-        self.window = tk.Toplevel(parent)
-        self.window.title("流程包编辑")
-        wt_dpi.geometry(self.window, 920, 620)
-        self.window.transient(parent)
+        self.window = _make_dialog_window(parent, "流程包编辑", 920, 620)
 
         self.var_id = tk.StringVar(value=str(self.package.get("id", "")).strip())
         self.var_name = tk.StringVar(value=str(self.package.get("name", "")).strip())
@@ -4537,7 +4807,7 @@ class FlowPackageDialog:
         tk.Label(
             step_frame,
             text="左侧默认按步骤ID排序展示全部可选步骤；右侧是流程包内实际执行顺序，可用上移/下移调整。双击列表项可定位到主编辑器左侧步骤树。",
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
             justify=tk.LEFT,
             anchor="w",
         ).pack(fill=tk.X)
@@ -4584,13 +4854,13 @@ class FlowPackageDialog:
         self._refresh_available_step_listbox()
         self._refresh_selected_step_listbox()
 
-        button_row = tk.Frame(container)
-        button_row.pack(fill=tk.X, pady=(12, 0))
-        tk.Button(button_row, text="全选可选步骤", command=lambda: self.available_step_listbox.selection_set(0, tk.END)).pack(side=tk.LEFT)
-        tk.Button(button_row, text="清空可选选择", command=lambda: self.available_step_listbox.selection_clear(0, tk.END)).pack(side=tk.LEFT, padx=(8, 0))
-        tk.Button(button_row, text="定位到步骤", command=self.focus_selected_step_in_editor).pack(side=tk.LEFT, padx=(8, 0))
-        tk.Button(button_row, text="保存", command=self.on_save, bg="#d1fae5").pack(side=tk.RIGHT)
-        tk.Button(button_row, text="取消", command=self.window.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+        _make_button_row(container, [
+            ("全选可选步骤", lambda: self.available_step_listbox.selection_set(0, tk.END), {}),
+            ("清空可选选择", lambda: self.available_step_listbox.selection_clear(0, tk.END), {"pack_padx": (8, 0)}),
+            ("定位到步骤", self.focus_selected_step_in_editor, {"pack_padx": (8, 0)}),
+            ("保存", self.on_save, {"bg": "#d1fae5", "side": tk.RIGHT}),
+            ("取消", self.window.destroy, {"side": tk.RIGHT, "pack_padx": (0, 8)}),
+        ], padx=0, pady=(12, 0))
 
     def _format_step_display(self, step_id):
         step = self.available_step_map.get(str(step_id).strip(), {})
@@ -4825,6 +5095,7 @@ class FlowEditorApp:
         self.var_retry_interval = tk.StringVar(value="1")
         self.var_on_error = tk.StringVar(value="continue")  # continue, stop, retry
         self.var_fallback_template = tk.StringVar()
+        self.var_prefer_template = tk.BooleanVar(value=False)
         self._syncing_post_input_ui = False
         self.var_relative_parent_title = tk.StringVar()
         self.var_relative_parent_class = tk.StringVar()
@@ -4853,6 +5124,8 @@ class FlowEditorApp:
 
         self._configure_visual_style()
         self._build_ui()
+        if not self.root.bind("<Control-s>"):
+            self.root.bind("<Control-s>", lambda _event: self.cmd_save())
         for trace_var in (
             self.var_window_title,
             self.var_action,
@@ -4938,7 +5211,7 @@ class FlowEditorApp:
             "primary": {"bg": EDITOR_THEME["primary_soft"], "active": "#bfdbfe"},
             "success": {"bg": EDITOR_THEME["success_soft"], "active": "#bbf7d0"},
             "danger": {"bg": EDITOR_THEME["danger_soft"], "active": "#fecaca"},
-            "accent": {"bg": "#ede9fe", "active": "#ddd6fe"},
+            "accent": {"bg": "#e0e7ff", "active": "#c7d2fe"},
         }
         palette = colors.get(tone, colors["default"])
         button = tk.Button(
@@ -5451,7 +5724,14 @@ class FlowEditorApp:
 
         self.input_param_label = tk.Label(action_frame, text="输入/参数")
         self.input_param_label.grid(row=1, column=4, sticky="w", pady=4)
-        self.input_param_entry = tk.Entry(action_frame, textvariable=self.var_input_text)
+        # 可编辑 Combobox：目标控件带 optionValues（如下拉框已采的"组/公共/私有"）时
+        # 下拉候选直接可用，仍可手输任意文本
+        self.input_param_entry = ttk.Combobox(
+            action_frame,
+            textvariable=self.var_input_text,
+            state="normal",
+            postcommand=self._refresh_input_param_options,
+        )
         self.input_param_entry.grid(row=1, column=5, sticky="ew", padx=(8, 12), pady=4)
 
         self.wait_before_label = tk.Label(action_frame, text="前等待(秒)")
@@ -5571,13 +5851,23 @@ class FlowEditorApp:
             highlightbackground=EDITOR_THEME["border"],
         )
         self.fallback_template_open_button.grid(row=6, column=5, sticky="ew", pady=4)
+        self.prefer_template_check = tk.Checkbutton(
+            action_frame,
+            text="优先模板识别：该步骤先做图片模板匹配，命中即完成；未命中再回退控件定位",
+            variable=self.var_prefer_template,
+            bg=EDITOR_THEME["panel"],
+            activebackground=EDITOR_THEME["panel"],
+            cursor="hand2",
+        )
+        self.prefer_template_check.grid(row=7, column=0, columnspan=6, sticky="w", pady=(6, 0))
         tk.Label(
             action_frame,
-            text="可为空。仅在当前步骤失败后，才用所选模板图片做一次兜底识别匹配。",
+            text="上方模板图片：未勾选时仅作步骤失败后的兜底识别；勾选优先模板后，该步骤先做模板匹配，命中更快，未命中自动回退控件定位。",
             fg=EDITOR_THEME["muted"],
             justify=tk.LEFT,
             anchor="w",
-        ).grid(row=7, column=0, columnspan=6, sticky="w")
+            wraplength=980,
+        ).grid(row=8, column=0, columnspan=6, sticky="w")
         self.relative_region_frame = tk.Frame(
             action_frame,
             bg=EDITOR_THEME["panel"],
@@ -5753,7 +6043,7 @@ class FlowEditorApp:
         tk.Label(
             controls_frame,
             text="先维护好这一步用到的控件，动作里的“目标控件”就可以直接下拉选择，流程搭建更顺畅。",
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
             justify=tk.LEFT,
             anchor="w",
             bg=EDITOR_THEME["panel"],
@@ -5770,7 +6060,7 @@ class FlowEditorApp:
         self._create_action_button(controls_button_row, "控件库采集", self.cmd_open_control_map_builder, tone="primary").pack(side=tk.LEFT, padx=2)
         self._create_action_button(controls_button_row, "控件定位检验", self.cmd_open_control_locator_tester, tone="primary").pack(side=tk.LEFT, padx=2)
         self._create_action_button(controls_button_row, "同步到步骤定位", self.cmd_sync_control_to_step_hints, tone="success").pack(side=tk.LEFT, padx=2)
-        tk.Label(controls_button_row, textvariable=self.controls_summary_var, fg="#555555").pack(side=tk.RIGHT)
+        tk.Label(controls_button_row, textvariable=self.controls_summary_var, fg=EDITOR_THEME["muted"]).pack(side=tk.RIGHT)
 
         controls_tree_frame = tk.Frame(controls_frame)
         controls_tree_frame.pack(fill=tk.BOTH, expand=True)
@@ -5836,7 +6126,7 @@ class FlowEditorApp:
         tk.Label(
             advanced_frame,
             text="左侧是步骤参数，右侧是完整 Action JSON。你平时只配上面的可视化字段，这里主要用于补充特殊参数。",
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
             justify=tk.LEFT,
             anchor="w",
         ).grid(row=0, column=0, columnspan=2, sticky="w")
@@ -6094,7 +6384,7 @@ class FlowEditorApp:
                 "用于复用步骤包。可视化维护后，flow_ref 步骤可直接引用这里的流程包。\n"
                 f"流程包会在保存时自动同步到固定目录：{FLOW_PACKAGE_REGISTRY_FILE}"
             ),
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
             justify=tk.LEFT,
             anchor="w",
         ).pack(fill=tk.X)
@@ -6144,7 +6434,7 @@ class FlowEditorApp:
         tk.Label(
             runtime_frame,
             text="保存 flow_definition.json 后，执行脚本会优先使用这里的路径配置覆盖硬编码与 resource 默认值。",
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
             justify=tk.LEFT,
             anchor="w",
         ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
@@ -6167,7 +6457,7 @@ class FlowEditorApp:
         tk.Label(
             template_frame,
             text="把常见动作封成模板。可直接插入新步骤，或套用到当前步骤。",
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
             justify=tk.LEFT,
             anchor="w",
         ).pack(fill=tk.X)
@@ -6182,7 +6472,7 @@ class FlowEditorApp:
         self.template_preview_text = tk.Text(template_frame, height=6, wrap=tk.WORD)
         self._style_text_surface(self.template_preview_text)
         self.template_preview_text.pack(fill=tk.X, pady=(6, 0))
-        tk.Label(template_frame, textvariable=self.template_summary_var, fg="#555555").pack(anchor="w", pady=(6, 0))
+        tk.Label(template_frame, textvariable=self.template_summary_var, fg=EDITOR_THEME["muted"]).pack(anchor="w", pady=(6, 0))
         template_button_row = tk.Frame(template_frame)
         template_button_row.pack(fill=tk.X, pady=(8, 0))
         self._create_action_button(template_button_row, "插入为新步骤", self.cmd_insert_step_template, tone="primary").pack(side=tk.LEFT, padx=2)
@@ -6194,7 +6484,7 @@ class FlowEditorApp:
         tk.Label(
             control_lib_frame,
             text="从已采集的控件库中选择控件，支持树形结构展示、编辑和删除。",
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
             justify=tk.LEFT,
             anchor="w",
         ).pack(fill=tk.X)
@@ -6220,7 +6510,7 @@ class FlowEditorApp:
         tk.Label(
             authoring_frame,
             text="下面这份规范对应“模板新增”的默认思路。后续新增步骤时，优先按这里的字段组合填写。",
-            fg="#555555",
+            fg=EDITOR_THEME["muted"],
             justify=tk.LEFT,
             anchor="w",
         ).pack(fill=tk.X)
@@ -6701,8 +6991,7 @@ class FlowEditorApp:
         return data
 
     def _grid_label_entry(self, parent, label, variable, row, column):
-        tk.Label(parent, text=label).grid(row=row, column=column, sticky="w", pady=4)
-        tk.Entry(parent, textvariable=variable).grid(row=row, column=column + 1, sticky="ew", padx=(8, 12), pady=4)
+        _grid_label_entry(parent, label, variable, row, column)
 
     def _refresh_action_control_choices(self, step=None):
         if not hasattr(self, "target_control_combo"):
@@ -6777,10 +7066,45 @@ class FlowEditorApp:
         if self._get_target_control_id():
             return
         self._set_target_control_value(control_id)
+        self._refresh_input_param_options()
 
     def _on_target_control_changed(self, _event=None):
         self._set_target_control_value(self._get_target_control_id())
         self._refresh_action_schema_hint()
+        self._refresh_input_param_options()
+
+    def _refresh_input_param_options(self):
+        """按当前目标控件的 optionValues 填充输入/参数下拉候选（仍可手输任意文本）。"""
+        if not hasattr(self, "input_param_entry"):
+            return
+        try:
+            control_id = self._get_target_control_id()
+        except Exception:
+            control_id = ""
+        option_values = []
+        target_step = {}
+        try:
+            if self.selected_index is not None and 0 <= self.selected_index < len(self.steps):
+                target_step = self.steps[self.selected_index]
+        except Exception:
+            target_step = {}
+        if not isinstance(target_step, dict):
+            target_step = {}
+        for control in (target_step.get("controls", []) or []):
+            if not isinstance(control, dict):
+                continue
+            if str(control.get("id", "")).strip() != control_id:
+                continue
+            option_values = [
+                str(value).strip()
+                for value in (control.get("optionValues") or (control.get("inspectData") or {}).get("optionValues") or [])
+                if str(value).strip()
+            ]
+            break
+        try:
+            self.input_param_entry.configure(values=option_values)
+        except Exception:
+            pass
 
     def _on_continue_when_control_changed(self, _event=None):
         self._set_continue_when_control_value(self._get_continue_when_control_id())
@@ -6857,7 +7181,9 @@ class FlowEditorApp:
         if not file_path:
             return
         self.var_fallback_template.set(self._normalize_template_path_for_storage(file_path))
-        if self.var_on_error.get().strip() in {"", "continue"}:
+        # 已勾选“优先模板识别”时不再自动转 fallback：优先模式已覆盖模板能力，
+        # 避免主流程失败后再重复一次模板兜底。
+        if not self.var_prefer_template.get() and self.var_on_error.get().strip() in {"", "continue"}:
             self.var_on_error.set("fallback")
         self._mark_dirty(f"已设置步骤失败兜底模板：{os.path.basename(file_path)}")
 
@@ -6975,6 +7301,7 @@ class FlowEditorApp:
             self.fallback_template_entry,
             self.fallback_template_choose_button,
             self.fallback_template_open_button,
+            self.prefer_template_check,
             self.post_input_keys_combo,
             self.require_blur_submit_check,
         ]
@@ -7076,6 +7403,7 @@ class FlowEditorApp:
         input_key = str(schema.get("input_key", "")).strip()
         input_value = str(action_config.get(input_key, "")).strip() if input_key else str(action_config.get("value", "")).strip()
         self.var_input_text.set(input_value)
+        self._refresh_input_param_options()
         self.var_wait_before.set(str(action_config.get("waitBefore", action_defaults.get("waitBefore", 0.0))).strip() or str(action_defaults.get("waitBefore", 0.0)))
         self.var_wait_after.set(str(action_config.get("waitAfter", action_defaults.get("waitAfter", 0.12))).strip() or str(action_defaults.get("waitAfter", 0.12)))
         self.var_timeout.set(str(action_config.get("timeoutSeconds", action_defaults.get("timeoutSeconds", 3.0))).strip() or str(action_defaults.get("timeoutSeconds", 3.0)))
@@ -7091,6 +7419,11 @@ class FlowEditorApp:
         self.var_retry_interval.set(str(action_config.get("retryInterval", "1")).strip() or "1")
         self.var_on_error.set(str(action_config.get("onError", "continue")).strip() or "continue")
         self.var_fallback_template.set(str(action_config.get("fallbackTemplate", "")).strip())
+        prefer_template_value = action_config.get("preferTemplate", False)
+        if isinstance(prefer_template_value, bool):
+            self.var_prefer_template.set(prefer_template_value)
+        else:
+            self.var_prefer_template.set(str(prefer_template_value or "").strip().lower() in {"1", "true", "yes", "on"})
         self._sync_post_input_controls(action_config.get("postInputKeys", ""))
         parent_window = action_config.get("parentWindow", {}) if isinstance(action_config.get("parentWindow"), dict) else {}
         relative_region = action_config.get("relativeRegion", {}) if isinstance(action_config.get("relativeRegion"), dict) else {}
@@ -7381,14 +7714,22 @@ class FlowEditorApp:
             action_config.pop("postInputKeys", None)
 
         fallback_template = self.var_fallback_template.get().strip()
+        prefer_template = self.var_prefer_template.get()
         if fallback_template:
             action_config["fallbackTemplate"] = fallback_template
             action_config["fallbackMode"] = "template_match"
-            if action_config.get("onError") in {"", "continue"}:
+            # 勾选“优先模板”时不再自动转 fallback：优先模式已覆盖模板能力，
+            # 主流程失败应直接按 onError 策略处理，避免模板被尝试两次。
+            if not prefer_template and action_config.get("onError") in {"", "continue"}:
                 action_config["onError"] = "fallback"
+            if prefer_template:
+                action_config["preferTemplate"] = True
+            else:
+                action_config.pop("preferTemplate", None)
         else:
             action_config.pop("fallbackTemplate", None)
             action_config.pop("fallbackMode", None)
+            action_config.pop("preferTemplate", None)
 
         return action_config
 
@@ -7820,6 +8161,41 @@ class FlowEditorApp:
         except ValueError:
             return None
 
+    def _import_anchor_control_from_library(self, control):
+        """把控件库控件导入当前步骤的细分控件清单，返回导入后的控件（含唯一 ID）。
+
+        锚点控件运行时通过 find_flow_control(step_id, control_id=anchor) 在当前步骤控件清单里定位，
+        因此控件库控件必须先落进当前步骤，锚点 ID 才能在 Tab 导航降级时被解析。
+        """
+        if self.selected_index is None:
+            return None
+        step = self.steps[self.selected_index]
+        step.setdefault("controls", [])
+        candidate = normalize_control(control, len(step["controls"]))
+        # 锚点控件来源标记（不覆盖已有的 sourceInfo，仅补默认值）
+        if not isinstance(candidate.get("sourceInfo"), dict) or not candidate["sourceInfo"]:
+            candidate["sourceInfo"] = build_source_info(
+                origin="anchor_library",
+                library_control_id=str(candidate.get("id", "") or ""),
+                library_file_name="",
+                imported_by="锚点控件导入",
+            )
+        original_id = str(candidate.get("id", "")).strip() or "anchor_control"
+        existing_ids = {str(ctrl.get("id", "")).strip() for ctrl in step["controls"]}
+        unique_id = original_id
+        suffix = 2
+        while unique_id in existing_ids:
+            unique_id = f"{original_id}_{suffix}"
+            suffix += 1
+        candidate["id"] = unique_id
+        if not candidate.get("windowTitle"):
+            candidate["windowTitle"] = step.get("windowTitle", "")
+        step["controls"].append(candidate)
+        self._refresh_controls_tree(step)
+        self._refresh_action_control_choices(step)
+        self._mark_dirty(f"已从控件库导入锚点控件：{candidate.get('name', '') or unique_id}")
+        return candidate
+
     def _open_control_dialog(self, initial_control=None):
         if self.selected_index is None:
             messagebox.showinfo("提示", "请先选择一个步骤。")
@@ -7840,6 +8216,7 @@ class FlowEditorApp:
             step_name=step.get("name", ""),
             default_window_title=step.get("windowTitle", ""),
             control_library=all_controls,
+            on_import_anchor_control=self._import_anchor_control_from_library,
         )
         self.root.wait_window(dialog.window)
         return dialog.result
@@ -7873,6 +8250,12 @@ class FlowEditorApp:
         updated_control = self._open_control_dialog(current_control)
         if not updated_control:
             return
+        # 用户实际改动过定位/交互字段时，打上「已编辑」来源标记（供后续分析定位识别自定义修改）
+        _ignore_fields = {"sourceInfo", "_qualityTier", "_qualityReason"}
+        before = {k: v for k, v in current_control.items() if k not in _ignore_fields}
+        after = {k: v for k, v in updated_control.items() if k not in _ignore_fields}
+        if before != after:
+            updated_control = mark_source_edited(updated_control)
         self.steps[self.selected_index]["controls"][control_index] = updated_control
         self._mark_dirty(f"已更新细分控件：{updated_control.get('name', '')}")
         self._refresh_controls_tree()
@@ -8099,6 +8482,131 @@ class FlowEditorApp:
         control = self.steps[self.selected_index].get("controls", [])[control_index]
         self._sync_control_to_step_hints_by_control(control)
         self._mark_dirty(f"已同步细分控件到步骤定位：{control.get('name', '')}")
+
+    def _extract_step_control_aid(self, control):
+        """委托共享修复层提取 automationId（与 flow_repair 同源）。"""
+        from WT_AUTOMATION_Agent import flow_repair
+
+        return flow_repair.extract_step_control_aid(control)
+
+    def _pick_library_match(self, candidates, control, flat_controls):
+        """委托共享修复层挑选多实例控件库匹配（与 flow_repair 同源）。"""
+        from WT_AUTOMATION_Agent import flow_repair
+
+        return flow_repair.pick_library_match(candidates, control, flat_controls)
+
+    def _apply_library_definition(self, control, rec):
+        """委托共享修复层回填控件库定义（与 flow_repair 同源）。"""
+        from WT_AUTOMATION_Agent import flow_repair
+
+        return flow_repair.apply_library_definition(control, rec)
+
+    def cmd_refresh_step_controls_from_library(self):
+        """批量刷新步骤控件定位：按 automationId 从合并后的总控件库匹配最新定义，
+        覆盖 targetMethod/targetValue/helpText/functionText，一键同步全部已绑定步骤。"""
+        if not self.steps:
+            messagebox.showinfo("提示", "当前流程没有步骤，无需刷新。", parent=self.window)
+            return
+        if not os.path.exists(MASTER_CONTROL_FILE):
+            messagebox.showinfo(
+                "提示",
+                f"未找到总控件库：\n{MASTER_CONTROL_FILE}\n\n请先在控件库界面执行『合并去重并保存』生成总控件信息。",
+                parent=self.window,
+            )
+            return
+        master_data = load_json_file(MASTER_CONTROL_FILE)
+        flat_controls = master_data.get("flatControls", []) if isinstance(master_data, dict) else []
+        if not flat_controls:
+            messagebox.showinfo("提示", "总控件库为空，请先采集并合并控件。", parent=self.window)
+            return
+
+        by_aid = {}
+        for idx, rec in enumerate(flat_controls):
+            if not isinstance(rec, dict):
+                continue
+            rec_ins = rec.get("inspectData", {}) if isinstance(rec.get("inspectData"), dict) else {}
+            rec_aid = str(rec.get("automationId", "") or rec_ins.get("automationId", "")).strip().lower()
+            if rec_aid:
+                by_aid.setdefault(rec_aid, []).append(idx)
+
+        updated, unmatched, skipped = 0, 0, 0
+        details = []
+        for step in self.steps:
+            if not isinstance(step, dict):
+                continue
+            controls = step.get("controls", [])
+            if not isinstance(controls, list):
+                continue
+            for control in controls:
+                if not isinstance(control, dict):
+                    continue
+                aid = self._extract_step_control_aid(control)
+                if not aid:
+                    skipped += 1
+                    continue
+                candidates = by_aid.get(aid.lower())
+                if not candidates:
+                    unmatched += 1
+                    continue
+                match_idx = self._pick_library_match(candidates, control, flat_controls)
+                if match_idx is None:
+                    unmatched += 1
+                    continue
+                if self._apply_library_definition(control, flat_controls[match_idx]):
+                    updated += 1
+                    details.append(control.get("name", "") or aid)
+
+        if updated == 0:
+            messagebox.showinfo(
+                "刷新完成",
+                f"扫描 {len(self.steps)} 个步骤，未发现可更新的控件（匹配 0，未匹配 {unmatched}，无 automationId 跳过 {skipped}）。",
+                parent=self.window,
+            )
+            return
+        self._mark_dirty(f"批量刷新步骤定位：更新 {updated} 个控件，未匹配 {unmatched} 个")
+        if self.selected_index is not None:
+            self._refresh_controls_tree()
+        preview = "\n".join(details[:10]) + ("…" if len(details) > 10 else "")
+        messagebox.showinfo(
+            "刷新完成",
+            f"已更新 {updated} 个步骤控件的定位，未匹配 {unmatched} 个（无 automationId 跳过 {skipped} 个）：\n\n{preview}",
+            parent=self.window,
+        )
+
+    def cmd_repair_flow_audit_issues(self):
+        """一键修复审核问题：确定性修复当前步骤 + 展示待确认项。"""
+        if not self.steps:
+            messagebox.showinfo("提示", "当前流程没有步骤，无需修复。", parent=self.window)
+            return
+        try:
+            from WT_AUTOMATION_Agent import flow_repair
+
+            repaired_flow, report = flow_repair.repair_flow_definition({"steps": self.steps}, MASTER_CONTROL_FILE)
+        except Exception as exc:
+            messagebox.showerror("修复失败", str(exc), parent=self.window)
+            return
+        repaired_steps = repaired_flow.get("steps", [])
+        if not isinstance(repaired_steps, list) or len(repaired_steps) != len(self.steps):
+            messagebox.showerror("修复失败", "修复模块返回的步骤数量不一致，已取消应用。", parent=self.window)
+            return
+        self.steps = repaired_steps
+        auto_count = int(report.get("auto_fixed_count", 0) or 0)
+        pending_count = int(report.get("pending_confirm_count", 0) or 0)
+        if auto_count == 0 and pending_count == 0:
+            messagebox.showinfo("修复完成", "未发现可自动修复或需要确认的问题。", parent=self.window)
+            return
+        self._mark_dirty(f"一键修复审核问题：自动修复 {auto_count} 项，待确认 {pending_count} 项")
+        if self.selected_index is not None:
+            self._refresh_controls_tree()
+        pending_preview = "\n".join(
+            f"- 步骤{it.get('step_index', '')} {it.get('step_name', '')}: {it.get('message', '')}"
+            for it in (report.get("pending_confirm", []) or [])[:10]
+        )
+        messagebox.showinfo(
+            "修复完成",
+            f"已自动修复 {auto_count} 项；仍有 {pending_count} 项待确认：\n\n{pending_preview or '（无）'}\n\n请保存流程文件后再次运行检查确认。",
+            parent=self.window,
+        )
 
     def cmd_add_flow_package(self):
         result = self._open_flow_package_dialog()
@@ -8503,6 +9011,8 @@ class FlowEditorApp:
         incr_merged = int(conversion_meta.get("incrementalMerged", 0) or 0)
         incr_new = int(conversion_meta.get("incrementalNew", 0) or 0)
         incr_removed = int(conversion_meta.get("incrementalRemoved", 0) or 0)
+        auto_fixed_count = int(conversion_meta.get("autoFixedCount", 0) or 0)
+        pending_confirm_count = int(conversion_meta.get("pendingConfirmCount", 0) or 0)
         incr_suffix = (
             f" | 增量合并={incr_merged}/新增={incr_new}/移除={incr_removed}"
             if (incr_merged or incr_new or incr_removed) else ""
@@ -8514,6 +9024,7 @@ class FlowEditorApp:
                 f"已完成 Recorder 转换并自动打开：{os.path.basename(output_path)}"
                 f" | 步骤={total_steps} | action={action_steps} | 控件库命中={matched_count}"
                 f" | 参数抽取={runtime_binding_count} | 截图关联={screenshot_linked} | 待复核={suspicious_count}"
+                f" | 自动修复={auto_fixed_count} | 待确认={pending_confirm_count}"
                 f"{incr_suffix}"
             ),
         )
@@ -8572,6 +9083,13 @@ class FlowEditorApp:
             self.flow_definition["runtimeConfig"] = self._build_runtime_config_from_form()
             self.flow_definition["flowPackages"] = self._build_flow_packages_from_form()
             self.flow_definition["steps"] = [normalize_step(step, index) for index, step in enumerate(self.steps)]
+            # 自动关联模板兜底：步骤未显式配置 fallbackTemplate 且控件存在可解析的
+            # templateKey（采集器/伴随拾取已回填）时，自动写入相对项目根的模板路径。
+            if image_template_index is not None:
+                try:
+                    image_template_index.auto_associate_fallback_templates(self.flow_definition.get("steps"))
+                except Exception:
+                    pass
             validation_errors = validate_flow_definition(self.flow_definition)
             if validation_errors:
                 raise ValueError("保存前校验未通过：\n- " + "\n- ".join(validation_errors[:12]))
@@ -9144,7 +9662,7 @@ class FlowEditorApp:
         elif ctrl_type in {"edit", "textbox"}:
             return "type_text"
         elif ctrl_type in {"combobox", "dropdown"}:
-            return "set_combobox"
+            return "select_dropdown_item_runtime"
         elif ctrl_type in {"list", "listitem"}:
             return "select_dropdown_item_runtime"
         elif ctrl_type in {"checkbox", "radiobutton", "tab", "tabitem"}:

@@ -343,6 +343,105 @@ class TestLabelTextDisambiguation(unittest.TestCase):
         self.assertEqual(first["recommendedTargetValue"], "textbox,Edit,纬度")
         self.assertEqual(second["recommendedTargetValue"], "textbox,Edit,经度")
 
+    def test_distinct_names_prefer_name(self):
+        # 组内成员 name 各不相同时，优先用 name 消歧（name 匹配比 label_text 快）
+        first = self._edit("[9,1,地形]", "地形", 100)
+        second = self._edit("[9,1,粗糙度]", "粗糙度", 200)
+        first["name"] = "地形"
+        second["name"] = "粗糙度"
+        bcm._disambiguate_duplicate_locators([first, second])
+        self.assertIn(",name", first["recommendedTargetMethod"])
+        self.assertIn("地形", first["recommendedTargetValue"])
+        self.assertIn("粗糙度", second["recommendedTargetValue"])
+
+
+class InputDriveHintAnnotationTests(unittest.TestCase):
+    """采集端①：不可聚焦输入宿主标注驱动方式，防止误用 UIA 输入。"""
+
+    def test_content_host_gets_send_keys_hint(self):
+        item = _item(control_type="Pane", automation_id="PART_ContentHost", class_name="ScrollViewer",
+                     isKeyboardFocusable="False",
+                     supportedPatterns=["LegacyIAccessible", "Scroll", "SynchronizedInput"])
+        bcm._annotate_input_drive_hint(item)
+        self.assertIn("需坐标点击+键盘驱动(send_keys)", item.get("qualityReason", ""))
+
+    def test_focusable_edit_no_hint(self):
+        item = _item(control_type="Edit", automation_id="TextBox1", isKeyboardFocusable="True",
+                     supportedPatterns=["Value"])
+        bcm._annotate_input_drive_hint(item)
+        self.assertNotIn("不可聚焦", item.get("qualityReason", ""))
+
+    def test_unfocusable_pane_container_no_hint(self):
+        # 普通 Pane 容器（className 非输入宿主特征）不可聚焦时不应误标为输入宿主
+        item = _item(control_type="Pane", automation_id="SomeContainer", class_name="Grid",
+                     isKeyboardFocusable="False")
+        bcm._annotate_input_drive_hint(item)
+        self.assertNotIn("不可聚焦", item.get("qualityReason", ""))
+
+    def test_content_host_with_value_pattern_hint_differs(self):
+        item = _item(control_type="Pane", automation_id="PART_ContentHost", class_name="ScrollViewer",
+                     isKeyboardFocusable="False", supportedPatterns=["Value"])
+        bcm._annotate_input_drive_hint(item)
+        self.assertIn("需坐标点击聚焦后键盘驱动", item.get("qualityReason", ""))
+
+    def test_folded_content_host_not_recommended(self):
+        # 折叠进父级 TextBox 的 PART_ContentHost 不应被推荐保留（B2）
+        item = _item(control_type="Pane", automation_id="PART_ContentHost", class_name="ScrollViewer",
+                     isKeyboardFocusable="False", foldedIntoParent=True)
+        tier, reason = bcm._classify_control_quality(item)
+        self.assertEqual(tier, "建议忽略")
+        self.assertIn("折叠", reason)
+
+
+def _flat_input(automation_id, class_name, rect, parent_index=None, name="", control_type=None):
+    return {
+        "automationId": automation_id,
+        "className": class_name,
+        "controlType": control_type or ("Pane" if automation_id == "PART_ContentHost" else "Edit"),
+        "name": name,
+        "boundingBox": dict(rect),
+        "parentIndex": parent_index,
+        "supportedPatterns": [],
+        "inspectData": {},
+    }
+
+
+class TextboxFoldDisambiguationTests(unittest.TestCase):
+    """采集端A：PART_ContentHost 沿祖先链/位置匹配折叠到父级 TextBox。"""
+
+    def test_fold_via_ancestor_chain(self):
+        textbox = _flat_input("textbox", "TextBox", {"left": 100, "top": 100, "right": 300, "bottom": 130}, name="半径")
+        middle = _flat_input("", "ScrollViewer", {"left": 100, "top": 100, "right": 300, "bottom": 130}, parent_index=0)
+        host = _flat_input("PART_ContentHost", "ScrollViewer", {"left": 100, "top": 100, "right": 300, "bottom": 130}, parent_index=1)
+        bcm._normalize_textbox_wrappers([textbox, middle, host])
+        self.assertTrue(host.get("foldedIntoParent"))
+        self.assertEqual(host.get("qualityTier"), "建议忽略")
+        self.assertEqual(host.get("foldedTargetIndex"), 0)
+
+    def test_fold_via_overlapping_position(self):
+        textbox = _flat_input("textbox", "TextBox", {"left": 100, "top": 100, "right": 300, "bottom": 130}, name="半径")
+        host = _flat_input("PART_ContentHost", "ScrollViewer", {"left": 100, "top": 100, "right": 300, "bottom": 130})
+        bcm._normalize_textbox_wrappers([textbox, host])
+        self.assertTrue(host.get("foldedIntoParent"))
+        self.assertEqual(host.get("foldedTargetIndex"), 0)
+
+    def test_orphan_content_host_kept(self):
+        host = _flat_input("PART_ContentHost", "ScrollViewer", {"left": 100, "top": 100, "right": 300, "bottom": 130})
+        bcm._normalize_textbox_wrappers([host])
+        self.assertFalse(host.get("foldedIntoParent"))
+        self.assertEqual(host.get("controlType"), "Edit")
+        self.assertEqual(host.get("qualityTier"), "推断输入框")
+
+
+class FoldedIntoParentFilterTests(unittest.TestCase):
+    """入库过滤：折叠的 PART_ContentHost 不再单独入库。"""
+
+    def test_should_include_definition(self):
+        self.assertTrue(bcm._should_include_definition({"id": "x"}))
+        self.assertFalse(bcm._should_include_definition({"id": "x", "foldedIntoParent": True}))
+        self.assertFalse(bcm._should_include_definition(None))
+        self.assertFalse(bcm._should_include_definition([]))
+
 
 if __name__ == "__main__":
     unittest.main()

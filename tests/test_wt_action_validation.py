@@ -193,5 +193,30 @@ class ActionSchemaValidationTests(unittest.TestCase):
         self.assertTrue(any("流程包ID `pkg_a` 重复出现 2 次" in item for item in errors))
 
 
+class WindowTitleConsistencyValidationTests(unittest.TestCase):
+    def _step(self, window_title, ui_path):
+        return {
+            "id": "step_main",
+            "name": "主窗口内控件",
+            "actionType": "action",
+            "actionConfig": {"action": "click", "controlId": "c1"},
+            "controls": [
+                {"id": "c1", "name": "控件", "windowTitle": window_title, "uiPath": ui_path}
+            ],
+        }
+
+    def test_pseudo_window_title_is_auto_repaired_not_reported(self):
+        errors = validate_step_definition(self._step("主面板", "Window > MicroScaleMainView_View_Main > A > B"))
+        self.assertFalse(any("伪标题" in item for item in errors))
+
+    def test_wildcard_window_title_allowed_for_main_window_root(self):
+        errors = validate_step_definition(self._step("*", "Window > MicroScaleMainView_View_Main > A > B"))
+        self.assertFalse(any("伪标题" in item for item in errors))
+
+    def test_real_dialog_title_not_reported(self):
+        errors = validate_step_definition(self._step("打开", "打开 > 文件名(N): > Edit"))
+        self.assertFalse(any("伪标题" in item for item in errors))
+
+
 if __name__ == "__main__":
     unittest.main()

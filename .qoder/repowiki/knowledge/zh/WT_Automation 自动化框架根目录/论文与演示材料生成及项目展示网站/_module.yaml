@@ -1,9 +1,0 @@
-schema_version: 1
-module_path: docs_and_papers
-title: 论文与演示材料生成及项目展示网站
-scope:
-    - docs/
-    - website/
-source_files: []
-depends_on: []
-related_to: []

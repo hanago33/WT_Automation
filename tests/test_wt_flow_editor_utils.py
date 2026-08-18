@@ -63,5 +63,39 @@ class StripWrappingQuotesTests(unittest.TestCase):
         self.assertEqual(wt_flow_editor_utils.strip_wrapping_quotes(None), "")
 
 
+class UipathWindowTitleTests(unittest.TestCase):
+    def test_main_window_root_detected(self):
+        self.assertTrue(wt_flow_editor_utils.uipath_is_main_window_root("Window > MicroScaleMainView_View_Main > A"))
+        self.assertTrue(wt_flow_editor_utils.uipath_is_main_window_root("Window_Main > A > B"))
+        self.assertTrue(wt_flow_editor_utils.uipath_is_main_window_root("Window||Window > A"))
+
+    def test_real_dialog_root_not_detected(self):
+        self.assertFalse(wt_flow_editor_utils.uipath_is_main_window_root("打开 > 文件名(N): > Edit"))
+        self.assertFalse(wt_flow_editor_utils.uipath_is_main_window_root(""))
+        self.assertFalse(wt_flow_editor_utils.uipath_is_main_window_root("WT微尺度模拟 > A"))
+
+    def test_normalize_window_title_for_main_window_root(self):
+        self.assertEqual(
+            wt_flow_editor_utils.normalize_window_title_for_uipath("主面板", "Window > A > B"),
+            "*",
+        )
+        self.assertEqual(
+            wt_flow_editor_utils.normalize_window_title_for_uipath("打开", "打开 > 文件名(N):"),
+            "打开",
+        )
+
+    def test_normalize_control_auto_wildcards_main_window_root(self):
+        control = wt_flow_editor_utils.normalize_control(
+            {
+                "id": "c1",
+                "name": "roughness index combo",
+                "windowTitle": "fake title",
+                "uiPath": "Window_Main > SiteRoughnessCreatorView > ComboBox",
+            },
+            0,
+        )
+        self.assertEqual(control["windowTitle"], "*")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,7 @@
 - [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
 - [WT_AUTOMATION_Agent/log_diagnosis.py](file://WT_AUTOMATION_Agent/log_diagnosis.py)
 - [WT_AUTOMATION_Agent/flow_ops.py](file://WT_AUTOMATION_Agent/flow_ops.py)
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
 - [wt_dsl_agent.py](file://wt_dsl_agent.py)
 - [flow_recorder_converter.py](file://flow_recorder_converter.py)
 - [tools/external_capture/capture.py](file://tools/external_capture/capture.py)
@@ -25,12 +26,10 @@
 
 ## 更新摘要
 **所做更改**
-- 新增控制搜索模块，增强控件定位与智能匹配能力
-- 引入知识库系统，支持AI技能与最佳实践的知识管理
-- 添加模型配置文件管理，支持多模型切换与参数调优
-- 集成日志诊断模块，提供自动化问题排查与修复建议
-- 扩展流程操作模块，支持复杂业务流程编排与执行
-- GUI界面大幅增强，提供更直观的交互体验
+- 新增参数扫描功能，支持Excel/CSV批量参数化流程生成
+- 增强Function Calling工具集，新增add_parameter_scan工具
+- 实现模型配置profile回退机制，提升配置灵活性
+- 完善参数扫描与DSL解析的集成，支持${stepParams.xxx}动态替换
 
 ## 目录
 1. [简介](#简介)
@@ -45,7 +44,7 @@
 10. [附录](#附录)
 
 ## 简介
-本文件面向WT自动化框架的AI辅助系统，系统性阐述Agent核心架构与工作原理、技能桥接扩展机制、CLI命令接口设计、DSL定义与解析流程、配置与自定义开发指南、自然语言到脚本的端到端示例、模型训练与微调方法，以及性能监控与优化策略。新版本引入了模块化架构，包括控制搜索、知识库管理、模型配置、日志诊断和流程操作等核心功能，大幅提升了系统的智能化水平和用户体验。
+本文件面向WT自动化框架的AI辅助系统，系统性阐述Agent核心架构与工作原理、技能桥接扩展机制、CLI命令接口设计、DSL定义与解析流程、配置与自定义开发指南、自然语言到脚本的端到端示例、模型训练与微调方法，以及性能监控与优化策略。新版本引入了模块化架构，包括控制搜索、知识库管理、模型配置、日志诊断和流程操作等核心功能，大幅提升了系统的智能化水平和用户体验。**特别增强了参数扫描能力，支持从Excel/CSV文件批量生成参数化流程，并通过Function Calling工具实现智能参数映射。**
 
 ## 项目结构
 WT自动化框架的AI辅助子系统经过重大重构，形成了更加模块化和可扩展的架构。新的结构包括核心Agent模块、控制搜索引擎、知识库管理系统、模型配置中心、日志诊断工具和流程操作引擎等组件。
@@ -66,16 +65,17 @@ H["knowledge_base.py<br/>知识库管理"]
 I["model_profiles.py<br/>模型配置中心"]
 J["log_diagnosis.py<br/>日志诊断工具"]
 K["flow_ops.py<br/>流程操作引擎"]
+L["parameter_scan.py<br/>参数扫描器"]
 end
 subgraph "DSL与录制"
-L["wt_dsl_agent.py<br/>DSL解析与生成"]
-M["flow_recorder_converter.py<br/>录制脚本转换"]
+M["wt_dsl_agent.py<br/>DSL解析与生成"]
+N["flow_recorder_converter.py<br/>录制脚本转换"]
 end
 subgraph "外部捕获与控件库"
-N["capture.py<br/>屏幕/窗口捕获"]
-O["pywinauto_backend.py<br/>PyWinauto后端"]
-P["uiapeek_client.py<br/>UIA客户端"]
-Q["standard_control_catalog.json<br/>标准控件目录"]
+O["capture.py<br/>屏幕/窗口捕获"]
+P["pywinauto_backend.py<br/>PyWinauto后端"]
+Q["uiapeek_client.py<br/>UIA客户端"]
+R["standard_control_catalog.json<br/>标准控件目录"]
 end
 A --> C
 A --> D
@@ -85,13 +85,14 @@ A --> H
 A --> I
 A --> J
 A --> K
+A --> L
 B --> A
-L --> A
 M --> A
-A --> N
-N --> O
-N --> P
-A --> Q
+N --> A
+A --> O
+O --> P
+O --> Q
+A --> R
 ```
 
 **图表来源**
@@ -101,25 +102,7 @@ A --> Q
 - [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
 - [WT_AUTOMATION_Agent/log_diagnosis.py](file://WT_AUTOMATION_Agent/log_diagnosis.py)
 - [WT_AUTOMATION_Agent/flow_ops.py](file://WT_AUTOMATION_Agent/flow_ops.py)
-- [WT_AUTOMATION_Agent/cli.py](file://WT_AUTOMATION_Agent/cli.py)
-- [WT_AUTOMATION_Agent/skill_bridge.py](file://WT_AUTOMATION_Agent/skill_bridge.py)
-- [WT_AUTOMATION_Agent/control_index.py](file://WT_AUTOMATION_Agent/control_index.py)
-- [WT_AUTOMATION_Agent/gui.py](file://WT_AUTOMATION_Agent/gui.py)
-- [WT_AUTOMATION_Agent/schemas.py](file://WT_AUTOMATION_Agent/schemas.py)
-- [wt_dsl_agent.py](file://wt_dsl_agent.py)
-- [flow_recorder_converter.py](file://flow_recorder_converter.py)
-- [tools/external_capture/capture.py](file://tools/external_capture/capture.py)
-- [tools/external_capture/pywinauto_backend.py](file://tools/external_capture/pywinauto_backend.py)
-- [tools/external_capture/uiapeek_client.py](file://tools/external_capture/uiapeek_client.py)
-- [control_maps/standard_control_catalog.json](file://control_maps/standard_control_catalog.json)
-
-**章节来源**
-- [WT_AUTOMATION_Agent/agent.py](file://WT_AUTOMATION_Agent/agent.py)
-- [WT_AUTOMATION_Agent/control_search.py](file://WT_AUTOMATION_Agent/control_search.py)
-- [WT_AUTOMATION_Agent/knowledge_base.py](file://WT_AUTOMATION_Agent/knowledge_base.py)
-- [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
-- [WT_AUTOMATION_Agent/log_diagnosis.py](file://WT_AUTOMATION_Agent/log_diagnosis.py)
-- [WT_AUTOMATION_Agent/flow_ops.py](file://WT_AUTOMATION_Agent/flow_ops.py)
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
 - [WT_AUTOMATION_Agent/cli.py](file://WT_AUTOMATION_Agent/cli.py)
 - [WT_AUTOMATION_Agent/skill_bridge.py](file://WT_AUTOMATION_Agent/skill_bridge.py)
 - [WT_AUTOMATION_Agent/control_index.py](file://WT_AUTOMATION_Agent/control_index.py)
@@ -142,6 +125,7 @@ A --> Q
 - **模型配置中心**：统一管理AI模型的配置文件，支持多模型切换、参数调优和性能监控。
 - **日志诊断工具**：自动分析执行日志，识别常见问题并提供修复建议，支持根因分析和预测性维护。
 - **流程操作引擎**：处理复杂的业务流程编排，支持条件分支、循环、并行执行和异常恢复。
+- **参数扫描器**：从Excel/CSV文件读取参数表，自动生成参数化的流程定义，支持${stepParams.xxx}动态替换。
 - DSL解析器：将领域特定语言转换为内部中间表示，再交由Agent编排执行。
 - 录制转换器：将录制的操作步骤转换为标准化流程定义，供AI学习与复用。
 - 外部捕获与后端：通过屏幕截图、UIA/Win32等后端获取UI状态，为AI提供感知输入。
@@ -156,6 +140,7 @@ A --> Q
 - [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
 - [WT_AUTOMATION_Agent/log_diagnosis.py](file://WT_AUTOMATION_Agent/log_diagnosis.py)
 - [WT_AUTOMATION_Agent/flow_ops.py](file://WT_AUTOMATION_Agent/flow_ops.py)
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
 - [wt_dsl_agent.py](file://wt_dsl_agent.py)
 - [flow_recorder_converter.py](file://flow_recorder_converter.py)
 - [tools/external_capture/capture.py](file://tools/external_capture/capture.py)
@@ -175,6 +160,7 @@ sequenceDiagram
 participant User as "用户"
 participant CLI as "CLI接口"
 participant Agent as "Agent主入口"
+participant ParameterScan as "参数扫描器"
 participant ControlSearch as "控制搜索引擎"
 participant KnowledgeBase as "知识库管理"
 participant ModelProfile as "模型配置中心"
@@ -202,6 +188,8 @@ Agent->>Capture : "获取当前UI快照"
 Capture-->>Agent : "截图/控件树"
 Agent->>Bridge : "选择并绑定技能"
 Bridge-->>Agent : "可执行步骤列表"
+Agent->>ParameterScan : "参数扫描如需要"
+ParameterScan-->>Agent : "参数化流程定义"
 Agent->>FlowOps : "编排复杂流程"
 FlowOps-->>Agent : "流程执行计划"
 Agent->>DSL : "生成/校验DSL中间表示"
@@ -221,6 +209,7 @@ CLI-->>User : "展示输出与下一步建议"
 - [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
 - [WT_AUTOMATION_Agent/log_diagnosis.py](file://WT_AUTOMATION_Agent/log_diagnosis.py)
 - [WT_AUTOMATION_Agent/flow_ops.py](file://WT_AUTOMATION_Agent/flow_ops.py)
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
 - [WT_AUTOMATION_Agent/cli.py](file://WT_AUTOMATION_Agent/cli.py)
 - [WT_AUTOMATION_Agent/skill_bridge.py](file://WT_AUTOMATION_Agent/skill_bridge.py)
 - [WT_AUTOMATION_Agent/control_index.py](file://WT_AUTOMATION_Agent/control_index.py)
@@ -300,6 +289,13 @@ class FlowOps {
 +循环控制()
 +异常恢复()
 }
+class ParameterScanner {
++read_excel()
++read_csv()
++scan()
++analyze_step_excel()
++export_param_template()
+}
 Agent --> SkillBridge : "调用"
 Agent --> ControlIndex : "查询"
 Agent --> ControlSearch : "智能搜索"
@@ -307,6 +303,7 @@ Agent --> KnowledgeBase : "知识检索"
 Agent --> ModelProfile : "配置管理"
 Agent --> LogDiagnosis : "诊断分析"
 Agent --> FlowOps : "流程编排"
+Agent --> ParameterScanner : "参数扫描"
 ```
 
 **图表来源**
@@ -318,6 +315,7 @@ Agent --> FlowOps : "流程编排"
 - [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
 - [WT_AUTOMATION_Agent/log_diagnosis.py](file://WT_AUTOMATION_Agent/log_diagnosis.py)
 - [WT_AUTOMATION_Agent/flow_ops.py](file://WT_AUTOMATION_Agent/flow_ops.py)
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
 - [control_maps/standard_control_catalog.json](file://control_maps/standard_control_catalog.json)
 - [tools/external_capture/capture.py](file://tools/external_capture/capture.py)
 - [wt_dsl_agent.py](file://wt_dsl_agent.py)
@@ -331,9 +329,92 @@ Agent --> FlowOps : "流程编排"
 - [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
 - [WT_AUTOMATION_Agent/log_diagnosis.py](file://WT_AUTOMATION_Agent/log_diagnosis.py)
 - [WT_AUTOMATION_Agent/flow_ops.py](file://WT_AUTOMATION_Agent/flow_ops.py)
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
 - [control_maps/standard_control_catalog.json](file://control_maps/standard_control_catalog.json)
 - [tools/external_capture/capture.py](file://tools/external_capture/capture.py)
 - [wt_dsl_agent.py](file://wt_dsl_agent.py)
+
+### 参数扫描功能详解
+**新增** 参数扫描功能是本次更新的核心特性，支持从Excel/CSV文件批量生成参数化流程定义。
+
+- 设计原理
+  - 读取Excel/CSV参数表，每行代表一组参数值。
+  - 为每组参数复制模板步骤，注入${stepParams.xxx}占位符。
+  - 执行时自动替换动态参数，生成完整的流程定义。
+- 核心功能
+  - **文件格式支持**：支持.xlsx/.xls/.csv/.tsv格式，自动检测文件类型。
+  - **智能列名处理**：中文列头自动转换为snake_case格式。
+  - **模板步骤复制**：每行参数生成完整步骤副本，支持增量学习。
+  - **参数映射**：内置常见字段映射（经纬度、文件路径、风机参数等）。
+- 使用场景
+  - 批量创建多个对象（如风机类型、测风塔等）。
+  - 批量导入不同参数的测试用例。
+  - 多组参数对比实验自动化。
+
+```mermaid
+flowchart TD
+Start(["开始"]) --> ReadFile["读取Excel/CSV文件"]
+ReadFile --> ParseHeaders["解析表头"]
+ParseHeaders --> ProcessRows["处理数据行"]
+ProcessRows --> CopyTemplate["复制模板步骤"]
+CopyTemplate --> InjectParams["注入stepParams"]
+InjectParams --> GenerateSteps["生成参数化步骤"]
+GenerateSteps --> Output["输出流程定义"]
+Output --> End(["结束"])
+subgraph "参数映射"
+Lon["经度/lon → stepParams.lon"]
+Lat["纬度/lat → stepParams.lat"]
+Grid["网格分辨率/grid_resolution → stepParams.gridResolution"]
+File["文件路径 → stepParams.filePath"]
+end
+ParseHeaders --> Lon
+ParseHeaders --> Lat
+ParseHeaders --> Grid
+ParseHeaders --> File
+```
+
+**图表来源**
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
+
+**章节来源**
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
+
+### Function Calling工具增强
+**新增** add_parameter_scan Function Calling工具，让AI能够智能识别并调用参数扫描功能。
+
+- 工具定义
+  - **名称**：add_parameter_scan
+  - **描述**：多参数扫描，从Excel参数表读取多行参数，每行驱动一组模板步骤执行一次。
+  - **参数**：excel_path（参数文件路径）、sheet_name（工作表名）、template_steps（模板步骤）、max_rows（最大行数）。
+- 智能识别
+  - 当用户提到"批量"、"扫描参数"、"用Excel驱动"、"多组参数运行"时，AI自动选择此工具。
+  - 支持${stepParams.xxx}动态引用Excel列头作为参数键名。
+- 执行流程
+  - AI解析用户需求，识别参数扫描意图。
+  - 调用add_parameter_scan工具，传入Excel文件和模板步骤。
+  - 参数扫描器生成完整的流程定义，包含所有参数组合的步骤。
+
+**章节来源**
+- [WT_AUTOMATION_Agent/agent.py](file://WT_AUTOMATION_Agent/agent.py)
+
+### 模型配置profile回退机制
+**新增** 模型配置的回退机制，提升配置的灵活性和容错性。
+
+- 回退逻辑
+  - 优先使用构造函数参数和环境变量配置。
+  - 如果环境变量未配置，自动回退到model_profiles的默认档案。
+  - 支持GUI/JSON配置与CLI环境的无缝衔接。
+- 配置优先级
+  - 最高优先级：构造函数参数
+  - 中等优先级：环境变量（WT_DSL_BASE_URL、WT_DSL_API_KEY、WT_DSL_MODEL）
+  - 最低优先级：model_profiles默认配置
+- 兼容性保证
+  - 即使只通过GUI配置了模型档案，CLI也能直接使用。
+  - 支持旧版_gui_config.json的自动迁移。
+
+**章节来源**
+- [WT_AUTOMATION_Agent/agent.py](file://WT_AUTOMATION_Agent/agent.py)
+- [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
 
 ### 控制搜索引擎与智能匹配
 - 设计原理
@@ -431,6 +512,7 @@ Agent --> FlowOps : "流程编排"
 - 意图识别
   - 基于关键词资源与规则的分类器，结合轻量模型进行置信度评估。
   - 多意图融合：复杂需求拆分为子意图，形成执行序列。
+  - **参数扫描意图识别**：识别"批量"、"扫描"、"Excel驱动"等关键词，触发add_parameter_scan工具。
 - 脚本生成
   - 将意图与实体映射为标准化的流程步骤或DSL节点。
   - 生成前后校验：结构完整性、参数合法性、控件存在性检查。
@@ -441,10 +523,11 @@ flowchart TD
 Start(["开始"]) --> Clean["文本清洗与分句"]
 Clean --> Extract["实体抽取与归一化"]
 Extract --> Classify["意图分类与置信度评估"]
-Classify --> Merge{"多意图?"}
-Merge --> |是| Split["拆分子意图"]
-Merge --> |否| Plan["规划执行序列"]
-Split --> Plan
+Classify --> CheckParam{"是否参数扫描?"}
+CheckParam --> |是| ScanIntent["识别参数扫描意图"]
+CheckParam --> |否| Plan["规划执行序列"]
+ScanIntent --> ToolCall["调用add_parameter_scan工具"]
+ToolCall --> Plan
 Plan --> Map["映射到技能与控件"]
 Map --> Validate["结构与参数校验"]
 Validate --> Output["生成脚本/DSL"]
@@ -623,6 +706,7 @@ Agent --> KnowledgeBase["知识库"]
 Agent --> ModelProfile["模型配置"]
 Agent --> LogDiagnosis["日志诊断"]
 Agent --> FlowOps["流程操作"]
+Agent --> ParameterScan["参数扫描"]
 Capture --> PyW["PyWinauto后端"]
 Capture --> UIA["UIA客户端"]
 Agent --> Catalog["标准控件目录"]
@@ -633,6 +717,7 @@ KnowledgeBase --> Agent
 ModelProfile --> Agent
 LogDiagnosis --> Agent
 FlowOps --> Agent
+ParameterScan --> Excel["Excel/CSV文件"]
 ```
 
 **图表来源**
@@ -646,6 +731,7 @@ FlowOps --> Agent
 - [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
 - [WT_AUTOMATION_Agent/log_diagnosis.py](file://WT_AUTOMATION_Agent/log_diagnosis.py)
 - [WT_AUTOMATION_Agent/flow_ops.py](file://WT_AUTOMATION_Agent/flow_ops.py)
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
 - [wt_dsl_agent.py](file://wt_dsl_agent.py)
 - [tools/external_capture/capture.py](file://tools/external_capture/capture.py)
 - [tools/external_capture/pywinauto_backend.py](file://tools/external_capture/pywinauto_backend.py)
@@ -665,6 +751,7 @@ FlowOps --> Agent
 - [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
 - [WT_AUTOMATION_Agent/log_diagnosis.py](file://WT_AUTOMATION_Agent/log_diagnosis.py)
 - [WT_AUTOMATION_Agent/flow_ops.py](file://WT_AUTOMATION_Agent/flow_ops.py)
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
 - [wt_dsl_agent.py](file://wt_dsl_agent.py)
 - [tools/external_capture/capture.py](file://tools/external_capture/capture.py)
 - [tools/external_capture/pywinauto_backend.py](file://tools/external_capture/pywinauto_backend.py)
@@ -678,10 +765,12 @@ FlowOps --> Agent
   - 控件索引与标准目录应定期更新并缓存，减少IO开销。
   - 截图与控件树缓存，避免重复采集。
   - 知识库查询结果缓存，提升检索效率。
+  - **参数扫描结果缓存**：避免重复读取相同的Excel文件。
 - 并发与异步
   - 技能执行支持异步与超时控制，提高吞吐。
   - 批量任务采用队列与限流，防止资源争用。
   - 多模型并行推理，充分利用计算资源。
+  - **参数扫描并行处理**：支持多线程处理大量参数行。
 - 模型推理优化
   - 使用本地轻量模型或缓存推理结果，降低延迟。
   - 对高频意图进行预计算与模板化。
@@ -698,30 +787,35 @@ FlowOps --> Agent
   - 执行异常：查看执行日志与断点信息，确认参数绑定是否正确。
   - 模型加载失败：检查模型配置文件和网络连接状态。
   - 知识库检索错误：验证知识格式和索引完整性。
+  - **参数扫描失败**：检查Excel文件格式、列头命名、文件路径权限。
 - 调试技巧
   - 启用调试模式，输出详细日志与中间结果。
   - 使用录制转换器回放历史步骤，对比差异定位问题。
   - 通过GUI的控件预览与日志面板快速定位。
   - 利用日志诊断工具自动分析问题根因。
   - 使用模型配置中心的性能监控功能。
+  - **参数扫描调试**：使用analyze_step_excel方法分析步骤Excel的可参数化字段。
 
 **章节来源**
 - [WT_AUTOMATION_Agent/agent.py](file://WT_AUTOMATION_Agent/agent.py)
 - [WT_AUTOMATION_Agent/cli.py](file://WT_AUTOMATION_Agent/cli.py)
 - [WT_AUTOMATION_Agent/log_diagnosis.py](file://WT_AUTOMATION_Agent/log_diagnosis.py)
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
 - [flow_recorder_converter.py](file://flow_recorder_converter.py)
 
 ## 结论
-WT自动化框架的AI辅助系统经过重大升级，形成了更加完善和智能化的架构。新版本引入了控制搜索引擎、知识库管理系统、模型配置中心、日志诊断工具和流程操作引擎等核心模块，大幅提升了系统的智能化水平和用户体验。通过这些模块化设计，系统能够更好地处理复杂的自动化场景，提供更准确的意图识别和更稳定的执行效果。配合增强的GUI界面和CLI接口，既满足了专业用户的深度定制需求，也兼顾了普通用户的易用性。未来可通过持续优化各模块性能和扩展更多AI能力，进一步提升自动化效率和准确性。
+WT自动化框架的AI辅助系统经过重大升级，形成了更加完善和智能化的架构。新版本引入了控制搜索引擎、知识库管理系统、模型配置中心、日志诊断工具和流程操作引擎等核心模块，**特别增强了参数扫描功能，支持从Excel/CSV文件批量生成参数化流程，并通过Function Calling工具实现智能参数映射**。通过这些模块化设计，系统能够更好地处理复杂的自动化场景，提供更准确的意图识别和更稳定的执行效果。配合增强的GUI界面和CLI接口，既满足了专业用户的深度定制需求，也兼顾了普通用户的易用性。未来可通过持续优化各模块性能和扩展更多AI能力，进一步提升自动化效率和准确性。
 
 ## 附录
 
 ### 实际使用示例：用自然语言描述自动化需求
 - 示例场景
   - 打开某软件窗口，选择指定菜单项，填写表单并提交。
+  - **批量创建多个风机类型，每个使用不同的参数配置**。
 - 端到端流程
   - 用户在CLI或GUI中输入自然语言描述。
   - Agent进行NLP与意图识别，提取目标窗口、菜单项与表单字段。
+  - **对于批量操作，AI自动识别参数扫描意图，调用add_parameter_scan工具**。
   - 控制搜索引擎智能匹配目标控件，知识库提供最佳实践参考。
   - 模型配置中心选择合适的AI模型进行处理。
   - 流程操作引擎编排复杂业务流程。
@@ -729,6 +823,7 @@ WT自动化框架的AI辅助系统经过重大升级，形成了更加完善和�
 - 参考路径
   - 自然语言输入与输出：[CLI接口](file://WT_AUTOMATION_Agent/cli.py)
   - 意图识别与脚本生成：[Agent主入口](file://WT_AUTOMATION_Agent/agent.py)
+  - **参数扫描功能：[参数扫描器](file://WT_AUTOMATION_Agent/parameter_scan.py)**
   - 智能控件搜索：[控制搜索引擎](file://WT_AUTOMATION_Agent/control_search.py)
   - 知识库查询：[知识库管理](file://WT_AUTOMATION_Agent/knowledge_base.py)
   - 模型配置：[模型配置中心](file://WT_AUTOMATION_Agent/model_profiles.py)
@@ -740,6 +835,7 @@ WT自动化框架的AI辅助系统经过重大升级，形成了更加完善和�
 **章节来源**
 - [WT_AUTOMATION_Agent/cli.py](file://WT_AUTOMATION_Agent/cli.py)
 - [WT_AUTOMATION_Agent/agent.py](file://WT_AUTOMATION_Agent/agent.py)
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
 - [WT_AUTOMATION_Agent/control_search.py](file://WT_AUTOMATION_Agent/control_search.py)
 - [WT_AUTOMATION_Agent/knowledge_base.py](file://WT_AUTOMATION_Agent/knowledge_base.py)
 - [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
@@ -770,6 +866,7 @@ WT自动化框架的AI辅助系统经过重大升级，形成了更加完善和�
   - 控件索引与标准目录：维护路径与更新策略。
   - 知识库路径与检索策略：配置知识存储和访问方式。
   - 日志与监控：开关详细日志，配置指标上报。
+  - **参数扫描配置**：Excel文件路径、Sheet名称、最大行数限制。
 - 自定义开发
   - 新增技能：定义元数据与实现函数，注册到桥接系统。
   - 扩展NLP：添加领域词典与规则，优化意图分类。
@@ -777,6 +874,7 @@ WT自动化框架的AI辅助系统经过重大升级，形成了更加完善和�
   - 扩展知识库：添加新的知识类型和检索算法。
   - 自定义模型：支持第三方模型接入和配置管理。
   - 流程扩展：开发新的流程操作符和编排策略。
+  - **参数扫描扩展**：添加新的参数映射规则，支持更多Excel列头格式。
 
 **章节来源**
 - [WT_AUTOMATION_Agent/skill_bridge.py](file://WT_AUTOMATION_Agent/skill_bridge.py)
@@ -784,5 +882,6 @@ WT自动化框架的AI辅助系统经过重大升级，形成了更加完善和�
 - [WT_AUTOMATION_Agent/knowledge_base.py](file://WT_AUTOMATION_Agent/knowledge_base.py)
 - [WT_AUTOMATION_Agent/model_profiles.py](file://WT_AUTOMATION_Agent/model_profiles.py)
 - [WT_AUTOMATION_Agent/flow_ops.py](file://WT_AUTOMATION_Agent/flow_ops.py)
+- [WT_AUTOMATION_Agent/parameter_scan.py](file://WT_AUTOMATION_Agent/parameter_scan.py)
 - [control_maps/standard_control_catalog.json](file://control_maps/standard_control_catalog.json)
 - [resources/dispatch_keywords.resource](file://resources/dispatch_keywords.resource)

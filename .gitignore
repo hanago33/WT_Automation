@@ -43,6 +43,8 @@ backups/
 
 # Temporary debug/diff scratch files
 _tmp_*
+.tmp_*
+tmp_*
 _debug_*.py
 _test_locator_runtime.py
 *_diff.txt
@@ -51,6 +53,20 @@ graphify-out/
 .agents/
 csv_to_xlsx.spec
 control_maps/self_heal_store.json
+
+# Temporary debug markdown / patches
+debug-*.md
+.codex_patches/
+
+# Backup files (recordings / flow packages)
+control_maps/recordings/*.bak.*
+flow_packages/*.bak_step*
+
+# Screenshots
+image_templates/WT_software_Images/screenshot_*.png
+
+# Research scratch
+tools/research/
 
 # OS/editor noise
 .DS_Store

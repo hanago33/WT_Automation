@@ -40,7 +40,7 @@ AUTHORITY_RANK = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
 # 合并时需逐字段保留的采集端增强元数据（非空才输出，已有非空值不被低权威来源覆盖）
 _PRESERVE_SCALAR_FIELDS = (
     "labelText", "labelRelation", "nameSource", "qualityTier", "uiPath",
-    "localizedControlType", "accessKey", "helpText", "boundingRectangle",
+    "localizedControlType", "accessKey", "helpText", "functionText", "boundingRectangle",
     "legacyRoleText", "legacyStateText", "locatorReason",
 )
 _PRESERVE_LIST_FIELDS = ("supportedPatterns", "optionValues")
@@ -49,12 +49,18 @@ _PRESERVE_LIST_FIELDS = ("supportedPatterns", "optionValues")
 def load_all(input_dir):
     recs = []
     files = []
-    files.extend(sorted(glob.glob(os.path.join(input_dir, "recordings", "*_control_map.json"))))
+    files.extend(sorted(glob.glob(os.path.join(input_dir, "recordings", "*.json"))))
     files.extend(sorted(glob.glob(os.path.join(input_dir, "library", "library_*.json"))))
+    # 外部采集适配器（uia-peek / axe-windows）直接落盘到 control_maps/ 根目录，
+    # 命名形如 {ts}_{title}_uiapeek_control_map.json / {ts}_pid{pid}_axewindows_control_map.json。
+    # 之前只读 recordings/ 与 library/，导致这些新采集文件永远进不了标准库合并。
+    files.extend(sorted(glob.glob(os.path.join(input_dir, "*_control_map.json"))))
     for fp in files:
         try:
             data = json.load(open(fp, encoding="utf-8"))
         except Exception:
+            continue
+        if not isinstance(data, dict):
             continue
         tw = data.get("targetWindow", {}) or {}
         fwin = str(tw.get("title", "")).strip()
@@ -130,6 +136,7 @@ def normalize_control(c, fwin, ffw, src, scan_time=""):
         "localizedControlType": str(c.get("localizedControlType", "") or ins.get("localizedControlType", "")).strip(),
         "accessKey": str(c.get("accessKey", "") or ins.get("accessKey", "")).strip(),
         "helpText": str(c.get("helpText", "") or ins.get("helpText", "")).strip(),
+        "functionText": str(c.get("functionText", "") or ins.get("functionText", "")).strip(),
         "boundingRectangle": str(ins.get("boundingRectangle", "")).strip(),
         "legacyRoleText": str(c.get("legacyRoleText", "") or ins.get("legacyRoleText", "")).strip(),
         "legacyStateText": str(c.get("legacyStateText", "") or ins.get("legacyStateText", "")).strip(),
@@ -184,14 +191,18 @@ def authority(rec):
 
 
 def _locator_robustness(method):
-    """定位器稳健性评分：label_text 复合定位抗布局变动，found_index 依赖遍历顺序易碎。
+    """定位器稳健性评分：label_text/help_text 复合定位抗布局变动，found_index 依赖遍历顺序易碎。
 
-    同权威度时新期采集的更稳健定位器（如 automation_id,control_type,label_text）
-    应替换旧期的 found_index 消歧版，否则目录永远停留在先入桶的脆弱定位。
+    同权威度时新期采集的更稳健定位器（如 automation_id,control_type,label_text,help_text）
+    应替换旧期的 found_index 消歧版或裸 label_text 版，否则目录永远停留在先入桶的脆弱定位。
+    help_text 是控件自身 UIA 属性（本地化资源真实功能名），比父容器兄弟 Text 查找更抗树结构
+    变化，与 label_text 组合是双保险，故同样计 +1。
     """
     parts = [p.strip() for p in str(method).split(",") if p.strip()]
     score = 0
     if "label_text" in parts:
+        score += 1
+    if "help_text" in parts:
         score += 1
     if "found_index" in parts:
         score -= 1

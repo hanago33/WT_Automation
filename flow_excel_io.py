@@ -665,10 +665,15 @@ def _normalize_payload(payload):
         "description": _safe_text(payload.get("description")),
         "lastUpdated": _safe_text(payload.get("lastUpdated")),
         "runtimeConfig": {
-            "gmExe": _safe_text(runtime_config.get("gmExe")),
-            "sourceFilePath": _safe_text(runtime_config.get("sourceFilePath")),
-            "outputDir": _safe_text(runtime_config.get("outputDir")),
-            "projectionFilePath": _safe_text(runtime_config.get("projectionFilePath")),
+            # 保留全部运行时配置键（含 controlMapPath / templateAutoUpdate 等扩展字段），
+            # 仅做基础类型清洗（bool/数字保留原类型），
+            # 避免白名单重建导致执行器依赖的配置在 Excel 往返中静默丢失或类型漂移。
+            key: (
+                value
+                if isinstance(value, (bool, int, float, dict, list))
+                else _safe_text(value)
+            )
+            for key, value in runtime_config.items()
         },
         "flowPackages": [
             {
@@ -1012,14 +1017,17 @@ def export_flow_to_excel(flow_json_path=DEFAULT_FLOW_JSON, excel_path=DEFAULT_FL
         ("description", payload.get("description", "")),
         ("lastUpdated", payload.get("lastUpdated", "")),
         ("generatedAt", datetime.now().isoformat(timespec="seconds")),
-        ("runtime.gmExe", payload["runtimeConfig"].get("gmExe", "")),
-        ("runtime.sourceFilePath", payload["runtimeConfig"].get("sourceFilePath", "")),
-        ("runtime.outputDir", payload["runtimeConfig"].get("outputDir", "")),
-        ("runtime.projectionFilePath", payload["runtimeConfig"].get("projectionFilePath", "")),
+    ]
+    # runtimeConfig 全部键写入 meta（runtime.<key>），导入时按相同前缀读回，
+    # 保证 controlMapPath / templateAutoUpdate 等扩展字段在 Excel 往返中不丢失。
+    for key, value in payload.get("runtimeConfig", {}).items():
+        if not isinstance(value, (dict, list)):
+            meta_rows.append(("runtime." + str(key), value))
+    meta_rows.extend([
         (ROUNDTRIP_AUDIT_BASELINE_PATH_FIELD, os.path.abspath(flow_json_path)),
         (ROUNDTRIP_AUDIT_BASELINE_LABEL_FIELD, os.path.basename(flow_json_path)),
         (ROUNDTRIP_AUDIT_STEP_IDS_FIELD, json.dumps(exported_step_ids, ensure_ascii=False)),
-    ]
+    ])
     for row in meta_rows:
         meta_sheet.append(list(row))
     _annotate_sheet_headers(meta_sheet, {"field": "固定字段名，请不要修改。", "value": "项目级配置值，可直接编辑。"})
@@ -1432,17 +1440,19 @@ def load_flow_payload_from_excel(excel_path=DEFAULT_FLOW_XLSX):
                 }
                 flow_packages.append(package)
 
+        runtime_config = {}
+        for field_key, field_value in meta_map.items():
+            field_key = _safe_text(field_key)
+            if not field_key.startswith("runtime."):
+                continue
+            runtime_config[field_key[len("runtime."):]] = field_value
+
         payload = {
             "version": _safe_text(meta_map.get("version")) or "1.0",
             "project": _safe_text(meta_map.get("project")) or "WT_Automation",
             "description": _safe_text(meta_map.get("description")),
             "lastUpdated": datetime.now().isoformat(timespec="seconds"),
-            "runtimeConfig": {
-                "gmExe": _safe_text(meta_map.get("runtime.gmExe")),
-                "sourceFilePath": _safe_text(meta_map.get("runtime.sourceFilePath")),
-                "outputDir": _safe_text(meta_map.get("runtime.outputDir")),
-                "projectionFilePath": _safe_text(meta_map.get("runtime.projectionFilePath")),
-            },
+            "runtimeConfig": runtime_config,
             "flowPackages": flow_packages,
             "steps": [item[1] for item in sorted(steps, key=lambda pair: (_sort_order_value(pair[0]), pair[1].get("id", "")))],
         }

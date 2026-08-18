@@ -14,8 +14,8 @@
     "mode": "editor_library",
     "categoryWindowTitle": "WT微尺度模拟",
     "categoryFrameworkId": "WPF",
-    "totalControls": 1,
-    "rawTotalControls": 1
+    "totalControls": 2,
+    "rawTotalControls": 2
   },
   "controlDefinitions": [
     {
@@ -74,7 +74,52 @@
         "recommendedTargetMethod": "name,control_type",
         "recommendedTargetValue": "WT微尺度模拟,Text"
       }
+    },
+    {
+      "id": "control_map_98",
+      "name": "Open Module 按钮",
+      "role": "来自控件库扫描：",
+      "enabled": true,
+      "windowTitle": "WT微尺度模拟",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MainPage_Button_Microscale,Button",
+      "templateKey": "",
+      "uiPath": "Window_Main > MUPHomePageMainView > OpenModule",
+      "notes": "MUP首页\"WT微尺度模拟\"模块卡片按钮。automation_id+control_type 定位评分=100，标准库推荐保留。包含子文本\"WT微尺度模拟\"，有Invoke模式。",
+      "rawInspectText": "Name: \t \"OpenModule\"\nControlType: \t Button\nLocalizedControlType: \t \"button\"\nBoundingRectangle: \t [l=1447,t=743,r=1867,b=1034]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t False\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"MainPage_Button_Microscale\"\nIsContentElement: \t True\nIsControlElement: \t True\nSupportedPatterns: \t \"Invoke, LegacyIAccessible, SynchronizedInput\"",
+      "auxChecks": [
+        "IsEnabled=True",
+        "FrameworkId=WPF",
+        "ClassName=Button",
+        "IsControlElement=True"
+      ],
+      "inspectData": {
+        "name": "OpenModule",
+        "controlType": "Button",
+        "localizedControlType": "button",
+        "boundingRectangle": "[l=1447,t=743,r=1867,b=1034]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "False",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MainPage_Button_Microscale",
+        "isControlElement": "True",
+        "isContentElement": "True",
+        "helpText": "OpenModule",
+        "ancestors": [
+          "Window_Main",
+          "MUPHomePageMainView"
+        ],
+        "supportedPatterns": [
+          "Invoke",
+          "LegacyIAccessible",
+          "SynchronizedInput"
+        ],
+        "recommendedTargetMethod": "automation_id,control_type",
+        "recommendedTargetValue": "MainPage_Button_Microscale,Button"
+      }
     }
   ],
-  "lastUpdated": "2026-07-29T19:33:19"
+  "lastUpdated": "2026-08-03T19:40:00"
 }

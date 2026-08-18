@@ -1,4 +1,4 @@
-﻿# encoding: utf-8
+# encoding: utf-8
 
 import ctypes
 import io
@@ -13,6 +13,7 @@ from datetime import datetime
 from ctypes import wintypes
 from functools import lru_cache
 from threading import Thread
+import threading
 
 import pyautogui
 from pywinauto import Desktop
@@ -74,6 +75,9 @@ IMAGE_TEMPLATES = {
 # 全局变量
 monitor_window = None
 running = False
+# 关闭监控窗口时的优雅停止请求：由 main() 的 WM_DELETE_WINDOW 触发，
+# 运行循环在步骤边界检测并落盘报告后退出（避免关窗即硬杀 daemon 线程导致报告丢失）
+_STOP_REQUESTED = threading.Event()
 _FLOW_LOCATOR_CONFIGURED = False
 _FLOW_EXECUTOR_CONFIGURED = False
 _WT_BUSINESS_STEPS_CONFIGURED = False
@@ -275,6 +279,8 @@ user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetWindowTextW.restype = ctypes.c_int
 user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.GetWindowRect.restype = wintypes.BOOL
+user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetClassNameW.restype = ctypes.c_int
 WM_NULL = 0x0000
 SMTO_ABORTIFHUNG = 0x0002
 user32.SendMessageTimeoutW.argtypes = [
@@ -489,12 +495,29 @@ def _load_runtime_config():
 			return str(value).strip()
 		return str(default_value).strip()
 
+	def _pick_bool(key, legacy_key, default_value):
+		for source in (env_runtime, flow_runtime):
+			value = source.get(key)
+			if value not in (None, ""):
+				if isinstance(value, bool):
+					return value
+				return str(value).strip().lower() in ("1", "true", "yes", "on")
+		value = project_settings.get(legacy_key, "")
+		if value not in (None, ""):
+			return str(value).strip().lower() in ("1", "true", "yes", "on")
+		return bool(default_value)
+
 	return {
 		"gmExe": _pick_value("gmExe", "GM_EXE", DEFAULT_GM_EXE),
 		"sourceFilePath": _pick_value("sourceFilePath", "SOURCE_FILE_PATH", DEFAULT_SOURCE_FILE_PATH),
 		"outputDir": _pick_value("outputDir", "OUTPUT_DIR", DEFAULT_OUTPUT_DIR),
 		"projectionFilePath": _pick_value("projectionFilePath", "PROJECTION_FILE_PATH", DEFAULT_PROJECTION_FILE_PATH),
 		"controlMapPath": _pick_value("controlMapPath", "CONTROL_MAP_PATH", ""),
+		# 执行中自动更新控件模板开关（runtimeConfig.templateAutoUpdate 或环境变量
+		# WT_TEMPLATE_AUTO_UPDATE）：开启=每次运行截图并与上次模板对比、不一致才替换，
+		# 且自动把模板关联为步骤兜底；关闭=完全不采集/不更新/不关联兜底（默认关闭，
+		# 避免“假成功”时的错误截图污染模板库）。
+		"templateAutoUpdate": _pick_bool("templateAutoUpdate", "TEMPLATE_AUTO_UPDATE", False),
 	}
 
 
@@ -567,6 +590,105 @@ def _resolve_runtime_control_map_path():
 	return str(os.environ.get("WT_CONTROL_MAP_PATH", "")).strip() or None
 
 
+# 模板兜底所需的图像匹配实现：复用 wt_projection_helpers 的多尺度匹配
+# （此前 _get_flow_executor 直接引用 _locate_template_center_by_path 但未定义 → NameError，
+#  导致执行器模板兜底从未真正接线）。
+_locate_template_center_by_path = wt_projection_helpers.locate_template_center_by_path
+
+
+def _auto_capture_template(step_id, step_definition):
+    """执行中自动采集/更新控件模板（受 runtimeConfig.templateAutoUpdate 开关控制）。
+
+    开关开启时（每次运行）：
+      - 用 flow_locator 定位控件 → 截图控件真实区域；
+      - 与上次模板做感知哈希对比：一致则保留（控件外观未变，避免假成功/界面波动
+        的错误截图覆盖掉可用模板）；不一致或无旧模板才替换保存；
+      - 保存后把模板 key 写入步骤控件的 templateKey（内存），使执行器模板兜底
+        自动接线（P0）立即生效，供后续运行复用。
+    开关关闭时（默认）：完全不采集截图模板，也不编辑/关联兜底功能。
+
+    best-effort：任何失败静默返回 None。
+    """
+    try:
+        import image_template_index
+        import pyautogui
+        import wt_flow_locator as flow_locator
+    except Exception:
+        return None
+    # 开关：未开启自动更新模板 → 不保存截图、不编辑兜底
+    try:
+        if not _load_runtime_config().get("templateAutoUpdate"):
+            return None
+    except Exception:
+        return None
+
+    step_definition = step_definition if isinstance(step_definition, dict) else {}
+    controls = step_definition.get("controls", [])
+    if not isinstance(controls, list) or not controls or not isinstance(controls[0], dict):
+        return None
+    control = controls[0]
+    action_config = step_definition.get("actionConfig", {}) if isinstance(step_definition.get("actionConfig"), dict) else {}
+    control_id = str(action_config.get("controlId", "")).strip()
+    window_title = str(step_definition.get("windowTitle", "") or control.get("windowTitle", "")).strip()
+    control_name = str(control.get("name", "") or control.get("displayName", "") or control_id or "control").strip()
+
+    _cap_dir, cap_path = image_template_index.auto_capture_path(window_title, control_name)
+
+    wrapper = flow_locator.find_flow_control(
+        step_id, control_id=control_id,
+        timeout_seconds=1.5, window_title_hint=window_title,
+    )
+    if wrapper is None:
+        return None
+
+    rect = None
+    try:
+        rect = flow_locator.get_wrapper_rectangle(wrapper)
+    except Exception:
+        rect = None
+    if not rect:
+        try:
+            rect = wrapper.rectangle()
+        except Exception:
+            rect = None
+    if rect is None:
+        return None
+    try:
+        if isinstance(rect, dict):
+            left, top = int(rect.get("left", 0)), int(rect.get("top", 0))
+            right, bottom = int(rect.get("right", 0)), int(rect.get("bottom", 0))
+        else:
+            left, top = int(rect.left), int(rect.top)
+            right, bottom = int(rect.right), int(rect.bottom)
+    except Exception:
+        return None
+    padding = 3
+    left = max(0, left - padding)
+    top = max(0, top - padding)
+    width = right - left + padding * 2
+    height = bottom - top + padding * 2
+    if width < 8 or height < 8 or width > 4000 or height > 4000:
+        return None
+
+    try:
+        shot = pyautogui.screenshot(region=(left, top, width, height))
+        # 与上次模板对比：外观一致则保留旧模板，不替换（避免假成功污染模板库）
+        if os.path.exists(cap_path) and image_template_index.images_are_similar(cap_path, shot):
+            return cap_path
+        os.makedirs(_cap_dir, exist_ok=True)
+        shot.save(cap_path)
+        image_template_index.reload()
+        # 编辑对应兜底：把本次模板关联为步骤控件的 templateKey（内存，执行器
+        # 自动接线后该步骤下次失败即可用此模板兜底匹配）
+        rel_key = os.path.relpath(cap_path, image_template_index.IMAGE_TEMPLATE_ROOT).replace("\\", "/")
+        control["templateKey"] = "auto_captured/" + rel_key.split("auto_captured/", 1)[-1]
+        log_step(f"已自动更新控件模板: {cap_path}")
+        return cap_path
+    except Exception as exc:
+        log_step(f"自动采集控件模板失败: step={step_id}, err={exc}")
+        return None
+
+
 def _get_flow_executor():
 	global _FLOW_EXECUTOR_CONFIGURED
 	if not _FLOW_EXECUTOR_CONFIGURED:
@@ -586,10 +708,13 @@ def _get_flow_executor():
 			drag_between_flow_controls=_drag_between_flow_controls,
 			mouse_wheel_on_flow_control=_mouse_wheel_on_flow_control,
 			wait_for_flow_control_condition=_wait_for_flow_control_condition,
+			find_flow_control=getattr(wt_flow_locator, "find_flow_control", None),
+			get_wrapper_value_snapshot=getattr(wt_flow_locator, "get_wrapper_value_snapshot", None),
 			menu_select_flow=_menu_select_flow,
 			locate_template_center_by_path=_locate_template_center_by_path,
 			report_step_result=_record_step_result,
 			run_ai_intervention_after_failure=_run_ai_intervention_after_failure,
+			auto_capture_template=_auto_capture_template,
 			control_map_path=_resolve_runtime_control_map_path(),
 		)
 		_FLOW_EXECUTOR_CONFIGURED = True
@@ -1162,6 +1287,7 @@ def activate_and_maximize_main_window(timeout_seconds=60):
 	return _get_wt_window_helpers().activate_and_maximize_main_window(
 		MAIN_WINDOW_TITLE_RE,
 		timeout_seconds=timeout_seconds,
+		class_name_keywords=("MUPSmartClient",),
 	)
 
 
@@ -1170,6 +1296,7 @@ def ensure_main_window_foreground(timeout_seconds=15):
 	return _get_wt_window_helpers().ensure_main_window_foreground(
 		MAIN_WINDOW_TITLE_RE,
 		timeout_seconds=timeout_seconds,
+		class_name_keywords=("MUPSmartClient",),
 	)
 
 
@@ -1465,11 +1592,6 @@ def _build_execution_context():
 	}
 
 
-def _ensure_output_dir_exists():
-	if not os.path.isdir(OUTPUT_DIR):
-		raise NotADirectoryError(f"Output dir not found: {OUTPUT_DIR}")
-
-
 def _normalize_step_id(text):
 	return str(text or "").strip()
 
@@ -1505,10 +1627,18 @@ def _resolve_steps_to_run(step_ids, steps_arg=None, from_step=None, to_step=None
 	if steps_arg:
 		raw_items = [item.strip() for item in str(steps_arg).split(",") if item.strip()]
 		normalized = []
+		dropped = []
 		for item in raw_items:
 			step_id = _normalize_step_id(item)
 			if step_id and step_id in step_ids and step_id not in normalized:
 				normalized.append(step_id)
+			elif step_id not in normalized:
+				dropped.append(item)
+		if dropped:
+			# 防假成功：无效步骤名不再静默丢弃——明确告警，便于调用方及时发现
+			log_step(
+				"以下步骤名未匹配到可用步骤，已忽略: {}".format(", ".join(dropped))
+			)
 		return normalized
 	if from_step:
 		from_id = _normalize_step_id(from_step)
@@ -1525,7 +1655,6 @@ def _resolve_steps_to_run(step_ids, steps_arg=None, from_step=None, to_step=None
 	if default_step_ids is not None:
 		return list(default_step_ids)
 	return step_ids
-
 
 def _collect_required_runtime_items(steps_to_run):
 	selected_step_ids = {str(step_id).strip() for step_id in (steps_to_run or []) if str(step_id).strip()}
@@ -1607,7 +1736,7 @@ def _log_mup_assets_status():
 def _attach_mup_data_diff(run_report, context):
 	"""把 MUP 数据目录"运行前后"文件差异写入 run_report["mupDataFiles"]。
 
-	流程开始前由 run_automation 拍了 context["mupDataSnapshotBefore"]，
+	惰性快照由 run_automation 在首个业务步骤执行前拍摄（launch_gm 完成后），
 	此处对比当前快照，得到导入/计算/合成步骤是否真正落盘的文件级证据
 	（软校验：数据目录不可用时跳过，不阻塞流程）。
 	"""
@@ -1621,15 +1750,22 @@ def _attach_mup_data_diff(run_report, context):
 			context["mupDataSnapshotBefore"] = after
 			return
 		result = diff(before, after)
-		if result["newCount"] or result["changedCount"]:
+		# 判定包含纯删除场景：只删除（deletedCount>0 且无新增/修改）同样记录
+		if result["newCount"] or result["changedCount"] or result["deletedCount"]:
 			run_report["mupDataFiles"] = result
 			log_step(
 				"[mup-data] 运行后检测到数据文件变化: 新增{new} 修改{changed} 删除{deleted}".format(
 					new=result["newCount"], changed=result["changedCount"], deleted=result["deletedCount"]
 				)
 			)
-	except Exception:
-		pass
+	except Exception as exc:
+		# 铁证缺失时不再静默吞掉：写日志并在报告中留错误字段，避免"证据缺席无任何痕迹"
+		try:
+			log_step(f"[mup-data] 运行后数据差异检测失败（跳过）: {exc}")
+		except Exception:
+			pass
+		if isinstance(run_report, dict):
+			run_report["mupDataDiffError"] = str(exc)
 
 
 def _preflight_check_main_window():
@@ -1649,7 +1785,26 @@ def _preflight_check_main_window():
 		) from exc
 
 
-def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=False, task_id=None, task_user=None, task_db=None):
+def _pre_raise_main_window(timeout_seconds=15):
+	"""运行前置顶：尽力把目标软件主窗口恢复并置顶，失败不中止流程。
+
+	与 _preflight_check_main_window 的区别：这里只做"置顶/恢复"，不做"未找到即中止"。
+	用于 skip_setup 场景或用户仅希望置顶不中断的流程包/步骤测试。
+	"""
+	try:
+		window_info = ensure_main_window_foreground(timeout_seconds=timeout_seconds)
+		log_step(
+			"[mup-preflight] 运行前置顶完成: hwnd={hwnd} title={title} size={width}x{height}".format(
+				**window_info
+			)
+		)
+		return window_info
+	except Exception as exc:
+		log_step(f"[mup-preflight] 运行前置顶未生效（继续执行）: {exc}")
+		return None
+
+
+def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=False, task_id=None, task_user=None, task_db=None, pre_raise=True):
 	global running
 	queue_db = task_db or wt_task_queue.DEFAULT_DB_PATH
 	try:
@@ -1675,6 +1830,12 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 			to_step=to_step,
 			default_step_ids=default_step_ids,
 		)
+		if not steps_to_run:
+			# 防假成功：无任何可执行步骤时必须中止，禁止"0 步执行"却报 success 的空跑
+			raise RuntimeError(
+				"待执行步骤列表为空：请检查 --steps/--from-step/--to-step 参数，"
+				"或流程定义是否包含可执行的 topLevel 步骤"
+			)
 		log_step(f"执行步骤列表: {steps_to_run}")
 		log_step(
 			f"当前运行参数: gmExe={GM_EXE}, sourceFilePath={SOURCE_FILE_PATH}, outputDir={OUTPUT_DIR}, projectionFilePath={PROJECTION_FILE_PATH}"
@@ -1683,16 +1844,19 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 		preflight_window = None
 		if not skip_setup:
 			preflight_window = _validate_runtime_items(steps_to_run)
+		if pre_raise and preflight_window is None:
+			# 运行前置顶（可开关，默认开启）：无论是否 skip_setup，
+			# 只要 _validate_runtime_items 未完成置顶（含 launch_gm 步骤、跳过检查等），
+			# 都尽力把 WT 主窗口恢复并置顶，失败不中止流程。
+			_pre_raise_main_window(timeout_seconds=15)
 
 		context = _build_execution_context()
 		if preflight_window:
 			context["preflightWindow"] = preflight_window
-		# MUP 数据目录运行前快照（用于流程结束时对比"是否真落盘"）
-		try:
-			from mup_data_files import snapshot
-			context["mupDataSnapshotBefore"] = snapshot()
-		except Exception:
-			context["mupDataSnapshotBefore"] = {}
+			# MUP 数据目录快照不在流程开始前拍：MUP 应用启动（launch_gm）时初始化的
+			# 数据文件会被误算入"步骤落盘铁证"（误报）。改为惰性快照——
+			# 首个业务步骤执行前拍，此时 launch_gm 已完成，启动期文件被排除在证据外。
+			context["mupDataSnapshotBefore"] = None
 		context["run_report"] = _get_wt_run_reporting().start_run_report(
 			steps_to_run,
 			context.get("runtime_config", {}),
@@ -1714,6 +1878,25 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 			step_id = item["id"]
 			if step_id not in steps_to_run:
 				continue
+			# 优雅停止：用户关闭监控窗口时，当前步骤完成后落盘报告再退出
+			if _STOP_REQUESTED.is_set():
+				log_step("收到关闭窗口请求，停止流程并落盘报告")
+				_attach_mup_data_diff(context.get("run_report"), context)
+				_get_wt_run_reporting().finalize_run_report(
+					context.get("run_report"), "terminated", error="用户关闭窗口请求"
+				)
+				wt_run_status.publish(
+					status="terminated",
+					activity="用户关闭窗口，流程终止",
+					last_log="用户关闭窗口，流程终止",
+					run_id=context.get("runId", ""),
+					source="WT_AUT_recorded",
+				)
+				if task_id:
+					wt_task_queue.mark_terminated(
+						task_id, error="用户关闭窗口请求", db_path=queue_db
+					)
+				return
 			if task_id:
 				task_snapshot = wt_task_queue.get_task(task_id, db_path=queue_db)
 				if task_snapshot:
@@ -1729,7 +1912,13 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 						wt_task_queue.mark_paused(task_id, resume_from_step=step_id, db_path=queue_db)
 						log_step("任务暂停请求已收到，流程将在当前步骤后暂停")
 						return
-				step_name = item.get("title") or item.get("name") or step_id
+				step_definition_for_progress = _get_flow_step(step_id)
+				step_name = (
+					str(step_definition_for_progress.get("name", "")).strip()
+					or str(item.get("title", "")).strip()
+					or str(item.get("name", "")).strip()
+					or step_id
+				)
 				wt_task_queue.update_progress(
 					task_id,
 					current_step_id=step_id,
@@ -1741,6 +1930,13 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 					last_log="正在执行步骤: {}".format(step_name),
 					db_path=queue_db,
 				)
+			# 惰性快照：首个待执行步骤（launch_gm 之后）执行前拍"运行前基线"
+			if context.get("mupDataSnapshotBefore") is None:
+				try:
+					from mup_data_files import snapshot
+					context["mupDataSnapshotBefore"] = snapshot()
+				except Exception:
+					context["mupDataSnapshotBefore"] = {}
 			_execute_step_by_id(step_id, execution_plan_map, context, skip_setup=skip_setup)
 			completed_count += 1
 			if task_id:
@@ -1815,6 +2011,8 @@ def main():
 	parser.add_argument("--task-id", dest="task_id", default="")
 	parser.add_argument("--task-user", dest="task_user", default="")
 	parser.add_argument("--task-db", dest="task_db", default="")
+	parser.add_argument("--no-pre-raise", dest="pre_raise", action="store_false")
+	parser.set_defaults(pre_raise=True)
 	args = parser.parse_args()
 
 	steps_arg = args.steps.strip() or None
@@ -1830,24 +2028,52 @@ def main():
 			task_id=args.task_id or None,
 			task_user=args.task_user or None,
 			task_db=args.task_db.strip() or None,
+			pre_raise=bool(args.pre_raise),
 		)
 		return
 
 	monitor_window = MonitorWindow()
-	automation_thread = Thread(
-		target=lambda: run_automation(
-			steps_arg=steps_arg,
-			from_step=from_step,
-			to_step=to_step,
-			skip_setup=bool(args.skip_setup),
-			task_id=args.task_id or None,
-			task_user=args.task_user or None,
-			task_db=args.task_db.strip() or None,
-		),
-		daemon=True,
-	)
+
+	def _request_stop():
+		# 拦截关闭按钮：先请求自动化优雅停止并落盘运行报告，而不是销毁窗口硬杀 daemon 线程
+		_STOP_REQUESTED.set()
+		monitor_window.log("关闭请求已收到：当前步骤完成后停止并落盘报告", kind="warning")
+
+	run_finished = threading.Event()
+
+	def _run_automation_and_mark():
+		try:
+			run_automation(
+				steps_arg=steps_arg,
+				from_step=from_step,
+				to_step=to_step,
+				skip_setup=bool(args.skip_setup),
+				task_id=args.task_id or None,
+				task_user=args.task_user or None,
+				task_db=args.task_db.strip() or None,
+				pre_raise=bool(args.pre_raise),
+			)
+		finally:
+			run_finished.set()
+
+	automation_thread = Thread(target=_run_automation_and_mark, daemon=True)
+
+	def _poll_exit():
+		# 关闭请求已发出且自动化线程收尾完毕后，销毁窗口结束 mainloop
+		if _STOP_REQUESTED.is_set() and run_finished.is_set():
+			try:
+				monitor_window.root.destroy()
+			except Exception:
+				pass
+			return
+		monitor_window.root.after(200, _poll_exit)
+
+	monitor_window.root.protocol("WM_DELETE_WINDOW", _request_stop)
 	automation_thread.start()
+	monitor_window.root.after(200, _poll_exit)
 	monitor_window.root.mainloop()
+	# mainloop 退出（正常完成或用户关闭）：等自动化线程彻底收尾，确保运行报告已落盘
+	automation_thread.join(timeout=30)
 
 
 if __name__ == "__main__":

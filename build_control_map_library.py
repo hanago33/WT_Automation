@@ -27,6 +27,15 @@ def _hover_log(msg):
     except Exception:
         pass
 
+
+def _play_notify_sound():
+    """采集结束提示音；winsound 不可用（非 Windows）时静默。"""
+    try:
+        import winsound
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+    except Exception:
+        pass
+
 # 强制 COM 初始化为 MTA 模式 (Multi-Threaded Apartment)
 # 这是 pywinauto 社区推荐的 UIA 后端核心性能优化，能大幅提升跨进程 COM 调用的速度。
 # 必须在导入 pywinauto 或 comtypes 之前设置。
@@ -62,6 +71,61 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONTROL_MAP_DIR = os.path.join(BASE_DIR, "control_maps")
 DEFAULT_BACKEND = "smart"
 DEFAULT_MAX_DEPTH = 10
+
+
+CONTROL_MAP_THEME = {
+    "bg": "#f4f7fb",
+    "panel": "#ffffff",
+    "panel_soft": "#fbfdff",
+    "toolbar": "#eaf1fb",
+    "border": "#d8e2f0",
+    "primary": "#2563eb",
+    "primary_soft": "#dbeafe",
+    "success": "#059669",
+    "success_soft": "#dcfce7",
+    "danger": "#dc2626",
+    "danger_soft": "#fee2e2",
+    "warning": "#b45309",
+    "warning_soft": "#fef3c7",
+    "text": "#1f2937",
+    "muted": "#64748b",
+    "font": ("Microsoft YaHei UI", 10),
+}
+
+
+def _paint_button(btn, tone="default"):
+    """按统一色板给 tk.Button 上色；tone 取 default/primary/success/danger/warning。"""
+    soft = {
+        "default": CONTROL_MAP_THEME["panel"],
+        "primary": CONTROL_MAP_THEME["primary_soft"],
+        "success": CONTROL_MAP_THEME["success_soft"],
+        "danger": CONTROL_MAP_THEME["danger_soft"],
+        "warning": CONTROL_MAP_THEME["warning_soft"],
+    }
+    fg = {
+        "default": CONTROL_MAP_THEME["text"],
+        "primary": CONTROL_MAP_THEME["primary"],
+        "success": CONTROL_MAP_THEME["success"],
+        "danger": CONTROL_MAP_THEME["danger"],
+        "warning": CONTROL_MAP_THEME["warning"],
+    }
+    btn.configure(
+        bg=soft.get(tone, soft["default"]),
+        fg=fg.get(tone, fg["default"]),
+        activebackground=CONTROL_MAP_THEME["panel_soft"],
+        activeforeground=fg.get(tone, fg["default"]),
+        relief="flat",
+        bd=1,
+        highlightthickness=1,
+        highlightbackground=CONTROL_MAP_THEME["border"],
+        cursor="hand2",
+        padx=10,
+        pady=3,
+        font=CONTROL_MAP_THEME["font"],
+    )
+    return btn
+
+
 
 
 class _TaskbarProgress:
@@ -113,6 +177,128 @@ class _TaskbarProgress:
 
     def clear(self):
         self.set_state(self.TBPF_NOPROGRESS)
+
+
+class _ScanProgressOverlay:
+    """采集进度置顶浮窗：实时显示控件数，结束/中止显示结果几秒后自动消失。
+
+    设计原因：整树/画框采集常需把采集器窗口最小化让目标软件置前，此时主界面
+    状态栏不可见，用户无法感知进度与结束。本浮窗独立于主窗口置顶在右上角，
+    鼠标穿透（WS_EX_TRANSPARENT）不拦截目标软件操作、不抢焦点（WS_EX_NOACTIVATE），
+    采集结束变绿显示结果，数秒后自动消失，配合提示音强调完成。
+    """
+    _GWL_EXSTYLE = -20
+    _WS_EX_TRANSPARENT = 0x00000020
+    _WS_EX_NOACTIVATE = 0x08000000
+    _AUTO_CLOSE_MS = 4000
+
+    def __init__(self, parent):
+        self._parent = parent
+        self._window = None
+        self._label = None
+        self._auto_close_id = None
+
+    def _ensure_window(self):
+        if self._window is not None:
+            try:
+                if self._window.winfo_exists():
+                    return self._window
+            except Exception:
+                pass
+            self._window = None
+        window = tk.Toplevel(self._parent)
+        window.overrideredirect(True)
+        try:
+            window.attributes("-topmost", True)
+        except Exception:
+            pass
+        window.configure(bg=CONTROL_MAP_THEME["toolbar"], highlightthickness=1,
+                         highlightbackground=CONTROL_MAP_THEME["border"])
+        label = tk.Label(window, text="", justify="left", anchor="w",
+                         bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"],
+                         padx=14, pady=8, wraplength=340,
+                         font=(CONTROL_MAP_THEME["font"][0], 10))
+        label.pack(fill=tk.BOTH, expand=True)
+        # 鼠标穿透 + 不抢焦点。注意：不能加 WS_EX_LAYERED——Tk 窗口没有配合
+        # transparentcolor/SetLayeredWindowAttributes 设置颜色键时，LAYERED 窗口
+        # 会被系统直接跳过绘制，导致浮窗建了却看不见（2026-08-12 实测像素级验证）。
+        try:
+            hwnd_str = window.frame() if window.frame() else str(window.winfo_id())
+            hwnd = int(hwnd_str, 16)
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, self._GWL_EXSTYLE)
+            new_style = style | self._WS_EX_TRANSPARENT | self._WS_EX_NOACTIVATE
+            ctypes.windll.user32.SetWindowLongW(hwnd, self._GWL_EXSTYLE, new_style)
+        except Exception:
+            pass
+        self._window = window
+        self._label = label
+        return window
+
+    def _position_top_right(self):
+        try:
+            sw = self._parent.winfo_screenwidth()
+            self._window.update_idletasks()
+            width = max(self._window.winfo_reqwidth(), 160)
+            height = self._window.winfo_reqheight()
+            x = sw - width - 14
+            self._window.geometry(f"{width}x{height}+{x}+10")
+        except Exception:
+            pass
+
+    def _set_text(self, text, fg=None, bg=None):
+        window = self._ensure_window()
+        if self._label is not None:
+            self._label.configure(text=text, fg=fg or CONTROL_MAP_THEME["text"])
+        if bg:
+            window.configure(bg=bg)
+            if self._label is not None:
+                self._label.configure(bg=bg)
+        self._position_top_right()
+        try:
+            window.deiconify()
+            window.lift()
+        except Exception:
+            pass
+
+    def _cancel_auto_close(self):
+        if self._auto_close_id is not None:
+            try:
+                self._parent.after_cancel(self._auto_close_id)
+            except Exception:
+                pass
+            self._auto_close_id = None
+
+    def _schedule_auto_close(self, ms=_AUTO_CLOSE_MS):
+        self._cancel_auto_close()
+        try:
+            self._auto_close_id = self._parent.after(ms, self.close)
+        except Exception:
+            pass
+
+    def show_progress(self, message, count):
+        self._cancel_auto_close()
+        self._set_text(f"扫描中… 已采集 {count} 个控件\n{message}",
+                       fg=CONTROL_MAP_THEME["text"], bg=CONTROL_MAP_THEME["toolbar"])
+
+    def show_done(self, message):
+        self._set_text(message, fg=CONTROL_MAP_THEME["success"], bg=CONTROL_MAP_THEME["success_soft"])
+        self._schedule_auto_close()
+
+    def show_cancelled(self, message):
+        self._set_text(message, fg=CONTROL_MAP_THEME["warning"], bg=CONTROL_MAP_THEME["warning_soft"])
+        self._schedule_auto_close()
+
+    def show_error(self, message):
+        self._set_text(message, fg=CONTROL_MAP_THEME["danger"], bg=CONTROL_MAP_THEME["danger_soft"])
+        self._schedule_auto_close(ms=6000)
+
+    def close(self):
+        self._cancel_auto_close()
+        if self._window is not None:
+            try:
+                self._window.withdraw()
+            except Exception:
+                pass
 # 整树采集（无画框区域）时的最小递归深度。WPF 控件树嵌套很深，
 # 默认 10 层往往覆盖不到滚动区/折叠面板/未激活 Tab 中的深层控件。
 FULLTREE_MIN_DEPTH = 18
@@ -614,9 +800,65 @@ def _build_readable_control_name(flat_control):
     return base_name
 
 
+_HELPTEXT_NOISE_EXACT = {"radcombobox", "radtabcontrol", "radtabitem"}
+
+
+def _extract_functional_name(flat_control):
+    """从软件暴露的 helpText 提炼控件真实操作语义名（如"添加新配置"）。
+    图标按钮的 UIA Name 常是 SVG path（M19,13L13,13... 加号/铅笔/垃圾桶）无法阅读，
+    而 helpText 是软件本地化资源里的真实功能说明，用作展示/识别层名字最可靠。
+    只影响展示层，不改任何定位字段（automationId/name/targetValue）。"""
+    if not isinstance(flat_control, dict):
+        return ""
+    help_text = str(flat_control.get("helpText", "") or "").strip()
+    if not help_text:
+        return ""
+    lowered = help_text.lower()
+    if lowered in _HELPTEXT_NOISE_EXACT or lowered.startswith("rad"):
+        return ""
+    # 排除 pid / 十六进制 / 路径等内部技术串，以及 SVG path 片段（M3,17.25...）
+    if any(marker in help_text for marker in ("pid:", ":0x", ".dll", "\\")) or re.search(r"\bM\d{1,3},", help_text):
+        return ""
+    if len(help_text) > 30:
+        help_text = help_text[:30]
+    return help_text
+
+
+def _display_control_name(item):
+    """UI 展示名：优先功能名（helpText 提炼），回退原始控件名。
+    采集 JSON 加载不经过 enrich 时 functionText 缺失，实时从 helpText 提炼兜底。"""
+    if not isinstance(item, dict):
+        return "控件"
+    return (
+        str(item.get("functionText", "")).strip()
+        or _extract_functional_name(item)
+        or str(item.get("savedControlName", "")).strip()
+        or str(item.get("suggestedControlName", "")).strip()
+        or str(item.get("displayName", "")).strip()
+        or "控件"
+    )
+
+
+def _option_values_hint(item):
+    """下拉框已采选项的树展示后缀，如「组·公共·私有」；无选项返回空串。"""
+    if not isinstance(item, dict):
+        return ""
+    options = item.get("optionValues") or (item.get("inspectData") or {}).get("optionValues")
+    if not options:
+        return ""
+    texts = [str(o).strip() for o in options if str(o).strip()]
+    if not texts:
+        return ""
+    return f"「{'·'.join(texts)}」"
+
+
 def _classify_control_quality(flat_control):
     if not isinstance(flat_control, dict):
         return "建议忽略", "无有效控件信息"
+    # 已折叠进父级 TextBox 的 PART_ContentHost：不应作为独立控件推荐，
+    # 否则它带着不唯一的 automation_id 定位入库，运行时误命中其它输入框宿主。
+    if flat_control.get("foldedIntoParent"):
+        return "建议忽略", "PART_ContentHost: WPF TextBox 内部编辑区域，已折叠进父级 TextBox，非独立可定位控件"
     # 下拉框显示值文本：已并入对应下拉框，保留但不单独入库。
     if flat_control.get("foldedIntoDropdown"):
         return "建议忽略", "下拉框当前显示值文本，已并入对应下拉框"
@@ -677,6 +919,45 @@ def _should_default_select_group(group):
     return quality_tier in {"推荐保留", "容器控件"}
 
 
+def _annotate_input_drive_hint(item):
+    """对不可聚焦的输入类宿主（WPF TextBox 内部宿主 PART_ContentHost 等）标注驱动方式。
+
+    这类控件 IsKeyboardFocusable=false、通常无 Value/Text Pattern，UIA 输入
+    （type_text 的 set_edit_text / type_keys）必然失败；正确驱动是
+    "坐标点击聚焦 + 全局键盘(send_keys)"。提示追加到 qualityReason，
+    入库后进入 notes 的"说明="，供流程设计时参考。
+    """
+    if not isinstance(item, dict):
+        return
+    keyboard_focusable = str(item.get("isKeyboardFocusable", "")).strip().lower()
+    if keyboard_focusable != "false":
+        return
+    automation_id = str(item.get("automationId", "")).strip()
+    control_type = str(item.get("controlType", "")).strip().lower()
+    class_name = str(item.get("className", "")).strip().lower()
+    input_class_names = {"textbox", "passwordbox", "scrollviewer"}
+    is_input_like = (
+        automation_id == "PART_ContentHost"
+        or control_type in {"edit", "combobox", "spinner", "document", "textbox"}
+        or (control_type in {"pane", "custom"} and class_name in input_class_names)
+    )
+    if not is_input_like:
+        return
+    raw_patterns = item.get("supportedPatterns") or []
+    if isinstance(raw_patterns, str):
+        raw_patterns = [raw_patterns]
+    patterns = {str(p).strip().lower() for p in raw_patterns if str(p).strip()}
+    has_value_or_text = any("value" in p or "text" in p for p in patterns)
+    hint = "不可聚焦输入宿主(IsKeyboardFocusable=false)"
+    if not has_value_or_text:
+        hint += "，无 Value/Text Pattern，需坐标点击+键盘驱动(send_keys)，不可直接 UIA 输入"
+    else:
+        hint += "，需坐标点击聚焦后键盘驱动"
+    quality_reason = str(item.get("qualityReason", "")).strip()
+    if hint not in quality_reason:
+        item["qualityReason"] = (quality_reason + " | " + hint).strip(" |")
+
+
 def _enrich_flat_controls(flat_controls, target_window):
     target_window = target_window or {}
     for item in flat_controls or []:
@@ -688,12 +969,14 @@ def _enrich_flat_controls(flat_controls, target_window):
             item["windowClassName"] = str(target_window.get("className", "")).strip()
         suggested_name = _build_readable_control_name(item)
         item["suggestedControlName"] = suggested_name
+        item["functionText"] = _extract_functional_name(item)
         quality_tier, quality_reason = _classify_control_quality(item)
         item["qualityTier"] = quality_tier
         item["qualityReason"] = quality_reason
         risk_level, risk_reasons = assess_control_automatability(item)
         item["automatabilityRisk"] = risk_level
         item["automatabilityReasons"] = risk_reasons
+        _annotate_input_drive_hint(item)
     return flat_controls
 
 
@@ -1322,13 +1605,14 @@ def _walk_wrapper(
     start_time=None,
     scan_timeout_seconds=30,
     status_callback=None,
+    cancel_event=None,
 ):
     if start_time is None:
         start_time = time.time()
 
-    if time.time() - start_time > scan_timeout_seconds:
+    if (cancel_event and cancel_event.is_set()) or time.time() - start_time > scan_timeout_seconds:
         if status_callback:
-            status_callback("扫描超时，已停止遍历。", len(flat_controls))
+            status_callback("扫描已中止或超时，已停止遍历。", len(flat_controls))
         return None
 
     path_segments = list(path_segments or [])
@@ -1353,9 +1637,9 @@ def _walk_wrapper(
 
     children = _safe_get_value(lambda: wrapper.children(), [])
     for child_index, child in enumerate(children, start=1):
-        if time.time() - start_time > scan_timeout_seconds:
+        if (cancel_event and cancel_event.is_set()) or time.time() - start_time > scan_timeout_seconds:
             if status_callback:
-                status_callback("扫描超时，已停止遍历。", len(flat_controls))
+                status_callback("扫描已中止或超时，已停止遍历。", len(flat_controls))
             break
 
         child_display_name = _build_display_name(
@@ -1382,6 +1666,7 @@ def _walk_wrapper(
             start_time=start_time,
             scan_timeout_seconds=scan_timeout_seconds,
             status_callback=status_callback,
+            cancel_event=cancel_event,
         )
         if child_node is not None:
             node["children"].append(child_node)
@@ -1535,6 +1820,7 @@ def _walk_raw_view_bfs(
     scan_timeout_seconds=30,
     status_callback=None,
     lightweight=False,
+    cancel_event=None,
 ):
     """使用 RawViewWalker 进行 BFS 树遍历，不丢失 IsContentElement=False 的控件。
 
@@ -1599,9 +1885,11 @@ def _walk_raw_view_bfs(
     last_report = 0
 
     while queue:
-        if time.time() - start_time > scan_timeout_seconds:
+        if (cancel_event and cancel_event.is_set()) or time.time() - start_time > scan_timeout_seconds:
             if status_callback:
-                status_callback("扫描超时，已停止遍历。", len(flat_controls))
+                status_callback("扫描已中止或超时，已停止遍历。", len(flat_controls))
+            if cancel_event and cancel_event.is_set():
+                stats["cancelled"] = True
             stats["timedOut"] = True
             break
 
@@ -1660,7 +1948,9 @@ def _walk_raw_view_bfs(
         try:
             child = raw_walker.GetFirstChildElement(element)
             while child:
-                if time.time() - start_time > scan_timeout_seconds:
+                if (cancel_event and cancel_event.is_set()) or time.time() - start_time > scan_timeout_seconds:
+                    if cancel_event and cancel_event.is_set():
+                        stats["cancelled"] = True
                     stats["timedOut"] = True
                     break
                 child_sib += 1
@@ -1700,6 +1990,9 @@ HOVER_SUPPLEMENT_TIMEOUT_SECONDS = 8
 # 采集层另由停顿门控约束（4 tick ≈ 0.6s），重操作触发频率与改前相当
 HOVER_TICK_MS = 150
 HOVER_STABLE_TICKS = 4
+# 位置级防重复：探测线程被 MUP 阻塞、无新鲜 key 时，距上次补采点过近则跳过，
+# 避免同一位置反复入队；worker 后台采集自会按 identity 去重合并（冗余无副作用）
+HOVER_REPEAT_DRIFT_PX = 8
 
 
 def _prefix_subtree_paths(sub_flats, ancestor_segments, base_depth=0):
@@ -2039,6 +2332,8 @@ def merge_supplement_into_payload(payload, sub_flats, target_window=None, status
                 if isinstance(definition, dict) and str(definition.get("id", "")).strip()
             }
             for item in new_items:
+                if not _should_include_definition(item):
+                    continue
                 definitions.append(_build_control_definition_from_flat(item, existing_ids))
 
     # ---- controlsTree 锚点替换：子树节点 flatIndex 重映射到合并后下标 ----
@@ -2747,6 +3042,15 @@ def _ensure_unique_control_id(control_definition, existing_ids):
     return control_definition
 
 
+def _should_include_definition(item):
+    """入库过滤：折叠进父级 TextBox 的 PART_ContentHost 不再单独入库。
+
+    它在 _normalize_textbox_wrappers 中已折叠（foldedIntoParent=True），
+    由父级 TextBox 替代，单独入库只会带来不唯一 automation_id 的冗余控件。
+    """
+    return isinstance(item, dict) and not item.get("foldedIntoParent")
+
+
 def _build_control_definition_from_flat(flat_item, existing_ids):
     inspect_data = dict(flat_item.get("inspectData", {}) or {})
     # 将关联/回填产物同步进 inspectData：运行时 label_text 候选与界面展示直接可用
@@ -2799,6 +3103,7 @@ def _build_control_definition_from_flat(flat_item, existing_ids):
         "isEnabled": flat_item.get("isEnabled"),
         "supportedPatterns": [str(p) for p in (flat_item.get("supportedPatterns") or []) if str(p).strip()],
         "helpText": str(flat_item.get("helpText", "")).strip(),
+        "functionText": str(flat_item.get("functionText", "")).strip(),
         # 标签伴随/关联元数据（流程编排可直接按关联标签定位输入控件）
         "relatedLabelName": str(flat_item.get("relatedLabelName", "")).strip(),
         "labelCompanion": bool(flat_item.get("labelCompanion")),
@@ -2820,6 +3125,15 @@ def _build_control_definition_from_flat(flat_item, existing_ids):
     tab_nav = flat_item.get("tabNavigation")
     if tab_nav:
         control_definition["tabNavigation"] = tab_nav
+    # 下拉框已采可选项：随控件定义一起入库，流程编辑可枚举、执行时键盘导航兜底选中
+    option_values = [
+        str(value).strip()
+        for value in (flat_item.get("optionValues") or inspect_data.get("optionValues") or [])
+        if str(value).strip()
+    ]
+    if option_values:
+        control_definition["optionValues"] = option_values
+        control_definition["optionCount"] = len(option_values)
     return _ensure_unique_control_id(control_definition, existing_ids)
 
 
@@ -3118,14 +3432,16 @@ def _nearest_option_ancestor(wrapper, max_up=5):
 
 
 def _realize_options_by_point_sweep(anchor_rect, backend="uia", desktop=None,
-                                    step=22, max_span=640, existing=None, diag=None):
+                                    step=22, max_span=640, existing=None, diag=None,
+                                    move_cursor=True, dwell_seconds=0.06, max_probes=10):
     """在锚点下拉按钮正下方按屏幕坐标做"命中点扫掠"，强制实体化并采集选项文本。
 
-    MTD 等 WPF 下拉框对选项列表启用 UI 虚拟化：选项节点只有在被 UIA 命中测试
-    （ElementFromPoint，即鼠标悬停到该处）时才实体化，普通子树遍历/顶层窗口枚举
-    都取不到。故用 Desktop.from_point 从按钮正下方逐行命中弹出区域，触发实体化后
-    读取可读文本。from_point 仅做命中测试，不移动物理鼠标、不提交选择，无副作用。
-    desktop 可注入以便测试。
+    MTD 等 WPF 下拉框对选项列表启用 UI 虚拟化：未实体化的选项节点在 UIA 树中不存在，
+    普通子树遍历/顶层窗口枚举都取不到，而 UIA ElementFromPoint 命中测试本身不会触发
+    WPF 实体化。故默认把物理鼠标移到每个候选位置并短暂停留，让 WPF 因真实鼠标悬停
+    而实体化该项，再经 Desktop.from_point 读取文本；扫完把鼠标复位。down 方向无果时
+    向上扫掠兜底（部分下拉框弹出层向上展开）。max_probes 限制每方向探测次数，避免
+    空弹出层下拉框拖长采集。desktop 可注入以便测试。
     """
     anchor = _normalize_rect_dict(anchor_rect)
     if not anchor:
@@ -3137,13 +3453,29 @@ def _realize_options_by_point_sweep(anchor_rect, backend="uia", desktop=None,
     if desktop is None or not hasattr(desktop, "from_point"):
         return []
     x = (anchor["left"] + anchor["right"]) // 2
-    y = anchor["bottom"] + 2
-    limit_y = anchor["bottom"] + max_span
+    original_pos = None
+    if move_cursor:
+        try:
+            pt = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(pt))
+            original_pos = (pt.x, pt.y)
+        except Exception:
+            original_pos = None
+
     seen = set(existing or [])
     ordered = []
     hits = 0
     misses = 0
-    while y <= limit_y and misses < 6:
+
+    def _probe(y):
+        nonlocal hits, misses
+        if move_cursor:
+            try:
+                user32.SetCursorPos(x, y)
+            except Exception:
+                pass
+            if dwell_seconds:
+                time.sleep(dwell_seconds)
         wrapper = _safe_get_value(lambda yy=y: desktop.from_point(x, yy), None)
         option = _nearest_option_ancestor(wrapper)
         text = _extract_option_text(option) if option is not None else ""
@@ -3156,8 +3488,30 @@ def _realize_options_by_point_sweep(anchor_rect, backend="uia", desktop=None,
         elif ordered:
             # 已进入选项列表后连续多次命中空白，视为已越过列表末尾，提前结束。
             misses += 1
-        y += step
+
+    def _sweep(y_start, y_end):
+        y = y_start
+        step_sign = step if y_end >= y_start else -step
+        probes = 0
+        while (y <= y_end if y_end >= y_start else y >= y_end) and misses < 6 and probes < max_probes:
+            _probe(y)
+            y += step_sign
+            probes += 1
+
+    try:
+        # 先向下扫（绝大多数下拉框弹出层在按钮正下方）。
+        _sweep(anchor["bottom"] + 2, anchor["bottom"] + max_span)
+        if not ordered:
+            _sweep(anchor["top"] - 2, anchor["top"] - max_span)
+    finally:
+        if move_cursor and original_pos is not None:
+            try:
+                user32.SetCursorPos(original_pos[0], original_pos[1])
+            except Exception:
+                pass
     if isinstance(diag, dict):
+        if move_cursor:
+            diag["pointSweepUsedCursor"] = True
         diag["pointSweepHits"] = hits
         diag["pointSweepOptionCount"] = len(ordered)
     return ordered
@@ -3217,16 +3571,26 @@ def _collect_options_from_popups(reference_wrapper, backend, diag=None, anchor_r
     return texts
 
 
-def _expand_dropdown_and_collect_options(wrapper, backend="uia", diag=None, anchor_rect=None):
+def _expand_dropdown_and_collect_options(wrapper, backend="uia", diag=None, anchor_rect=None,
+                                         move_cursor=True):
     """程序化展开下拉框、采集其可选项文本、再收回。仅在 live UIA 下有效。
 
     打开策略：ExpandCollapse -> Toggle -> Invoke（兼容 RadComboBox 与 PART_DropDownButton）。
     读取策略：ComboBox.item_texts -> 控件子树 -> 父级子树 -> 顶层 Popup 窗口 -> 命中点扫掠。
     任何异常都被吞掉并返回已采集到的部分，避免影响整体扫描。diag 可传入 dict 记录诊断过程。
+    move_cursor=False 时点扫掠只做 ElementFromPoint 命中测试、不物理移动鼠标（目标软件
+    对悬停布局敏感/会卡死时由界面开关关闭）。
     """
     if wrapper is None:
         return []
     expandable = _resolve_expandable_wrapper(wrapper)
+    # anchor_rect 缺失时（如 PART_DropDownButton 的 boundingBox 为空）从 live wrapper 现取，
+    # 否则点扫掠拿不到锚点会整段跳过，虚拟化下拉框的选项永远采不到。
+    if not anchor_rect:
+        anchor_rect = (
+            _rect_to_dict(_safe_get_value(lambda: wrapper.rectangle(), None))
+            or _rect_to_dict(_safe_get_value(lambda: expandable.rectangle(), None))
+        )
     options = []
     closer = None
     opened = False
@@ -3268,7 +3632,9 @@ def _expand_dropdown_and_collect_options(wrapper, backend="uia", diag=None, anch
         # 5) 命中点扫掠兑底（WPF 虚拟化：选项仅在被命中/悬停时实体化，前述遍历均取不到）。
         # 仅在前述步骤（1-4）均未取到结果时才运行，避免覆盖已成功获取的 options。
         if opened and anchor_rect and not options:
-            sweep_options = _realize_options_by_point_sweep(anchor_rect, backend, diag=diag)
+            sweep_options = _realize_options_by_point_sweep(
+                anchor_rect, backend, diag=diag, move_cursor=move_cursor
+            )
             if sweep_options:
                 options = sweep_options
                 stage = "point_sweep"
@@ -3291,19 +3657,26 @@ def _expand_dropdown_and_collect_options(wrapper, backend="uia", diag=None, anch
     return result
 
 
-def _expand_region_dropdowns(flat_controls, region_rect, backend="uia"):
+def _expand_region_dropdowns(flat_controls, region_rect, backend="uia",
+                             status_callback=None, move_cursor=True):
     """对画框区域内的下拉框逐个展开采集可选项，写入 optionValues，并返回诊断列表。
 
     该操作会真实展开/收回界面下拉框，仅在显式开启 expand_dropdowns 开关时调用。
     依赖 flat_controls 中临时保留的 _wrapperRef（live 包装器）。为避免展开远离画框
     区域的无关下拉框（如标签关联可能跨窗口命中），只对自身矩形与画框区域
-    实际相交的下拉框执行展开。
+    实际相交的下拉框执行展开。逐项经 status_callback 上报进度，避免该阶段在
+    UI 上长时间无反馈（此前整段静默，最小化时用户看不到任何进展）。
     """
     region_rect = _normalize_rect_dict(region_rect)
     diagnostics = []
-    for item in flat_controls:
-        if not isinstance(item, dict) or not _control_is_dropdown(item):
-            continue
+    dropdown_items = [
+        item for item in flat_controls
+        if isinstance(item, dict) and _control_is_dropdown(item)
+    ]
+    total = len(dropdown_items)
+    processed = 0
+    with_options = 0
+    for item in dropdown_items:
         wrapper = item.get("_wrapperRef")
         item_rect = _normalize_rect_dict(item.get("boundingBox"))
         if not region_rect:
@@ -3325,13 +3698,23 @@ def _expand_region_dropdowns(flat_controls, region_rect, backend="uia"):
             entry["note"] = "no_wrapper_ref"
             diagnostics.append(entry)
             continue
-        options = _expand_dropdown_and_collect_options(wrapper, backend, diag=entry, anchor_rect=item_rect)
+        processed += 1
+        options = _expand_dropdown_and_collect_options(
+            wrapper, backend, diag=entry, anchor_rect=item_rect, move_cursor=move_cursor
+        )
         if options:
             item["optionValues"] = options
             item["optionCount"] = len(options)
+            with_options += 1
             inspect_data = item.get("inspectData")
             if isinstance(inspect_data, dict):
                 inspect_data["optionValues"] = options
+        # 在采完该项后上报，让浮窗能实时看到"已采到选项的下拉框数"在累积
+        # （选项存于 optionValues、不增加控件总数，仅报 (n/total) 会让人误以为没采到）。
+        if status_callback and total:
+            status_callback(
+                f"自动展开下拉框采选项 ({processed}/{total})，已采 {with_options} 组",
+                len(flat_controls))
         diagnostics.append(entry)
     return diagnostics
 
@@ -3702,6 +4085,54 @@ _INPUT_CLASS_NAME_HINTS = (
 )
 
 
+def _find_textbox_ancestor(item, by_index, max_depth=12):
+    """沿 parentIndex 祖先链向上找 className 含 textbox 的父级 TextBox（多层）。
+
+    PART_ContentHost 常隔着 ScrollViewer 等中间层才到 TextBox，不能只看直接父级。
+    返回 (textbox_item, parent_index) 或 (None, None)。
+    """
+    parent_idx = item.get("parentIndex")
+    if parent_idx is None:
+        return None, None
+    current_idx = parent_idx
+    for _ in range(max_depth):
+        parent = by_index.get(current_idx)
+        if parent is None:
+            return None, None
+        parent_class = str(parent.get("className", "")).strip().lower()
+        if any(hint in parent_class for hint in ("textbox", "passwordbox", "richtextbox")):
+            return parent, current_idx
+        next_idx = parent.get("parentIndex")
+        if next_idx is None or next_idx == current_idx:
+            return None, None
+        current_idx = next_idx
+    return None, None
+
+
+def _find_overlapping_textbox(item, flat_controls):
+    """按位置重叠匹配同位置的 TextBox 控件（祖先链找不到父级 TextBox 时的兜底）。
+
+    同一输入框的 PART_ContentHost 与父级 TextBox 位置几乎完全重合，
+    据此将二者关联为一个输入框。返回 (textbox_item, textbox_index) 或 (None, None)。
+    """
+    item_rect = _normalize_rect_dict(item.get("boundingBox"))
+    if not item_rect:
+        return None, None
+    for index, other in enumerate(flat_controls):
+        if other is item or not isinstance(other, dict):
+            continue
+        if str(other.get("automationId", "")).strip() == "PART_ContentHost":
+            continue
+        other_class = str(other.get("className", "")).strip().lower()
+        if not any(hint in other_class for hint in ("textbox", "passwordbox", "richtextbox")):
+            continue
+        other_rect = _normalize_rect_dict(other.get("boundingBox"))
+        if not other_rect or not _rect_intersects(item_rect, other_rect):
+            continue
+        return other, index
+    return None, None
+
+
 def _normalize_textbox_wrappers(flat_controls):
     """识别 WPF TextBox/PasswordBox 控件并修正其 controlType 为 Edit。
 
@@ -3747,23 +4178,22 @@ def _normalize_textbox_wrappers(flat_controls):
         # 情况 2：PART_ContentHost — WPF TextBox 内部 ScrollViewer，
         # IsContentElement=False，UIA tree walker 可跳过；from_point 可命中。
         # 要向上找到父级 TextBox 并交换身份。
-        if automation_id == "PART_ContentHost" and control_type in ("pane", "custom"):
-            # 查找父级 TextBox
-            parent_idx = item.get("parentIndex")
-            textbox_parent = None
-            if parent_idx is not None and parent_idx in by_index:
-                parent = by_index[parent_idx]
-                parent_class = str(parent.get("className", "")).strip().lower()
-                if parent_class in ("textbox", "passwordbox", "richtextbox"):
-                    textbox_parent = parent
-                    # 父级是真正的 TextBox，规范化其 controlType
-                    if str(parent.get("controlType", "")).strip().lower() in ("custom", "pane", "group"):
-                        parent["controlType"] = "Edit"
-                        parent["controlTypeSource"] = "normalized-from-contenthost"
-                        inspect_p = parent.get("inspectData")
-                        if isinstance(inspect_p, dict):
-                            inspect_p["controlType"] = "Edit"
+        if automation_id == "PART_ContentHost" and not item.get("foldedIntoParent"):
+            # 沿祖先链向上找父级 TextBox（可能隔着 ScrollViewer 等中间层）；
+            # 祖先链找不到时，按位置重叠匹配同位置的 TextBox 控件。
+            # 合并后 PART_ContentHost 的 controlType 可能已是 Edit（被前置规范化/提升），
+            # 不再限定 pane/custom，只要 aid 是 PART_ContentHost 且未折叠就尝试折叠。
+            textbox_parent, parent_idx = _find_textbox_ancestor(item, by_index)
+            if textbox_parent is None:
+                textbox_parent, parent_idx = _find_overlapping_textbox(item, flat_controls)
             if textbox_parent is not None:
+                # 父级是真正的 TextBox，规范化其 controlType
+                if str(textbox_parent.get("controlType", "")).strip().lower() in ("custom", "pane", "group"):
+                    textbox_parent["controlType"] = "Edit"
+                    textbox_parent["controlTypeSource"] = "normalized-from-contenthost"
+                    inspect_p = textbox_parent.get("inspectData")
+                    if isinstance(inspect_p, dict):
+                        inspect_p["controlType"] = "Edit"
                 # 折叠 PART_ContentHost 自身 — 它不应作为独立控件被定位/操作
                 item["foldedIntoParent"] = True
                 item["qualityTier"] = "建议忽略"
@@ -4135,6 +4565,31 @@ def _locator_identity(item):
     return str(id(item))
 
 
+def _extract_panel_title(item, flat_controls):
+    """提取控件所在面板容器的标题 Text（如 interest-area 面板的"测风点"/"结果点"）。
+
+    模板复制控件（同 automationId/name/uiPath，只有位置不同）之间唯一稳定的
+    语义差异是所在面板标题，用作 label_text 消歧与运行时定位键。
+    提取失败返回空串。
+    """
+    parent_index = item.get("parentIndex", None)
+    if parent_index is None or not isinstance(flat_controls, list):
+        return ""
+    if not (0 <= parent_index < len(flat_controls)):
+        return ""
+    for sibling in flat_controls:
+        if sibling is item or sibling.get("parentIndex", None) != parent_index:
+            continue
+        if sibling.get("controlType", "") not in ("Text", "TextBlock", "Static", "Label"):
+            continue
+        text = str(sibling.get("name", "") or "").strip()
+        # 跳过 SVG path（"M3,17.25L3,21..."）等非标题长文本
+        if not text or "," in text[:30] or len(text) > 30:
+            continue
+        return text
+    return ""
+
+
 def _disambiguate_duplicate_locators(flat_controls):
     """全局唯一性后处理：多个不同控件若共用同一 recommendedTargetValue（如
     "访问级别下拉框"和"性质下拉框"两个 PART_DropDownButton 都得到
@@ -4163,7 +4618,23 @@ def _disambiguate_duplicate_locators(flat_controls):
             distinct.append(member)
         if len(distinct) < 2:
             continue
-        # 优先 label_text 消歧：组内成员各有互不相同的关联标签文本（标签伴随/
+        # 优先 name 消歧：组内成员 name（按钮文本/控件名）各不相同时，用 name 消歧。
+        # name 匹配（get_wrapper_text）比 label_text 快——label_text 匹配要遍历窗口找标签。
+        name_members = {}
+        for member in distinct:
+            nm = str(member.get("name", "") or member.get("suggestedControlName", "") or member.get("displayName", "")).strip()
+            if not nm or "," in nm or nm in name_members:
+                name_members = {}
+                break
+            name_members[nm] = member
+        if len(name_members) >= 2:
+            for nm, member in name_members.items():
+                member["recommendedTargetMethod"] = method + ",name"
+                member["recommendedTargetValue"] = value + "," + nm
+                reason = str(member.get("locatorReason", "")).strip()
+                member["locatorReason"] = (reason + " + name消歧").strip(" +")
+            continue
+        # 其次 label_text 消歧：组内成员各有互不相同的关联标签文本（标签伴随/
         # 区域关联产物）时，用标签文本消歧比 found_index 更抗布局与顺序变动。
         label_text_members = {}
         for member in distinct:
@@ -4178,6 +4649,25 @@ def _disambiguate_duplicate_locators(flat_controls):
                 member["recommendedTargetValue"] = value + "," + lt
                 reason = str(member.get("locatorReason", "")).strip()
                 member["locatorReason"] = (reason + " + label_text消歧").strip(" +")
+            continue
+        # 面板标题消歧：模板复制控件（同 automationId/name/uiPath，如各 interest-area
+        # 面板的图标按钮）无法用 name/label_text/found_index 区分时，其所在面板标题
+        # Text（"测风点"/"结果点"等）互不相同，用面板标题作 label_text 消歧。
+        # 运行时 wrapper_matches_label_text 按父容器内兄弟 Text 匹配。
+        panel_title_members = {}
+        for member in distinct:
+            pt = _extract_panel_title(member, flat_controls)
+            if not pt or "," in pt or pt in panel_title_members:
+                panel_title_members = {}
+                break
+            panel_title_members[pt] = member
+        if len(panel_title_members) >= 2:
+            for pt, member in panel_title_members.items():
+                member["labelText"] = pt
+                member["recommendedTargetMethod"] = method + ",label_text"
+                member["recommendedTargetValue"] = value + "," + pt
+                reason = str(member.get("locatorReason", "")).strip()
+                member["locatorReason"] = (reason + " + 面板标题消歧").strip(" +")
             continue
         scope_method = _locator_scope_method(method)
         if not scope_method:
@@ -4196,6 +4686,25 @@ def _disambiguate_duplicate_locators(flat_controls):
             member["recommendedTargetValue"] = value + "," + str(found_index)
             reason = str(member.get("locatorReason", "")).strip()
             member["locatorReason"] = (reason + " + found_index消歧").strip(" +")
+    # 功能名消歧增强：对已消歧（name/label_text/found_index）成员追加 help_text 分量。
+    # helpText 是控件自身 UIA 属性，运行时直接从属性读取比对，比父容器兄弟 Text 查找
+    # 更抗树结构变化，与面板标题（label_text）组合成双保险精确定位器。
+    # functionText 为空或含逗号（破坏 locator 逗号分隔）时跳过；已有 help_text 不重复追加。
+    disambiguated_parts = {"name", "label_text", "found_index"}
+    for member in flat_controls:
+        if not isinstance(member, dict):
+            continue
+        member_method = str(member.get("recommendedTargetMethod", "")).strip()
+        method_parts = {part.strip() for part in member_method.split(",")}
+        if "help_text" in method_parts or not (method_parts & disambiguated_parts):
+            continue
+        function_text = str(member.get("functionText", "")).strip()
+        if not function_text or "," in function_text:
+            continue
+        member["recommendedTargetMethod"] = member_method + ",help_text"
+        member["recommendedTargetValue"] = str(member.get("recommendedTargetValue", "")).strip() + "," + function_text
+        reason = str(member.get("locatorReason", "")).strip()
+        member["locatorReason"] = (reason + " + 功能名消歧").strip(" +")
 
 
 def _merge_flat_controls(*groups):
@@ -4221,7 +4730,16 @@ def _build_control_group_key(flat_control):
     target_method = str(flat_control.get("recommendedTargetMethod", "")).strip()
     target_value = str(flat_control.get("recommendedTargetValue", "")).strip()
     if target_method and target_value:
-        return f"locator|{target_method}|{target_value}"
+        key = f"locator|{target_method}|{target_value}"
+        # 模板复制控件（同一 WPF 模板多次实例化，如各 interest-area 面板的
+        # InterestAreas_Button_Edit/Delete 等）的 automationId/name/uiPath 完全相同，
+        # 只有位置不同；追加归一化 rect 让不同实例在分组/保存去重中不被误并为一个，
+        # 否则非全选保存时每组只保留一个，其它面板/位置的按钮会静默丢失。
+        if str(flat_control.get("automationId", "")).strip():
+            rect = _normalize_rect_dict(flat_control.get("boundingBox"))
+            if rect:
+                key += f"|rect:{rect['left']},{rect['top']},{rect['right']},{rect['bottom']}"
+        return key
     automation_id = str(flat_control.get("automationId", "")).strip()
     control_type = str(flat_control.get("controlType", "")).strip()
     class_name = str(flat_control.get("className", "")).strip()
@@ -4535,6 +5053,8 @@ def _scan_single_backend_payload(
     scan_timeout_seconds=30,
     expand_dropdowns=False,
     status_callback=None,
+    cancel_event=None,
+    move_cursor=True,
 ):
     start_time = time.time()
     if status_callback:
@@ -4612,6 +5132,7 @@ def _scan_single_backend_payload(
                 start_time=start_time,
                 scan_timeout_seconds=bfs_timeout,
                 status_callback=status_callback,
+                cancel_event=cancel_event,
             )
         except Exception:
             if status_callback:
@@ -4629,24 +5150,29 @@ def _scan_single_backend_payload(
             start_time=start_time,
             scan_timeout_seconds=scan_timeout_seconds,
             status_callback=status_callback,
+            cancel_event=cancel_event,
         )
     # 树结构元数据增强 + 重建嵌套控件树（在全部采集与探针补采完成后统一执行，
     # 确保所有 flat_controls 条目都获得 pathHash / childCount / isTransparentContainer，
     # 且 controlsTree 包含探针补采的新条目）。
     # 注意：_enrich_tree_metadata 和 _build_tree_from_flat 延后到全部补采完成后执行。
     seen_identities = {_build_flat_control_identity(item) for item in flat_controls}
-    _collect_region_probe_wrappers(
-        backend,
-        region_rect,
-        target_window,
-        flat_controls,
-        seen_identities,
-        root_handle=root_handle,
-        max_depth=max_depth,
-    )
+    # 用户中止后不再执行任何补采（尤其 uia_tree_dumper 会启动子进程），
+    # 仅返回已采集到的部分结果。
+    scan_cancelled = bool(cancel_event and cancel_event.is_set())
+    if not scan_cancelled:
+        _collect_region_probe_wrappers(
+            backend,
+            region_rect,
+            target_window,
+            flat_controls,
+            seen_identities,
+            root_handle=root_handle,
+            max_depth=max_depth,
+        )
     # 整树采集时借鉴画框采集的网格探针：对整个窗口矩形做 from_point 采样，
     # 补采纯树遍历漏掉的虚拟化/离屏控件。
-    if is_fulltree:
+    if is_fulltree and not scan_cancelled:
         _collect_fulltree_probe_wrappers(
             backend,
             target_window,
@@ -4671,17 +5197,18 @@ def _scan_single_backend_payload(
         )
     # 标签伴随采集：保证每个已采集标签对应的输入/操作控件也被采到（树采集+画框采集通用）。
     # 放在 _enrich_tree_metadata 之前，使补采条目同样获得 pathHash 等树元数据。
-    _collect_label_companion_wrappers(
-        backend,
-        target_window,
-        flat_controls,
-        seen_identities,
-        root_handle=root_handle,
-        max_depth=max_depth,
-        start_time=start_time,
-        scan_timeout_seconds=scan_timeout_seconds,
-        status_callback=status_callback,
-    )
+    if not scan_cancelled:
+        _collect_label_companion_wrappers(
+            backend,
+            target_window,
+            flat_controls,
+            seen_identities,
+            root_handle=root_handle,
+            max_depth=max_depth,
+            start_time=start_time,
+            scan_timeout_seconds=scan_timeout_seconds,
+            status_callback=status_callback,
+        )
     # ---- 全部采集与补采完成，统一增强元数据并重建控件树 ----
     _enrich_tree_metadata(flat_controls)
     control_tree = _build_tree_from_flat(flat_controls)
@@ -4702,7 +5229,10 @@ def _scan_single_backend_payload(
     # 可选：自动展开区域内下拉框，采集其可选项（会真实操作界面，默认关闭）。
     dropdown_diagnostics = []
     if expand_dropdowns:
-        dropdown_diagnostics = _expand_region_dropdowns(flat_controls, region_rect, backend)
+        dropdown_diagnostics = _expand_region_dropdowns(
+            flat_controls, region_rect, backend,
+            status_callback=status_callback, move_cursor=move_cursor,
+        )
     # 采集阶段结束，剥离临时 live 包装器引用，避免序列化失败与 COM 引用滞留。
     for item in flat_controls:
         item.pop("_wrapperRef", None)
@@ -4726,7 +5256,11 @@ def _scan_single_backend_payload(
     _disambiguate_duplicate_locators(region_controls)
     for item in region_controls:
         item.pop("_wrapperIdentity", None)
-    control_definitions = [_build_control_definition_from_flat(item, existing_ids) for item in region_controls]
+    control_definitions = [
+        _build_control_definition_from_flat(item, existing_ids)
+        for item in region_controls
+        if _should_include_definition(item)
+    ]
     by_type = {}
     for item in region_controls:
         control_type = str(item.get("controlType", "")).strip() or "Unknown"
@@ -4752,15 +5286,19 @@ def _scan_single_backend_payload(
         "dropdownExpandDiagnostics": dropdown_diagnostics,
         "fullTreeRelaxation": fulltree_relaxation,
     }
-    # 采集截断可见性：超时/元素熔断会静默漏采后续元素，必须显式记录，
+    # 采集截断可见性：超时/元素熔断/用户中止会静默漏采后续元素，必须显式记录，
     # 提醒用户对缺失区域使用悬停跟踪/定点补采。
-    if bfs_stats.get("timedOut") or bfs_stats.get("hitLimit"):
-        scan_meta["truncation"] = {
+    if bfs_stats.get("timedOut") or bfs_stats.get("hitLimit") or scan_cancelled:
+        truncation = {
             "bfsTimedOut": bool(bfs_stats.get("timedOut")),
             "bfsHitElementLimit": bool(bfs_stats.get("hitLimit")),
             "elementLimit": _MAX_ELEMENTS_PER_WALK,
             "hint": "整树采集被截断，结果可能不全；请对缺失区域使用悬停跟踪/定点补采。",
         }
+        if scan_cancelled:
+            truncation["cancelled"] = True
+            truncation["hint"] = "扫描已被用户中止，结果不完整；可重新采集。"
+        scan_meta["truncation"] = truncation
 
     return {
         "schemaVersion": "1.0",
@@ -4786,6 +5324,8 @@ def build_control_map_payload(
     scan_timeout_seconds=30,
     expand_dropdowns=False,
     status_callback=None,
+    cancel_event=None,
+    move_cursor=True,
 ):
     requested_backend = str(backend or DEFAULT_BACKEND).strip().lower() or DEFAULT_BACKEND
     backend_candidates = _expand_backend_candidates(requested_backend)
@@ -4805,6 +5345,8 @@ def build_control_map_payload(
                 scan_timeout_seconds=scan_timeout_seconds,
                 expand_dropdowns=expand_dropdowns,
                 status_callback=status_callback,
+                cancel_event=cancel_event,
+                move_cursor=move_cursor,
             )
         )
 
@@ -4830,6 +5372,7 @@ def build_control_map_payload(
                         scan_timeout_seconds=scan_timeout_seconds,
                         expand_dropdowns=expand_dropdowns,
                         status_callback=status_callback,
+                        cancel_event=cancel_event,
                     )
                 )
             except Exception:
@@ -4849,7 +5392,11 @@ def build_control_map_payload(
     _backfill_sibling_label_for_inputs(merged_controls)
     _backfill_label_text_to_controls(merged_controls)
     existing_ids = set()
-    merged_definitions = [_build_control_definition_from_flat(item, existing_ids) for item in merged_controls]
+    merged_definitions = [
+        _build_control_definition_from_flat(item, existing_ids)
+        for item in merged_controls
+        if _should_include_definition(item)
+    ]
     by_type = {}
     for item in merged_controls:
         control_type = str(item.get("controlType", "")).strip() or "Unknown"
@@ -4928,6 +5475,7 @@ class _PersistentHighlight:
         self._parent = parent
         self._overlay = None  # Tk Toplevel，延迟创建
         self._canvas = None   # Canvas 控件，延迟创建
+        self.last_rect = None  # 当前显示的高亮矩形 (left, top, right, bottom)，None=未显示
 
     def _ensure_overlay(self):
         """懒创建 overlay 窗口（首次调用时）。"""
@@ -4974,6 +5522,7 @@ class _PersistentHighlight:
         except Exception:
             return
 
+        self.last_rect = (left, top, right, bottom)
         self._ensure_overlay()
         if self._overlay is None:
             return
@@ -5000,6 +5549,7 @@ class _PersistentHighlight:
 
     def hide(self):
         """隐藏高亮框（不销毁，可再次 show）。"""
+        self.last_rect = None
         if self._overlay is not None:
             try:
                 self._overlay.withdraw()
@@ -5109,6 +5659,8 @@ class ControlMapBuilderApp:
         self.var_exclude_offscreen = tk.BooleanVar(value=True)
         self.var_exclude_unidentified = tk.BooleanVar(value=True)
         self.var_expand_dropdowns = tk.BooleanVar(value=False)
+        # 点扫掠实体化选项时是否物理移动鼠标悬停（MUP 对悬停布局敏感会卡死时取消勾选）
+        self.var_move_cursor = tk.BooleanVar(value=True)
         self.var_status = tk.StringVar(value='准备就绪：建议先切到目标软件窗口，再点击"一键整树采集并保存"。')
         self.var_summary = tk.StringVar(value="尚未扫描控件树。")
         self.current_payload = None
@@ -5120,12 +5672,21 @@ class ControlMapBuilderApp:
         self.var_saved_control_name = tk.StringVar(value="")
         self.var_saved_control_id = tk.StringVar(value="")
         self.var_scan_progress = tk.StringVar(value="")
+        # 保存后自动合并入库：勾选时保存成功即触发全量 recordings → 总控件库（含备份）
+        self.var_auto_merge = tk.BooleanVar(value=True)
+        # 扫描后台线程状态：防重入 + 中止标志 + 中止按钮引用 + 扫描期间禁用的按钮
+        self._scan_running = False
+        self._scan_cancel_event = None
+        self._scan_cancel_btn = None
+        self._scan_disabled_widgets = []
         # 定点补采：命中元素后沿祖先链上溯的层数（人工指到叶子时扩大补采范围）
         self.var_supplement_climb = tk.IntVar(value=1)
         # 层级树视图 iid → 树节点映射（选中预览与补采锚定用）；iid 用单调递增序号，
         # 增量插入/删除后也不会撞号
         self._hierarchy_nodes_by_iid = {}
         self._hierarchy_iid_seq = 0
+        # 树节点 index → flat 条目映射（层级树展示名回退，刷新时重建）
+        self._hierarchy_flat_by_index = {}
         # 补采选中控件时暂存的期望 identity
         self._pending_supplement_expected = None
         # 连续悬停跟踪补采（Inspect 式）运行状态
@@ -5135,8 +5696,12 @@ class ControlMapBuilderApp:
         self._hover_last_pos = None
         self._hover_stable_count = 0
         self._hover_last_hit_key = ""
+        # 最近一次"新鲜命中"的光标位置：overlay 跳过重探测的参考点（见 _hover_probe_once）
+        self._hover_last_fresh_xy = None
         # 采集层去重：本轮已入队补采过的元素 key（与查看层 last_hit_key 分离）
         self._hover_last_collect_key = ""
+        # 位置级防重复：探测被阻塞无新鲜 key 时，距上次补采点过近则跳过入队
+        self._hover_last_collect_pos = None
         # 当前悬停元素在 flatControls 中的下标缓存（None=不在库中）
         self._hover_existing_index = None
         self._hover_session_added = 0
@@ -5158,50 +5723,102 @@ class ControlMapBuilderApp:
         self._worker_queue = queue.Queue()
         self._worker_busy = False  # 防重入标志：上一个任务未完成时为 True
         self._worker_thread = None  # 当前运行的 worker 线程
+        # ---- 悬停命中探测线程（把 from_point 从主线程挪走，杜绝 UI 卡死）----
+        # 设计原因：_probe_hover_hit_key 的 UIA COM 调用无超时，MUP 忙/卡时单次
+        # 可阻塞主线程数秒，整窗"未响应"。探测挪到独立线程后，主线程每个 tick
+        # 只读最新探测结果，永不阻塞；命中跟随延迟约 1 tick。
+        self._probe_thread = None
+        self._probe_stop = threading.Event()  # 停止信号，_stop_probe_thread 时置位
+        self._probe_wake = threading.Event()
+        self._probe_req_lock = threading.Lock()
+        self._probe_request = None  # 主线程请求探测的 (x, y, submit_ts)，单槽取最新
+        self._probe_result = (None, None, None, None, "")  # 探测线程最新完成 (x, y, key, rect, pid)
+        self._probe_result_latency_ms = 0.0  # 最近一次探测自身的耗时（线程内度量），供慢 tick 日志
+        self._hover_last_pid = ""  # 最近命中元素的进程 pid（放行补采用）
 
+        self._apply_theme()
         self._build_ui()
 
         # 任务栏进度条（采集期间显示进度）
         self._taskbar_progress = _TaskbarProgress(self.root)
+        # 置顶迷你进度浮窗（采集时主窗口常最小化，实时反馈进度与结果）
+        self._scan_progress_overlay = _ScanProgressOverlay(self.root)
+
+    def _apply_theme(self):
+        root = self.root
+        root.configure(bg=CONTROL_MAP_THEME["bg"])
+        root.option_add("*Font", CONTROL_MAP_THEME["font"])
+        root.option_add("*TCombobox*Listbox*Font", CONTROL_MAP_THEME["font"])
+        root.option_add("*Entry*Font", CONTROL_MAP_THEME["font"])
+        root.option_add("*Spinbox*Font", CONTROL_MAP_THEME["font"])
+        root.option_add("*Checkbutton*Font", CONTROL_MAP_THEME["font"])
+        root.option_add("*Radiobutton*Font", CONTROL_MAP_THEME["font"])
+
+        style = ttk.Style(root)
+        style.configure("ControlMap.TCombobox", fieldbackground=CONTROL_MAP_THEME["panel"],
+                        background=CONTROL_MAP_THEME["panel"], foreground=CONTROL_MAP_THEME["text"],
+                        arrowcolor=CONTROL_MAP_THEME["primary"], bordercolor=CONTROL_MAP_THEME["border"])
+        style.map("ControlMap.TCombobox", fieldbackground=[("readonly", CONTROL_MAP_THEME["panel_soft"])])
+        style.configure("ControlMap.Treeview", background=CONTROL_MAP_THEME["panel"],
+                        fieldbackground=CONTROL_MAP_THEME["panel"], foreground=CONTROL_MAP_THEME["text"],
+                        borderwidth=1, relief="solid", rowheight=28)
+        style.map("ControlMap.Treeview",
+                  background=[("selected", CONTROL_MAP_THEME["primary_soft"])],
+                  foreground=[("selected", CONTROL_MAP_THEME["primary"])])
+        style.configure("ControlMap.Treeview.Heading", background=CONTROL_MAP_THEME["toolbar"],
+                        foreground=CONTROL_MAP_THEME["text"], relief="flat", padding=(8, 6),
+                        font=(CONTROL_MAP_THEME["font"][0], 10, "bold"))
+        style.map("ControlMap.Treeview.Heading", background=[("active", CONTROL_MAP_THEME["border"])])
+        style.configure("ControlMap.Vertical.TScrollbar", background=CONTROL_MAP_THEME["panel_soft"],
+                        troughcolor=CONTROL_MAP_THEME["bg"], bordercolor=CONTROL_MAP_THEME["border"],
+                        arrowcolor=CONTROL_MAP_THEME["muted"], relief="flat")
+        style.configure("ControlMap.Horizontal.TScrollbar", background=CONTROL_MAP_THEME["panel_soft"],
+                        troughcolor=CONTROL_MAP_THEME["bg"], bordercolor=CONTROL_MAP_THEME["border"],
+                        arrowcolor=CONTROL_MAP_THEME["muted"], relief="flat")
 
     def _build_ui(self):
-        toolbar = tk.LabelFrame(self.root, text="扫描配置", padx=10, pady=10)
+        toolbar = tk.LabelFrame(self.root, text="扫描配置", padx=10, pady=10,
+                               bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"],
+                               relief="flat", bd=1, highlightthickness=1,
+                               highlightbackground=CONTROL_MAP_THEME["border"],
+                               font=(CONTROL_MAP_THEME["font"][0], 11, "bold"))
         toolbar.pack(fill=tk.X, padx=10, pady=10)
 
         tk.Radiobutton(toolbar, text="当前前台窗口", variable=self.var_scan_mode, value="foreground").grid(row=0, column=0, sticky="w")
         tk.Radiobutton(toolbar, text="按标题关键字", variable=self.var_scan_mode, value="keyword").grid(row=0, column=1, sticky="w")
-        tk.Label(toolbar, text="窗口关键字").grid(row=0, column=2, sticky="e", padx=(10, 4))
+        tk.Label(toolbar, text="窗口关键字", bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"]).grid(row=0, column=2, sticky="e", padx=(10, 4))
         tk.Entry(toolbar, textvariable=self.var_window_keyword, width=28).grid(row=0, column=3, sticky="ew")
-        tk.Label(toolbar, text="backend").grid(row=0, column=4, sticky="e", padx=(10, 4))
-        ttk.Combobox(toolbar, textvariable=self.var_backend, values=BACKEND_OPTIONS, width=8, state="readonly").grid(row=0, column=5, sticky="w")
-        tk.Label(toolbar, text="最大深度").grid(row=0, column=6, sticky="e", padx=(10, 4))
+        tk.Label(toolbar, text="backend", bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"]).grid(row=0, column=4, sticky="e", padx=(10, 4))
+        ttk.Combobox(toolbar, textvariable=self.var_backend, values=BACKEND_OPTIONS, width=8, state="readonly", style="ControlMap.TCombobox").grid(row=0, column=5, sticky="w")
+        tk.Label(toolbar, text="最大深度", bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"]).grid(row=0, column=6, sticky="e", padx=(10, 4))
         tk.Spinbox(toolbar, from_=0, to=40, textvariable=self.var_max_depth, width=6).grid(row=0, column=7, sticky="w")
-        tk.Label(toolbar, text="画框延迟").grid(row=0, column=8, sticky="e", padx=(10, 4))
+        tk.Label(toolbar, text="画框延迟", bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"]).grid(row=0, column=8, sticky="e", padx=(10, 4))
         tk.Spinbox(toolbar, from_=1, to=10, textvariable=self.var_pick_delay, width=6).grid(row=0, column=9, sticky="w")
         toolbar.columnconfigure(3, weight=1)
 
-        filter_row = tk.Frame(toolbar)
-        filter_row.grid(row=2, column=0, columnspan=10, sticky="w", pady=(6, 0))
+        filter_row = tk.Frame(toolbar, bg=CONTROL_MAP_THEME["toolbar"])
+        filter_row.grid(row=3, column=0, columnspan=10, sticky="w", pady=(6, 0))
         tk.Checkbutton(filter_row, text="过滤离屏控件", variable=self.var_exclude_offscreen).pack(side=tk.LEFT, padx=(0, 12))
         tk.Checkbutton(filter_row, text="过滤无标识容器", variable=self.var_exclude_unidentified).pack(side=tk.LEFT, padx=(0, 12))
         tk.Checkbutton(filter_row, text="自动展开下拉框采选项", variable=self.var_expand_dropdowns).pack(side=tk.LEFT, padx=(0, 12))
-        tk.Label(filter_row, text="(勾选后采集时自动展开区域内下拉框读取可选项再收回，会真实操作界面，需目标软件处于可交互状态)", fg="#6b7280").pack(side=tk.LEFT)
+        tk.Checkbutton(filter_row, text="移动鼠标实体化选项", variable=self.var_move_cursor).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Label(filter_row, text="(勾选后采集时自动展开区域内下拉框读取可选项再收回，会真实操作界面，需目标软件处于可交互状态；MUP 扫描时卡死请取消\"移动鼠标实体化选项\")", fg=CONTROL_MAP_THEME["muted"]).pack(side=tk.LEFT)
 
-        hint_row = tk.Frame(toolbar)
-        hint_row.grid(row=3, column=0, columnspan=10, sticky="w", pady=(4, 0))
+        hint_row = tk.Frame(toolbar, bg=CONTROL_MAP_THEME["toolbar"])
+        hint_row.grid(row=4, column=0, columnspan=10, sticky="w", pady=(4, 0))
         tk.Label(
             hint_row,
             text=(
                 "整树采集会自动放宽过滤：保留离屏控件与无标识容器、深度至少提升到 "
                 f"{FULLTREE_MIN_DEPTH} 层，并对整窗做网格探针补采（上方过滤开关仅对画框采集生效）。"
             ),
-            fg="#2563eb",
+            fg=CONTROL_MAP_THEME["primary"],
         ).pack(side=tk.LEFT)
 
-        supplement_row = tk.Frame(toolbar)
-        supplement_row.grid(row=4, column=0, columnspan=10, sticky="w", pady=(6, 0))
+        supplement_row = tk.Frame(toolbar, bg=CONTROL_MAP_THEME["toolbar"])
+        supplement_row.grid(row=5, column=0, columnspan=10, sticky="w", pady=(6, 0))
         self.btn_hover_supplement = tk.Button(
-            supplement_row, text="🔴 悬停跟踪补采", command=self.cmd_toggle_hover_supplement, bg="#fca5a5"
+            supplement_row, text="🔴 悬停跟踪补采", command=self.cmd_toggle_hover_supplement, bg=CONTROL_MAP_THEME["danger_soft"]
         )
         self.btn_hover_supplement.pack(side=tk.LEFT, padx=(0, 3))
         # "只看不采"模式开关：开启后悬停仅高亮跟随，不触发补采写库（默认关闭，保持原有行为）
@@ -5212,66 +5829,92 @@ class ControlMapBuilderApp:
             variable=self.var_look_only,
             command=self._on_look_only_toggle,
         ).pack(side=tk.LEFT, padx=(0, 3))
-        tk.Button(supplement_row, text="🎯 定点补采子树", command=self.cmd_point_supplement, bg="#fde68a").pack(side=tk.LEFT, padx=3)
-        tk.Button(supplement_row, text="🌱 补采选中控件", command=self.cmd_selected_supplement, bg="#fde68a").pack(side=tk.LEFT, padx=3)
+        tk.Button(supplement_row, text="🎯 定点补采子树", command=self.cmd_point_supplement, bg=CONTROL_MAP_THEME["warning_soft"]).pack(side=tk.LEFT, padx=3)
+        tk.Button(supplement_row, text="🌱 补采选中控件", command=self.cmd_selected_supplement, bg=CONTROL_MAP_THEME["warning_soft"]).pack(side=tk.LEFT, padx=3)
         tk.Label(supplement_row, text="上溯层级").pack(side=tk.LEFT, padx=(10, 2))
         tk.Spinbox(supplement_row, from_=0, to=8, textvariable=self.var_supplement_climb, width=4).pack(side=tk.LEFT)
         tk.Label(
             supplement_row,
             text="(Inspect 式跟踪：开启后鼠标悬停到哪里就实时补采哪里的子树并同步定位层级树；Esc 或再次点击停止；虚拟化控件需先在目标软件里展开；F6 冻结/解冻，F7 采集入库，Ctrl+Shift+方向键导航)",
-            fg="#92400e",
+            fg=CONTROL_MAP_THEME["warning"],
         ).pack(side=tk.LEFT, padx=(10, 0))
 
-        button_row = tk.Frame(toolbar)
-        button_row.grid(row=1, column=0, columnspan=10, sticky="ew", pady=(10, 0))
-        tk.Button(button_row, text="一键整树采集并保存", command=self.cmd_scan_and_save, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="整树采集预览", command=self.cmd_scan_preview).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="画框区域采集并保存", command=self.cmd_region_scan_and_save, bg="#bfdbfe").pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="画框区域预览", command=self.cmd_region_scan_preview, bg="#bfdbfe").pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="智能勾选", command=self.cmd_smart_check_results).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="全选结果", command=self.cmd_check_all_results).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="清空勾选", command=self.cmd_clear_checked_results).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="🗑 清空当前结果", command=self.cmd_clear_current_payload, bg="#fee2e2").pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="保存当前结果", command=self.cmd_save_current_payload).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="打开控件库目录", command=self.cmd_open_control_map_dir).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="🔍 搜索控件", command=self.cmd_search_controls, bg="#fef9c3").pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="📥 合并入库", command=self.cmd_merge_into_library, bg="#e0f2fe").pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="复制所选定位", command=self.cmd_copy_selected_locator).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row, text="检验定位", command=self.cmd_test_selected_locator, bg="#e0e7ff").pack(side=tk.LEFT, padx=3)
+        # 操作按钮分两排排布，避免窗口缩小时单排按钮被遮挡：
+        # 第一排：采集 + 勾选操作；第二排：结果处理 + 视图操作（右侧为状态栏）
+        button_row1 = tk.Frame(toolbar, bg=CONTROL_MAP_THEME["toolbar"])
+        button_row1.grid(row=1, column=0, columnspan=10, sticky="ew", pady=(10, 0))
+        self._scan_button_frame1 = button_row1
+        tk.Button(button_row1, text="一键整树采集并保存", command=self.cmd_scan_and_save, bg=CONTROL_MAP_THEME["success_soft"]).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row1, text="整树采集预览", command=self.cmd_scan_preview).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row1, text="画框区域采集并保存", command=self.cmd_region_scan_and_save, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row1, text="画框区域预览", command=self.cmd_region_scan_preview, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row1, text="智能勾选", command=self.cmd_smart_check_results).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row1, text="全选结果", command=self.cmd_check_all_results).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row1, text="清空勾选", command=self.cmd_clear_checked_results).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row1, text="🗑 清空当前结果", command=self.cmd_clear_current_payload, bg=CONTROL_MAP_THEME["danger_soft"]).pack(side=tk.LEFT, padx=3)
+        # 中止采集：仅在扫描进行中可用（_set_scan_ui_busy 控制），点击后置位
+        # 取消事件，后台扫描线程在下一遍历检查点响应。
+        self._scan_cancel_btn = tk.Button(
+            button_row1, text="⏹ 中止采集", command=self.cmd_cancel_scan,
+            bg=CONTROL_MAP_THEME["danger_soft"], state=tk.DISABLED,
+        )
+        self._scan_cancel_btn.pack(side=tk.LEFT, padx=3)
+
+        button_row2 = tk.Frame(toolbar, bg=CONTROL_MAP_THEME["toolbar"])
+        button_row2.grid(row=2, column=0, columnspan=10, sticky="ew", pady=(6, 0))
+        self._scan_button_frame2 = button_row2
+        tk.Button(button_row2, text="📂 加载控件库文件", command=self.cmd_load_control_map_file, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row2, text="保存当前结果", command=self.cmd_save_current_payload).pack(side=tk.LEFT, padx=3)
+        tk.Checkbutton(button_row2, text="保存后自动合并入库", variable=self.var_auto_merge, bg=CONTROL_MAP_THEME["toolbar"]).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(button_row2, text="打开控件库目录", command=self.cmd_open_control_map_dir).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row2, text="🔍 搜索控件", command=self.cmd_search_controls, bg=CONTROL_MAP_THEME["warning_soft"]).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row2, text="📥 合并入库", command=self.cmd_merge_into_library, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row2, text="复制所选定位", command=self.cmd_copy_selected_locator).pack(side=tk.LEFT, padx=3)
+        tk.Button(button_row2, text="检验定位", command=self.cmd_test_selected_locator, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
         self.var_tree_view_mode = tk.StringVar(value="flat")
-        tk.Checkbutton(button_row, text="层级树视图", variable=self.var_tree_view_mode, onvalue="hierarchy", offvalue="flat", command=self._refresh_tree).pack(side=tk.LEFT, padx=8)
-        tk.Button(button_row, text="展开全部", command=self._cmd_expand_all_tree,
+        tk.Checkbutton(button_row2, text="层级树视图", variable=self.var_tree_view_mode, onvalue="hierarchy", offvalue="flat", command=self._refresh_tree).pack(side=tk.LEFT, padx=8)
+        tk.Button(button_row2, text="展开全部", command=self._cmd_expand_all_tree,
                   font=("Microsoft YaHei UI", 9), padx=6, pady=0).pack(side=tk.LEFT, padx=2)
-        tk.Button(button_row, text="折叠全部", command=self._cmd_collapse_all_tree,
+        tk.Button(button_row2, text="折叠全部", command=self._cmd_collapse_all_tree,
                   font=("Microsoft YaHei UI", 9), padx=6, pady=0).pack(side=tk.LEFT, padx=2)
-        tk.Label(button_row, textvariable=self.var_status, fg="#555555").pack(side=tk.RIGHT)
-        tk.Label(button_row, textvariable=self.var_scan_progress, fg="#22c55e").pack(side=tk.RIGHT, padx=(10, 0))
+        tk.Label(button_row2, textvariable=self.var_status, fg=CONTROL_MAP_THEME["muted"]).pack(side=tk.RIGHT)
+        tk.Label(button_row2, textvariable=self.var_scan_progress, fg=CONTROL_MAP_THEME["success"]).pack(side=tk.RIGHT, padx=(10, 0))
 
         # 主内容区：左右两栏，左2/3（控件候选），右1/3（扫描概览 + 控件详情）
-        body = tk.Frame(self.root)
+        body = tk.Frame(self.root, bg=CONTROL_MAP_THEME["bg"])
         body.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         body.columnconfigure(0, weight=2)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
-        left = tk.LabelFrame(body, text="控件候选", padx=10, pady=10)
+        left = tk.LabelFrame(body, text="控件候选", padx=10, pady=10,
+                             bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
+                             relief="flat", bd=1, highlightthickness=1,
+                             highlightbackground=CONTROL_MAP_THEME["border"],
+                             font=(CONTROL_MAP_THEME["font"][0], 11, "bold"))
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
 
-        right_container = tk.Frame(body)
+        right_container = tk.Frame(body, bg=CONTROL_MAP_THEME["bg"])
         right_container.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
         right_container.columnconfigure(0, weight=1)
         right_container.rowconfigure(1, weight=1)
 
-        summary = tk.LabelFrame(right_container, text="扫描概览", padx=10, pady=10)
+        summary = tk.LabelFrame(right_container, text="扫描概览", padx=10, pady=10,
+                                bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
+                                relief="flat", bd=1, highlightthickness=1,
+                                highlightbackground=CONTROL_MAP_THEME["border"],
+                                font=(CONTROL_MAP_THEME["font"][0], 11, "bold"))
         summary.grid(row=0, column=0, sticky="ew", pady=(0, 5))
         tk.Label(summary, textvariable=self.var_summary, justify=tk.LEFT, anchor="w", wraplength=380).pack(fill=tk.X)
 
-        right = tk.LabelFrame(right_container, text="控件详情", padx=10, pady=10)
+        right = tk.LabelFrame(right_container, text="控件详情", padx=10, pady=10,
+                              bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
+                              relief="flat", bd=1, highlightthickness=1,
+                              highlightbackground=CONTROL_MAP_THEME["border"],
+                              font=(CONTROL_MAP_THEME["font"][0], 11, "bold"))
         right.grid(row=1, column=0, sticky="nsew")
 
-        tree_style = ttk.Style()
-        tree_style.configure("ControlMap.Treeview", rowheight=28)
-        tree_style.configure("ControlMap.Treeview.Heading", padding=(8, 6))
+        # Treeview/滚动条主题样式在 _apply_theme 中统一配置
 
         self.control_tree = ttk.Treeview(
             left,
@@ -5299,30 +5942,38 @@ class ControlMapBuilderApp:
         self.control_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.control_tree.bind("<Button-1>", self._on_tree_click, add="+")
 
-        scrollbar = ttk.Scrollbar(left, orient="vertical", command=self.control_tree.yview)
+        scrollbar = ttk.Scrollbar(left, orient="vertical", command=self.control_tree.yview, style="ControlMap.Vertical.TScrollbar")
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        h_scrollbar = ttk.Scrollbar(left, orient="horizontal", command=self.control_tree.xview)
+        h_scrollbar = ttk.Scrollbar(left, orient="horizontal", command=self.control_tree.xview, style="ControlMap.Horizontal.TScrollbar")
         h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 0))
         self.control_tree.configure(yscrollcommand=scrollbar.set, xscrollcommand=h_scrollbar.set)
 
-        rename_frame = tk.LabelFrame(right, text="保存前命名", padx=10, pady=10)
+        rename_frame = tk.LabelFrame(right, text="保存前命名", padx=10, pady=10,
+                                     bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
+                                     relief="flat", bd=1, highlightthickness=1,
+                                     highlightbackground=CONTROL_MAP_THEME["border"],
+                                     font=(CONTROL_MAP_THEME["font"][0], 11, "bold"))
         rename_frame.pack(fill=tk.X, pady=(0, 8))
-        tk.Label(rename_frame, text="保存控件名").grid(row=0, column=0, sticky="w")
+        tk.Label(rename_frame, text="保存控件名", bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"]).grid(row=0, column=0, sticky="w")
         tk.Entry(rename_frame, textvariable=self.var_saved_control_name).grid(row=0, column=1, sticky="ew", padx=(8, 12))
-        tk.Label(rename_frame, text="控件ID").grid(row=0, column=2, sticky="w")
+        tk.Label(rename_frame, text="控件ID", bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"]).grid(row=0, column=2, sticky="w")
         tk.Entry(rename_frame, textvariable=self.var_saved_control_id).grid(row=0, column=3, sticky="ew", padx=(8, 12))
-        tk.Button(rename_frame, text="应用到当前控件", command=self.cmd_apply_current_control_alias, bg="#d1fae5").grid(row=0, column=4)
+        tk.Button(rename_frame, text="应用到当前控件", command=self.cmd_apply_current_control_alias, bg=CONTROL_MAP_THEME["success_soft"]).grid(row=0, column=4)
         tk.Label(
             rename_frame,
             text="扫描名通常只是系统原始控件名。保存前可改成业务语义名称，最终只保存已勾选控件。",
-            fg="#555555",
+            fg=CONTROL_MAP_THEME["muted"],
             justify=tk.LEFT,
             anchor="w",
         ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(8, 0))
         rename_frame.columnconfigure(1, weight=1)
         rename_frame.columnconfigure(3, weight=1)
 
-        self.preview_text = scrolledtext.ScrolledText(right, wrap=tk.WORD, font=("Consolas", 10))
+        self.preview_text = scrolledtext.ScrolledText(right, wrap=tk.WORD, font=("Consolas", 10),
+                                                      bg=CONTROL_MAP_THEME["panel_soft"], fg=CONTROL_MAP_THEME["text"],
+                                                      insertbackground=CONTROL_MAP_THEME["text"],
+                                                      relief="flat", bd=1, highlightthickness=1,
+                                                      highlightbackground=CONTROL_MAP_THEME["border"])
         self.preview_text.pack(fill=tk.BOTH, expand=True)
 
     def _resolve_scan_args(self):
@@ -5334,6 +5985,7 @@ class ControlMapBuilderApp:
             "exclude_offscreen": bool(self.var_exclude_offscreen.get()),
             "exclude_unidentified_containers": bool(self.var_exclude_unidentified.get()),
             "expand_dropdowns": bool(self.var_expand_dropdowns.get()),
+            "move_cursor": bool(self.var_move_cursor.get()),
         }
 
     def _rebuild_control_groups(self):
@@ -5411,16 +6063,172 @@ class ControlMapBuilderApp:
             "excluded_titles": [item for item in titles if item],
         }
 
+    def _set_scan_ui_busy(self, busy):
+        """扫描进行中禁用两排操作按钮，仅保留「中止采集」可用；结束/中止后恢复。"""
+        if busy:
+            if self._scan_disabled_widgets:
+                return
+            for frame in (
+                getattr(self, "_scan_button_frame1", None),
+                getattr(self, "_scan_button_frame2", None),
+            ):
+                if frame is None:
+                    continue
+                for child in frame.winfo_children():
+                    if not isinstance(child, tk.Button):
+                        continue
+                    if child is self._scan_cancel_btn:
+                        continue
+                    try:
+                        if str(child.cget("state")) != tk.DISABLED:
+                            child.configure(state=tk.DISABLED)
+                            self._scan_disabled_widgets.append(child)
+                    except Exception:
+                        pass
+            if self._scan_cancel_btn is not None:
+                try:
+                    self._scan_cancel_btn.configure(text="⏹ 中止采集", state=tk.NORMAL)
+                except Exception:
+                    pass
+        else:
+            for widget in self._scan_disabled_widgets:
+                try:
+                    widget.configure(state=tk.NORMAL)
+                except Exception:
+                    pass
+            self._scan_disabled_widgets = []
+            if self._scan_cancel_btn is not None:
+                try:
+                    self._scan_cancel_btn.configure(text="⏹ 中止采集", state=tk.DISABLED)
+                except Exception:
+                    pass
+
+    def cmd_cancel_scan(self):
+        """中止当前扫描：置位取消事件，后台扫描线程在下一遍历检查点停止。"""
+        if not getattr(self, "_scan_running", False):
+            return
+        event = getattr(self, "_scan_cancel_event", None)
+        if event is not None:
+            event.set()
+        self.var_status.set("正在中止采集（等待当前遍历返回）...")
+        if self._scan_cancel_btn is not None:
+            try:
+                self._scan_cancel_btn.configure(text="⏹ 正在中止…", state=tk.DISABLED)
+            except Exception:
+                pass
+        # 兜底：若后台线程被永久阻塞的 UIA 调用拖住（目标进程无响应），
+        # 15 秒后恢复界面按钮，避免整个采集器保持"半冻结"；此时可关闭窗口重开。
+        try:
+            self.root.after(15000, self._recover_ui_after_cancel_stall)
+        except Exception:
+            pass
+
+    def _recover_ui_after_cancel_stall(self):
+        """中止兜底：扫描线程未按时返回时恢复界面，让用户可以关闭/重开采集器。"""
+        if not getattr(self, "_scan_running", False):
+            return
+        self._set_scan_ui_busy(False)
+        self.var_status.set(
+            "扫描线程仍在等待目标进程响应，已恢复界面；可关闭本窗口后重新打开采集器。"
+        )
+
     def _run_scan(self, auto_save, region_rect=None):
-        args = self._resolve_scan_args()
-        args.update(self._get_excluded_scan_context())
-        args["region_rect"] = region_rect
-        args["status_callback"] = self._update_scan_progress
+        """扫描入口：主线程启动后台扫描线程后立即返回，UI 保持响应。
+
+        后台线程执行 build_control_map_payload（UIA 遍历可能因目标进程忙碌而
+        长时间阻塞，甚至永久挂起，此前主线程同步执行会把整个采集器窗口拖成
+        "未响应"）。完成后经 root.after 回主线程更新界面，扫描期间可随时点
+        「中止采集」。
+        """
+        if getattr(self, "_scan_running", False):
+            self.var_status.set("已有扫描正在进行，请先中止或等待完成。")
+            return
+        self._scan_running = True
+        self._scan_cancel_event = threading.Event()
+        try:
+            args = self._resolve_scan_args()
+            args.update(self._get_excluded_scan_context())
+            args["region_rect"] = region_rect
+            args["status_callback"] = self._update_scan_progress
+            args["cancel_event"] = self._scan_cancel_event
+            self._set_scan_ui_busy(True)
+            self.var_status.set("正在启动扫描...")
+            # 立即显示置顶浮窗，让用户最小化窗口后也能立刻看到采集已开始
+            try:
+                self._scan_progress_overlay.show_progress("正在启动扫描...", 0)
+            except Exception:
+                pass
+            threading.Thread(
+                target=self._run_scan_worker,
+                args=(auto_save, region_rect, args),
+                daemon=True,
+                name="control-map-scan",
+            ).start()
+        except Exception as exc:
+            # 启动失败（如参数解析异常）：复位状态并还原窗口，避免一直最小化/隐藏
+            self._scan_running = False
+            self._scan_cancel_event = None
+            try:
+                self._set_scan_ui_busy(False)
+            except Exception:
+                pass
+            self.var_status.set(f"扫描启动失败：{exc}")
+            try:
+                self.root.deiconify()
+                self.root.lift()
+            except Exception:
+                pass
+
+    def _run_scan_worker(self, auto_save, region_rect, args):
+        """后台线程：执行扫描，结果/异常经 root.after 交回主线程。"""
+        com_init = False
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+            com_init = True
+        except Exception:
+            pass
         try:
             payload = build_control_map_payload(**args)
+            error = None
+            cancelled = bool(
+                getattr(self, "_scan_cancel_event", None) and self._scan_cancel_event.is_set()
+            )
         except Exception as exc:
-            messagebox.showerror("扫描失败", f"控件树扫描失败：\n{exc}")
-            self.var_status.set(f"扫描失败：{exc}")
+            payload = None
+            error = exc
+            cancelled = bool(
+                getattr(self, "_scan_cancel_event", None) and self._scan_cancel_event.is_set()
+            )
+        if com_init:
+            try:
+                import pythoncom
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+        try:
+            self.root.after(0, lambda: self._on_scan_finished(auto_save, region_rect, payload, error, cancelled))
+        except Exception:
+            pass  # 窗口已关闭
+
+    def _on_scan_finished(self, auto_save, region_rect, payload, error, cancelled):
+        """主线程完成回调：恢复 UI、更新树、按需保存。"""
+        self._scan_running = False
+        self._set_scan_ui_busy(False)
+        # 扫描期间采集器保持最小化不抢目标前台，完成后还原窗口展示结果
+        try:
+            self.root.deiconify()
+            self.root.lift()
+        except Exception:
+            pass
+        if error is not None:
+            messagebox.showerror("扫描失败", f"控件树扫描失败：\n{error}")
+            self.var_status.set(f"扫描失败：{error}")
+            try:
+                self._scan_progress_overlay.show_error(f"扫描失败：{str(error)[:80]}")
+                _play_notify_sound()
+            except Exception:
+                pass
             try:
                 self._taskbar_progress.clear()
             except Exception:
@@ -5435,7 +6243,7 @@ class ControlMapBuilderApp:
         self.checked_control_indices = self._build_default_checked_indices()
         self.var_saved_control_name.set("")
         self.var_saved_control_id.set("")
-        if auto_save:
+        if not cancelled and auto_save:
             try:
                 filtered_payload = self._build_filtered_payload_for_save()
                 self.current_output_path = save_control_map_payload(filtered_payload)
@@ -5450,12 +6258,38 @@ class ControlMapBuilderApp:
             self._taskbar_progress.clear()
         except Exception:
             pass
-        if auto_save and self.current_output_path:
+        if cancelled:
+            self.var_status.set("扫描已中止。已保留部分结果，未自动保存；可再次采集。")
+            try:
+                self._scan_progress_overlay.show_cancelled("采集已中止：已保留部分结果，未自动保存")
+                _play_notify_sound()
+            except Exception:
+                pass
+        elif auto_save and self.current_output_path:
             self.var_status.set(f"已完成控件库扫描并保存：{self.current_output_path}")
+            try:
+                total = (payload.get("scanMeta", {}) or {}).get("totalControls", 0)
+                self._scan_progress_overlay.show_done(
+                    f"采集完成：共 {total} 个控件\n已保存：{self.current_output_path}"
+                )
+                _play_notify_sound()
+            except Exception:
+                pass
+            self._maybe_auto_merge_after_save()
         elif self.current_region_rect:
             self.var_status.set("已完成画框区域控件扫描，当前结果尚未保存。")
+            try:
+                self._scan_progress_overlay.show_done("采集完成：画框区域控件扫描完成")
+                _play_notify_sound()
+            except Exception:
+                pass
         else:
             self.var_status.set("已完成控件树扫描，当前结果尚未保存。")
+            try:
+                self._scan_progress_overlay.show_done("采集完成：控件树扫描完成")
+                _play_notify_sound()
+            except Exception:
+                pass
 
     def _refresh_summary(self):
         if not isinstance(self.current_payload, dict):
@@ -5566,7 +6400,7 @@ class ControlMapBuilderApp:
                 index = member_indexes[0]
                 item = flat_controls[index]
                 locator = f"{item.get('recommendedTargetMethod', '')}:{item.get('recommendedTargetValue', '')}".strip(":")
-                display_name = item.get("savedControlName", "") or item.get("suggestedControlName", "") or item.get("displayName", "")
+                display_name = _display_control_name(item) + _option_values_hint(item)
                 tier_label = str(item.get("qualityTier", "")).strip() or "未分类"
                 self.control_tree.insert(
                     "",
@@ -5606,7 +6440,7 @@ class ControlMapBuilderApp:
             for child_order, index in enumerate(member_indexes, start=1):
                 item = flat_controls[index]
                 locator = f"{item.get('recommendedTargetMethod', '')}:{item.get('recommendedTargetValue', '')}".strip(":")
-                display_name = item.get("savedControlName", "") or item.get("suggestedControlName", "") or item.get("displayName", "")
+                display_name = _display_control_name(item) + _option_values_hint(item)
                 child_label = ("推荐保留" if index == best_index else f"候选 {child_order}") + f" | {item.get('qualityTier', '') or '未分类'}"
                 self.control_tree.insert(
                     group_iid,
@@ -5628,9 +6462,34 @@ class ControlMapBuilderApp:
         """层级树视图：展示真实父子关系。"""
         control_tree = self.current_payload.get("controlsTree", {}) if isinstance(self.current_payload, dict) else {}
         self._hierarchy_nodes_by_iid = {}
+        # 树节点常缺 suggestedControlName 等语义字段，建 index→flat 条目映射供展示名回退
+        self._hierarchy_flat_by_index = {}
+        if isinstance(self.current_payload, dict):
+            for f in self.current_payload.get("flatControls") or []:
+                if isinstance(f, dict) and f.get("index") is not None:
+                    try:
+                        self._hierarchy_flat_by_index.setdefault(int(f["index"]), f)
+                    except Exception:
+                        pass
         if not control_tree:
             return
         self._insert_hierarchy_node(control_tree)
+
+    def _node_option_hint(self, node):
+        """层级树节点的选项后缀：节点自带 optionValues 直接用，否则按 flatIndex
+        反查 flatControls（controlsTree 在展开下拉框之前构建，节点不含 optionValues）。"""
+        hint = _option_values_hint(node)
+        if hint:
+            return hint
+        try:
+            flat_index = int(node.get("flatIndex", -1))
+        except Exception:
+            return ""
+        if flat_index >= 0:
+            flats = (self.current_payload or {}).get("flatControls") or []
+            if flat_index < len(flats):
+                return _option_values_hint(flats[flat_index])
+        return ""
 
     def _insert_hierarchy_node(self, node, parent_iid="", depth=0, open_depth=2):
         """递归插入一个 controlsTree 节点及其子树，返回根 iid。
@@ -5661,12 +6520,29 @@ class ControlMapBuilderApp:
         except Exception:
             flat_index = -1
         has_flat = flat_index >= 0
-        full_display = (
-            str(node.get("savedControlName", "")).strip()
+        # 语义展示名：节点自身 functionText/功能名/已存语义名优先；
+        # 树节点常缺这些字段（如 suggestedControlName），回退到对应 flat 条目的语义名，
+        # 避免显示成 PART_DropDownButton / 原始数值等无法辨认的名字
+        node_semantic = (
+            str(node.get("functionText", "")).strip()
+            or _extract_functional_name(node)
+            or str(node.get("savedControlName", "")).strip()
             or str(node.get("suggestedControlName", "")).strip()
+        )
+        flat_display = ""
+        if not node_semantic:
+            try:
+                flat_item = self._hierarchy_flat_by_index.get(int(node.get("index", -1)))
+            except Exception:
+                flat_item = None
+            if flat_item:
+                flat_display = _display_control_name(flat_item)
+        full_display = (
+            node_semantic
+            or flat_display
             or str(node.get("displayName", "")).strip()
             or display_name
-        )
+        ) + self._node_option_hint(node)
         scan_backend = str(node.get("scanBackend", "")).strip() or "-"
         locator = f"{node.get('recommendedTargetMethod', '')}:{node.get('recommendedTargetValue', '')}".strip(":")
         # 插入节点
@@ -5691,6 +6567,33 @@ class ControlMapBuilderApp:
             self._insert_hierarchy_node(child, iid, depth + 1, open_depth=open_depth)
         return iid
 
+    def _get_hierarchy_identity_index(self):
+        """构建并缓存层级树节点的 identity 反查索引（runtimeId/签名 → iid，O(1) 查找）。
+
+        悬停查看层每次元素切换都要反查层级节点，旧实现逐节点扫描数千个节点，
+        是悬停聚焦卡顿的主因之一。此处与 _get_flat_identity_maps 同款缓存键
+        (id(dict), len(dict))：重建树换新 dict→id 变；补采增量插入→len 变，
+        两种变更都能自动失效（别名编辑不改 identity 字段，无需失效）。
+        """
+        nodes = self._hierarchy_nodes_by_iid
+        cache = getattr(self, "_hierarchy_index_cache", None)
+        cache_key = (id(nodes), len(nodes))
+        if cache is not None and cache[0] == cache_key:
+            return cache[1], cache[2]
+        runtime_index = {}
+        sig_index = {}
+        for iid, node in nodes.items():
+            if not isinstance(node, dict):
+                continue
+            runtime = str(node.get("runtimeId", "")).strip()
+            if runtime and runtime not in runtime_index:
+                runtime_index[runtime] = iid
+            _, sig, sig_usable = _extract_identity_match_keys(node)
+            if sig_usable and sig not in sig_index:
+                sig_index[sig] = iid
+        self._hierarchy_index_cache = (cache_key, runtime_index, sig_index)
+        return runtime_index, sig_index
+
     def _locate_hierarchy_iid_by_identity(self, item):
         """在当前层级树视图中反查节点 iid。
 
@@ -5698,33 +6601,29 @@ class ControlMapBuilderApp:
         1. runtimeId 精确匹配（最可靠，但重启后失效）
         2. 多字段签名匹配（name+className+controlType，稳定）
         3. uiPath 模糊匹配（父子路径安全，签名退化时的兜底）
+
+        runtimeId/签名走 _get_hierarchy_identity_index 的 O(1) 缓存索引；
+        uiPath 仅在签名退化（name/className/controlType 全空）时逐节点扫描。
         """
         if not isinstance(item, dict):
             return None
         target_runtime, target_sig, sig_usable = _extract_identity_match_keys(item)
         target_ui_path = str(item.get("uiPath", "") or item.get("inspectData", {}).get("uiPath", "")).strip()
 
-        sig_iid = None
+        runtime_index, sig_index = self._get_hierarchy_identity_index()
+        runtime_iid = runtime_index.get(target_runtime) if target_runtime else None
+        sig_iid = sig_index.get(target_sig) if sig_usable else None
+
         ui_path_iid = None
-        runtime_iid = None
-        for iid, node in self._hierarchy_nodes_by_iid.items():
-            if not isinstance(node, dict):
-                continue
-            node_runtime = str(node.get("runtimeId", "")).strip()
-            if target_runtime and node_runtime and node_runtime == target_runtime:
-                runtime_iid = iid  # 最高优先级：runtimeId 匹配
-                break
-            if sig_usable and sig_iid is None:
-                _, node_sig, _ = _extract_identity_match_keys(node)
-                if node_sig == target_sig:
-                    sig_iid = iid
-            # uiPath 回退：签名中所有字段为空时才有意义
-            if not sig_usable and ui_path_iid is None and target_ui_path:
+        if not sig_usable and target_ui_path:
+            for iid, node in self._hierarchy_nodes_by_iid.items():
+                if not isinstance(node, dict):
+                    continue
                 node_ui_path = str(node.get("uiPath", "") or node.get("inspectData", {}).get("uiPath", "")).strip()
                 if node_ui_path and node_ui_path == target_ui_path:
                     ui_path_iid = iid
-        # exists() 是跨 Tcl 调用，只对最终候选验证（旧实现对每个节点验证，
-        # 数千节点时一次反查耗时上百毫秒，是悬停聚焦卡顿的主因之一）
+                    break
+        # exists() 是跨 Tcl 调用，只对最终候选验证
         for candidate in (runtime_iid, sig_iid, ui_path_iid):
             if candidate and self.control_tree.exists(candidate):
                 return candidate
@@ -6204,9 +7103,12 @@ class ControlMapBuilderApp:
             if captured:
                 self.var_scan_mode.set(original_mode)
                 self.var_window_keyword.set("")
-            self.root.deiconify()
-            self.root.lift()
-            self.root.focus_force()
+            # 扫描进行中（_run_scan 起后台线程后立即返回）保持最小化，
+            # 避免采集器抢前台导致目标窗口失焦；真正完成由 _on_scan_finished 还原。
+            if not getattr(self, "_scan_running", False):
+                self.root.deiconify()
+                self.root.lift()
+                self.root.focus_force()
 
     def _start_region_pick(self, auto_save):
         delay_seconds = max(1, int(self.var_pick_delay.get() or DEFAULT_PICK_DELAY_SECONDS))
@@ -6217,22 +7119,72 @@ class ControlMapBuilderApp:
 
     def _show_region_overlay(self, auto_save):
         self.root.update()
+        # 画框前捕获当前前台窗口标题：延迟期间用户已切到目标软件，此刻前台即目标。
+        # 画框扫描据此走 keyword 模式，避免 overlay 销毁后前台窗口漂移导致扫错/扫空。
+        self._region_capture_title = ""
+        try:
+            hwnd = user32.GetForegroundWindow()
+            length = user32.GetWindowTextLengthW(hwnd)
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            captured_title = buf.value.strip()
+            if captured_title and captured_title not in ("WT 控件库采集器", "window"):
+                self._region_capture_title = captured_title
+        except Exception:
+            self._region_capture_title = ""
         overlay = RegionPickerOverlay(self.root, on_complete=lambda rect: self._finish_region_pick(rect, auto_save))
         overlay.window.focus_force()
 
     def _finish_region_pick(self, rect, auto_save):
-        if not rect:
-            self.root.deiconify()
-            self.root.lift()
-            self.root.focus_force()
-            self.var_status.set("已取消区域采集。")
-            return
-        self._update_scan_progress("开始区域扫描", 0)
-        time.sleep(0.2)
-        self._run_scan(auto_save=auto_save, region_rect=rect)
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
+        original_mode = self.var_scan_mode.get().strip()
+        original_keyword = self.var_window_keyword.get().strip()
+        captured = str(getattr(self, "_region_capture_title", "") or "").strip()
+        # 画框扫描优先使用画框前捕获的目标窗口标题（keyword 模式），
+        # 避免 overlay 销毁后前台窗口漂移导致扫描到错误窗口/空结果；
+        # 用户已显式设置 keyword 模式与关键字时尊重原设置，不覆盖。
+        used_captured = bool(captured and (original_mode == "foreground" or not original_keyword))
+        try:
+            if not rect:
+                self.var_status.set("已取消区域采集。")
+                return
+            if used_captured:
+                self.var_scan_mode.set("keyword")
+                self.var_window_keyword.set(captured)
+            self._update_scan_progress("开始区域扫描", 0)
+            time.sleep(0.2)
+            self._run_scan(auto_save=auto_save, region_rect=rect)
+        except Exception as exc:
+            # 画框采集链路任何异常都不能让主窗口保持隐藏（否则表现为"界面消失"）：
+            # 记录完整 traceback 供定位，并弹出错误提示。
+            try:
+                import traceback as _tb
+                _hover_log("画框区域扫描异常: {}\n{}".format(exc, _tb.format_exc()))
+            except Exception:
+                pass
+            try:
+                messagebox.showerror(
+                    "画框扫描异常",
+                    "画框区域扫描过程中出现异常：\n{}\n\n详情已写入 _hover_monitor.log".format(exc),
+                )
+            except Exception:
+                pass
+        finally:
+            # 恢复用户原有的扫描模式与关键字设置
+            try:
+                if used_captured:
+                    self.var_scan_mode.set(original_mode)
+                    self.var_window_keyword.set(original_keyword)
+            except Exception:
+                pass
+            # 取消/启动失败时主窗口必须恢复，避免"界面消失"误判；扫描进行中
+            # 保持隐藏/最小化不抢目标窗口前台，完成由 _on_scan_finished 统一还原。
+            if not getattr(self, "_scan_running", False):
+                try:
+                    self.root.deiconify()
+                    self.root.lift()
+                    self.root.focus_force()
+                except Exception:
+                    pass
 
     def _update_scan_progress(self, message, count):
         """进度回调 — 可能在 worker 线程调用，必须线程安全。"""
@@ -6254,6 +7206,11 @@ class ControlMapBuilderApp:
             estimated_total = max(count, ((count // 50) + 1) * 50)
             self._taskbar_progress.set_state(_TaskbarProgress.TBPF_NORMAL)
             self._taskbar_progress.set_value(count, estimated_total)
+        except Exception:
+            pass
+        # 置顶迷你浮窗实时反馈（主窗口最小化时依然可见）
+        try:
+            self._scan_progress_overlay.show_progress(message, count)
         except Exception:
             pass
         try:
@@ -6281,8 +7238,11 @@ class ControlMapBuilderApp:
         self._hover_last_pos = None
         self._hover_stable_count = 0
         self._hover_last_hit_key = ""
+        self._hover_last_fresh_xy = None
         # 采集层去重：本轮已入队补采过的元素 key（与查看层 last_hit_key 分离）
         self._hover_last_collect_key = ""
+        # 位置级防重复：探测被阻塞无新鲜 key 时，距上次补采点过近则跳过入队
+        self._hover_last_collect_pos = None
         # 当前悬停元素在 flatControls 中的下标缓存（None=不在库中）
         self._hover_existing_index = None
         self._hover_session_added = 0
@@ -6300,13 +7260,17 @@ class ControlMapBuilderApp:
         except Exception:
             pass
         self.root.bind("<Escape>", lambda _event: self._stop_hover_supplement("已停止悬停跟踪补采（Esc）。"))
-        self.btn_hover_supplement.config(text="⏹ 停止悬停跟踪", bg="#fecaca")
+        self.btn_hover_supplement.config(text="⏹ 停止悬停跟踪", bg=CONTROL_MAP_THEME["danger_soft"], fg=CONTROL_MAP_THEME["danger"])
         self.var_status.set(
             "悬停跟踪已开启：把鼠标悬停到目标软件控件上稍作停顿即自动补采其子树；Esc 或再次点击按钮停止；F6 冻结/解冻，F7 采集入库。"
         )
         # 启动 worker 线程（秒级子树采集卸载到后台）
         self._worker_busy = False
         self._start_worker_thread()
+        # 启动悬停命中探测线程（from_point 卸载到后台，主线程永不阻塞）
+        self._probe_result = (None, None, None, None, "")  # 复位旧结果，首个 tick 重新探测
+        self._hover_last_pid = ""
+        self._start_probe_thread()
         # 启动全局热键监听器
         self._start_hotkey_listener()
         self._hover_after_id = self.root.after(HOVER_TICK_MS, self._hover_tick)
@@ -6327,6 +7291,8 @@ class ControlMapBuilderApp:
             self._hover_after_id = None
         # 停止 worker 线程（发送退出信号并等待结束）
         self._stop_worker_thread()
+        # 停止悬停命中探测线程
+        self._stop_probe_thread()
         # 销毁持久高亮 overlay
         try:
             if self._persistent_highlight is not None:
@@ -6344,7 +7310,7 @@ class ControlMapBuilderApp:
             self._taskbar_progress.clear()
         except Exception:
             pass
-        self.btn_hover_supplement.config(text="🔴 悬停跟踪补采", bg="#fca5a5")
+        self.btn_hover_supplement.config(text="🔴 悬停跟踪补采", bg=CONTROL_MAP_THEME["danger_soft"], fg=CONTROL_MAP_THEME["danger"])
         if message:
             self.var_status.set(message)
 
@@ -6379,10 +7345,13 @@ class ControlMapBuilderApp:
     def _hover_probe_once(self):
         """悬停探测（Inspect 式两层解耦）。
 
-        查看层：每个 tick 都做轻量 hit-test（10-50ms），元素一变→红框/状态栏/
-            树聚焦立即跟随，不受停顿门控约束（"指哪看哪"）。
-        采集层：仅当鼠标停顿满 HOVER_STABLE_TICKS、非只看不采、元素不在库中、
-            未采过且 worker 空闲时才触发秒级子树补采（重操作严格门控）。
+        查看层：每 tick 读探测线程最新结果，仅当结果对应当前光标位置才算新鲜；
+            新鲜命中立即更新红框/状态栏/树聚焦（"指哪看哪"），静止时同样每 tick
+            重读，探测一返回当前位置的结果立即生效（不再等鼠标再动一次）。
+            探测被 MUP 阻塞时用 Win32 窗口级命中兜底高亮（永不阻塞），界面始终跟手。
+        采集层：停顿满 HOVER_STABLE_TICKS、非只看不采、worker 空闲才触发；元素级
+            去重仅在新鲜结果可用时生效，探测被阻塞时退化为位置级防重复，避免旧 key
+            误判"已存在"而吞掉新元素的补采。
         """
         point = wintypes.POINT()
         user32.GetCursorPos(ctypes.byref(point))
@@ -6403,62 +7372,139 @@ class ControlMapBuilderApp:
         else:
             self._hover_stable_count += 1
 
-        # ---- 查看层：每 tick hit-test，元素变了立即跟随 ----
-        _t_probe = time.time()
-        hit_key, hit_rect = self._probe_hover_hit_key(point.x, point.y)
-        probe_ms = (time.time() - _t_probe) * 1000
-        if not hit_key:
-            return  # 命中失败（自进程/目标窗口关闭等），保持上次视图
-        if hit_key != self._hover_last_hit_key:
-            self._hover_last_hit_key = hit_key
-            # 红框立即跟随（O3：高亮不再等停顿门控）
-            if hit_rect is not None and self._persistent_highlight is not None:
-                try:
-                    self._persistent_highlight.show(hit_rect)
-                except Exception:
-                    pass
-            # 已存在控件：立即在层级树中聚焦（结果缓存到 tick 级，避免重复扫 flat）
-            _t_sync = time.time()
-            self._hover_existing_index = self._find_flat_in_payload_by_hit_key(hit_key)
-            if self._hover_existing_index is not None:
-                existing_item = self.current_payload["flatControls"][self._hover_existing_index]
-                anchor_iid = self._locate_hierarchy_iid_by_identity(existing_item)
-                # 已选中同一节点时跳过重复聚焦
-                if anchor_iid and self.control_tree.selection() != (anchor_iid,):
-                    self._expand_ancestors(anchor_iid)
-                    self.control_tree.see(anchor_iid)
-                    self.control_tree.selection_set(anchor_iid)
-                    self.control_tree.focus(anchor_iid)
-                    # selection_set() 不会触发 <<TreeviewSelect>> 事件，需显式调用面板更新
+        # ---- overlay 处理：需要探测时先隐藏红框，读完新鲜结果再恢复 ----
+        # 高亮 overlay 是置顶窗口，实测其覆盖范围内的 UIA ElementFromPoint 会被拖慢
+        # 到 0.4~3 秒且命中 overlay 自身（返回自身进程→被过滤为空）。因此凡是需要
+        # 新探测，就先隐藏红框，探测返回毫秒级真实元素后立刻恢复；光标停住不动时
+        # 直接沿用缓存命中，红框/树聚焦稳定不闪。这样悬停任何控件（含大容器里的
+        # 子控件）都能精确定位聚焦，而不是卡在已高亮的大元素上。
+        hl = getattr(self, "_persistent_highlight", None)
+        hl_rect = getattr(hl, "last_rect", None) if hl is not None else None
+        inside_hl = (hl_rect is not None and self._hover_last_fresh_xy is not None
+                     and hl_rect[0] <= point.x <= hl_rect[2]
+                     and hl_rect[1] <= point.y <= hl_rect[3])
+
+        # ---- 查看层：探测走独立线程，主线程每 tick 读最新结果，绝不阻塞 ----
+        # 此前 from_point+6 属性读取在主线程执行，UIA COM 无超时，MUP 忙/卡时
+        # 单次可阻塞数秒→整窗"未响应"（移动门控只降频、不消除阻塞，故仍卡死）。
+        # 现在探测交给 _probe_thread，主线程每 tick 读结果并校验"位置新鲜"：
+        # 仅当结果对应当前光标位置才更新视图；静止时同样每 tick 重读，探测一返回
+        # 当前位置的新鲜命中立即生效（修复"停住后必须再动一下才更新"的卡死）。
+        # 注意：探测期间绝不能再显示任何覆盖光标点的窗口——overlay/兜底高亮都会让
+        # MTA 探测线程的 from_point 阻塞到超时（实测 300ms~1.3s+）。所以只允许
+        # "先隐藏 overlay→探测→返回后恢复真实矩形高亮"这一条路径。
+        moved = last is None or point.x != last[0] or point.y != last[1]
+        if (not moved) and inside_hl:
+            # 停住不动且光标仍在已高亮框内：元素未变，用缓存命中替代探测，
+            # 红框/树聚焦稳定；采集层照常走停顿门控补采新元素。
+            rx, ry = self._hover_last_fresh_xy[0], self._hover_last_fresh_xy[1]
+            key = self._hover_last_hit_key
+            rect = hl_rect
+            pid = self._hover_last_pid
+            probe_ms = 0
+            matched = True
+        else:
+            rx, ry, key, rect, pid = self._read_probe_result()
+            matched = (rx == point.x and ry == point.y)
+            if not matched and (moved or not self._hover_last_hit_key):
+                # 探测前先隐藏红框：overlay 会遮蔽其覆盖范围内的 UIA from_point。
+                # 隐藏后探测命中真实元素、毫秒级返回；读到新鲜结果时立即恢复红框。
+                if hl is not None:
                     try:
-                        self._on_tree_select()
+                        hl.hide()
                     except Exception:
                         pass
-                self.var_status.set("[已存在] 控件已在库中，树已聚焦（不会重复补采）")
-            elif self._hover_look_only:
-                self.var_status.set("[只看不采] 悬停命中新元素，仅高亮跟随（F7 可手动采集入库）")
+                self._submit_probe(point.x, point.y)
+            probe_ms = self._probe_result_latency_ms if matched else 0
+        if matched and key:
+            # 新鲜命中：红框/状态栏/树聚焦立即跟随（O3：高亮不受停顿门控约束）
+            if key != self._hover_last_hit_key:
+                self._hover_last_hit_key = key
+                self._hover_last_fresh_xy = (point.x, point.y)
+                self._hover_last_pid = pid
+                # 红框立即跟随
+                if rect is not None and self._persistent_highlight is not None:
+                    try:
+                        self._persistent_highlight.show(rect)
+                    except Exception:
+                        pass
+                # 已存在控件：立即在层级树中聚焦（结果缓存到 tick 级，避免重复扫 flat）
+                _t_sync = time.time()
+                self._hover_existing_index = self._find_flat_in_payload_by_hit_key(key)
+                if self._hover_existing_index is not None:
+                    existing_item = self.current_payload["flatControls"][self._hover_existing_index]
+                    anchor_iid = self._locate_hierarchy_iid_by_identity(existing_item)
+                    # 已选中同一节点时跳过重复聚焦
+                    if anchor_iid and self.control_tree.selection() != (anchor_iid,):
+                        self._expand_ancestors(anchor_iid)
+                        self.control_tree.see(anchor_iid)
+                        self.control_tree.selection_set(anchor_iid)
+                        self.control_tree.focus(anchor_iid)
+                        # selection_set() 不会触发 <<TreeviewSelect>> 事件，需显式调用面板更新
+                        try:
+                            self._on_tree_select()
+                        except Exception:
+                            pass
+                    self.var_status.set("[已存在] 控件已在库中，树已聚焦（不会重复补采）")
+                elif self._hover_look_only:
+                    self.var_status.set("[只看不采] 悬停命中新元素，仅高亮跟随（F7 可手动采集入库）")
+                else:
+                    self.var_status.set("悬停命中新元素：停顿约 0.6 秒自动补采其子树…")
+                sync_ms = (time.time() - _t_sync) * 1000
+                # 仅慢 tick 才落盘（定位容器卡顿用）：高频日志本身会拖慢轮询
+                if probe_ms + sync_ms > 100:
+                    _hover_log(
+                        f"slow view tick: from_point={probe_ms:.0f}ms, tree_sync={sync_ms:.0f}ms, "
+                        f"index={self._hover_existing_index}, key={key[:80]!r}"
+                    )
             else:
-                self.var_status.set("悬停命中新元素：停顿约 0.6 秒自动补采其子树…")
-            sync_ms = (time.time() - _t_sync) * 1000
-            # 仅慢 tick 才落盘（定位容器卡顿用）：高频日志本身会拖慢轮询
-            if probe_ms + sync_ms > 100:
-                _hover_log(
-                    f"slow view tick: from_point={probe_ms:.0f}ms, tree_sync={sync_ms:.0f}ms, "
-                    f"index={self._hover_existing_index}, key={hit_key[:80]!r}"
-                )
+                # 同一元素命中（光标在同元素内移动后回到它 / 探测确认同元素）：
+                # 移动 tick 的清空分支可能把 existing_index 置 None，这里重算恢复，
+                # 避免把已入库元素误判成"新元素"而触发多余补采。
+                self._hover_existing_index = self._find_flat_in_payload_by_hit_key(key)
+                self._hover_last_fresh_xy = (point.x, point.y)
+                self._hover_last_pid = pid
+        elif matched:
+            # 探测新鲜返回但为空（命中采集器自身窗口/无元素）：复位，不采。
+            # 探测前已隐藏红框，正常情况下不会命中 overlay；此处兜底复位，
+            # 下个 tick 重新探测真实元素（红框已隐藏→探测快→恢复高亮）。
+            self._hover_last_hit_key = ""
+            self._hover_last_fresh_xy = None
+            self._hover_existing_index = None
+            return
+        else:
+            # 探测尚未返回当前位置结果（MUP 忙/卡或线程被阻塞）：
+            # 不清空上次 key（静止时保持上次高亮不闪）；不把旧结果当本次命中，
+            # 避免"已存在"误判吞掉新元素补采。此处不再做任何高亮兜底：
+            # 任何覆盖光标点的窗口（含兜底高亮）都会让 MTA 探测线程的 from_point
+            # 阻塞到超时（实测 300ms~1.3s+），等于把卡顿又引回来。探测返回后
+            # 下一个 tick 自会用真实控件矩形恢复高亮（探测前已隐藏 overlay）。
+            self._hover_existing_index = None
 
         # ---- 采集层：停顿门控 + 只看不采拦截 + 已存在跳过 + 去重 + 防重入 ----
         if self._hover_stable_count < HOVER_STABLE_TICKS:
             return
         if self._hover_look_only:
             return  # O4：只看不采时绝不入队秒级采集（F7 手动采）
-        if self._hover_existing_index is not None:
-            return  # 已在库中，无需补采
-        if hit_key == self._hover_last_collect_key:
-            return  # 同一元素本轮已采过，不重复入队
         if self._worker_busy:
             return  # 上一个任务未完成，下个 tick 重试（门控条件仍满足）
-        self._hover_last_collect_key = hit_key
+        if matched and key:
+            # 新鲜结果可用：元素级去重（已在库 / 本轮已采过 → 跳过）
+            if self._hover_existing_index is not None:
+                return  # 已在库中，无需补采
+            if key == self._hover_last_collect_key:
+                return  # 同一元素本轮已采过，不重复入队
+            self._hover_last_collect_key = key
+        else:
+            # 无新鲜 key（探测被阻塞）：元素级去重不可用，退化为位置级防重复，
+            # 避免同一位置反复入队；worker 后台采集自会按 identity 去重合并。
+            last_cp = self._hover_last_collect_pos or (None, None)
+            if (last_cp[0] is not None
+                    and abs(point.x - last_cp[0]) <= HOVER_REPEAT_DRIFT_PX
+                    and abs(point.y - last_cp[1]) <= HOVER_REPEAT_DRIFT_PX):
+                return
+            self._hover_last_collect_key = self._hover_last_hit_key or ""
+        self._hover_last_collect_pos = (point.x, point.y)
         self._worker_busy = True
         # 记录 source 供回调时使用（避免闭包捕获问题）
         self._worker_last_source = f"悬停({point.x},{point.y})"
@@ -6468,6 +7514,18 @@ class ControlMapBuilderApp:
         self._collect_t0 = time.time()  # 记录补采开始时间，供回调计算耗时
         _hover_log(f"worker enqueue, queue_size={self._worker_queue.qsize()}")
         self.var_status.set("正在后台补采子树…（界面可继续悬停查看，采完自动入树）")
+        allowed_process_ids = self._get_target_process_ids()
+        # MUP 重启后 payload 的 pid 失效：并入当前悬停元素自身 pid，放行补采
+        if self._hover_last_pid:
+            allowed_process_ids = sorted(set(allowed_process_ids) | {self._hover_last_pid})
+        # 补采前隐藏高亮 overlay：worker 线程的 from_point 若命中 overlay（自身进程、
+        # 置顶在光标下）会被判为"命中自身窗口"而拒绝，补采必然失败。隐藏后 worker
+        # 命中真实元素；采集回调会复位缓存，下个 tick 重新探测并恢复高亮。
+        if self._persistent_highlight is not None:
+            try:
+                self._persistent_highlight.hide()
+            except Exception:
+                pass
         self._worker_queue.put((
             collect_subtree_at_point,
             (
@@ -6479,7 +7537,7 @@ class ControlMapBuilderApp:
                 "max_depth": HOVER_SUPPLEMENT_MAX_DEPTH,
                 "scan_timeout_seconds": HOVER_SUPPLEMENT_TIMEOUT_SECONDS,
                 "excluded_process_ids": [str(os.getpid())],
-                "allowed_process_ids": self._get_target_process_ids(),
+                "allowed_process_ids": allowed_process_ids,
                 "status_callback": self._update_scan_progress,
             },
             self._on_subtree_collected,
@@ -6488,19 +7546,21 @@ class ControlMapBuilderApp:
     def _probe_hover_hit_key(self, x, y):
         """轻量命中探测：只取元素 identity 作去重键，不做子树遍历。
 
-        返回 (hit_key, rect) 元组：hit_key 为 identity 字符串，rect 为控件屏幕矩形。
-        命中自身进程（overlay 等）时返回 ("", None)，防止探测"自伤"。
+        返回 (hit_key, rect, pid) 三元组：hit_key 为 identity 字符串，rect 为控件
+        屏幕矩形，pid 为命中元素所属进程号。命中自身进程（overlay 等）时返回
+        ("", None, "")，防止探测"自伤"。运行在独立探测线程，主线程调用方只读结果。
         """
         if Desktop is None:
-            return "", None
+            return "", None, ""
         wrapper = _safe_get_value(lambda: Desktop(backend="uia").from_point(int(x), int(y)), None)
         if wrapper is None:
-            return "", None
+            return "", None, ""
+        pid = ""
         # 排除自身进程的窗口，防止 overlay 被 from_point 命中后"自伤"
         try:
-            pid = wrapper.process_id()
-            if pid == os.getpid():
-                return "", None
+            pid = str(wrapper.process_id()).strip()
+            if pid == str(os.getpid()):
+                return "", None, ""
         except Exception:
             pass
         try:
@@ -6511,13 +7571,29 @@ class ControlMapBuilderApp:
             identity = _build_wrapper_identity(wrapper)
         except Exception as exc:
             _hover_log(f"_build_wrapper_identity failed: {exc}")
-            return "", None
-        return identity, rect
+            return "", None, ""
+        return identity, rect, pid
 
     def _get_target_process_ids(self):
-        """从当前 payload 收集目标软件的进程 id，悬停跟踪时限定只采同进程元素。"""
+        """从当前 payload 收集目标软件的进程 id，悬停跟踪时限定只采同进程元素。
+
+        MUP 重启后 payload 里记录的 pid 会失效（进程号变了），此处兜底按可执行路径
+        实时枚举 Meteodyn\\MeteodynUniverse 下的进程，两者取并集，保证重启后仍可补采。
+        """
         flat = self.current_payload.get("flatControls", []) if isinstance(self.current_payload, dict) else []
-        return sorted({str(item.get("processId", "")).strip() for item in flat if str(item.get("processId", "")).strip()})
+        pids = {str(item.get("processId", "")).strip() for item in flat if str(item.get("processId", "")).strip()}
+        try:
+            import psutil
+            for proc in psutil.process_iter(["pid", "exe"]):
+                try:
+                    exe = proc.info.get("exe") or ""
+                except Exception:
+                    continue
+                if "Meteodyn\\MeteodynUniverse\\" in exe.replace("/", "\\"):
+                    pids.add(str(proc.info.get("pid", "")))
+        except Exception:
+            pass
+        return sorted(p for p in pids if p)
 
     # ---- "只看不采"模式开关 ----
 
@@ -6757,6 +7833,85 @@ class ControlMapBuilderApp:
         )
         self._worker_thread.start()
 
+    # ---- 悬停命中探测线程（from_point 卸载，主线程永不阻塞）----
+
+    def _start_probe_thread(self):
+        """启动悬停命中探测线程（如果尚未启动）。
+
+        探测线程负责执行 _probe_hover_hit_key 的 UIA COM 调用（from_point + 属性读取，
+        无超时）。此前这些调用在主线程执行，MUP 忙/卡时单次可阻塞数秒，导致整个
+        采集器窗口"未响应"；挪到独立线程后主线程只读结果，UI 永远可响应。
+        """
+        if self._probe_thread is not None and self._probe_thread.is_alive():
+            return  # 已在运行
+        self._probe_stop.clear()
+        self._probe_thread = threading.Thread(
+            target=self._probe_loop,
+            name="HoverProbeThread",
+            daemon=True,
+        )
+        self._probe_thread.start()
+
+    def _stop_probe_thread(self, timeout=2.0):
+        """停止探测线程：置停止信号并等待线程结束（当前探测阻塞时仅超时返回）。"""
+        if self._probe_thread is None:
+            return
+        self._probe_stop.set()
+        self._probe_wake.set()
+        try:
+            self._probe_thread.join(timeout=timeout)
+        except Exception:
+            pass
+        self._probe_thread = None
+
+    def _probe_loop(self):
+        """探测线程主循环：处理主线程的命中探测请求，结果写入 _probe_result。
+
+        线程内独立做 COM 初始化（MTA），与 worker 线程一致。请求单槽取最新：
+        鼠标快速移动时只保留最后位置，避免积压；正在执行的探测不可中断，完成后
+        立即接下一个请求。收到停止信号（_probe_stop）时退出。
+        """
+        if comtypes is not None:
+            try:
+                comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+            except Exception:
+                pass
+        try:
+            while not self._probe_stop.is_set():
+                self._probe_wake.wait(0.25)
+                self._probe_wake.clear()
+                with self._probe_req_lock:
+                    req = self._probe_request
+                if self._probe_stop.is_set():
+                    break
+                if req is None:
+                    continue
+                x, y, req_ts = req
+                key, rect, pid = self._probe_hover_hit_key(x, y)
+                with self._probe_req_lock:
+                    self._probe_result = (x, y, key, rect, pid)
+                    self._probe_result_latency_ms = (time.time() - req_ts) * 1000
+                    if self._probe_request == req:
+                        self._probe_request = None  # 处理完当前请求，等待新请求
+        finally:
+            if comtypes is not None:
+                try:
+                    comtypes.CoUninitialize()
+                except Exception:
+                    pass
+
+    def _submit_probe(self, x, y):
+        """主线程：提交一次命中探测请求（不阻塞；同位置重复请求会被合并）。"""
+        with self._probe_req_lock:
+            if self._probe_request is None or self._probe_request[:2] != (x, y):
+                self._probe_request = (x, y, time.time())
+                self._probe_wake.set()
+
+    def _read_probe_result(self):
+        """主线程：读取探测线程最新完成的结果 (x, y, hit_key, rect, pid)。"""
+        with self._probe_req_lock:
+            return self._probe_result
+
     def _stop_worker_thread(self, timeout=2.0):
         """停止 worker 线程：发送退出信号并等待线程结束。
 
@@ -6847,6 +8002,7 @@ class ControlMapBuilderApp:
         # 采完后重置查看层 key：下个 tick 重新评估当前悬停元素，层级树自动聚焦
         # 到刚入库的控件（采集层去重靠 _hover_last_collect_key，不会重复入队）
         self._hover_last_hit_key = ""
+        self._hover_last_fresh_xy = None
         self._hover_existing_index = None
 
     def _bring_to_front_temporarily(self, duration_ms=2500):
@@ -7086,8 +8242,19 @@ class ControlMapBuilderApp:
         self.var_saved_control_id.set("")
         self._hierarchy_nodes_by_iid = {}
         self._hierarchy_iid_seq = 0
+        self._hierarchy_flat_by_index = {}
         self._pending_supplement_expected = None
         self._flat_identity_cache = None  # 悬停查库的 identity 反查缓存一并释放
+        # 清理悬停相关后台线程与状态（避免清空后旧探测结果误用）
+        self._stop_probe_thread()
+        with self._probe_req_lock:
+            self._probe_result = (None, None, None, None, "")
+            self._probe_request = None
+        self._hover_last_hit_key = ""
+        self._hover_last_fresh_xy = None
+        self._hover_last_pid = ""
+        self._hover_last_collect_key = ""
+        self._hover_last_collect_pos = None
         self.control_tree.delete(*self.control_tree.get_children())
         self.var_status.set("已清空当前采集结果。")
         self._refresh_summary()
@@ -7161,8 +8328,10 @@ class ControlMapBuilderApp:
             flat_item = flat_controls[index]
             if index < len(control_definitions) and isinstance(control_definitions[index], dict):
                 item = control_definitions[index]
-            else:
+            elif _should_include_definition(flat_item):
                 item = _build_control_definition_from_flat(flat_item, set())
+            else:
+                continue
             current_name = (
                 str(item.get("name", "")).strip()
                 or str(flat_item.get("savedControlName", "")).strip()
@@ -7175,6 +8344,22 @@ class ControlMapBuilderApp:
                 {"id": str(item.get("id", "")).strip() or _build_saved_control_id_from_name(current_name, fallback=f"control_{position + 1}")},
                 existing_ids,
             )["id"]
+            # 补填下拉框可选项：老进程/旧 JSON 生成的控件定义可能缺失 optionValues，
+            # 但 flat 条目（本次展开采集/权威注入）有，保存时补齐以支撑流程可选项与执行兜底
+            existing_options = [
+                str(value).strip()
+                for value in (item.get("optionValues") or (item.get("inspectData") or {}).get("optionValues") or [])
+                if str(value).strip()
+            ]
+            if not existing_options:
+                flat_options = [
+                    str(value).strip()
+                    for value in (flat_item.get("optionValues") or (flat_item.get("inspectData") or {}).get("optionValues") or [])
+                    if str(value).strip()
+                ]
+                if flat_options:
+                    item["optionValues"] = flat_options
+                    item["optionCount"] = len(flat_options)
             normalized_definitions.append(item)
         payload["flatControls"] = filtered_flat_controls
         payload["controlDefinitions"] = normalized_definitions
@@ -7208,6 +8393,132 @@ class ControlMapBuilderApp:
             return
         self._refresh_summary()
         self.var_status.set(f"已保存已勾选控件：{self.current_output_path}")
+        self._maybe_auto_merge_after_save()
+
+    def cmd_load_control_map_file(self):
+        """加载已采集的控件库文件，直接在当前采集器上继续补采。
+
+        免去每次打开都要重新整树扫描的重复工作：加载既有库后，
+        悬停跟踪 / 定点补采会把新增控件合并进当前结果，保存即为增量库。
+        """
+        initial_dir = os.path.join(CONTROL_MAP_DIR, "recordings") if os.path.exists(os.path.join(CONTROL_MAP_DIR, "recordings")) else BASE_DIR
+        path = filedialog.askopenfilename(
+            title="加载已采集控件库文件",
+            initialdir=initial_dir,
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception as exc:
+            messagebox.showerror("加载失败", f"读取控件库文件失败：\n{exc}")
+            return
+        if not isinstance(payload, dict):
+            messagebox.showerror("加载失败", "文件内容不是有效的控件库（应为 JSON 对象）。")
+            return
+        flat_controls = payload.get("flatControls")
+        definitions = payload.get("controlDefinitions")
+        if not isinstance(flat_controls, list) or not isinstance(definitions, list):
+            messagebox.showerror("加载失败", "文件缺少 flatControls / controlDefinitions 数组，不是有效的控件库文件。")
+            return
+        # 悬停跟踪若在运行，先停止并清空探测/去重状态，避免旧 key 干扰新库
+        if self._hover_mode_active:
+            self._stop_hover_supplement("已加载控件库，停止上一轮悬停跟踪。")
+        # 复用扫描完成的状态装配：分组、树、摘要
+        self.current_payload = payload
+        self.current_output_path = path
+        self.current_region_rect = None
+        self._rebuild_control_groups()
+        # 加载的库整体保留：全量勾选（零丢弃保存），补采新控件继续并入
+        self._all_checked_mode = True
+        self.checked_control_indices = set(range(len(flat_controls)))
+        self.var_saved_control_name.set("")
+        self.var_saved_control_id.set("")
+        # 复位悬停层去重状态（防止旧 key 误判"已存在"而吞掉补采）
+        self._hover_last_hit_key = ""
+        self._hover_last_fresh_xy = None
+        self._hover_last_pid = ""
+        self._hover_last_collect_key = ""
+        self._hover_last_collect_pos = None
+        self._hover_existing_index = None
+        with self._probe_req_lock:
+            self._probe_result = (None, None, None, None, "")
+            self._probe_request = None
+        self._refresh_tree()
+        self._refresh_summary()
+        self.root.title("WT 控件库采集器")
+        target_title = ((payload.get("targetWindow", {}) or {}).get("title", "") or "未知窗口").strip()
+        self.var_status.set(
+            f"已加载控件库：{len(flat_controls)} 个控件（窗口：{target_title}）。"
+            f"可直接悬停跟踪 / 定点补采新增控件，保存即为增量库。"
+        )
+
+    def _maybe_auto_merge_after_save(self):
+        """保存成功后按勾选状态触发自动合并入库（后台线程执行）。"""
+        if self.var_auto_merge.get():
+            self._auto_merge_to_master()
+
+    def _auto_merge_to_master(self):
+        """自动合并入库：备份总库后，将 recordings 全量合并进总控件库。
+
+        复用 tools.merge_standard_control_library.run_merge（与流程编辑器"合并去重并保存"
+        同一套合并逻辑），保证两处产物数据同源；以后优化合并代码，自动合并自动同步。
+        """
+        if getattr(self, "_auto_merge_running", False):
+            return
+        self._auto_merge_running = True
+        self.var_status.set("保存成功，正在自动合并入库…")
+
+        catalog_path = os.path.join(CONTROL_MAP_DIR, "standard", "standard_control_catalog.json")
+        report_path = os.path.join(CONTROL_MAP_DIR, "standard", "standard_catalog_mismatch_report.json")
+        master_path = os.path.join(CONTROL_MAP_DIR, "standard", "总控件信息.json")
+
+        backup_path = ""
+        try:
+            if os.path.exists(master_path):
+                backup_dir = os.path.join(CONTROL_MAP_DIR, "standard", "backups")
+                os.makedirs(backup_dir, exist_ok=True)
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_path = os.path.join(backup_dir, f"总控件信息_{stamp}.json")
+                shutil.copy2(master_path, backup_path)
+        except Exception:
+            backup_path = ""
+
+        def _worker():
+            try:
+                from tools import merge_standard_control_library as msl
+
+                def _progress(pct, msg):
+                    self.root.after(0, lambda p=pct, m=msg: self.var_status.set(
+                        f"自动合并入库 ({p}%): {m}"))
+
+                stats = msl.run_merge(CONTROL_MAP_DIR, catalog_path, report_path,
+                                      master_path, progress_callback=_progress)
+            except Exception as exc:  # noqa: BLE001 - 失败需完整反馈到状态栏
+                self.root.after(0, lambda: self._on_auto_merge_done(None, exc, backup_path))
+            else:
+                self.root.after(0, lambda: self._on_auto_merge_done(stats, None, backup_path))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_auto_merge_done(self, stats, error, backup_path):
+        self._auto_merge_running = False
+        if error is not None:
+            self.var_status.set("自动合并入库失败：%s" % error)
+            return
+        self.var_status.set(
+            "自动合并入库完成：%d个控件（high %d / medium %d / low %d），待复核%d项%s"
+            % (
+                stats.get("totalControls", 0),
+                stats.get("high", 0),
+                stats.get("medium", 0),
+                stats.get("lowOrUnknown", 0),
+                stats.get("needsReview", 0),
+                ("；已备份：" + backup_path) if backup_path else "",
+            )
+        )
 
     def cmd_open_control_map_dir(self):
         ensure_directory(CONTROL_MAP_DIR)
@@ -7357,25 +8668,28 @@ class ControlMapBuilderApp:
             messagebox.showinfo("提示", "当前扫描结果中没有控件。")
             return
 
-        dlg = tk.Toplevel(self.root)
+        dlg = tk.Toplevel(self.root, bg=CONTROL_MAP_THEME["bg"])
         dlg.title("搜索控件")
         dlg.geometry("620x520")
         dlg.transient(self.root)
         dlg.grab_set()
 
         # -- 搜索行 --
-        top_frame = tk.Frame(dlg)
+        top_frame = tk.Frame(dlg, bg=CONTROL_MAP_THEME["bg"])
         top_frame.pack(fill=tk.X, padx=10, pady=(10, 4))
-        tk.Label(top_frame, text="关键字:").pack(side=tk.LEFT)
+        tk.Label(top_frame, text="关键字:", bg=CONTROL_MAP_THEME["bg"], fg=CONTROL_MAP_THEME["text"]).pack(side=tk.LEFT)
         kw_var = tk.StringVar()
-        kw_entry = tk.Entry(top_frame, textvariable=kw_var, width=30)
+        kw_entry = tk.Entry(top_frame, textvariable=kw_var, width=30,
+                           bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
+                           insertbackground=CONTROL_MAP_THEME["text"], relief="flat",
+                           highlightthickness=1, highlightbackground=CONTROL_MAP_THEME["border"])
         kw_entry.pack(side=tk.LEFT, padx=(6, 0))
         kw_entry.focus_set()
-        tk.Button(top_frame, text="搜索", bg="#d1fae5", command=lambda: _do_search()).pack(side=tk.LEFT, padx=(6, 0))
+        _paint_button(tk.Button(top_frame, text="搜索", command=lambda: _do_search()), tone="success").pack(side=tk.LEFT, padx=(6, 0))
 
         # -- 搜索范围 --
         scope_var = tk.StringVar(value="all")
-        scope_frame = tk.Frame(dlg)
+        scope_frame = tk.Frame(dlg, bg=CONTROL_MAP_THEME["bg"])
         scope_frame.pack(fill=tk.X, padx=10, pady=4)
         for text, val in [("全部字段", "all"), ("控件名(name)", "name"),
                           ("ID(automationId)", "aid"), ("类型(controlType)", "ctype"),
@@ -7383,19 +8697,24 @@ class ControlMapBuilderApp:
             tk.Radiobutton(scope_frame, text=text, variable=scope_var, value=val).pack(side=tk.LEFT, padx=(0, 8))
 
         # -- 结果列表 --
-        list_frame = tk.Frame(dlg)
+        list_frame = tk.Frame(dlg, bg=CONTROL_MAP_THEME["bg"])
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
         sb = tk.Scrollbar(list_frame)
-        result_listbox = tk.Listbox(list_frame, font=("Consolas", 10), yscrollcommand=sb.set)
+        result_listbox = tk.Listbox(list_frame, font=("Consolas", 10), yscrollcommand=sb.set,
+                                    bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
+                                    selectbackground=CONTROL_MAP_THEME["primary_soft"],
+                                    selectforeground=CONTROL_MAP_THEME["primary"],
+                                    relief="flat", bd=1, highlightthickness=1,
+                                    highlightbackground=CONTROL_MAP_THEME["border"])
         sb.config(command=result_listbox.yview)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         result_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         status_var = tk.StringVar(value="输入关键字后回车或点搜索")
-        tk.Label(dlg, textvariable=status_var, fg="#555555").pack(anchor="w", padx=10, pady=(0, 4))
+        tk.Label(dlg, textvariable=status_var, fg=CONTROL_MAP_THEME["muted"], bg=CONTROL_MAP_THEME["bg"]).pack(anchor="w", padx=10, pady=(0, 4))
 
         # -- 底部按钮 --
-        btn_frame = tk.Frame(dlg)
+        btn_frame = tk.Frame(dlg, bg=CONTROL_MAP_THEME["bg"])
         btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
 
         result_indices = []  # listbox position -> flat index
@@ -7403,7 +8722,7 @@ class ControlMapBuilderApp:
         def _search_flat(kw, scope, ctrl):
             texts = {
                 "all": lambda c: " ".join(str(v) for v in c.values()),
-                "name": lambda c: f"{c.get('displayName','')} {c.get('name','')}",
+                "name": lambda c: f"{_display_control_name(c)} {c.get('name','')} {c.get('helpText','')}",
                 "aid": lambda c: c.get("automationId", ""),
                 "ctype": lambda c: c.get("controlType", ""),
                 "cname": lambda c: c.get("className", ""),
@@ -7424,7 +8743,7 @@ class ControlMapBuilderApp:
             for idx, ctrl in enumerate(current_flat):
                 if _search_flat(kw, scope, ctrl):
                     result_indices.append(idx)
-                    name = (ctrl.get("displayName") or ctrl.get("name") or "")
+                    name = _display_control_name(ctrl) or ctrl.get("name") or ""
                     aid = (ctrl.get("automationId") or "")
                     ctype = (ctrl.get("controlType") or "")
                     display = f"#{idx:<4} | {ctype:<12} | id={aid:<20} | {name}"
@@ -7443,8 +8762,8 @@ class ControlMapBuilderApp:
 
         kw_entry.bind("<Return>", _do_search)
         result_listbox.bind("<Double-Button-1>", lambda e: _locate())
-        tk.Button(btn_frame, text="定位到选中项", command=_locate).pack(side=tk.LEFT, padx=3)
-        tk.Button(btn_frame, text="关闭", command=dlg.destroy).pack(side=tk.RIGHT, padx=3)
+        _paint_button(tk.Button(btn_frame, text="定位到选中项", command=_locate), tone="primary").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(btn_frame, text="关闭", command=dlg.destroy)).pack(side=tk.RIGHT, padx=3)
 
     # ── 合并入库 ──────────────────────────────────────────────────────────────
 
@@ -7457,22 +8776,31 @@ class ControlMapBuilderApp:
           - 另存为新文件
           - 三种去重策略 + 高权威覆盖
         """
-        dlg = tk.Toplevel(self.root)
+        dlg = tk.Toplevel(self.root, bg=CONTROL_MAP_THEME["bg"])
         dlg.title("合并入库")
         dlg.geometry("780x620")
         dlg.transient(self.root)
         dlg.grab_set()
 
         # ── 源文件区（新采集，可多选） ──
-        src_frame = tk.LabelFrame(dlg, text="源文件（新采集的要汇入的文件）", padx=8, pady=6)
+        src_frame = tk.LabelFrame(dlg, text="源文件（新采集的要汇入的文件）", padx=8, pady=6,
+                                  bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
+                                  relief="flat", bd=1, highlightthickness=1,
+                                  highlightbackground=CONTROL_MAP_THEME["border"],
+                                  font=(CONTROL_MAP_THEME["font"][0], 10, "bold"))
         src_frame.pack(fill=tk.X, padx=10, pady=(10, 2))
 
-        src_btn_row = tk.Frame(src_frame)
+        src_btn_row = tk.Frame(src_frame, bg=CONTROL_MAP_THEME["panel"])
         src_btn_row.pack(fill=tk.X)
-        tk.Button(src_btn_row, text="添加源文件...", command=lambda: _add_source()).pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(src_btn_row, text="移除选中", command=lambda: _remove_source()).pack(side=tk.LEFT)
+        _paint_button(tk.Button(src_btn_row, text="添加源文件...", command=lambda: _add_source()), tone="primary").pack(side=tk.LEFT, padx=(0, 6))
+        _paint_button(tk.Button(src_btn_row, text="移除选中", command=lambda: _remove_source())).pack(side=tk.LEFT)
 
-        src_listbox = tk.Listbox(src_frame, height=4, font=("Consolas", 10))
+        src_listbox = tk.Listbox(src_frame, height=4, font=("Consolas", 10),
+                                bg=CONTROL_MAP_THEME["panel_soft"], fg=CONTROL_MAP_THEME["text"],
+                                selectbackground=CONTROL_MAP_THEME["primary_soft"],
+                                selectforeground=CONTROL_MAP_THEME["primary"],
+                                relief="flat", bd=1, highlightthickness=1,
+                                highlightbackground=CONTROL_MAP_THEME["border"])
         src_listbox.pack(fill=tk.X, pady=(4, 0))
         src_scroll = tk.Scrollbar(src_frame, orient="vertical", command=src_listbox.yview)
         src_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -7481,23 +8809,34 @@ class ControlMapBuilderApp:
         src_entries = []  # [(display_name, full_path)]
 
         # ── 目标文件区 ──
-        tgt_frame = tk.LabelFrame(dlg, text="目标文件（要合并到哪个库）", padx=8, pady=6)
+        tgt_frame = tk.LabelFrame(dlg, text="目标文件（要合并到哪个库）", padx=8, pady=6,
+                                  bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
+                                  relief="flat", bd=1, highlightthickness=1,
+                                  highlightbackground=CONTROL_MAP_THEME["border"],
+                                  font=(CONTROL_MAP_THEME["font"][0], 10, "bold"))
         tgt_frame.pack(fill=tk.X, padx=10, pady=2)
 
         tgt_path_var = tk.StringVar()
-        tgt_entry = tk.Entry(tgt_frame, textvariable=tgt_path_var, width=60, state="readonly")
+        tgt_entry = tk.Entry(tgt_frame, textvariable=tgt_path_var, width=60, state="readonly",
+                             bg=CONTROL_MAP_THEME["panel_soft"], fg=CONTROL_MAP_THEME["text"],
+                             relief="flat", highlightthickness=1, highlightbackground=CONTROL_MAP_THEME["border"])
         tgt_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(tgt_frame, text="选择目标...", command=lambda: _browse_target()).pack(side=tk.LEFT, padx=(6, 0))
+        _paint_button(tk.Button(tgt_frame, text="选择目标...", command=lambda: _browse_target()), tone="primary").pack(side=tk.LEFT, padx=(6, 0))
 
         # ── 合并选项 ──
-        opt_frame = tk.LabelFrame(dlg, text="合并选项", padx=8, pady=6)
+        opt_frame = tk.LabelFrame(dlg, text="合并选项", padx=8, pady=6,
+                                  bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
+                                  relief="flat", bd=1, highlightthickness=1,
+                                  highlightbackground=CONTROL_MAP_THEME["border"],
+                                  font=(CONTROL_MAP_THEME["font"][0], 10, "bold"))
         opt_frame.pack(fill=tk.X, padx=10, pady=2)
 
         dedup_var = tk.StringVar(value="automationId+controlType+name")
-        tk.Label(opt_frame, text="去重键:").pack(side=tk.LEFT)
+        tk.Label(opt_frame, text="去重键:", bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"]).pack(side=tk.LEFT)
         ttk.Combobox(
             opt_frame, textvariable=dedup_var, width=32, state="readonly",
-            values=["automationId+controlType+name", "uiPath", "name+controlType"]
+            values=["automationId+controlType+name", "uiPath", "name+controlType"],
+            style="ControlMap.TCombobox"
         ).pack(side=tk.LEFT, padx=(4, 16))
 
         overwrite_var = tk.BooleanVar(value=False)
@@ -7505,14 +8844,17 @@ class ControlMapBuilderApp:
                        variable=overwrite_var).pack(side=tk.LEFT)
 
         # ── 预览区 ──
-        preview_box = scrolledtext.ScrolledText(dlg, wrap=tk.WORD, font=("Consolas", 10), height=10)
+        preview_box = scrolledtext.ScrolledText(dlg, wrap=tk.WORD, font=("Consolas", 10), height=10,
+                                                bg=CONTROL_MAP_THEME["panel_soft"], fg=CONTROL_MAP_THEME["text"],
+                                                insertbackground=CONTROL_MAP_THEME["text"], relief="flat",
+                                                bd=1, highlightthickness=1, highlightbackground=CONTROL_MAP_THEME["border"])
         preview_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=4)
 
-        lbl_status = tk.Label(dlg, text="请选择源文件（至少一个）和目标文件", fg="#555555")
+        lbl_status = tk.Label(dlg, text="请选择源文件（至少一个）和目标文件", fg=CONTROL_MAP_THEME["muted"], bg=CONTROL_MAP_THEME["bg"])
         lbl_status.pack(anchor="w", padx=10)
 
         # ── 底部按钮 ──
-        bottom_bar = tk.Frame(dlg)
+        bottom_bar = tk.Frame(dlg, bg=CONTROL_MAP_THEME["bg"])
         bottom_bar.pack(fill=tk.X, padx=10, pady=(0, 10))
 
         # 缓存的源数据（避免重复加载）
@@ -7757,11 +9099,10 @@ class ControlMapBuilderApp:
             except Exception as exc:
                 messagebox.showerror("保存失败", str(exc))
 
-        tk.Button(bottom_bar, text="预览合并", command=_do_preview, bg="#fef9c3").pack(side=tk.LEFT, padx=3)
-        tk.Button(bottom_bar, text="执行合并（覆盖目标）", command=_do_merge,
-                  bg="#d1fae5", font=("Microsoft YaHei", 10, "bold")).pack(side=tk.LEFT, padx=3)
-        tk.Button(bottom_bar, text="另存为新文件", command=_save_as_new, bg="#e0e7ff").pack(side=tk.LEFT, padx=3)
-        tk.Button(bottom_bar, text="关闭", command=dlg.destroy).pack(side=tk.RIGHT, padx=3)
+        _paint_button(tk.Button(bottom_bar, text="预览合并", command=_do_preview), tone="warning").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(bottom_bar, text="执行合并（覆盖目标）", command=_do_merge), tone="success").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(bottom_bar, text="另存为新文件", command=_save_as_new), tone="primary").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(bottom_bar, text="关闭", command=dlg.destroy)).pack(side=tk.RIGHT, padx=3)
 
 
 def _merge_dedup_key(item, mode):
@@ -7816,33 +9157,46 @@ def _merge_payloads_into_target(target_payload, source_payloads, mode, authority
         for ctrl in pay.get("flatControls", []) or pay.get("controlDefinitions", []):
             key = _merge_dedup_key(ctrl, mode)
             if key in index:
-                if authority_override:
-                    existing = index[key]
-                    for field, value in ctrl.items():
-                        if field.startswith("_"):
-                            continue
-                        if value not in (None, "", [], {}) and not existing.get(field):
-                            existing[field] = value
-                    updated += 1
+                # 重复 key：始终做「字段级补空合并」，保证 source 独有字段不丢失。
+                # 只填补 target 中为空/缺失的字段，不覆盖 target 已有的权威值。
+                existing = index[key]
+                for field, value in ctrl.items():
+                    if field.startswith("_"):
+                        continue
+                    if value not in (None, "", [], {}) and existing.get(field) in (None, "", [], {}):
+                        existing[field] = value
+                # 嵌套结构（inspectData 等）也做一层补空，避免子字段丢失
+                if isinstance(ctrl.get("inspectData"), dict) and isinstance(existing.get("inspectData"), dict):
+                    for sub_field, sub_value in ctrl["inspectData"].items():
+                        if sub_value not in (None, "", [], {}) and existing["inspectData"].get(sub_field) in (None, "", [], {}):
+                            existing["inspectData"][sub_field] = sub_value
+                updated += 1
             else:
                 index[key] = ctrl
                 added += 1
 
     merged_list = list(index.values())
 
-    # 合并 controlsTree（简单追加）
-    tgt_tree = target_payload.get("controlsTree", [])
+    # 合并 controlsTree（兼容采集端单根节点 dict 结构与目录 list 结构：
+    # dict 形式 {根节点} 取其 children 子树；list 形式直接用）
+    def _tree_to_list(value):
+        if isinstance(value, list):
+            return list(value)
+        if isinstance(value, dict):
+            children = value.get("children", []) or []
+            if isinstance(children, list) and children:
+                return children
+            return [value]
+        return []
+
+    tgt_tree = _tree_to_list(target_payload.get("controlsTree", []))
     src_tree_merged = []
     for pay in source_payloads:
         if pay is None:
             continue
-        st = pay.get("controlsTree", [])
-        if st:
-            src_tree_merged.extend(st)
-    if src_tree_merged and not tgt_tree:
-        target_payload["controlsTree"] = src_tree_merged
-    elif src_tree_merged and tgt_tree:
-        target_payload["controlsTree"] = tgt_tree + src_tree_merged
+        src_tree_merged.extend(_tree_to_list(pay.get("controlsTree", [])))
+    if src_tree_merged:
+        target_payload["controlsTree"] = (tgt_tree + src_tree_merged) if tgt_tree else src_tree_merged
 
     # 回写控件列表（优先 flatControls）
     if target_payload.get("flatControls") is not None:

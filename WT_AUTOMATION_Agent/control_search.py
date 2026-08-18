@@ -480,13 +480,21 @@ def _score(c: dict[str, Any], query: str, action: str = "") -> float:
         return 0.0
 
     # 9) 动作 ↔ 控件类型对标
+    #    交互动作必须命中可交互控件；纯展示层（Text/TextBlock/Static/Label/Separator）
+    #    即使名称完全匹配也应降权，否则模型会选中"文字层"导致点击假成功
+    #    （如查询"求解器参数"时真正的展开按钮是 Button，而非同名的 Text 子节点）。
     if action:
         prefs = _ACTION_TYPE_PREFS.get(action)
         if prefs:
             if ct in prefs:
                 score += 3.0
-            elif action in _INPUT_ACTIONS and ct in _DISPLAY_ONLY_TYPES:
-                score -= 3.0
+            elif ct in _DISPLAY_ONLY_TYPES:
+                score -= 6.0
+    elif _DISPLAY_ONLY_TYPES.intersection({ct}) and re.search(
+        r"设置|输入|点击|选择|改为|填入|设成|改成|选为|切换|展开|选中|设定", q
+    ):
+        # 未传 action 但查询含明确交互意图词：同样对展示层弱降权
+        score -= 3.0
 
     # 10) 质量分级 / 定位评分加权
     tier = str(c.get("qualityTier", ""))

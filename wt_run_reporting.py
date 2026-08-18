@@ -2,11 +2,14 @@
 
 import json
 import os
+import tempfile
 from datetime import datetime
 
 
 _BASE_DIR = os.path.dirname(__file__)
 _LOG_STEP = lambda message: None
+# 进程内运行序号：与毫秒组合保证同一 tick 内多次运行 runId 仍唯一（Windows 时钟粒度粗）
+_RUN_SEQUENCE = [0]
 
 
 def configure_run_reporting(base_dir=None, log_step=None):
@@ -23,10 +26,34 @@ def _ensure_report_dir():
     return report_dir
 
 
+def _atomic_write_json(path, data):
+    """原子写 JSON：先写临时文件再 os.replace，避免进程中断留下截断文件。"""
+    dir_path = os.path.dirname(path)
+    os.makedirs(dir_path, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_report_", suffix=".json", dir=dir_path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file_obj:
+            json.dump(data, file_obj, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def start_run_report(steps_to_run, runtime_config):
     started_at = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now()
+    # runId 追加毫秒+进程内序号：同一秒甚至同一 tick 内多次运行（快速重跑/双实例）
+    # 也不会互相覆盖报告文件
+    _RUN_SEQUENCE[0] += 1
+    run_id = now.strftime("wt_run_%Y%m%d_%H%M%S") + "_{:03d}_{:03d}".format(
+        now.microsecond // 1000, _RUN_SEQUENCE[0] % 1000
+    )
     return {
-        "runId": datetime.now().strftime("wt_run_%Y%m%d_%H%M%S"),
+        "runId": run_id,
         "startedAt": started_at,
         "endedAt": "",
         "status": "running",
@@ -109,17 +136,19 @@ def finalize_run_report(run_report, status, error=""):
     run_report["lastReportPath"] = last_report_path
 
     for target_path in [report_path, last_report_path]:
-        with open(target_path, "w", encoding="utf-8") as file_obj:
-            json.dump(run_report, file_obj, ensure_ascii=False, indent=2)
+        _atomic_write_json(target_path, run_report)
 
+    _summary = run_report.get("summary", {})
+    if not isinstance(_summary, dict):
+        _summary = {}
     _LOG_STEP(
         "运行结果摘要已写入: "
         f"status={run_report.get('status', '')}, "
-        f"executed={run_report['summary'].get('executedCount', 0)}, "
-        f"success={run_report['summary'].get('successCount', 0)}, "
-        f"failed={run_report['summary'].get('failedCount', 0)}, "
-        f"skipped={run_report['summary'].get('skippedCount', 0)}, "
-        f"fallback={run_report['summary'].get('fallbackCount', 0)}, "
+        f"executed={_summary.get('executedCount', 0)}, "
+        f"success={_summary.get('successCount', 0)}, "
+        f"failed={_summary.get('failedCount', 0)}, "
+        f"skipped={_summary.get('skippedCount', 0)}, "
+        f"fallback={_summary.get('fallbackCount', 0)}, "
         f"report={report_path}"
     )
     return report_path

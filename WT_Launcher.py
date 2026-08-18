@@ -119,8 +119,28 @@ def load_json_file(file_path):
 
 
 def save_json_file(file_path, payload):
-    with open(file_path, "w", encoding="utf-8") as file_obj:
-        json.dump(payload, file_obj, ensure_ascii=False, indent=2)
+    tmp_path = file_path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as file_obj:
+            json.dump(payload, file_obj, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, file_path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def _read_log_tail(path, max_lines=20):
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as file_obj:
+            lines = file_obj.read().splitlines()
+        return "\n".join(lines[-max_lines:])
+    except OSError:
+        return ""
 
 
 def load_flow_runtime_config(flow_definition_path=None):
@@ -1319,6 +1339,7 @@ class LauncherApp:
         self.run_report_summary_var = tk.StringVar(value="运行报告：尚未生成")
         self.run_report_meta_var = tk.StringVar(value="最近一次流程执行后，会在这里展示结构化运行结果。")
         self.skip_setup_var = tk.BooleanVar(value=False)
+        self.pre_raise_var = tk.BooleanVar(value=True)
         self.show_monitor_var = tk.BooleanVar(value=True)
         self.flow_steps = []
         self.flow_step_display_map = {}
@@ -1329,6 +1350,7 @@ class LauncherApp:
         self.flow_definition_path_var = tk.StringVar(value=FLOW_DEFINITION_FILE)
         self.template_categories = []
         self._task_server_process = None
+        self._launcher_subprocess_log_handles = []
 
         launcher_state, _state_error = load_json_file(LAUNCHER_STATE_FILE)
         launcher_state = launcher_state or {}
@@ -1346,8 +1368,12 @@ class LauncherApp:
         self.task_queue_url = str(raw_task_url).strip().rstrip("/") or TASK_SERVER_DEFAULT_URL
         self.task_queue_user = str(launcher_state.get("taskQueueUser") or "").strip()
         self.task_queue_token = str(launcher_state.get("taskQueueToken") or "").strip()
+        self.simple_remote_var = tk.BooleanVar(value=bool(launcher_state.get("simpleModeRemote", False)))
         self._initial_ui_mode = "simple" if launcher_state.get("uiMode") == "simple" else "advanced"
         self.enable_ai_intervention_var = tk.BooleanVar(value=bool(launcher_state.get("enableAiIntervention", False)))
+        # 执行中自动更新控件模板开关：勾选后每次运行截图并与上次模板对比、不一致才替换，
+        # 自动关联步骤兜底；不勾选则完全不采集/不更新模板（默认关闭，防止假成功污染模板库）
+        self.template_auto_update_var = tk.BooleanVar(value=bool(launcher_state.get("templateAutoUpdate", False)))
         self.ui_scale_var = tk.StringVar(value=wt_dpi.scale_to_label(wt_dpi.load_scale_config()))
         self.flow_definition_path_var.set(launcher_state.get("flowDefinitionPath") or FLOW_DEFINITION_FILE)
         state_step_order = launcher_state.get("stepOrderByFlowPath", {})
@@ -1595,6 +1621,20 @@ class LauncherApp:
             activebackground=theme["danger_active"], state=tk.DISABLED,
         )
         self.btn_simple_stop.pack(side=tk.LEFT, padx=(8, 0))
+        self.btn_simple_remote = tk.Checkbutton(
+            toolbar,
+            text="远程模式",
+            variable=self.simple_remote_var,
+            bg=theme["toolbar"],
+            fg=theme["muted"],
+            activebackground=theme["toolbar"],
+            activeforeground=theme["muted"],
+            selectcolor=theme["toolbar"],
+            relief=tk.FLAT,
+            cursor="hand2",
+            highlightthickness=0,
+        )
+        self.btn_simple_remote.pack(side=tk.LEFT, padx=(8, 0))
         self.btn_task_monitor = tk.Button(
             toolbar,
             text="任务与监控",
@@ -1608,6 +1648,32 @@ class LauncherApp:
             activebackground=theme["secondary_active"],
         )
         self.btn_task_monitor.pack(side=tk.LEFT, padx=(8, 0))
+        self.btn_simple_submit_remote = tk.Button(
+            toolbar,
+            text="提交所选板块到远程队列",
+            command=self._submit_simple_to_remote_queue,
+            bg=theme["secondary"],
+            fg=theme["text"],
+            relief=tk.FLAT,
+            padx=12,
+            pady=6,
+            cursor="hand2",
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_submit_remote.pack(side=tk.LEFT, padx=(8, 0))
+        self.btn_simple_submit_chain = tk.Button(
+            toolbar,
+            text="提交 JSON 链路",
+            command=self._submit_chain_to_remote_queue,
+            bg=theme["secondary"],
+            fg=theme["text"],
+            relief=tk.FLAT,
+            padx=12,
+            pady=6,
+            cursor="hand2",
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_submit_chain.pack(side=tk.LEFT, padx=(8, 0))
 
         self.simple_status_var = tk.StringVar(value="就绪")
         self.simple_status_label = tk.Label(
@@ -1901,6 +1967,7 @@ class LauncherApp:
                     simple_enabled[key] = bool(enabled_var.get())
             state["simpleModeFlows"] = simple_flows
             state["simpleModeEnabled"] = simple_enabled
+            state["simpleModeRemote"] = bool(self.simple_remote_var.get())
             state["uiMode"] = self.ui_mode_var.get()
             save_json_file(LAUNCHER_STATE_FILE, state)
         except Exception:
@@ -1936,7 +2003,181 @@ class LauncherApp:
             )
             if not skip:
                 return
+        if self.simple_remote_var.get():
+            self._start_simple_remote(selected)
+            return
         self._start_simple_queue(selected)
+
+    def _submit_simple_to_remote_queue(self):
+        """把 Simple 界面勾选且已配置流程文件的板块提交到远程任务队列。"""
+        selected = []
+        missing = []
+        for sec in self.SIMPLE_SECTIONS:
+            key = sec["key"]
+            info = self.simple_section_vars.get(key, {})
+            enabled_var = info.get("enabled")
+            enabled = bool(enabled_var.get()) if enabled_var is not None else False
+            if not enabled:
+                continue
+            path = info.get("path", "")
+            if not path or not os.path.isfile(path):
+                missing.append(sec["title"])
+                continue
+            selected.append(
+                {"key": key, "title": sec["title"], "path": path}
+            )
+        if not selected:
+            hint = "请先勾选要提交的板块，并确保每个板块已设置流程文件。"
+            if missing:
+                hint += "\n\n未配置：" + "、".join(missing[:5])
+            messagebox.showinfo("提示", hint)
+            return
+        if missing:
+            skip = messagebox.askyesno(
+                "部分板块未配置",
+                "以下板块缺少流程文件，将跳过：\n- {}\n\n是否继续提交其余板块？".format(
+                    "\n- ".join(missing[:8])
+                ),
+            )
+            if not skip:
+                return
+        if getattr(self, "_simple_remote_task_ids", None):
+            messagebox.showinfo("提示", "Simple 远程队列正在运行中，请先停止或等待完成。")
+            return
+        self.open_task_queue()
+        window = getattr(self, "_task_queue_window", None)
+        if window is not None:
+            window.submit_simple_sections_dialog(selected)
+
+    def _submit_chain_to_remote_queue(self):
+        if not self.task_queue_url or not self.task_queue_user or not self.task_queue_token:
+            messagebox.showwarning(
+                "提示",
+                "请先打开任务队列窗口填写服务器地址、用户名和服务令牌（--auth-token）。",
+            )
+            return
+        self.open_task_queue()
+        window = getattr(self, "_task_queue_window", None)
+        if window is not None:
+            window.submit_local_flow_file()
+
+    def _start_simple_remote(self, keys):
+        if getattr(self, "_simple_remote_task_ids", None):
+            messagebox.showinfo("提示", "Simple 远程队列正在运行中，请先停止或等待完成。")
+            return False
+        if not self.task_queue_url or not self.task_queue_user or not self.task_queue_token:
+            messagebox.showwarning(
+                "提示",
+                "远程模式需要先配置服务器地址、用户名和服务令牌。\n请先打开任务队列窗口填写连接参数。",
+            )
+            return False
+        self.open_task_queue()
+        window = getattr(self, "_task_queue_window", None)
+        if window is None:
+            return False
+        self.btn_simple_run.config(state=tk.DISABLED)
+        self.btn_simple_stop.config(state=tk.NORMAL)
+        self._simple_remote_stop = False
+        self._simple_remote_task_ids = {}
+        self._simple_set_status("正在提交 {} 个板块到远程队列".format(len(keys)), "running")
+        sections = []
+        for key in keys:
+            sec = next(s for s in self.SIMPLE_SECTIONS if s["key"] == key)
+            sections.append({
+                "key": key,
+                "title": sec["title"],
+                "path": self.simple_section_vars.get(key, {}).get("path", ""),
+            })
+        window.submit_simple_sections(
+            sections,
+            completed_callback=lambda ids, results: self._simple_remote_submitted(ids, results),
+        )
+        return True
+
+    def _simple_remote_submitted(self, task_ids, results):
+        if self._simple_remote_stop:
+            self._simple_remote_task_ids = {}
+            return
+        submitted = 0
+        for result in results or []:
+            if result[1] == "已提交":
+                submitted += 1
+        if not task_ids:
+            self._simple_set_status("远程提交失败，未获取到任务 ID", "error")
+            self._simple_finish_remote_run()
+            return
+        for task_id in task_ids:
+            self._simple_remote_task_ids[task_id] = True
+        self._simple_set_status(
+            "已提交 {} 个任务，等待执行".format(len(task_ids)),
+            "running",
+        )
+        import threading as _th
+        _th.Thread(target=self._simple_remote_poll, daemon=True).start()
+
+    def _simple_remote_poll(self):
+        window = getattr(self, "_task_queue_window", None)
+        if window is None:
+            self._post_ui(lambda: self._simple_finish_remote_run("任务队列窗口已关闭"))
+            return
+        while True:
+            if self._simple_remote_stop:
+                return
+            if not getattr(self, "_simple_remote_task_ids", None):
+                return
+            remaining = dict(self._simple_remote_task_ids)
+            done_count = 0
+            running_detail = None
+            total = len(remaining)
+            index = 0
+            for task_id in list(remaining):
+                index += 1
+                try:
+                    payload = window.get_task_detail(task_id)
+                    task = payload.get("task") or {} if isinstance(payload, dict) else {}
+                    status = str(task.get("status") or "")
+                    if status in ("success", "failed", "canceled", "terminated"):
+                        done_count += 1
+                        self._simple_remote_task_ids.pop(task_id, None)
+                    elif running_detail is None and status in ("pending", "running", "paused"):
+                        running_detail = task
+                except Exception as exc:
+                    self._post_ui(
+                        lambda e=exc: self._simple_set_status(
+                            "远程查询失败：{}".format(e), "warning"
+                        )
+                    )
+                    time.sleep(2)
+                    break
+            else:
+                if running_detail is not None:
+                    step = str(running_detail.get("currentStepName") or "").strip()
+                    percent = running_detail.get("progressPercent")
+                    status_text = str(running_detail.get("status") or "")
+                    if isinstance(percent, (int, float)):
+                        info = "{:.0f}%".format(percent)
+                    else:
+                        info = status_text
+                    if step:
+                        info += " {}".format(step)
+                    self._post_ui(
+                        lambda i=info: self._simple_set_status(
+                            "远程执行中 {}/{}：{}".format(total - done_count, total, i),
+                            "running",
+                        )
+                    )
+                if not self._simple_remote_task_ids and not self._simple_remote_stop:
+                    self._post_ui(lambda: self._simple_finish_remote_run())
+                    return
+                time.sleep(2)
+
+    def _simple_finish_remote_run(self, note=""):
+        self._simple_remote_task_ids = {}
+        self._simple_remote_stop = False
+        self.btn_simple_run.config(state=tk.NORMAL)
+        self.btn_simple_stop.config(state=tk.DISABLED)
+        text = note or "全部远程任务完成"
+        self._simple_set_status(text, "success" if not note else "idle")
 
     def _simple_run_one(self, section_key):
         info = self.simple_section_vars.get(section_key, {})
@@ -1962,11 +2203,24 @@ class LauncherApp:
         return True
 
     def _simple_stop_queue(self):
+        task_ids = list(getattr(self, "_simple_remote_task_ids", None) or [])
+        window = getattr(self, "_task_queue_window", None)
+        self._simple_remote_stop = True
         self._simple_run_queue = []
         self._simple_run_index = 0
+        self._simple_remote_task_ids = {}
         self.btn_simple_run.config(state=tk.NORMAL)
         self.btn_simple_stop.config(state=tk.DISABLED)
         self._simple_set_status("已停止排队", "idle")
+        if task_ids and window is not None:
+            def _terminate_tasks():
+                for task_id in task_ids:
+                    try:
+                        window.control_task(task_id, "terminate")
+                    except Exception:
+                        pass
+            import threading as _th
+            _th.Thread(target=_terminate_tasks, daemon=True).start()
 
     def _simple_run_next(self):
         """启动下一个待运行板块（由 after 在主线程中调度，线程安全）。"""
@@ -2321,6 +2575,14 @@ class LauncherApp:
         ).pack(anchor="w")
         tk.Checkbutton(
             test_frame,
+            text="运行前置顶 WT 主窗口（流程包/步骤测试前自动置顶）",
+            variable=self.pre_raise_var,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+        ).pack(anchor="w", pady=(4, 0))
+        tk.Checkbutton(
+            test_frame,
             text="显示流程监视器",
             variable=self.show_monitor_var,
             bg=self.theme["card"],
@@ -2331,6 +2593,18 @@ class LauncherApp:
             test_frame,
             text="启用 AI 失效介入（仅在普通执行和模板兜底都失败后调用 UI-TARS）",
             variable=self.enable_ai_intervention_var,
+            command=self._refresh_config_summary,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+            wraplength=340,
+            justify=tk.LEFT,
+            anchor="w",
+        ).pack(anchor="w", pady=(4, 0))
+        tk.Checkbutton(
+            test_frame,
+            text="自动更新控件模板（每次运行截图与上次对比，不一致才替换，并自动关联步骤模板兜底）",
+            variable=self.template_auto_update_var,
             command=self._refresh_config_summary,
             bg=self.theme["card"],
             fg=self.theme["text"],
@@ -3086,7 +3360,7 @@ class LauncherApp:
             return
 
         summary = report.get("summary", {}) if isinstance(report.get("summary"), dict) else {}
-        self.run_report_summary_var.set(
+        base_summary = (
             "运行状态：{status} | 请求 {requested} 步 | 实际记录 {executed} 步 | 成功 {success} | 失败 {failed} | 跳过 {skipped} | fallback {fallback}".format(
                 status=report.get("status", "unknown"),
                 requested=summary.get("requestedCount", len(report.get("stepsRequested", []) or [])),
@@ -3097,6 +3371,20 @@ class LauncherApp:
                 fallback=summary.get("fallbackCount", 0),
             )
         )
+        # MUP 数据落盘铁证：展示运行前后数据文件变化
+        mup_files = report.get("mupDataFiles") if isinstance(report.get("mupDataFiles"), dict) else None
+        if mup_files:
+            parts = []
+            new_map = mup_files.get("new", {}) or {}
+            _dir_label = {"terrain": "地形", "timeseries": "气象", "roughness": "粗糙度", "results": "计算", "synthesis": "合成"}
+            for key, files in sorted(new_map.items()):
+                if files:
+                    parts.append("{label}新增{count}个".format(label=_dir_label.get(key, key), count=len(files)))
+            if parts:
+                base_summary += " | 数据落盘：{}".format("、".join(parts))
+            else:
+                base_summary += " | 数据落盘：未检测到新增文件"
+        self.run_report_summary_var.set(base_summary)
         self.run_report_meta_var.set(
             "开始：{started} | 结束：{ended} | 总耗时：{elapsed:.3f} 秒 | 报告：{path}".format(
                 started=report.get("startedAt", "") or "-",
@@ -3445,11 +3733,13 @@ class LauncherApp:
                 "repoRoot": values["repoRoot"],
                 "configPath": values["configPath"],
                 "enableAiIntervention": bool(self.enable_ai_intervention_var.get()),
+                "templateAutoUpdate": bool(self.template_auto_update_var.get()),
                 "flowDefinitionPath": self._get_flow_definition_path(),
                 "stepOrderByFlowPath": self.step_order_by_flow_path,
                 "recentModels": self.recent_models,
                 "simpleModeFlows": simple_flows,
                 "simpleModeEnabled": self._simple_enabled_state() if hasattr(self, "simple_section_vars") else {},
+                "simpleModeRemote": bool(getattr(self, "simple_remote_var", tk.BooleanVar(value=False)).get()),
                 "serverMonitorUrl": getattr(self, "server_monitor_url", SERVER_MONITOR_DEFAULT_URL),
                 "taskQueueUrl": getattr(self, "task_queue_url", TASK_SERVER_DEFAULT_URL),
                 "taskQueueUser": getattr(self, "task_queue_user", ""),
@@ -3469,6 +3759,7 @@ class LauncherApp:
         target_env["UI_TARS_VLM_BASE_URL"] = values["baseURL"]
         target_env["UI_TARS_USE_RESPONSES_API"] = "true" if values["useResponsesApi"] else "false"
         target_env["WT_ENABLE_AI_INTERVENTION"] = "true" if self.enable_ai_intervention_var.get() else "false"
+        target_env["WT_TEMPLATE_AUTO_UPDATE"] = "true" if self.template_auto_update_var.get() else "false"
         target_env["WT_AI_INTERVENTION_LOG_LINES"] = "10"
         if values["apiKey"]:
             target_env["VOLC_API_KEY"] = values["apiKey"]
@@ -3503,7 +3794,8 @@ class LauncherApp:
             f"模型：{values['model'] or '未配置'}\n"
             f"BaseURL：{values['baseURL'] or '未配置'}\n"
             f"API Key：{self._mask_secret(values['apiKey'])}\n"
-            f"失败后 AI 介入：{'已开启' if self.enable_ai_intervention_var.get() else '未开启'}"
+            f"失败后 AI 介入：{'已开启' if self.enable_ai_intervention_var.get() else '未开启'}\n"
+            f"自动更新模板：{'已开启' if self.template_auto_update_var.get() else '未开启'}"
         )
         self.config_summary_var.set(summary)
 
@@ -3761,6 +4053,9 @@ class LauncherApp:
         command = [sys.executable, AUTOMATION_SCRIPT]
         if not self.show_monitor_var.get():
             command.append("--no-monitor")
+        # 运行前置顶开关（默认开启）：关闭时跳过启动前把 WT 主窗口置顶的动作。
+        if not self.pre_raise_var.get():
+            command.append("--no-pre-raise")
         command.extend(extra_args or [])
         self.process = subprocess.Popen(
             command,
@@ -4954,22 +5249,54 @@ class LauncherApp:
             extra_args.append("--skip-setup")
         self._launch_automation(extra_args, banner=f"========== 从步骤开始执行：{start_step} ==========")
 
+    def _load_fresh_flow_package(self, package_id):
+        """从磁盘实时读取流程包定义，避免使用内存中可能陈旧的 stepIds。"""
+        try:
+            payload, _effective_path, _source_definition_path = load_effective_flow_payload(
+                self._get_flow_definition_path()
+            )
+            raw_packages = payload.get("flowPackages", []) if isinstance(payload, dict) else []
+            for pkg in raw_packages:
+                if not isinstance(pkg, dict):
+                    continue
+                if str(pkg.get("id", "")).strip() == package_id:
+                    return pkg
+        except Exception as exc:
+            self._append_log(f"读取最新流程包定义失败，回退内存数据：{exc}", tag="warning")
+        return None
+
     def start_selected_flow_package(self):
         package = self._get_selected_flow_package()
         if not package:
             messagebox.showinfo("提示", "请先选择一个流程包。")
             return
+        package_id = str(package.get("id", "")).strip()
+        fresh_package = self._load_fresh_flow_package(package_id)
+        if fresh_package is not None:
+            step_ids = [str(item).strip() for item in (fresh_package.get("stepIds") or []) if str(item).strip()]
+            if step_ids:
+                package = fresh_package
+            else:
+                self._append_log(
+                    f"最新流程包 {package_id} 的 stepIds 为空，仍使用内存数据",
+                    tag="warning",
+                )
+        else:
+            self._append_log(
+                f"未在磁盘找到流程包 {package_id}，仍使用内存数据启动",
+                tag="warning",
+            )
         step_ids = [str(item).strip() for item in (package.get("stepIds") or []) if str(item).strip()]
         if not step_ids:
-            messagebox.showinfo("提示", f"流程包 {package.get('id', '')} 里还没有可测试的步骤。")
+            messagebox.showinfo("提示", f"流程包 {package_id} 里还没有可测试的步骤。")
             return
         extra_args = ["--steps", ",".join(step_ids)]
         if self.skip_setup_var.get():
             extra_args.append("--skip-setup")
-        package_name = package.get("name") or package.get("id", "")
+        package_name = package.get("name") or package_id
         self._launch_automation(
             extra_args,
-            banner=f"========== 启动流程包测试：{package_name} ({package.get('id', '')}) ==========",
+            banner=f"========== 启动流程包测试：{package_name} ({package_id}) ==========",
         )
 
     def open_template_builder(self):
@@ -5086,31 +5413,51 @@ class LauncherApp:
         self.status_var.set("状态：导入控件启动失败")
         self.current_step_var.set("当前步骤：请检查流程编辑器启动日志")
 
+    def _new_launcher_subprocess_log_path(self, name):
+        log_dir = os.path.join(BASE_DIR, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return os.path.join(log_dir, "launcher_{}_{}.log".format(name, timestamp))
+
+    def _open_launcher_subprocess_log(self, name):
+        log_path = self._new_launcher_subprocess_log_path(name)
+        log_handle = open(log_path, "a", encoding="utf-8", errors="ignore")
+        self._launcher_subprocess_log_handles.append(log_handle)
+        return log_path, log_handle
+
     def open_control_map_builder(self):
         """打开控件库采集器（用于采集新窗口的控件信息）"""
         if not os.path.exists(CONTROL_MAP_BUILDER_SCRIPT):
             messagebox.showerror("打开失败", f"未找到控件库采集器：\n{CONTROL_MAP_BUILDER_SCRIPT}")
             return
 
+        log_handle = None
         try:
+            log_path, log_handle = self._open_launcher_subprocess_log("control_map_builder")
             builder_process = subprocess.Popen(
                 [sys.executable, CONTROL_MAP_BUILDER_SCRIPT],
                 cwd=BASE_DIR,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except Exception as exc:
+            if log_handle is not None:
+                try:
+                    log_handle.close()
+                except OSError:
+                    pass
+                try:
+                    self._launcher_subprocess_log_handles.remove(log_handle)
+                except ValueError:
+                    pass
             messagebox.showerror("打开失败", f"启动控件库采集器失败：\n{exc}")
             self._append_log(f"启动控件库采集器失败：{exc}", tag="error")
             return
 
-        self.root.after(1200, lambda: self._check_control_map_builder_startup(builder_process))
+        self.root.after(1200, lambda: self._check_control_map_builder_startup(builder_process, log_path))
 
-    def _check_control_map_builder_startup(self, process):
+    def _check_control_map_builder_startup(self, process, log_path=None):
         return_code = process.poll()
         if return_code is None:
             self._append_log("已打开控件库采集器。", tag="system")
@@ -5118,8 +5465,7 @@ class LauncherApp:
             self.current_step_var.set("当前步骤：可扫描窗口控件树并保存控件库")
             return
 
-        stdout, stderr = process.communicate()
-        error_output = (stderr or stdout or "").strip()
+        error_output = _read_log_tail(log_path)
         if not error_output:
             error_output = f"控件库采集器已退出，退出码：{return_code}"
 
@@ -5167,25 +5513,33 @@ class LauncherApp:
         except OSError:
             pass
 
+        log_handle = None
         try:
+            log_path, log_handle = self._open_launcher_subprocess_log("flow_editor")
             self._editor_process = subprocess.Popen(
                 [sys.executable, FLOW_EDITOR_SCRIPT, "--startup-ping", FLOW_EDITOR_STARTUP_SIGNAL],
                 cwd=BASE_DIR,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except Exception as exc:
+            if log_handle is not None:
+                try:
+                    log_handle.close()
+                except OSError:
+                    pass
+                try:
+                    self._launcher_subprocess_log_handles.remove(log_handle)
+                except ValueError:
+                    pass
             messagebox.showerror("打开失败", f"启动流程链路编辑器失败：\n{exc}")
             self._append_log(f"启动流程链路编辑器失败：{exc}", tag="error")
             return
 
-        self.root.after(1600, lambda: self._check_flow_editor_startup(self._editor_process))
+        self.root.after(1600, lambda: self._check_flow_editor_startup(self._editor_process, log_path))
 
-    def _check_flow_editor_startup(self, process):
+    def _check_flow_editor_startup(self, process, log_path=None):
         if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
             self._append_log("已打开流程链路编辑器。", tag="system")
             self.status_var.set("状态：流程链路编辑器已启动")
@@ -5199,8 +5553,7 @@ class LauncherApp:
             self.current_step_var.set("当前步骤：等待链路编辑器窗口就绪")
             return
 
-        stdout, stderr = process.communicate()
-        error_output = (stderr or stdout or "").strip()
+        error_output = _read_log_tail(log_path)
         if not error_output:
             error_output = f"流程链路编辑器已退出，退出码：{return_code}"
 
@@ -5949,6 +6302,11 @@ class LauncherApp:
                 return
             try:
                 self.process.terminate()
+            except OSError:
+                pass
+        for log_handle in getattr(self, "_launcher_subprocess_log_handles", []):
+            try:
+                log_handle.close()
             except OSError:
                 pass
         self.root.destroy()

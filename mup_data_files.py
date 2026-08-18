@@ -53,21 +53,23 @@ def _dir_path(business_key):
     data_dir = locate_data_dir()
     if not data_dir:
         return ""
-    rel = {"terrain": "DATAFILES\\OROGRAPHY", "timeseries": "DATAFILES\\TIMESERIES",
-           "roughness": "DATAFILES\\ROUGHNESS", "results": "RESULT_FILES",
-           "synthesis": "SYNTHESIS_FILES"}.get(business_key)
+    rel = rel_dir(business_key)
     return os.path.join(data_dir, rel) if rel else ""
 
 
 def snapshot():
     """记录各业务目录文件清单。
 
-    返回 {"terrain": {filename: {"size":int,"mtime":float}}, "timeseries": {...}, ...}
+    返回 {"terrain": {filename: {"size":int,"mtime":float}}, "timeseries": {...}, ...,
+          "_meta": {"data_dir": str}}。
+    "_meta" 记录本次快照对应的用户数据目录，供 diff 检测两条快照之间的目录漂移
+    （换用户/换机同步可能出现新的 local_* 目录，文件级对比会失真）。
     """
-    result = {}
+    data_dir = locate_data_dir()
+    result = {"_meta": {"data_dir": data_dir}}
     for _, business_key in _BUSINESS_DIRS:
         result[business_key] = {}
-        base = _dir_path(business_key)
+        base = os.path.join(data_dir, rel_dir(business_key)) if data_dir else ""
         if not base or not os.path.isdir(base):
             continue
         try:
@@ -85,6 +87,13 @@ def snapshot():
     return result
 
 
+def rel_dir(business_key):
+    """业务目录相对用户数据目录的路径。business_key 为 "terrain"/"timeseries"/..."""
+    return {"terrain": "DATAFILES\\OROGRAPHY", "timeseries": "DATAFILES\\TIMESERIES",
+            "roughness": "DATAFILES\\ROUGHNESS", "results": "RESULT_FILES",
+            "synthesis": "SYNTHESIS_FILES"}.get(business_key) or ""
+
+
 def diff(before, after):
     """对比两个快照，返回按业务目录归类的新增/删除/变化文件。
 
@@ -93,13 +102,25 @@ def diff(before, after):
       "changed": {business_key: [filename,...]},
       "deleted": {business_key: [filename,...]},
       "newCount": int, "changedCount": int, "deletedCount": int,
+      "dirChanged": bool(可选，目录漂移时为 True，此时不产出文件级差异),
     }
     """
     before = before or {}
     after = after or {}
     out = {"new": {}, "changed": {}, "deleted": {}, "newCount": 0, "changedCount": 0, "deletedCount": 0}
+    before_meta = before.get("_meta") if isinstance(before.get("_meta"), dict) else {}
+    after_meta = after.get("_meta") if isinstance(after.get("_meta"), dict) else {}
+    before_dir = before_meta.get("data_dir") or ""
+    after_dir = after_meta.get("data_dir") or ""
+    if before_dir and after_dir and before_dir != after_dir:
+        # 目录漂移：前后快照来自不同的用户数据目录（换用户/换机同步新增 local_*），
+        # 文件级对比会大面积假"新增/删除"，只上报漂移标志，避免误导性铁证。
+        out["dirChanged"] = True
+        return out
     all_keys = set(before) | set(after)
     for key in all_keys:
+        if key == "_meta":
+            continue
         b = before.get(key) or {}
         a = after.get(key) or {}
         new = [fn for fn in a if fn not in b]
@@ -108,7 +129,7 @@ def diff(before, after):
             fn for fn in a
             if fn in b
             and (b[fn].get("size") != a[fn].get("size")
-                 or abs((b[fn].get("mtime") or 0) - (a[fn].get("mtime") or 0)) > 0.5)
+                 or abs((b[fn].get("mtime") or 0) - (a[fn].get("mtime") or 0)) > 2.0)
         ]
         if new:
             out["new"][key] = new
@@ -130,4 +151,7 @@ def list_new_files(before, after, business_key):
 
 def clear_cache():
     """清空目录定位缓存。"""
-    locate_data_dir.cache_clear()
+    # locate_data_dir 未被 lru_cache 装饰，防御性调用（外部可能按惯例调用 clear_cache）
+    clear = getattr(locate_data_dir, "cache_clear", None)
+    if callable(clear):
+        clear()

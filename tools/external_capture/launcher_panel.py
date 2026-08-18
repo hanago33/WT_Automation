@@ -145,6 +145,31 @@ class ExternalCaptureDialog:
         self.window.after(300, self._refresh_service_status)
 
     # ------------------------------------------------------------------ UI
+    def _theme_button(self, parent, text, command, tone="default"):
+        """按统一色板创建按钮；tone 取 default/primary/danger。"""
+        tones = {
+            "default": (self.theme.get("panel", "#ffffff"), self.theme.get("text", "#1f2937")),
+            "primary": (self.theme.get("primary_soft", "#dbeafe"), self.theme.get("primary", "#2563eb")),
+            "danger": (self.theme.get("danger_soft", "#fee2e2"), self.theme.get("danger", "#dc2626")),
+        }
+        bg, fg = tones.get(tone, tones["default"])
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=bg,
+            fg=fg,
+            activebackground=self.theme.get("panel_soft", "#fbfdff"),
+            activeforeground=fg,
+            relief=tk.FLAT,
+            bd=1,
+            highlightthickness=1,
+            highlightbackground=self.theme.get("border", "#d8e2f0"),
+            cursor="hand2",
+            padx=10,
+            pady=3,
+            font=("Microsoft YaHei UI", 10),
+        )
     def _build_ui(self):
         bg = self.theme.get("bg", "#eef3f9")
         card = self.theme.get("card", "#ffffff")
@@ -169,18 +194,19 @@ class ExternalCaptureDialog:
         svc.pack(fill=tk.X, pady=(10, 0))
         row = tk.Frame(svc, bg=card)
         row.pack(fill=tk.X)
-        tk.Button(row, text="启动服务", command=self.start_uiapeek_service).pack(side=tk.LEFT)
-        tk.Button(row, text="停止服务", command=self.stop_uiapeek_service).pack(side=tk.LEFT, padx=(6, 0))
-        tk.Button(row, text="检测状态", command=self._refresh_service_status).pack(side=tk.LEFT, padx=(6, 0))
+        self._theme_button(row, "启动服务", self.start_uiapeek_service, tone="primary").pack(side=tk.LEFT)
+        self._theme_button(row, "停止服务", self.stop_uiapeek_service, tone="danger").pack(side=tk.LEFT, padx=(6, 0))
+        self._theme_button(row, "检测状态", self._refresh_service_status).pack(side=tk.LEFT, padx=(6, 0))
         tk.Label(row, text="状态：", bg=card).pack(side=tk.LEFT, padx=(12, 0))
-        tk.Label(row, textvariable=self.var_service_status, bg=card,
-                 fg=self.theme.get("accent", "#2d7ff9")).pack(side=tk.LEFT)
+        self._service_status_label = tk.Label(row, textvariable=self.var_service_status, bg=card,
+                                              fg=self.theme.get("primary", "#2563eb"))
+        self._service_status_label.pack(side=tk.LEFT)
 
         path_row = tk.Frame(svc, bg=card)
         path_row.pack(fill=tk.X, pady=(8, 0))
         tk.Label(path_row, text="UiaPeek.exe 路径：", bg=card).pack(side=tk.LEFT)
         tk.Entry(path_row, textvariable=self.var_uiapeek_exe).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
-        tk.Button(path_row, text="浏览…", command=self._browse_uiapeek_exe).pack(side=tk.LEFT)
+        self._theme_button(path_row, "浏览…", self._browse_uiapeek_exe).pack(side=tk.LEFT)
 
         url_row = tk.Frame(svc, bg=card)
         url_row.pack(fill=tk.X, pady=(6, 0))
@@ -192,16 +218,16 @@ class ExternalCaptureDialog:
         peek.pack(fill=tk.X, pady=(10, 0))
         prow = tk.Frame(peek, bg=card)
         prow.pack(fill=tk.X)
-        tk.Button(prow, text="peek 焦点元素", command=self.peek_focused).pack(side=tk.LEFT)
+        self._theme_button(prow, "peek 焦点元素", self.peek_focused, tone="primary").pack(side=tk.LEFT)
         tk.Label(prow, text="  坐标 X：", bg=card).pack(side=tk.LEFT, padx=(10, 0))
         tk.Entry(prow, textvariable=self.var_peek_x, width=6).pack(side=tk.LEFT)
         tk.Label(prow, text="Y：", bg=card).pack(side=tk.LEFT, padx=(4, 0))
         tk.Entry(prow, textvariable=self.var_peek_y, width=6).pack(side=tk.LEFT)
-        tk.Button(prow, text="peek 坐标", command=self.peek_at).pack(side=tk.LEFT, padx=(6, 0))
+        self._theme_button(prow, "peek 坐标", self.peek_at, tone="primary").pack(side=tk.LEFT, padx=(6, 0))
 
         rrow = tk.Frame(peek, bg=card)
         rrow.pack(fill=tk.X, pady=(6, 0))
-        tk.Button(rrow, text="录制键鼠事件流", command=self.record_events).pack(side=tk.LEFT)
+        self._theme_button(rrow, "录制键鼠事件流", self.record_events, tone="primary").pack(side=tk.LEFT)
         tk.Label(rrow, text="  秒数：", bg=card).pack(side=tk.LEFT, padx=(10, 0))
         tk.Entry(rrow, textvariable=self.var_record_seconds, width=6).pack(side=tk.LEFT)
         tk.Label(rrow, text="（需 pip install signalrcore）", bg=card, fg=muted).pack(side=tk.LEFT, padx=(6, 0))
@@ -213,26 +239,33 @@ class ExternalCaptureDialog:
         arow.pack(fill=tk.X)
         tk.Label(arow, text="目标进程 PID：", bg=card).pack(side=tk.LEFT)
         tk.Entry(arow, textvariable=self.var_pid, width=10).pack(side=tk.LEFT, padx=(6, 0))
-        tk.Button(arow, text="自动探测 WT", command=self.axe_detect_wt).pack(side=tk.LEFT, padx=(6, 0))
-        tk.Button(arow, text="CLI 扫描", command=self.axe_scan_cli).pack(side=tk.LEFT, padx=(6, 0))
-        tk.Button(arow, text="Bridge 扫描(含 Patterns)", command=self.axe_scan_bridge).pack(side=tk.LEFT, padx=(6, 0))
-        tk.Button(arow, text="查找 CLI", command=self.axe_find_cli).pack(side=tk.LEFT, padx=(6, 0))
+        self._theme_button(arow, "自动探测 WT", self.axe_detect_wt).pack(side=tk.LEFT, padx=(6, 0))
+        self._theme_button(arow, "CLI 扫描", self.axe_scan_cli, tone="primary").pack(side=tk.LEFT, padx=(6, 0))
+        self._theme_button(arow, "Bridge 扫描(含 Patterns)", self.axe_scan_bridge, tone="primary").pack(side=tk.LEFT, padx=(6, 0))
+        self._theme_button(arow, "查找 CLI", self.axe_find_cli).pack(side=tk.LEFT, padx=(6, 0))
 
         crow = tk.Frame(axe, bg=card)
         crow.pack(fill=tk.X, pady=(6, 0))
         admin_txt = "管理员权限：是 ✓（AxeBridge 可正常枚举任何进程）" if _is_admin() \
             else "管理员权限：否（AxeBridge 可能无法枚举 WT 窗口，建议右键 bat 以管理员运行）"
-        tk.Label(crow, text=admin_txt, bg=card, fg=("#1a7f37" if _is_admin() else "#b35900")).pack(side=tk.LEFT)
+        tk.Label(crow, text=admin_txt, bg=card,
+                 fg=("#059669" if _is_admin() else "#b45309")).pack(side=tk.LEFT)
         crow2 = tk.Frame(axe, bg=card)
         crow2.pack(fill=tk.X, pady=(2, 0))
         tk.Label(crow2, text="AxeWindowsCLI.exe 路径（可选）：", bg=card).pack(side=tk.LEFT)
         tk.Entry(crow, textvariable=self.var_axe_cli_exe).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
-        tk.Button(crow, text="浏览…", command=self._browse_axe_cli_exe).pack(side=tk.LEFT)
+        self._theme_button(crow, "浏览…", self._browse_axe_cli_exe).pack(side=tk.LEFT)
 
         # ---- 结果区 ----
         res = tk.LabelFrame(container, text="采集结果", padx=10, pady=10, bg=card, fg=text_c)
         res.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-        self.result_text = scrolledtext.ScrolledText(res, height=12, wrap=tk.WORD, font=("Consolas", 9))
+        self.result_text = scrolledtext.ScrolledText(res, height=12, wrap=tk.WORD, font=("Consolas", 9),
+                                                      bg=self.theme.get("panel_soft", "#fbfdff"),
+                                                      fg=self.theme.get("text", "#1f2937"),
+                                                      insertbackground=self.theme.get("text", "#1f2937"),
+                                                      relief="flat", bd=1,
+                                                      highlightthickness=1,
+                                                      highlightbackground=self.theme.get("border", "#d8e2f0"))
         self.result_text.pack(fill=tk.BOTH, expand=True)
         self.result_text.configure(state=tk.DISABLED)
 
@@ -269,8 +302,19 @@ class ExternalCaptureDialog:
 
         def done(ok):
             self.var_service_status.set("运行中" if ok else "未运行")
+            self._update_service_status_color(ok)
 
         self._run_async(work, done)
+
+    def _update_service_status_color(self, running):
+        """按服务运行/空闲状态着色状态文字。"""
+        if not hasattr(self, "_service_status_label"):
+            return
+        label = self._service_status_label
+        if running:
+            label.configure(fg=self.theme.get("success", "#059669"))
+        else:
+            label.configure(fg=self.theme.get("danger", "#dc2626"))
 
     def start_uiapeek_service(self):
         exe = self.var_uiapeek_exe.get().strip()
@@ -540,8 +584,13 @@ class ExternalCaptureDialog:
         pick.title("选择 WT 进程")
         pick.transient(self.window)
         pick.grab_set()
-        tk.Label(pick, text="检测到以下 WT 候选进程，选择其一以填入 PID：").pack(padx=12, pady=8)
-        lb = tk.Listbox(pick, width=46, height=min(8, len(procs)))
+        pick.configure(bg=self.theme.get("bg", "#f4f7fb"))
+        tk.Label(pick, text="检测到以下 WT 候选进程，选择其一以填入 PID：", bg=self.theme.get("bg", "#f4f7fb"),
+                 fg=self.theme.get("text", "#1f2937")).pack(padx=12, pady=8)
+        lb = tk.Listbox(pick, width=46, height=min(8, len(procs)), bg=self.theme.get("panel", "#ffffff"),
+                        fg=self.theme.get("text", "#1f2937"), selectbackground=self.theme.get("primary_soft", "#dbeafe"),
+                        selectforeground=self.theme.get("primary", "#2563eb"), relief="flat",
+                        bd=1, highlightthickness=1, highlightbackground=self.theme.get("border", "#d8e2f0"))
         lb.pack(padx=12, pady=(0, 8))
         for pid, name in procs:
             lb.insert(tk.END, "{}   -   {}".format(pid, name))
@@ -556,10 +605,10 @@ class ExternalCaptureDialog:
             self._log("已自动填入 WT 进程 PID：{}".format(pid), "success")
             pick.destroy()
 
-        btn_row = tk.Frame(pick)
+        btn_row = tk.Frame(pick, bg=self.theme.get("bg", "#f4f7fb"))
         btn_row.pack(pady=(0, 10))
-        tk.Button(btn_row, text="确定", command=choose, width=12).pack(side=tk.LEFT, padx=12)
-        tk.Button(btn_row, text="取消", command=pick.destroy, width=12).pack(side=tk.LEFT, padx=12)
+        self._theme_button(btn_row, "确定", choose, tone="primary").pack(side=tk.LEFT, padx=12)
+        self._theme_button(btn_row, "取消", pick.destroy).pack(side=tk.LEFT, padx=12)
 
     def axe_find_cli(self):
         cli = aw.find_cli_exe()

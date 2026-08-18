@@ -1,16 +1,30 @@
 {
   "meta": {
-    "templateCount": 7,
+    "templateCount": 8,
     "categoryCount": 1,
-    "lastUpdated": "2026-06-30T20:46:53"
+    "lastUpdated": "2026-08-05T10:13:53"
   },
   "categories": [
     {
       "id": "projection",
-      "count": 7
+      "count": 8
     }
   ],
   "templates": [
+    {
+      "category": "projection",
+      "file_name": "WT",
+      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\projection\\WT.png",
+      "relative_image_path": "projection\\WT.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260805_101208.png",
+      "region": {
+        "x": 1624,
+        "y": 796,
+        "w": 240,
+        "h": 233
+      },
+      "updatedAt": "2026-08-05T10:13:53"
+    },
     {
       "category": "projection",
       "file_name": "template_001",

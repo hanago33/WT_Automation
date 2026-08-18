@@ -311,6 +311,62 @@ def handle_api(path: str, handler) -> None:
                 return _json_response(handler, {"status": "error", "message": f"审核失败：{exc}"}, 500)
             return _json_response(handler, {"status": "ok", **report})
 
+        # ── 一键修复：备份 → 确定性修复 → LLM 语义建议逐条确认后写回 ──
+        if route == "/api/flow/repair" and handler.command == "POST":
+            from WT_AUTOMATION_Agent import flow_ops, flow_repair
+
+            data = _read_body(handler)
+            flow_path = (data.get("flow_path") or "").strip()
+            flow = flow_ops.load_flow(flow_path)
+            if not flow:
+                return _json_response(handler, {"status": "error", "message": "流程文件不存在或解析失败"}, 400)
+            agent = _build_agent(data.get("config", {}))
+            try:
+                repaired, report = flow_repair.repair_flow_definition(flow)
+                llm_suggestions = agent.repair_flow_suggestions(repaired, report)
+                apply = data.get("apply")
+                written = False
+                backup_path = ""
+                if apply is not None:
+                    if apply == "all":
+                        apply_indices = list(range(len(llm_suggestions)))
+                    elif isinstance(apply, list):
+                        apply_indices = []
+                        for raw_idx in apply:
+                            try:
+                                idx = int(raw_idx)
+                            except (TypeError, ValueError):
+                                continue
+                            if 0 <= idx < len(llm_suggestions):
+                                apply_indices.append(idx)
+                    else:
+                        apply_indices = []
+                    for idx in apply_indices:
+                        item = llm_suggestions[idx]
+                        patch = item.get("proposed_patch") or {}
+                        step_index = int(item.get("step_index", 0) or 0)
+                        steps = repaired.get("steps", [])
+                        if not (1 <= step_index <= len(steps)):
+                            continue
+                        step = steps[step_index - 1]
+                        if isinstance(step, dict) and isinstance(patch, dict):
+                            step.update(patch)
+                    backup_path = flow_repair.save_with_backup(flow_path, repaired, report)
+                    written = True
+                return _json_response(handler, {
+                    "status": "ok",
+                    "written": written,
+                    "backup_path": backup_path,
+                    "summary": report.get("summary", ""),
+                    "auto_fixed_count": report.get("auto_fixed_count", 0),
+                    "pending_confirm_count": report.get("pending_confirm_count", 0),
+                    "pending_confirm": report.get("pending_confirm", []),
+                    "llm_suggestions": llm_suggestions,
+                })
+            except Exception as exc:
+                return _json_response(handler, {"status": "error", "message": f"修复失败：{exc}"}, 500)
+
+
         # ── 自然语言生成 → 保存为流程文件（组装完整 flow_definition + 执行器校验 + 落盘） ──
         if route == "/api/flow/save" and handler.command == "POST":
             data = _read_body(handler)
@@ -358,6 +414,17 @@ def handle_api(path: str, handler) -> None:
             except (OSError, json.JSONDecodeError):
                 pass
             flow["steps"] = clean
+
+            # 自动关联模板兜底：步骤未显式配置 fallbackTemplate 且控件存在可解析的
+            # templateKey（采集器/伴随拾取已回填）时自动写入，与链路编辑器保存行为一致
+            try:
+                _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                if _project_root not in sys.path:
+                    sys.path.insert(0, _project_root)
+                import image_template_index
+                image_template_index.auto_associate_fallback_templates(clean)
+            except Exception:
+                pass
 
             # 用执行器同源校验（与链路编辑器加载时一致），不通过也能保存但会返回错误清单
             errors: list[str] = []
@@ -1078,6 +1145,7 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
           <button class="btn btn-secondary btn-sm" onclick="logDiagnose()">🩺 日志诊断</button>
         </div>
         <button class="btn btn-secondary btn-sm" style="width:100%; margin-top:6px; background:#8B5CF6; color:#fff;" onclick="auditFlow()" title="确定性规则 + 模型语义审核，检查动作/控件/参数并给出纠错建议">🧹 流程检查纠错</button>
+        <button class="btn btn-secondary btn-sm" style="width:100%; margin-top:6px; background:#F59E0B; color:#fff;" onclick="repairFlow()" title="备份后自动修复确定性问题，展示模型语义建议供逐条确认">🔧 一键修复</button>
       </div>
     </div>
 
@@ -2212,6 +2280,82 @@ async function auditFlow() {
   } catch (e) {
     removeLoadingMessage();
     addMessage('agent', '❌ 检查出错：' + escapeHtml(e.message));
+  }
+}
+
+async function repairFlow() {
+  let path = document.getElementById('ft-flow').value.trim();
+  if (!path) { showToast('请输入流程文件路径', 'error'); return; }
+  if (!getConfig().base_url) { showToast('未配置 LLM，将只执行确定性修复', 'error'); }
+  addMessage('user', '🔧 一键修复：' + path);
+  addLoadingMessage();
+  try {
+    let cfg = getConfig();
+    let resp = await fetch('/api/flow/repair', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({flow_path: path, config: cfg}),
+    });
+    let data = await resp.json();
+    removeLoadingMessage();
+    if (data.status === 'error') { addMessage('agent', '❌ ' + data.message); return; }
+    let lines = ['## 一键修复预览', data.summary || '', '自动修复：' + data.auto_fixed_count + ' 项 | 待确认：' + data.pending_confirm_count + ' 项'];
+    (data.pending_confirm || []).forEach((it) => {
+      lines.push('🔎 步骤' + it.step_index + ' ' + (it.step_name || '') + '：' + it.message);
+      if (it.suggestion) lines.push('   建议：' + it.suggestion);
+    });
+    let suggestions = data.llm_suggestions || [];
+    suggestions.forEach((it, i) => {
+      lines.push('🔧 [模型建议 ' + (i + 1) + '] 步骤' + it.step_index + '：' + it.issue);
+      if (it.suggestion) lines.push('   建议：' + it.suggestion);
+    });
+    let msg = addMessage('agent', lines.join('\n'));
+    let bubble = msg.querySelector('.bubble');
+    let applied = new Set(suggestions.map((_, i) => i));
+    suggestions.forEach((it, i) => {
+      let row = document.createElement('div');
+      row.style.marginTop = '6px';
+      let toggle = document.createElement('button');
+      toggle.className = 'btn btn-sm';
+      toggle.textContent = '✓ 应用' + (i + 1);
+      toggle.onclick = () => {
+        if (applied.has(i)) { applied.delete(i); toggle.textContent = '✗ 忽略' + (i + 1); }
+        else { applied.add(i); toggle.textContent = '✓ 应用' + (i + 1); }
+      };
+      row.appendChild(toggle);
+      bubble.appendChild(row);
+    });
+    let writeBtn = document.createElement('button');
+    writeBtn.className = 'btn btn-primary btn-sm';
+    writeBtn.textContent = suggestions.length ? '✅ 确认应用并写回' : '✅ 写回自动修复';
+    writeBtn.style.marginTop = '8px';
+    writeBtn.onclick = () => repairWrite(path, Array.from(applied));
+    bubble.appendChild(writeBtn);
+  } catch (e) {
+    removeLoadingMessage();
+    addMessage('agent', '❌ 修复失败：' + escapeHtml(e.message));
+  }
+}
+
+async function repairWrite(path, indices) {
+  addLoadingMessage();
+  try {
+    let cfg = getConfig();
+    let resp = await fetch('/api/flow/repair', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({flow_path: path, config: cfg, apply: indices}),
+    });
+    let data = await resp.json();
+    removeLoadingMessage();
+    if (data.status === 'error') { addMessage('agent', '❌ ' + data.message); return; }
+    let lines = ['## 修复写回完成', data.summary || ''];
+    if (data.backup_path) lines.push('备份文件：' + data.backup_path);
+    lines.push('已写回：' + path);
+    addMessage('agent', lines.join('\n'));
+  } catch (e) {
+    removeLoadingMessage();
+    addMessage('agent', '❌ 写回失败：' + escapeHtml(e.message));
   }
 }
 

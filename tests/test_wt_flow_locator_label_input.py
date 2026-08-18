@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from contextlib import ExitStack
 from unittest.mock import patch, MagicMock
 
 
@@ -131,37 +132,64 @@ class TryLabelToInputFallbackTests(unittest.TestCase):
         """Pane 类型 + PART_ContentHost + labelText 匹配 → 成功定位。"""
         defn = self._make_control_definition("Pane", "pane", "名称", automation_id="PART_ContentHost")
         pane_wrapper = _make_fake_wrapper("Pane", "pane", automation_id="PART_ContentHost")
+        edit_wrapper = _make_fake_wrapper("Edit", "edit")
         window = _make_window([pane_wrapper])
 
         with patch.object(wt_flow_locator, "get_wrapper_control_type", side_effect=lambda w: "Pane"), \
              patch.object(wt_flow_locator, "get_wrapper_automation_id", side_effect=lambda w: "PART_ContentHost"), \
              patch.object(wt_flow_locator, "wrapper_matches_label_text", return_value=True), \
+             patch.object(wt_flow_locator, "_resolve_editable_target", return_value=edit_wrapper), \
              patch.object(wt_flow_locator, "score_control_match", return_value=85), \
              patch.object(wt_flow_locator, "_LOG_STEP"):
             result = wt_flow_locator._try_label_to_input_fallback([window], defn, step_id="step_pane")
 
-        self.assertIs(result, pane_wrapper)
+        self.assertIs(result, edit_wrapper)
 
     def test_matches_custom_part_content_host_by_label_text(self):
         """Custom 类型 + PART_ContentHost + labelText 匹配 → 成功定位。"""
         defn = self._make_control_definition("Custom", "custom", "描述", automation_id="PART_ContentHost")
         custom_wrapper = _make_fake_wrapper("Custom", "custom", automation_id="PART_ContentHost")
+        edit_wrapper = _make_fake_wrapper("Edit", "edit")
         window = _make_window([custom_wrapper])
 
         with patch.object(wt_flow_locator, "get_wrapper_control_type", side_effect=lambda w: "Custom"), \
              patch.object(wt_flow_locator, "get_wrapper_automation_id", side_effect=lambda w: "PART_ContentHost"), \
              patch.object(wt_flow_locator, "wrapper_matches_label_text", return_value=True), \
+             patch.object(wt_flow_locator, "_resolve_editable_target", return_value=edit_wrapper), \
              patch.object(wt_flow_locator, "score_control_match", return_value=85), \
              patch.object(wt_flow_locator, "_LOG_STEP"):
             result = wt_flow_locator._try_label_to_input_fallback([window], defn, step_id="step_custom")
 
-        self.assertIs(result, custom_wrapper)
+        self.assertIs(result, edit_wrapper)
+
+    def test_matches_real_edit_for_part_content_host_definition(self):
+        defn = self._make_control_definition("Pane", "pane", "查找", automation_id="PART_ContentHost")
+        edit_wrapper = _make_fake_wrapper("Edit", "edit")
+        window = _make_window([edit_wrapper])
+
+        with patch.object(wt_flow_locator, "wrapper_matches_label_text", return_value=True), \
+             patch.object(wt_flow_locator, "score_control_match", return_value=75), \
+             patch.object(wt_flow_locator, "_LOG_STEP"):
+            result = wt_flow_locator._try_label_to_input_fallback([window], defn, step_id="step_9")
+
+        self.assertIs(result, edit_wrapper)
+
+    def test_resolves_part_content_host_to_textbox_ancestor(self):
+        content_host = _make_fake_wrapper("Pane", "pane", automation_id="PART_ContentHost")
+        textbox = _make_fake_wrapper("Custom", "custom")
+        textbox.class_name = MagicMock(return_value="TextBox")
+        content_host.parent = MagicMock(return_value=textbox)
+
+        result = wt_flow_locator._resolve_editable_target(content_host)
+
+        self.assertIs(result, textbox)
 
     def test_multiple_part_content_host_distinguished_by_label(self):
         """多个 PART_ContentHost 时通过 labelText 正确区分。"""
         defn = self._make_control_definition("Pane", "pane", "名称", automation_id="PART_ContentHost")
         pane_a = _make_fake_wrapper("Pane", "pane", automation_id="PART_ContentHost")
         pane_b = _make_fake_wrapper("Pane", "pane", automation_id="PART_ContentHost")
+        edit_a = _make_fake_wrapper("Edit", "edit")
         window = _make_window([pane_a, pane_b])
 
         # 只有 pane_a 的标签匹配
@@ -171,11 +199,12 @@ class TryLabelToInputFallbackTests(unittest.TestCase):
         with patch.object(wt_flow_locator, "get_wrapper_control_type", side_effect=lambda w: "Pane"), \
              patch.object(wt_flow_locator, "get_wrapper_automation_id", side_effect=lambda w: "PART_ContentHost"), \
              patch.object(wt_flow_locator, "wrapper_matches_label_text", side_effect=label_match_side_effect), \
+             patch.object(wt_flow_locator, "_resolve_editable_target", side_effect=lambda w: edit_a if w is pane_a else None), \
              patch.object(wt_flow_locator, "score_control_match", return_value=85), \
              patch.object(wt_flow_locator, "_LOG_STEP"):
             result = wt_flow_locator._try_label_to_input_fallback([window], defn)
 
-        self.assertIs(result, pane_a)
+        self.assertIs(result, edit_a)
 
     def test_skips_pane_without_part_content_host_in_candidates(self):
         """遍历候选时，Pane 但无 PART_ContentHost 的控件应被跳过。"""
@@ -311,6 +340,82 @@ class TryLabelToInputFallbackTests(unittest.TestCase):
             result = wt_flow_locator._try_label_to_input_fallback([window], defn)
 
         self.assertIsNone(result)
+
+
+class PartContentHostTypeRelaxationTests(unittest.TestCase):
+    """PART_ContentHost 的 Raw View 类型放宽：运行时类型可为 Pane/Edit 等。"""
+
+    def _make_definition(self, automation_id="PART_ContentHost", control_type="Pane"):
+        return {
+            "name": "",
+            "labelText": "查找",
+            "targetMethod": "automation_id,control_type",
+            "targetValue": "PART_ContentHost,Pane",
+            "uiPath": "Window_Main > MBAProjectionSelectionView > PART_ContentHost",
+            "inspectData": {
+                "automationId": automation_id,
+                "controlType": control_type,
+                "localizedControlType": "pane",
+            },
+        }
+
+    def _neutral_patches(self):
+        """把所有辅助评分路径固定为中性值，隔离被测逻辑。"""
+        return [
+            patch.object(wt_flow_locator, "get_wrapper_automation_id", side_effect=lambda w: "PART_ContentHost"),
+            patch.object(wt_flow_locator, "get_wrapper_text", return_value=""),
+            patch.object(wt_flow_locator, "wrapper_matches_label_text", return_value=False),
+            patch.object(wt_flow_locator, "_build_wrapper_path_signature", return_value=[]),
+            patch.object(wt_flow_locator, "get_wrapper_found_index", return_value=-1),
+            patch.object(wt_flow_locator, "get_wrapper_class_name", return_value=""),
+            patch.object(wt_flow_locator, "get_wrapper_framework_id", return_value=""),
+            patch.object(wt_flow_locator, "get_wrapper_localized_control_type", return_value=""),
+            patch.object(wt_flow_locator, "get_wrapper_process_id", return_value=""),
+            patch.object(wt_flow_locator, "get_wrapper_parent_signatures", return_value=[]),
+            patch.object(wt_flow_locator, "get_wrapper_child_signatures", return_value=[]),
+            patch.object(wt_flow_locator, "get_wrapper_is_enabled", return_value=""),
+            patch.object(wt_flow_locator, "get_wrapper_is_offscreen", return_value=""),
+            patch.object(wt_flow_locator, "get_wrapper_is_keyboard_focusable", return_value=""),
+            patch.object(wt_flow_locator, "get_wrapper_has_keyboard_focus", return_value=""),
+            patch.object(wt_flow_locator, "get_wrapper_help_text", return_value=""),
+        ]
+
+    def test_runtime_edit_type_still_matches_when_aid_is_part_content_host(self):
+        """运行时 Raw View 报 Edit（而非采集的 Pane）时，aid 命中 PART_ContentHost 应匹配。"""
+        defn = self._make_definition()
+        wrapper = _make_fake_wrapper("Edit", "edit", automation_id="PART_ContentHost")
+
+        with ExitStack() as stack:
+            for p in self._neutral_patches():
+                stack.enter_context(p)
+            score = wt_flow_locator.get_control_definition_match_score(wrapper, defn)
+
+        self.assertGreater(score, 0)
+
+    def test_runtime_edit_type_without_aid_not_matched(self):
+        """aid 不是 PART_ContentHost 的 Edit 即使类型匹配也不应被放宽逻辑放行。"""
+        defn = self._make_definition()
+        wrapper = _make_fake_wrapper("Edit", "edit", automation_id="OtherTextBox")
+
+        with ExitStack() as stack:
+            for p in self._neutral_patches():
+                stack.enter_context(p)
+            wt_flow_locator.get_wrapper_automation_id = lambda w: "OtherTextBox"
+            score = wt_flow_locator.get_control_definition_match_score(wrapper, defn)
+
+        self.assertLess(score, 0)
+
+    def test_runtime_pane_type_still_matches(self):
+        """运行时类型仍为 Pane 时保持既有严格匹配行为（回归保护）。"""
+        defn = self._make_definition()
+        wrapper = _make_fake_wrapper("Pane", "pane", automation_id="PART_ContentHost")
+
+        with ExitStack() as stack:
+            for p in self._neutral_patches():
+                stack.enter_context(p)
+            score = wt_flow_locator.get_control_definition_match_score(wrapper, defn)
+
+        self.assertGreater(score, 0)
 
 
 if __name__ == "__main__":

@@ -44,6 +44,46 @@ CONTACT_SHEET_CELL_HEIGHT = 180
 CONTACT_SHEET_MARGIN = 16
 
 
+# ============================================================================
+# 统一浅色蓝灰主题
+# ============================================================================
+
+TEMPLATE_THEME = {
+    "bg": "#f4f7fb",
+    "panel": "#ffffff",
+    "panel_soft": "#fbfdff",
+    "toolbar": "#eaf1fb",
+    "border": "#d8e2f0",
+    "primary": "#2563eb",
+    "primary_soft": "#dbeafe",
+    "success": "#059669",
+    "success_soft": "#dcfce7",
+    "danger": "#dc2626",
+    "danger_soft": "#fee2e2",
+    "warning": "#b45309",
+    "warning_soft": "#fef3c7",
+    "text": "#1f2937",
+    "muted": "#64748b",
+    "font": "Microsoft YaHei UI",
+}
+
+
+def _paint_button(button, bg, fg, active_bg, active_fg="#ffffff"):
+    """按统一色板配置普通 tk.Button 样式。"""
+    button.configure(
+        bg=bg,
+        fg=fg,
+        activebackground=active_bg,
+        activeforeground=active_fg,
+        relief="flat",
+        bd=0,
+        cursor="hand2",
+        padx=10,
+        pady=3,
+        font=(TEMPLATE_THEME["font"], 10),
+    )
+
+
 def find_tesseract_executable():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     workspace_dir = os.path.dirname(script_dir)
@@ -361,38 +401,90 @@ class TemplateBuilderApp:
         self.max_undo_steps = 50
         self.category_options = []
 
+        self._apply_theme()
         self._build_ui()
+        self.status_var.trace_add("write", self._on_status_changed)
         self.refresh_category_options()
 
+    def _apply_theme(self):
+        """应用统一浅色蓝灰主题。"""
+        t = TEMPLATE_THEME
+        self.root.configure(bg=t["bg"])
+        style = ttk.Style(self.root)
+        style.configure(
+            "Template.TCombobox",
+            fieldbackground=t["panel_soft"],
+            background=t["panel_soft"],
+            foreground=t["text"],
+            arrowcolor=t["primary"],
+            padding=3,
+        )
+        style.map(
+            "Template.TCombobox",
+            fieldbackground=[("readonly", t["panel_soft"])],
+            foreground=[("readonly", t["text"])],
+            selectbackground=[("readonly", t["primary_soft"])],
+            selectforeground=[("readonly", t["text"])],
+        )
+
+    def _on_status_changed(self, *_args):
+        """根据状态文本自动着色：失败/成功/运行/就绪。"""
+        text = self.status_var.get()
+        t = TEMPLATE_THEME
+        if any(k in text for k in ("失败", "错误", "无法", "未找到")):
+            color = t["danger"]
+        elif any(k in text for k in ("成功", "完成", "已保存", "已加载")):
+            color = t["success"]
+        elif any(k in text for k in ("检测", "扫描", "截屏", "保存", "OCR", "加载", "绘制", "撤回", "3秒")):
+            color = t["primary"]
+        elif any(k in text for k in ("没有", "暂停", "跳过", "暂无", "未开启")):
+            color = t["warning"]
+        else:
+            color = t["text"]
+        if hasattr(self, "status_label"):
+            self.status_label.config(fg=color)
+
     def _build_ui(self):
-        top_frame = tk.Frame(self.root)
+        top_frame = tk.Frame(self.root, bg=TEMPLATE_THEME["toolbar"])
         top_frame.pack(fill=tk.X, padx=8, pady=8)
 
-        tk.Label(top_frame, text="截图").grid(row=0, column=0, sticky="w")
-        tk.Entry(top_frame, textvariable=self.screenshot_path_var, width=90).grid(row=0, column=1, padx=4, sticky="ew")
-        tk.Button(top_frame, text="选择截图", command=self.choose_screenshot).grid(row=0, column=2, padx=4)
-        tk.Button(top_frame, text="截屏(3秒后)", command=self.take_screenshot).grid(row=0, column=3, padx=4)
-        tk.Button(top_frame, text="自动检测", command=self.detect_regions).grid(row=0, column=4, padx=4)
+        tk.Label(top_frame, text="截图", bg=TEMPLATE_THEME["toolbar"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=0, sticky="w")
+        tk.Entry(top_frame, textvariable=self.screenshot_path_var, width=90, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=1, padx=4, sticky="ew")
+        choose_btn = tk.Button(top_frame, text="选择截图", command=self.choose_screenshot)
+        _paint_button(choose_btn, TEMPLATE_THEME["panel"], TEMPLATE_THEME["text"], TEMPLATE_THEME["primary_soft"], active_fg=TEMPLATE_THEME["primary"])
+        choose_btn.grid(row=0, column=2, padx=4)
+        capture_btn = tk.Button(top_frame, text="截屏(3秒后)", command=self.take_screenshot)
+        _paint_button(capture_btn, TEMPLATE_THEME["primary_soft"], TEMPLATE_THEME["primary"], TEMPLATE_THEME["primary"])
+        capture_btn.grid(row=0, column=3, padx=4)
+        detect_btn = tk.Button(top_frame, text="自动检测", command=self.detect_regions)
+        _paint_button(detect_btn, TEMPLATE_THEME["primary_soft"], TEMPLATE_THEME["primary"], TEMPLATE_THEME["primary"])
+        detect_btn.grid(row=0, column=4, padx=4)
 
-        tk.Label(top_frame, text="输出目录").grid(row=1, column=0, sticky="w")
-        tk.Entry(top_frame, textvariable=self.output_dir_var, width=90).grid(row=1, column=1, padx=4, sticky="ew")
-        tk.Button(top_frame, text="选择目录", command=self.choose_output_dir).grid(row=1, column=2, padx=4)
+        tk.Label(top_frame, text="输出目录", bg=TEMPLATE_THEME["toolbar"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=0, sticky="w")
+        tk.Entry(top_frame, textvariable=self.output_dir_var, width=90, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=1, padx=4, sticky="ew")
+        dir_btn = tk.Button(top_frame, text="选择目录", command=self.choose_output_dir)
+        _paint_button(dir_btn, TEMPLATE_THEME["panel"], TEMPLATE_THEME["text"], TEMPLATE_THEME["primary_soft"], active_fg=TEMPLATE_THEME["primary"])
+        dir_btn.grid(row=1, column=2, padx=4)
 
-        tk.Label(top_frame, text="分类").grid(row=1, column=3, sticky="e")
-        self.category_combo = ttk.Combobox(top_frame, textvariable=self.category_var, width=18)
+        tk.Label(top_frame, text="分类", bg=TEMPLATE_THEME["toolbar"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=3, sticky="e")
+        self.category_combo = ttk.Combobox(top_frame, textvariable=self.category_var, width=18, style="Template.TCombobox")
         self.category_combo.grid(row=1, column=4, padx=4)
-        tk.Button(top_frame, text="刷新分类", command=self.refresh_category_options).grid(row=1, column=5, padx=4)
-        tk.Button(top_frame, text="打开当前分类目录", command=self.open_current_category_dir).grid(row=1, column=6, padx=4)
+        refresh_cat_btn = tk.Button(top_frame, text="刷新分类", command=self.refresh_category_options)
+        _paint_button(refresh_cat_btn, TEMPLATE_THEME["panel"], TEMPLATE_THEME["text"], TEMPLATE_THEME["primary_soft"], active_fg=TEMPLATE_THEME["primary"])
+        refresh_cat_btn.grid(row=1, column=5, padx=4)
+        open_cat_btn = tk.Button(top_frame, text="打开当前分类目录", command=self.open_current_category_dir)
+        _paint_button(open_cat_btn, TEMPLATE_THEME["panel"], TEMPLATE_THEME["text"], TEMPLATE_THEME["primary_soft"], active_fg=TEMPLATE_THEME["primary"])
+        open_cat_btn.grid(row=1, column=6, padx=4)
 
         top_frame.columnconfigure(1, weight=1)
 
-        main_frame = tk.Frame(self.root)
+        main_frame = tk.Frame(self.root, bg=TEMPLATE_THEME["bg"])
         main_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
 
-        left_frame = tk.Frame(main_frame)
+        left_frame = tk.Frame(main_frame, bg=TEMPLATE_THEME["bg"])
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.canvas = tk.Canvas(left_frame, bg="#1f1f1f", width=CANVAS_MAX_WIDTH, height=CANVAS_MAX_HEIGHT)
+        self.canvas = tk.Canvas(left_frame, bg="#1f1f1f", width=CANVAS_MAX_WIDTH, height=CANVAS_MAX_HEIGHT, highlightbackground=TEMPLATE_THEME["border"], highlightcolor=TEMPLATE_THEME["border"], highlightthickness=1, relief="flat")
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.canvas.bind("<ButtonPress-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
@@ -401,73 +493,97 @@ class TemplateBuilderApp:
         self.root.bind("<Control-z>", self.on_undo_shortcut)
         self.root.bind("<Control-Z>", self.on_undo_shortcut)
 
-        right_container = tk.Frame(main_frame, width=380)
+        right_container = tk.Frame(main_frame, width=380, bg=TEMPLATE_THEME["panel"])
         right_container.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
         right_container.pack_propagate(False)
 
-        right_scrollbar = tk.Scrollbar(right_container)
+        right_scrollbar = tk.Scrollbar(right_container, bg=TEMPLATE_THEME["toolbar"], troughcolor=TEMPLATE_THEME["panel"], activebackground=TEMPLATE_THEME["primary"], relief="flat", bd=0)
         right_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        self.right_canvas = tk.Canvas(right_container, highlightthickness=0)
+        self.right_canvas = tk.Canvas(right_container, bg=TEMPLATE_THEME["panel_soft"], highlightthickness=0)
         self.right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         right_scrollbar.config(command=self.right_canvas.yview)
         self.right_canvas.configure(yscrollcommand=right_scrollbar.set)
 
-        right_frame = tk.Frame(self.right_canvas)
+        right_frame = tk.Frame(self.right_canvas, bg=TEMPLATE_THEME["panel_soft"])
         self.right_canvas_window = self.right_canvas.create_window((0, 0), window=right_frame, anchor=tk.NW)
         right_frame.bind("<Configure>", self.on_right_frame_configure)
         self.right_canvas.bind("<Configure>", self.on_right_canvas_configure)
         self.right_canvas.bind_all("<MouseWheel>", self.on_mousewheel)
 
-        tk.Label(right_frame, text="候选区域").pack(anchor="w")
-        self.listbox = tk.Listbox(right_frame, width=45, height=12, selectmode=tk.EXTENDED, exportselection=False)
+        tk.Label(right_frame, text="候选区域", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10, "bold")).pack(anchor="w")
+        self.listbox = tk.Listbox(right_frame, width=45, height=12, selectmode=tk.EXTENDED, exportselection=False, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], selectbackground=TEMPLATE_THEME["primary"], selectforeground="#ffffff", highlightbackground=TEMPLATE_THEME["border"], highlightcolor=TEMPLATE_THEME["primary"], highlightthickness=1, relief="flat", bd=0, font=(TEMPLATE_THEME["font"], 10))
         self.listbox.pack(fill=tk.BOTH, expand=False)
         self.listbox.bind("<<ListboxSelect>>", self.on_listbox_select)
-        listbox_h_scrollbar = tk.Scrollbar(right_frame, orient=tk.HORIZONTAL, command=self.listbox.xview)
+        listbox_h_scrollbar = tk.Scrollbar(right_frame, orient=tk.HORIZONTAL, command=self.listbox.xview, bg=TEMPLATE_THEME["toolbar"], troughcolor=TEMPLATE_THEME["panel_soft"], activebackground=TEMPLATE_THEME["primary"], relief="flat", bd=0)
         listbox_h_scrollbar.pack(fill=tk.X, pady=(4, 0))
         self.listbox.configure(xscrollcommand=listbox_h_scrollbar.set)
 
-        list_button_frame = tk.Frame(right_frame)
+        list_button_frame = tk.Frame(right_frame, bg=TEMPLATE_THEME["panel_soft"])
         list_button_frame.pack(fill=tk.X, pady=6)
-        tk.Button(list_button_frame, text="上一项", command=self.select_previous).pack(side=tk.LEFT, padx=2)
-        tk.Button(list_button_frame, text="下一项", command=self.select_next).pack(side=tk.LEFT, padx=2)
-        tk.Button(list_button_frame, text="重新检测", command=self.detect_regions).pack(side=tk.LEFT, padx=2)
+        prev_btn = tk.Button(list_button_frame, text="上一项", command=self.select_previous)
+        _paint_button(prev_btn, TEMPLATE_THEME["panel"], TEMPLATE_THEME["text"], TEMPLATE_THEME["primary_soft"], active_fg=TEMPLATE_THEME["primary"])
+        prev_btn.pack(side=tk.LEFT, padx=2)
+        next_btn = tk.Button(list_button_frame, text="下一项", command=self.select_next)
+        _paint_button(next_btn, TEMPLATE_THEME["panel"], TEMPLATE_THEME["text"], TEMPLATE_THEME["primary_soft"], active_fg=TEMPLATE_THEME["primary"])
+        next_btn.pack(side=tk.LEFT, padx=2)
+        redetect_btn = tk.Button(list_button_frame, text="重新检测", command=self.detect_regions)
+        _paint_button(redetect_btn, TEMPLATE_THEME["primary_soft"], TEMPLATE_THEME["primary"], TEMPLATE_THEME["primary"])
+        redetect_btn.pack(side=tk.LEFT, padx=2)
         tk.Checkbutton(
             list_button_frame,
             text="手动画框",
             variable=self.draw_mode_var,
             command=self.on_draw_mode_changed,
+            bg=TEMPLATE_THEME["panel_soft"],
+            fg=TEMPLATE_THEME["text"],
+            selectcolor=TEMPLATE_THEME["panel"],
+            activebackground=TEMPLATE_THEME["panel_soft"],
+            activeforeground=TEMPLATE_THEME["primary"],
+            font=(TEMPLATE_THEME["font"], 10),
         ).pack(side=tk.LEFT, padx=2)
 
-        tk.Label(right_frame, text="当前模板预览").pack(anchor="w", pady=(8, 2))
-        self.preview_label = tk.Label(right_frame, relief=tk.SUNKEN, bd=1, width=300, height=160, bg="white")
+        tk.Label(right_frame, text="当前模板预览", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10, "bold")).pack(anchor="w", pady=(8, 2))
+        self.preview_label = tk.Label(right_frame, relief=tk.SUNKEN, bd=1, width=300, height=160, bg="white", highlightbackground=TEMPLATE_THEME["border"], highlightcolor=TEMPLATE_THEME["border"], highlightthickness=1)
         self.preview_label.pack(fill=tk.X)
 
-        form_frame = tk.Frame(right_frame)
+        form_frame = tk.Frame(right_frame, bg=TEMPLATE_THEME["panel_soft"])
         form_frame.pack(fill=tk.X, pady=8)
-        tk.Label(form_frame, text="文件名").grid(row=0, column=0, sticky="w")
-        self.file_name_entry = tk.Entry(form_frame, textvariable=self.file_name_var, width=28)
+        tk.Label(form_frame, text="文件名", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=0, sticky="w")
+        self.file_name_entry = tk.Entry(form_frame, textvariable=self.file_name_var, width=28, bg=TEMPLATE_THEME["panel"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10))
         self.file_name_entry.grid(row=0, column=1, sticky="ew", padx=4)
-        tk.Label(form_frame, text=".png").grid(row=0, column=2, sticky="w")
-        tk.Label(form_frame, text="批量前缀").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        tk.Entry(form_frame, textvariable=self.batch_prefix_var, width=28).grid(row=1, column=1, sticky="ew", padx=4, pady=(6, 0))
+        tk.Label(form_frame, text=".png", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["muted"], font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=2, sticky="w")
+        tk.Label(form_frame, text="批量前缀", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        tk.Entry(form_frame, textvariable=self.batch_prefix_var, width=28, bg=TEMPLATE_THEME["panel"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=1, sticky="ew", padx=4, pady=(6, 0))
         form_frame.columnconfigure(1, weight=1)
 
-        button_frame = tk.Frame(right_frame)
+        button_frame = tk.Frame(right_frame, bg=TEMPLATE_THEME["panel_soft"])
         button_frame.pack(fill=tk.X)
-        tk.Button(button_frame, text="OCR命名当前", command=self.ocr_name_current).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="OCR命名选中", command=self.ocr_name_selected).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="保存当前模板", command=self.save_current_template).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="保存并下一项", command=self.save_and_next).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="保存选中模板", command=self.save_selected_templates).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="导出预览拼图", command=self.export_contact_sheet).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="导出带框原图", command=self.export_annotated_screenshot).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="导出布局JSON", command=self.export_layout_json).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="导入布局JSON", command=self.import_layout_json).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="撤回(Ctrl+Z)", command=self.undo_last_action).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="删除当前框", command=self.delete_current_region).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="删除选中框", command=self.delete_selected_regions).pack(fill=tk.X, pady=2)
-        tk.Button(button_frame, text="打开输出目录", command=self.open_output_dir).pack(fill=tk.X, pady=2)
+
+        def _tone(text, command, tone):
+            btn = tk.Button(button_frame, text=text, command=command)
+            if tone == "primary":
+                _paint_button(btn, TEMPLATE_THEME["primary_soft"], TEMPLATE_THEME["primary"], TEMPLATE_THEME["primary"])
+            elif tone == "danger":
+                _paint_button(btn, TEMPLATE_THEME["danger_soft"], TEMPLATE_THEME["danger"], TEMPLATE_THEME["danger"])
+            else:
+                _paint_button(btn, TEMPLATE_THEME["panel"], TEMPLATE_THEME["text"], TEMPLATE_THEME["primary_soft"], active_fg=TEMPLATE_THEME["primary"])
+            btn.pack(fill=tk.X, pady=2)
+            return btn
+
+        _tone("OCR命名当前", self.ocr_name_current, "default")
+        _tone("OCR命名选中", self.ocr_name_selected, "default")
+        _tone("保存当前模板", self.save_current_template, "primary")
+        _tone("保存并下一项", self.save_and_next, "primary")
+        _tone("保存选中模板", self.save_selected_templates, "primary")
+        _tone("导出预览拼图", self.export_contact_sheet, "default")
+        _tone("导出带框原图", self.export_annotated_screenshot, "default")
+        _tone("导出布局JSON", self.export_layout_json, "default")
+        _tone("导入布局JSON", self.import_layout_json, "default")
+        _tone("撤回(Ctrl+Z)", self.undo_last_action, "default")
+        _tone("删除当前框", self.delete_current_region, "danger")
+        _tone("删除选中框", self.delete_selected_regions, "danger")
+        _tone("打开输出目录", self.open_output_dir, "default")
 
         help_text = (
             "使用建议:\n"
@@ -482,19 +598,22 @@ class TemplateBuilderApp:
             "9. 选中多个框后可按 Delete 批量删除\n"
             "10. 支持 Ctrl+Z 撤回上一步框编辑或命名操作"
         )
-        tk.Label(right_frame, text=help_text, justify=tk.LEFT, fg="#444").pack(anchor="w", pady=(10, 0))
-        tk.Label(right_frame, text=get_ocr_status_message(), justify=tk.LEFT, fg="#666").pack(anchor="w", pady=(8, 0))
+        tk.Label(right_frame, text=help_text, justify=tk.LEFT, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["muted"], font=(TEMPLATE_THEME["font"], 9)).pack(anchor="w", pady=(10, 0))
+        tk.Label(right_frame, text=get_ocr_status_message(), justify=tk.LEFT, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["muted"], font=(TEMPLATE_THEME["font"], 9)).pack(anchor="w", pady=(8, 0))
         tk.Label(
             right_frame,
             textvariable=self.category_summary_var,
             justify=tk.LEFT,
-            fg="#555",
+            bg=TEMPLATE_THEME["panel_soft"],
+            fg=TEMPLATE_THEME["muted"],
             wraplength=320,
+            font=(TEMPLATE_THEME["font"], 9),
         ).pack(anchor="w", pady=(8, 0))
 
-        bottom_frame = tk.Frame(self.root)
+        bottom_frame = tk.Frame(self.root, bg=TEMPLATE_THEME["toolbar"])
         bottom_frame.pack(fill=tk.X, padx=8, pady=(0, 8))
-        tk.Label(bottom_frame, textvariable=self.status_var, anchor="w").pack(fill=tk.X)
+        self.status_label = tk.Label(bottom_frame, textvariable=self.status_var, anchor="w", bg=TEMPLATE_THEME["toolbar"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10, "bold"))
+        self.status_label.pack(fill=tk.X)
 
     def on_right_frame_configure(self, _event):
         self.right_canvas.configure(scrollregion=self.right_canvas.bbox("all"))
