@@ -684,8 +684,13 @@ def _perform_coordinate_action(action_name, center, text="", delta=0):
     if action_name == "select_dropdown_item_runtime":
         _LOG_STEP("Warning: refusing raw coordinate click for select_dropdown_item_runtime")
         return
-    if action_name in {"click", "wait_for_control"}:
+    if action_name == "click":
         pyautogui.click(center[0], center[1])
+    elif action_name == "wait_for_control":
+        # 等待语义不应产生点击：坐标兜底中"到达该坐标即视为满足"，避免误触按钮
+        # 进入无关状态（BUG-5）。
+        _LOG_STEP("coordinate fallback: wait_for_control 仅做存在性确认，不点击")
+        return
     elif action_name == "double_click":
         pyautogui.doubleClick(center[0], center[1])
     elif action_name == "right_click":

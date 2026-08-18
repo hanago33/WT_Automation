@@ -272,8 +272,9 @@ class TryLabelToInputFallbackTests(unittest.TestCase):
 
     # ---- 最低分保底 ----
 
-    def test_score_floor_at_80_for_label_match(self):
-        """labelText 命中时，即使 score_control_match 给低分也应保底 80。"""
+    def test_score_reported_as_raw_for_label_match(self):
+        """labelText 命中时按原始分排序与上报（修复 B7：不再把每个候选钳到 80，
+        否则同窗口多候选时第一个枚举到的必胜出）。"""
         defn = self._make_control_definition("Edit", "edit", "名称")
         edit_wrapper = _make_fake_wrapper("Edit", "edit")
         window = _make_window([edit_wrapper])
@@ -285,9 +286,9 @@ class TryLabelToInputFallbackTests(unittest.TestCase):
             result = wt_flow_locator._try_label_to_input_fallback([window], defn, step_id="step_x")
 
         self.assertIs(result, edit_wrapper)
-        # 验证日志中 score=80（保底分）而非原始 30
+        # 日志上报原始分（score=30）而非钳制后的 80
         log_call_args = mock_log.call_args[0][0]
-        self.assertIn("score=80", log_call_args)
+        self.assertIn("score=30", log_call_args)
 
     # ---- 多窗口搜索 ----
 

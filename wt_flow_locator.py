@@ -929,16 +929,17 @@ def _try_label_to_input_fallback(windows, control_definition, step_id=""):
                     continue
             if not label_matches:
                 continue
-            score = score_control_match(candidate, control_definition)
+            raw_score = score_control_match(candidate, control_definition)
             try:
-                score = int(score or 0)
+                raw_score = int(raw_score or 0)
             except (TypeError, ValueError):
-                score = 80
-            if score < 80:
-                score = 80
-            if score > best_score:
+                raw_score = 80
+            # 用原始分挑选最优候选（同窗口多个 label 候选时按分数排序）；
+            # 不能先钳制到 ≥80 再比较——所有候选钳成同分后，第一个枚举到的必胜出（B7）。
+            # 对应的 label 语义（候选已通过 label_matches）本就视作可接受，无需再按阈值否决。
+            if raw_score > best_score:
                 best_match = resolved_candidate
-                best_score = score
+                best_score = raw_score
     if best_match is not None:
         _LOG_STEP(
             "[FlowLocator] label fallback hit: step={step_id}, control_type={control_type}, score={score}".format(
@@ -3012,7 +3013,12 @@ def wrapper_matches_expected_window_title(wrapper, expected_window_title):
     if (
         not actual_title
         and actual_framework == "WPF"
-        and actual_class_name in {"Window", "HwndWrapper[MUPSmartClient.exe;;916f6a43-19df-48d6-85bf-f0e5771b59b6]"}
+        and (
+            actual_class_name == "Window"
+            # HwndWrapper[MUPSmartClient.exe;;<GUID>] 的 GUID 随安装/机器变化，
+            # 只按进程名子串匹配，避免换机后窗口匹配静默失效
+            or "MUPSmartClient" in actual_class_name
+        )
     ):
         return True
     return False
@@ -4251,22 +4257,22 @@ def iter_raw_view_fallback_candidates(window, control_definition, max_elements=3
             break
         element, depth = queue[index]
         index += 1
-        # 廉价预过滤：不匹配直接跳过，避免构造 wrapper 与完整评分；
-        # 预过滤不匹配的子树不再入队（保持性能），深层带 AutomationId 的目标
-        # 已由 FindAll 路径覆盖，故此处不依赖预过滤剪枝可达性。
-        if not _raw_element_passes_prefilter(element, target_name, target_automation_id, target_type_id, props):
-            continue
-        try:
-            wrapper = UIAWrapper(UIAElementInfo(element))
-        except Exception:
-            wrapper = None
-        if wrapper is not None and wrapper_matches_control_definition(wrapper, normalized):
-            key = get_wrapper_handle(wrapper) or normalize_match_text(
-                _safe_get_value(lambda: str(wrapper.element_info.runtime_id), "")
-            ) or id(wrapper)
-            if key not in seen:
-                seen.add(key)
-                yield wrapper
+        # 廉价预过滤：不匹配仅跳过对该元素自身的 wrapper 构造与完整评分，仍继续下沉到子节点。
+        # 注意：不能因祖先预过滤失败就剪掉整个子树——无 automationId 的 Raw View 目标
+        #（如孤立 PART_ContentHost）的祖先几乎必然不通过 name/type 预过滤，剪枝后这类
+        # 目标永远不可达（B8）。子树遍历由 max_depth/max_elements/budget_seconds 兜底。
+        if _raw_element_passes_prefilter(element, target_name, target_automation_id, target_type_id, props):
+            try:
+                wrapper = UIAWrapper(UIAElementInfo(element))
+            except Exception:
+                wrapper = None
+            if wrapper is not None and wrapper_matches_control_definition(wrapper, normalized):
+                key = get_wrapper_handle(wrapper) or normalize_match_text(
+                    _safe_get_value(lambda: str(wrapper.element_info.runtime_id), "")
+                ) or id(wrapper)
+                if key not in seen:
+                    seen.add(key)
+                    yield wrapper
         if depth >= max_depth:
             continue
         try:
