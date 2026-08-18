@@ -94,6 +94,12 @@ def resolve_single_report(value, reports_dir):
     guess = os.path.join(reports_dir, run_id + ".json")
     if os.path.isfile(guess):
         return load_report(guess)
+    # runId 现含毫秒/序号后缀（wt_run_日期_时分秒_毫秒_序号，见 wt_run_reporting）：
+    # 兼容传入旧格式/部分 runId（如 wt_run_20260818_101500）时，取同前缀最新一个报告
+    prefix = os.path.join(reports_dir, run_id + "_*.json")
+    prefixed = sorted(glob.glob(prefix))
+    if prefixed:
+        return load_report(prefixed[-1])
     return None
 
 

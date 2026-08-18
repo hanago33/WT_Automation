@@ -1806,6 +1806,9 @@ def _pre_raise_main_window(timeout_seconds=15):
 
 def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=False, task_id=None, task_user=None, task_db=None, pre_raise=True):
 	global running
+	# 每次运行从干净状态开始：上一轮若因关闭窗口触发过停止，不得延续到本次
+	# （同一进程内可能多次调用 run_automation，如任务队列 worker 串行执行）。
+	_STOP_REQUESTED.clear()
 	queue_db = task_db or wt_task_queue.DEFAULT_DB_PATH
 	try:
 		_force_utf8_stdio()

@@ -266,6 +266,29 @@ class ExecutorSinglePointTests(unittest.TestCase):
         # _REPORT_STEP_RESULT(run_report, step_id, step_name, status, ...)：status 是位置参数
         self.assertEqual(reported[-1][3], "failed")
 
+    def test_step_policy_continue_when_reaches_run_action_step(self):
+        """一致性：_resolve_step_policy 改为深拷贝归一化后，run_action_step 重新读取
+        缓存 action_config 也必须能看到 stepPolicy 提供的 continueWhen（动作后置校验）。"""
+        wait_calls = []
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(wt_flow_executor, "_GET_STEP_DEFINITION", return_value={
+                "id": "step_p", "name": "动作", "enabled": True, "actionType": "action",
+                "actionConfig": {
+                    "action": "click", "controlId": "btn",
+                    "stepPolicy": {"onFail": "stop", "maxRetries": 1,
+                                   "continueWhen": {"controlId": "result", "condition": "visible", "timeoutSeconds": 0.2}},
+                },
+            }))
+            stack.enter_context(patch.object(wt_flow_executor, "_RESOLVE_DYNAMIC_VALUE", side_effect=lambda value, step_id, ctx: value))
+            stack.enter_context(patch.object(wt_flow_executor, "_CLICK_FLOW_CONTROL", return_value=True))
+            stack.enter_context(patch.object(wt_flow_executor, "_WAIT_FOR_FLOW_CONTROL_CONDITION", side_effect=lambda *a, **k: wait_calls.append(k) or False))
+            stack.enter_context(patch.object(wt_flow_executor, "_REPORT_STEP_RESULT", lambda *a, **k: None))
+            stack.enter_context(patch.object(wt_flow_executor, "_LOG_STEP", lambda m: None))
+            with self.assertRaises(RuntimeError):
+                wt_flow_executor.execute_step_by_id("step_p", {"step_p": {"id": "step_p"}}, {"run_report": {"stepResults": []}})
+        self.assertTrue(wait_calls, "stepPolicy 的 continueWhen 必须被 run_action_step 消费")
+        self.assertEqual(wait_calls[0].get("control_id"), "result")
+
     def test_executed_step_dedup(self):
         calls = []
         with ExitStack() as stack:

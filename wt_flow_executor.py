@@ -530,6 +530,9 @@ def _try_fallback_chain(step_id, context, original_error):
     action_config = step_definition.get("actionConfig", {})
     if not isinstance(action_config, dict):
         action_config = {}
+    # 归一化 stepPolicy（深拷贝、幂等、不写穿缓存）：本函数从流程定义重新读取
+    # action_config，不归一化会看不到 stepPolicy 提供的 continueWhen 等旧字段。
+    action_config = _resolve_step_policy(action_config)
     action_config = _RESOLVE_DYNAMIC_VALUE(action_config, step_id, context)
 
     action_name = str(action_config.get("action", "")).strip().lower()
@@ -803,6 +806,9 @@ def run_action_step(step_id, context):
     action_config = step_definition.get("actionConfig", {})
     if not isinstance(action_config, dict):
         action_config = {}
+    # 归一化 stepPolicy（深拷贝、幂等、不写穿缓存）：本函数从流程定义重新读取
+    # action_config，不归一化会看不到 stepPolicy 提供的 continueWhen（动作后置校验）。
+    action_config = _resolve_step_policy(action_config)
     action_config = _RESOLVE_DYNAMIC_VALUE(action_config, step_id, context)
 
     action_name = str(action_config.get("action", "")).strip().lower()
