@@ -2,11 +2,13 @@
 
 import ctypes
 from ctypes import wintypes
+import gc
 import json
 import os
 import re
 import threading
 import time
+import traceback
 
 import pyautogui
 from pywinauto import Desktop
@@ -704,12 +706,14 @@ def _label_rect_matches_control(label_rect, control_rect):
 
 _LABEL_RECT_CACHE = threading.local()
 
-def _label_rect_cache_reset():
-    """清空 label 矩形缓存（find_flow_control 每次调用开始时调用）。
+_LABEL_RECT_CACHE_TTL = 30.0  # label 矩形缓存软失效时长（秒）
 
-    label 矩形按 (顶层窗口句柄, labelText) 缓存：同一窗口下枚举出的候选越多，
-    越需要避免每个候选都做一次 parent/top_window 全子树扫描（O(N·T) 热点）。
-    单次定位调用内窗口内容基本不变，缓存跨候选复用安全；调用间由 reset 失效。
+def _label_rect_cache_reset():
+    """硬清空 label 矩形缓存（测试隔离 / 明确需要失效时调用）。
+
+    生产路径 find_flow_control 不再每次调用都硬清空（改由 TTL 自动过期），
+    使同一目标窗口在几十秒内的连续步骤共享一次全树 label 扫描结果，
+    避免每个步骤都重复支付 20-36 秒的全树扫描。
     """
     _LABEL_RECT_CACHE.rects = {}
 
@@ -719,7 +723,14 @@ def _label_rect_cache_get(top_window, label_text):
     if cache is None:
         return None
     handle = _safe_get_value(lambda: get_wrapper_handle(top_window), 0) or id(top_window)
-    return cache.get((handle, label_text))
+    entry = cache.get((handle, label_text))
+    if entry is None:
+        return None
+    ts, rects = entry
+    if time.time() - ts > _LABEL_RECT_CACHE_TTL:
+        cache.pop((handle, label_text), None)
+        return None
+    return list(rects)
 
 
 def _label_rect_cache_put(top_window, label_text, rects):
@@ -729,7 +740,7 @@ def _label_rect_cache_put(top_window, label_text, rects):
         _LABEL_RECT_CACHE.rects = cache
     handle = _safe_get_value(lambda: get_wrapper_handle(top_window), 0) or id(top_window)
     if len(cache) < 64:  # 有界，防异常路径缓存无限膨胀
-        cache[(handle, label_text)] = list(rects or [])
+        cache[(handle, label_text)] = (time.time(), list(rects or []))
 
 
 def _find_label_rects_for_wrapper(wrapper, label_text):
@@ -751,25 +762,36 @@ def _find_label_rects_for_wrapper(wrapper, label_text):
         if cached is not None:
             return list(cached)
         seen_rects = set()
-        for scope in scopes:
-            for candidate in scope.descendants():
-                if get_wrapper_control_type(candidate) not in {"Text", "Static", "Label", "Document"}:
-                    continue
-                if normalize_match_text(get_wrapper_text(candidate)) != expected:
-                    continue
-                rect = get_wrapper_rectangle(candidate)
-                if not rect:
-                    continue
-                rect_key = (
-                    int(rect.get("left", 0)),
-                    int(rect.get("top", 0)),
-                    int(rect.get("right", 0)),
-                    int(rect.get("bottom", 0)),
-                )
-                if rect_key in seen_rects:
-                    continue
-                seen_rects.add(rect_key)
-                rects.append(rect)
+        # 临时关闭 GC：pywinauto/comtypes 的 UIA 元素数组在垃圾回收时释放 COM
+        # 对象（__del__ → Release），若目标软件 UIA provider 已失效会触发
+        # "Windows fatal exception: access violation"（段错误）导致整个子进程崩溃。
+        # 遍历期间禁用 GC，避免 COM 对象在遍历中途被回收，遍历结束后恢复。
+        gc_was_enabled = gc.isenabled()
+        try:
+            if gc_was_enabled:
+                gc.disable()
+            for scope in scopes:
+                for candidate in scope.descendants():
+                    if get_wrapper_control_type(candidate) not in {"Text", "Static", "Label", "Document"}:
+                        continue
+                    if normalize_match_text(get_wrapper_text(candidate)) != expected:
+                        continue
+                    rect = get_wrapper_rectangle(candidate)
+                    if not rect:
+                        continue
+                    rect_key = (
+                        int(rect.get("left", 0)),
+                        int(rect.get("top", 0)),
+                        int(rect.get("right", 0)),
+                        int(rect.get("bottom", 0)),
+                    )
+                    if rect_key in seen_rects:
+                        continue
+                    seen_rects.add(rect_key)
+                    rects.append(rect)
+        finally:
+            if gc_was_enabled:
+                gc.enable()
         _label_rect_cache_put(top_window, expected, rects)
     except Exception as exc:
         _record_silent_exception("find_label_rects", exc)
@@ -787,16 +809,23 @@ def wrapper_matches_label_text(wrapper, label_text):
     labeled_by = _read_wrapper_labeled_by_name(wrapper)
     if labeled_by:
         return value_matches(labeled_by, expected)
+    # 廉价兄弟 TextBlock 匹配优先：WPF 中"标签/面板标题 + 控件"常为同层兄弟
+    # （interest-area 面板"测风点"标题与各图标按钮、输入框旁的单位/名称标签）。
+    # 大多数场景在此命中，可避免 _find_label_rects_for_wrapper 的全树扫描
+    # （巨大 WPF 窗口首次扫描实测 20-36 秒，是每步定位耗时主因）。
+    if _match_sibling_text_block_label(wrapper, expected):
+        return True
+    # Telerik/WPF 多选下拉 CheckBox 的等级文本在其子 TextBlock 上，而非自身 Name
+    # （如热稳定度『2 - 中性』的 MTDGroupComboBoxMultiSelection_CheckBox：自身 name
+    # 为空，父 ListItem 名才是选项文本，子节点 TextBlock 保存展示文本）。
+    # 仅靠 automation_id 会命中全部 10 个等级 checkbox，靠 label_text 匹配子文本
+    # 才能精确锁定目标等级，避免勾选到同下拉框下其它选项。
+    if _match_child_text_block_label(wrapper, expected):
+        return True
     control_rect = get_wrapper_rectangle(wrapper)
     for label_rect in _find_label_rects_for_wrapper(wrapper, expected):
         if _label_rect_matches_control(label_rect, control_rect):
             return True
-    # 内部宿主 / 模板复制控件（同 automationId/name）：LabeledBy 为空、附近标签
-    # 矩形查找可能因 Raw View 树结构（装饰器/中间层）落空，此时检查其父容器内
-    # 兄弟 TextBlock（WPF 中"标签/面板标题 + 控件"常为同层兄弟，如 interest-area
-    # 面板的"测风点"标题与各图标按钮），作为 label_text 匹配的兜底。
-    if _match_sibling_text_block_label(wrapper, expected):
-        return True
     return False
 
 
@@ -815,6 +844,25 @@ def _match_sibling_text_block_label(wrapper, expected):
                 return True
     except Exception as exc:
         _record_silent_exception("match_sibling_text_block", exc)
+    return False
+
+
+def _match_child_text_block_label(wrapper, expected):
+    """在 wrapper 的子节点中查找文本等于 expected 的 TextBlock/Text。
+
+    专为"控件自身 UIA Name 为空、文本在其子 Text 上"的场景设计：
+    Telerik 多选下拉的 CheckBox（如热稳定度各等级 MTDGroupComboBoxMultiSelection_CheckBox）
+    结构为 CheckBox > [Image, TextBlock(等级文本)]，等级文本在子 TextBlock 上。
+    仅匹配 Text/TextBlock/Static 类子节点，避免误命中图标等无文本节点。
+    """
+    try:
+        for child in wrapper.children():
+            if get_wrapper_control_type(child) not in {"Text", "TextBlock", "Static", "Label"}:
+                continue
+            if normalize_match_text(get_wrapper_text(child)) == expected:
+                return True
+    except Exception as exc:
+        _record_silent_exception("match_child_text_block", exc)
     return False
 
 
@@ -2089,6 +2137,24 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                         }
                 toggle_state = get_wrapper_toggle_state(dropdown_wrapper)
                 should_click = toggle_state in {"", "0", "Off", "off", "0.0", "Indeterminate"}
+                # 无论本次是否点击展开，都重新收集下拉窗口列表：step_16 之类的前置
+                # 步骤可能已把下拉展开（toggle=On），此时 Popup 窗口已存在但不在旧的
+                # dropdown_windows 里，不重新收集会导致后续枚举漏掉 RadComboBoxItem。
+                try:
+                    popup_windows = _collect_dropdown_windows()
+                    if expected_process_id:
+                        popup_windows = [
+                            w for w in popup_windows
+                            if get_wrapper_process_id(w) == expected_process_id
+                        ]
+                    for w in popup_windows:
+                        if not any(
+                            get_wrapper_handle(x) == get_wrapper_handle(w)
+                            for x in dropdown_windows
+                        ):
+                            dropdown_windows.append(w)
+                except Exception:
+                    pass
                 if should_click:
                     clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
                     if clicked:
@@ -2111,24 +2177,8 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                                 toggle=get_wrapper_toggle_state(dropdown_wrapper) or "(unknown)",
                             )
                         )
-                        # 展开后下拉选项所在的 Popup 窗口才创建，重新收集窗口列表并合并，
-                        # 确保后续枚举能覆盖到选项窗口。
-                        try:
-                            popup_windows = _collect_dropdown_windows()
-                            if expected_process_id:
-                                popup_windows = [
-                                    w for w in popup_windows
-                                    if get_wrapper_process_id(w) == expected_process_id
-                                ]
-                            for w in popup_windows:
-                                if not any(
-                                    get_wrapper_handle(x) == get_wrapper_handle(w)
-                                    for x in dropdown_windows
-                                ):
-                                    dropdown_windows.append(w)
-                        except Exception:
-                            pass
-                        # 展开成功：定位可能已耗掉大部分预算，为枚举选项续时
+                        # 展开后下拉选项所在的 Popup 窗口才创建（上面的窗口收集已覆盖），
+                        # 此处只需为枚举选项续时：定位可能已耗掉大部分预算。
                         remaining = deadline - time.time()
                         if remaining < 2.0:
                             deadline = time.time() + 2.0
@@ -2676,8 +2726,14 @@ def wrapper_matches_locator(wrapper, target_method, target_value):
             if not value_matches(get_wrapper_automation_id(wrapper), expected):
                 return False
         elif method == "name":
-            if not value_matches(get_wrapper_text(wrapper), expected):
-                return False
+            if value_matches(get_wrapper_text(wrapper), expected):
+                continue
+            # 控件自身 UIA Name 为空时（如 Telerik 多选下拉 CheckBox，等级文本在子
+            # TextBlock 上），回退到运行时文本候选（含子节点文本）匹配，避免 name
+            # 定位失配把同一 automationId 的多实例全部选中导致点错等级。
+            if any(value_matches(t, expected) for t in get_wrapper_runtime_text_candidates(wrapper)):
+                continue
+            return False
         elif method == "class_name":
             if not value_matches(get_wrapper_class_name(wrapper), expected):
                 return False
@@ -3472,7 +3528,10 @@ def _enum_visible_mup_win32_windows():
         return True
 
     try:
-        ctypes.windll.user32.EnumWindows(enum_proc, 0)
+        # 注意：必须传入回调实例 _callback，而不是类型工厂 enum_proc。
+        # 传 enum_proc 会抛 ctypes.ArgumentError 被 except 吞掉，导致函数永远返回 []，
+        # MUP 窗口进不了候选（实测"窗口过滤严格无命中，回退前置窗口单候选"反复出现）。
+        ctypes.windll.user32.EnumWindows(_callback, 0)
     except Exception:
         return []
     return windows
@@ -3679,23 +3738,30 @@ def build_fast_locator_queries(control_definition):
     query_candidates = []
     seen = set()
     query_fields = []
-    if locator_map.get("name"):
-        # name 优先：pywinauto 只支持 title/control_type 等（不支持 automation_id），
-        # 且控件 name（按钮文本/下拉框标题）通常唯一，FindAll(title) 快。
-        query_fields.extend(
-            [
-                ("name", "control_type"),
-                ("name",),
-            ]
-        )
-    elif locator_map.get("automation_id"):
+    # automation_id 优先：UIA 原生 FindAll(AutomationId) 精确、毫秒级，且不依赖 name。
+    # 部分控件（图标按钮/图形按钮）的 name 是超长 SVG/Geometry 路径（如 M21032.418,...），
+    # 用 name 走 pywinauto descendants(title=超长串) 每次属性比较都做字符串匹配，既慢又不稳，
+    # 而稳定唯一的 automation_id 分支反被 elif 跳过 → fast 阶段空转超时掉进整树扫描。
+    # （step_18 点击-返回按钮 WRAAnalysisReferenceIEC_Button_GoBack 4.7s 定位失败的根因）
+    if locator_map.get("automation_id"):
         query_fields.extend(
             [
                 ("automation_id", "control_type"),
                 ("automation_id",),
             ]
         )
-    elif locator_map.get("class_name"):
+    if locator_map.get("name"):
+        # name 作为补充查询（尤其无 automation_id 时）：按钮文本/下拉框标题通常唯一。
+        # 但当 name 是超长 SVG path（几百到几千字符）时跳过，避免 pywinauto 慢匹配，
+        # automation_id 已覆盖该场景。
+        if not _is_svg_path_name(locator_map.get("name", "")):
+            query_fields.extend(
+                [
+                    ("name", "control_type"),
+                    ("name",),
+                ]
+            )
+    elif locator_map.get("class_name") and not query_fields:
         query_fields.extend(
             [
                 ("class_name", "control_type"),
@@ -3742,12 +3808,18 @@ def _release_com_pointer(ptr):
         pass
 
 
-def _iter_uia_findall_by_automation_id(window, automation_id, max_results=256):
+def _iter_uia_findall_by_automation_id(window, automation_id, max_results=256, label_text=""):
     """UIA 原生 FindAll(Subtree, AutomationId) 快速定位。
 
     pywinauto 0.6.9 的 descendants 不支持 automation_id 参数（build_condition 只认
     process/class_name/title/control_type），传它会抛 TypeError 被吞，导致 fast 定位空。
     UIA 原生 FindAll 用 AutomationId 条件直接枚举，兼容所有控件。
+
+    label_text 可选：对泛化 automationId（如 WPF 每个 TextBox 都叫 "textbox"）做
+    Raw View 兄弟标签预过滤（毫秒级）。控件定义 targetMethod 带 label_text 时传入，
+    可把"全树 FindAll 返回几十个同名 Edit 再逐个完整评分"压缩为直接命中目标，
+    避免 fast 阶段超时后掉进整树扫描（整树在巨大 WPF 窗口下达 9 秒+，见 step_10
+    Wohler 指数 16.7s 的定位耗时）。
     返回 list（非生成器），以便 in-flight 立即释放 FindAll 的 COM 指针。
     """
     results = []
@@ -3762,6 +3834,9 @@ def _iter_uia_findall_by_automation_id(window, automation_id, max_results=256):
         return results
     condition = None
     found = None
+    walker = None
+    props = {}
+    label_expected = normalize_match_text(label_text)
     try:
         root_element = window.element_info.element
         iuia = IUIA().iuia
@@ -3774,9 +3849,30 @@ def _iter_uia_findall_by_automation_id(window, automation_id, max_results=256):
         except Exception as exc:
             _record_silent_exception("uia_findall_count", exc)
             count = 0
+        if label_expected:
+            # 需要 Raw View 兄弟标签过滤时才获取 walker/props（多数场景无 label，避免额外开销）。
+            # 与 _iter_raw_view_findall_candidates 保持一致，用 RawViewWalker 属性。
+            try:
+                walker = IUIA().iuia.RawViewWalker
+                props = _raw_view_filter_props()
+            except Exception as exc:
+                _record_silent_exception("uia_findall_label_init", exc)
         for i in range(min(count, max_results)):
             try:
                 element = found.GetElement(i)
+                if label_expected:
+                    try:
+                        label_hit = _raw_sibling_label_matches(element, label_text, walker, props)
+                        # Telerik 多选下拉 CheckBox：等级文本在子节点而非兄弟，
+                        # 兄弟匹配不到时回退子节点文本匹配，避免真实候选被误过滤。
+                        if not label_hit:
+                            label_hit = _raw_element_child_text_matches(
+                                element, label_text, walker, props
+                            )
+                        if not label_hit:
+                            continue
+                    except Exception as exc:
+                        _record_silent_exception("uia_findall_label_filter", exc)
                 results.append(UIAWrapper(UIAElementInfo(element)))
             except Exception as exc:
                 _record_silent_exception("uia_findall_element", exc)
@@ -3786,6 +3882,52 @@ def _iter_uia_findall_by_automation_id(window, automation_id, max_results=256):
         _release_com_pointer(found)
         _release_com_pointer(condition)
     return results
+
+
+def _is_svg_path_name(text):
+    """判断控件 name 是否为超长 SVG/Geometry 路径（图标按钮的常见脏数据）。
+
+    此类 name 是 WPF Path 的 Data 属性（M/L/C/A 命令 + 大量坐标），几百到几千字符，
+    用于 pywinauto descendants(title=...) 匹配既慢又不稳；有稳定 automation_id 时应跳过。
+    判定标准：长度超阈值 且 含 SVG 命令特征。
+    """
+    try:
+        if not text:
+            return False
+        if len(text) < 64:
+            return False
+        head = text[:32]
+        # SVG path 通常以 M/L/C/Q/A 命令开头，且含大量逗号/空格分隔的坐标数字
+        if not (head[0] in "MmLlCcQqAa" and ("," in head or " " in head)):
+            return False
+        # 特征：M/C/A 命令与数字密集
+        cmd_count = sum(1 for ch in text if ch in "MmCcAaZzLlQq")
+        digit_ratio = sum(1 for ch in text if ch.isdigit()) / max(1, len(text))
+        return cmd_count >= 4 and digit_ratio >= 0.3
+    except Exception:
+        return False
+
+
+def _fast_locator_label_hint(control_definition):
+    """从控件定义提取 labelText 快查提示。
+
+    仅当 targetMethod 明确含 label_text 时返回（此时 fast 阶段才需要按标签消歧）；
+    否则返回空串，避免对无标签需求的控件引入 Raw View 兄弟扫描开销。
+    """
+    try:
+        if not isinstance(control_definition, dict):
+            return ""
+        methods = split_locator_parts(control_definition.get("targetMethod", ""))
+        if "label_text" not in {m.strip() for m in methods}:
+            return ""
+        return (
+            control_definition.get("labelText", "")
+            or (control_definition.get("inspectData", {}) or {}).get("labelText", "")
+            or control_definition.get("relatedLabelName", "")
+            or (control_definition.get("inspectData", {}) or {}).get("relatedLabelName", "")
+        )
+    except Exception:
+        return ""
 
 
 def iter_fast_locator_candidates(window, control_definition):
@@ -3807,7 +3949,13 @@ def iter_fast_locator_candidates(window, control_definition):
         if query.get("automation_id"):
             # pywinauto 0.6.9 的 descendants 不支持 automation_id（build_condition 只认
             # process/class_name/title/control_type），用 UIA 原生 FindAll(Subtree, AutomationId)。
-            for candidate in _iter_uia_findall_by_automation_id(window, query.get("automation_id", "")):
+            # 泛化 automationId（如 WPF 的 "textbox"）在全树有大量实例，逐个完整评分
+            # 会拖到 fast deadline 超时再掉进整树扫描；带 label_text 时用 Raw View 兄弟
+            # 标签预过滤直接命中目标（毫秒级）。
+            label_hint = _fast_locator_label_hint(control_definition)
+            for candidate in _iter_uia_findall_by_automation_id(
+                window, query.get("automation_id", ""), label_text=label_hint
+            ):
                 handle = _safe_get_value(lambda: getattr(candidate.element_info, "handle", None), None)
                 handle_key = handle if handle not in (None, 0, "") else id(candidate)
                 if handle_key in seen_handles:
@@ -3952,19 +4100,25 @@ def _iter_raw_view_findall_candidates(window, control_definition, max_results=12
     元素集合，数量级提速且不受深度限制。
     """
     if window is None:
-        return
+        return []
     try:
         from pywinauto.uia_defines import IUIA
         from pywinauto.controls.uiawrapper import UIAWrapper
         from pywinauto.uia_element_info import UIAElementInfo
     except Exception as exc:
         _record_silent_exception("raw_findall_import", exc)
-        return
+        # 必须返回空列表而不是 None：调用方 `for candidate in _iter_raw_view_findall_candidates(...)`
+        # 直接迭代返回值，返回 None 会抛 TypeError('NoneType' object is not iterable)，
+        # 使整个定位链提前失败（日志中 step_31/38/45/52/59/66 反复出现该错误）。
+        return []
     normalized = normalize_control_definition(control_definition)
     inspect_data = normalized.get("inspectData", {}) or {}
     target_automation_id = normalize_match_text(inspect_data.get("automationId", ""))
     if not target_automation_id:
-        return
+        # 无 automationId 时无法走 FindAll 优化：返回空列表，让调用方回退到
+        # descendants 全量扫描（按 name/label/class 匹配），避免返回 None 导致
+        # `for candidate in ...` 触发 TypeError（如保存对话框文件名框等占位控件）。
+        return []
     condition = None
     found = None
     try:
@@ -4005,6 +4159,18 @@ def _iter_raw_view_findall_candidates(window, control_definition, max_results=12
             except Exception as exc:
                 _record_silent_exception("raw_findall_element", exc)
                 continue
+            # 廉价 Raw View 兄弟标签预过滤优先：控件定义带 label_text 时，先检查
+            # 候选的 Raw 兄弟是否含同名标签（毫秒级），不匹配直接跳过，避免对
+            # 每个候选做完整评分（完整评分内的 _find_label_rects_for_wrapper 全树
+            # 扫描在巨大 WPF 窗口下可达 20-36 秒）。label_expected 为空时跳过。
+            # Telerik 多选下拉 CheckBox 的等级文本在子节点而非兄弟，兄弟匹配不到
+            # 时回退子节点文本匹配，避免真实候选被误过滤。
+            if label_expected and walker is not None:
+                label_ok = _raw_sibling_label_matches(element, label_expected, walker, props)
+                if not label_ok:
+                    label_ok = _raw_element_child_text_matches(element, label_expected, walker, props)
+                if not label_ok:
+                    continue
             if not wrapper_matches_control_definition(wrapper, normalized):
                 continue
             key = get_wrapper_handle(wrapper) or normalize_match_text(
@@ -4013,8 +4179,14 @@ def _iter_raw_view_findall_candidates(window, control_definition, max_results=12
             if key in seen:
                 continue
             seen.add(key)
-            if label_expected and walker is not None and _raw_sibling_label_matches(element, label_expected, walker, props):
-                label_hits.append(wrapper)
+            if label_expected and walker is not None:
+                label_ok = _raw_sibling_label_matches(element, label_expected, walker, props)
+                if not label_ok:
+                    label_ok = _raw_element_child_text_matches(element, label_expected, walker, props)
+                if label_ok:
+                    label_hits.append(wrapper)
+                else:
+                    plain_hits.append(wrapper)
             else:
                 plain_hits.append(wrapper)
     except Exception as exc:
@@ -4054,6 +4226,49 @@ def _raw_sibling_label_matches(element, label_text, walker, props):
             sibling = walker.GetNextSiblingElement(sibling)
     except Exception as exc:
         _record_silent_exception("raw_sibling_walk", exc)
+    return False
+
+
+def _raw_element_child_text_matches(element, label_text, walker, props, max_depth=2):
+    """Raw View 子节点文本匹配：宿主元素的直接子 Text/TextBlock 中是否有 Name 等于标签。
+
+    Telerik 多选下拉 CheckBox（如热稳定度各等级 MTDGroupComboBoxMultiSelection_CheckBox）
+    的结构为 CheckBox > [Image, Text(等级文本)]：等级文本在 CheckBox 的**子节点**上，
+    而非兄弟节点。只按兄弟匹配（_raw_sibling_label_matches）会把这些真实候选全部
+    过滤掉，导致 fast 定位枚举不到任何 checkbox（日志表现为『未找到匹配控件』）。
+    """
+    expected = normalize_match_text(label_text)
+    if not expected:
+        return False
+    try:
+        child = walker.GetFirstChildElement(element)
+        depth = 0
+        stack = [(child, depth)]
+        while stack:
+            cur, d = stack.pop()
+            if cur is None or d > max_depth:
+                continue
+            try:
+                name = str(cur.GetCurrentPropertyValue(props.get("name", 30005)) or "").strip()
+                ctype = str(cur.GetCurrentPropertyValue(props.get("control_type", 30003)) or "").strip()
+            except Exception:
+                name, ctype = "", ""
+            if normalize_match_text(name) == expected:
+                return True
+            try:
+                sub = walker.GetFirstChildElement(cur)
+            except Exception:
+                sub = None
+            if sub is not None and d < max_depth:
+                stack.append((sub, d + 1))
+            try:
+                sibling = walker.GetNextSiblingElement(cur)
+            except Exception:
+                sibling = None
+            if sibling is not None:
+                stack.append((sibling, d))
+    except Exception as exc:
+        _record_silent_exception("raw_child_text_walk", exc)
     return False
 
 
@@ -6276,12 +6491,13 @@ def _get_adaptive_threshold(richness: str) -> int:
     return {"high": 100, "mid": 50, "low": 1}.get(richness, 100)
 
 
-def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_hint="", control_map_path=None):
+def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_title_hint="", control_map_path=None):
     # ── 阶段计时初始化 ──────────────────────────────────────────────────────
     _t0 = time.perf_counter()
     _reset_silent_exception_counts()
-    # label 矩形缓存仅在本调用内有效：窗口内容/候选跨调用会变，必须每次清空防陈旧
-    _label_rect_cache_reset()
+    # label 矩形缓存带 TTL 跨调用保留：同一目标窗口在几十秒内的连续步骤共享
+    # 一次全树 label 扫描结果，避免每个步骤重复支付 20-36 秒的全树扫描。
+    # （缓存 get/put 内部按 _LABEL_RECT_CACHE_TTL 自动过期，无需硬清空。）
     _t1 = _t2 = _t3 = _t4 = _t0
     step_definition = _GET_STEP_DEFINITION(step_id)
     controls = step_definition.get("controls", []) if isinstance(step_definition, dict) else []
@@ -6395,6 +6611,10 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                     if expects_raw:
                         break
                     for candidate in iter_fast_locator_candidates(window, control_definition):
+                        # fast 阶段可能对巨大窗口做全量枚举（如 label_text 匹配），
+                        # 单轮就可能远超 deadline；逐候选检查，超时就放弃继续搜索。
+                        if time.time() > deadline:
+                            break
                         if not wrapper_matches_control_definition(candidate, control_definition):
                             continue
                         if str(step_id).strip() == "step_2" and get_wrapper_is_offscreen(candidate) == "True":
@@ -6688,6 +6908,34 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
                         ),
                     )
                 )
+            # [诊断] 定位失败时打印 Raw View（FindAll automationId=PART_ContentHost）候现实况，
+            # 排查"名称/描述"同名同结构输入框的 found_index 消歧为何失效。
+            try:
+                _diag_win = windows[-1] if windows else None
+                if _diag_win is not None:
+                    _diag_candidates = _iter_raw_view_findall_candidates(
+                        _diag_win,
+                        {"automationId": "PART_ContentHost", "inspectData": {"automationId": "PART_ContentHost"}},
+                        max_results=60,
+                    )
+                    _diag_snap = []
+                    for _c in (_diag_candidates or []):
+                        try:
+                            _diag_snap.append({
+                                "type": get_wrapper_control_type(_c),
+                                "class": get_wrapper_class_name(_c),
+                                "name": get_wrapper_text(_c),
+                                "offscreen": get_wrapper_is_offscreen(_c),
+                                "rect": str(get_wrapper_rectangle(_c) or {}),
+                                "idx_ctrl_Pane": get_wrapper_found_index(_c, "control_type", "Pane"),
+                                "idx_cls_ScrollViewer": get_wrapper_found_index(_c, "class_name", "ScrollViewer"),
+                            })
+                        except Exception:
+                            continue
+                    _LOG_STEP("[FlowLocator][候选][raw] PART_ContentHost count={} snap={}".format(
+                        len(_diag_snap), json.dumps(_diag_snap, ensure_ascii=False)))
+            except Exception as _diag_outer_exc:
+                _LOG_STEP("[FlowLocator][候选] 诊断失败: " + repr(_diag_outer_exc)[:200])
             last_error = RuntimeError(
                 f"step={step_id}, control={control_id or '(first)'}, windows={len(windows)} 未找到匹配控件"
             )
@@ -6721,11 +6969,48 @@ def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_
             f"seconds={elapsed:.2f}, reason=timeout_no_match{silent_suffix}"
         )
     else:
+        tb_snippet = ""
+        if isinstance(last_error, Exception) and last_error.__traceback__ is not None:
+            try:
+                frames = traceback.format_exception(
+                    type(last_error), last_error, last_error.__traceback__
+                )
+                # 只取真正抛异常的帧，去掉前几行包装，保留文件:行号
+                tb_snippet = " | traceback=" + " | ".join(
+                    line.strip() for line in frames if line.strip()
+                )[-1500:]
+            except Exception:
+                tb_snippet = ""
         _LOG_STEP(
             f"流程控件定位失败: step={step_id}, control={control_id or '(first)'}, "
-            f"seconds={elapsed:.2f}, last_error={last_error}{silent_suffix}"
+            f"seconds={elapsed:.2f}, last_error={last_error}{tb_snippet}{silent_suffix}"
         )
     return None
+
+
+def find_flow_control(step_id, control_id=None, timeout_seconds=3, window_title_hint="", control_map_path=None):
+    """控件定位入口：在 UIA 遍历期间临时禁用 GC，防止 comtypes 释放失效 COM 指针崩溃。
+
+    pywinauto/comtypes 的 UIA 元素数组在垃圾回收时释放 COM 对象（__del__ → Release），
+    若目标软件 UIA provider 已失效会触发 "Windows fatal exception: access violation"
+    或 "code 0xc0000374"（堆损坏），导致整个子进程崩溃、无任何错误详情。整个定位过程
+    （descendants/children/FindAll/Raw View 遍历）都可能触发，故在此统一禁用 GC，
+    遍历结束后恢复。定位过程通常秒级，禁用 GC 的内存影响可忽略。
+    """
+    gc_was_enabled = gc.isenabled()
+    try:
+        if gc_was_enabled:
+            gc.disable()
+        return _find_flow_control_impl(
+            step_id,
+            control_id=control_id,
+            timeout_seconds=timeout_seconds,
+            window_title_hint=window_title_hint,
+            control_map_path=control_map_path,
+        )
+    finally:
+        if gc_was_enabled:
+            gc.enable()
 
 
 def _normalize_compare_value(value):
@@ -6780,6 +7065,21 @@ def wait_for_flow_control_condition(
                         return True
                 elif _normalize_compare_value(actual_value) == _normalize_compare_value(expected):
                     return True
+        elif target_condition in {"toggle", "checked", "toggle_state"}:
+            # 仅对实现 TogglePattern 的控件有意义（CheckBox / ToggleButton /
+            # RadioButton / Expander 头 / 分扇区开关等）。非切换控件
+            # get_wrapper_toggle_state 返回 ""，永不满足 → 不影响其它流程。
+            state = get_wrapper_toggle_state(control)
+            exp = str(expected_value or "").strip().lower() or "on"
+            on_states = {"1", "on", "1.0"}
+            off_states = {"0", "off", "0.0"}
+            ind_states = {"2", "indeterminate"}
+            if exp in on_states and state in on_states:
+                return True
+            if exp in off_states and state in off_states:
+                return True
+            if exp in ind_states and state in ind_states:
+                return True
         else:
             raise ValueError(f"不支持的 wait_for_control condition: {condition}")
         time.sleep(max(0.1, float(poll_interval_seconds)))
@@ -6870,9 +7170,17 @@ def click_relative_anchor(
     window_title_hint="",
     click_kind="single",
     control_map_path=None,
+    anchor_align="center",
 ):
-    """锚点相对点击：先定位锚点控件(anchor_control_id)，再以其可见矩形中心为基准，
+    """锚点相对点击：先定位锚点控件(anchor_control_id)，再以其可见矩形某个基准点为原点，
     按像素偏移 offset=(offset_x, offset_y) 点击。
+
+    anchor_align 决定基准点（offset 从该点开始偏移）：
+      - "center": 矩形中心（默认，兼容旧行为）
+      - "left":   左边缘中点（x = left,  y = 垂直中心）
+      - "right":  右边缘中点（x = right, y = 垂直中心）——常用于点控件最右侧的内部图标
+      - "top":    上边缘中点（y = top,   x = 水平中心）
+      - "bottom": 下边缘中点（y = bottom, x = 水平中心）
 
     整段逻辑运行在守护线程中并配看门狗：UIA COM 调用在后台/最小化窗口上可能挂起，
     看门狗超时后强制返回失败，避免流程"一直运行无反应"。
@@ -6924,8 +7232,20 @@ def click_relative_anchor(
                 return
             cx = int((rect.left + rect.right) // 2)
             cy = int((rect.top + rect.bottom) // 2)
-            px = cx + offset_x
-            py = cy + offset_y
+            # 根据对齐基准计算基准点坐标；anchor_align 非法时回退 center
+            align = str(anchor_align or "center").strip().lower()
+            if align == "left":
+                base_x, base_y = rect.left, cy
+            elif align == "right":
+                base_x, base_y = rect.right, cy
+            elif align == "top":
+                base_x, base_y = cx, rect.top
+            elif align == "bottom":
+                base_x, base_y = cx, rect.bottom
+            else:
+                base_x, base_y = cx, cy
+            px = base_x + offset_x
+            py = base_y + offset_y
 
             kind = str(click_kind or "single").strip().lower()
             if timed_out["value"]:
@@ -6943,13 +7263,16 @@ def click_relative_anchor(
                 pyautogui.click(px, py)
 
             _LOG_STEP(
-                f"已通过锚点相对点击: anchor={anchor_control_id}, center=({cx},{cy}), "
+                f"已通过锚点相对点击: anchor={anchor_control_id}, align={align}, "
+                f"base=({base_x},{base_y}), center=({cx},{cy}), "
                 f"offset=({offset_x},{offset_y}), click=({px},{py}), kind={kind}"
             )
             result_box["ok"] = True
             result_box["meta"] = {
                 "anchorControlId": anchor_control_id,
+                "anchorAlign": align,
                 "anchorCenter": {"x": cx, "y": cy},
+                "anchorBase": {"x": base_x, "y": base_y},
                 "offset": {"x": offset_x, "y": offset_y},
                 "clickPoint": {"x": px, "y": py},
                 "clickKind": kind,
