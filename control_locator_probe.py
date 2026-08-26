@@ -31,6 +31,9 @@ MAX_WINDOWS_SCAN = 6              # 最多扫描的窗口数量（迭代序按�
 MAX_DESCENDANTS_ELEMENTS = 6000   # 阶段3 单窗口 descendants 元素上限
 DESCENDANTS_BUDGET_SECONDS = 8.0  # 阶段3 总时间预算
 RAW_VIEW_BUDGET_SECONDS = 8.0     # 阶段2 Raw View 兜底预算
+# 与流程执行器 find_flow_control 一致：出现 >=100 分的高置信候选立即返回，
+# 不再继续评分后续候选（MUP 上单次评分可达秒级~数十秒，是检验定位耗时大头）
+EARLY_EXIT_SCORE = 100
 
 
 def _bounded_descendants(window, expected_type, deadline, max_elements):
@@ -58,7 +61,9 @@ def search_control(control, budgets=None):
     """在隔离进程内执行与采集器/流程执行器同源的分阶段定位搜索，返回结果 dict。
 
     阶段1 快速候选 → 阶段2 Raw View 兜底 → 阶段3 descendants 受限兜底。
-    各阶段均受预算约束；任意阶段命中即返回。
+    各阶段均受预算约束；任意阶段命中即返回。出现 >=EARLY_EXIT_SCORE 的高置信
+    候选时立即返回（与执行器 find_flow_control 的 best_score>=100 早退同语义），
+    此时 match_count 只统计已评分部分，结果带 early_exit=True 标记。
 
     budgets 为可选覆盖参数（键同模块常量），仅供测试注入小预算/禁用阶段。
     """
@@ -105,8 +110,13 @@ def search_control(control, budgets=None):
 
         matched = []
         seen = set()
+        best_score = 0
+
+        def _early_hit():
+            return best_score >= EARLY_EXIT_SCORE
 
         def _match(candidate_iter, _window):
+            nonlocal best_score
             for candidate in candidate_iter:
                 handle = flow_locator.get_wrapper_handle(candidate) or id(candidate)
                 if handle in seen:
@@ -115,15 +125,21 @@ def search_control(control, budgets=None):
                 score = flow_locator.score_control_match(candidate, control)
                 if score > 0:
                     matched.append((score, candidate, _window))
+                    if score > best_score:
+                        best_score = score
+                    if _early_hit():
+                        return
 
         # 阶段1：快速候选（窗口按评级降序，通常前几个窗口即命中）
         for window in windows:
             if time.time() - start > desc_budget:
                 break
             _match(flow_locator.iter_fast_locator_candidates(window, control), window)
+            if _early_hit():
+                break
 
         # 阶段2：RawView 兜底（带预算）
-        if not matched and control.get("inspectData", {}):
+        if not _early_hit() and not matched and control.get("inspectData", {}):
             try:
                 from wt_flow_locator import (
                     control_definition_expects_raw_view,
@@ -139,11 +155,13 @@ def search_control(control, budgets=None):
                             ), window)
                         except Exception:
                             pass
+                        if _early_hit():
+                            break
             except Exception:
                 pass
 
         # 阶段3：descendants 受限兜底（元素数 + 时间预算，只扫候选窗口）
-        if not matched:
+        if not _early_hit() and not matched:
             expected_type = str(
                 control.get("controlType", "")
                 or control.get("inspectData", {}).get("controlType", "")
@@ -153,9 +171,12 @@ def search_control(control, budgets=None):
                 if time.time() >= desc_deadline:
                     break
                 _match(_bounded_descendants(window, expected_type, desc_deadline, max_elements), window)
+                if _early_hit():
+                    break
 
         elapsed = time.time() - start
         result["elapsed"] = round(elapsed, 1)
+        result["early_exit"] = bool(_early_hit())
         if not matched:
             result["error"] = "未找到匹配控件"
             return result

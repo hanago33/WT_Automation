@@ -5927,7 +5927,8 @@ class ControlMapBuilderApp:
         tk.Button(button_row2, text="🔍 搜索控件", command=self.cmd_search_controls, bg=CONTROL_MAP_THEME["warning_soft"]).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row2, text="📥 合并入库", command=self.cmd_merge_into_library, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row2, text="复制所选定位", command=self.cmd_copy_selected_locator).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row2, text="检验定位", command=self.cmd_test_selected_locator, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
+        self._btn_test_locator = tk.Button(button_row2, text="检验定位", command=self.cmd_test_selected_locator, bg=CONTROL_MAP_THEME["primary_soft"])
+        self._btn_test_locator.pack(side=tk.LEFT, padx=3)
         self.var_tree_view_mode = tk.StringVar(value="flat")
         tk.Checkbutton(button_row2, text="层级树视图", variable=self.var_tree_view_mode, onvalue="hierarchy", offvalue="flat", command=self._refresh_tree).pack(side=tk.LEFT, padx=8)
         tk.Button(button_row2, text="展开全部", command=self._cmd_expand_all_tree,
@@ -6993,19 +6994,73 @@ class ControlMapBuilderApp:
             self.var_status.set("⚠ 检验定位：该控件没有可用于定位的属性")
             return
 
-        self.var_status.set("⏳ 正在检验定位（独立进程执行中）...")
+        self._set_probe_running(True)
         self.root.update_idletasks()
         self._launch_locator_probe(control)
 
     _PROBE_WAIT_SECONDS = 90.0
 
+    def _set_probe_running(self, running):
+        """检验期间禁用按钮并显示已等待秒数。
+
+        同一时刻只允许一个探针在跑：按钮禁用挡住常规重复点击，_probe_seq 序号
+        兜底保证旧一轮的超时定时器/回调不会干扰新一轮（此前实例属性被第二次
+        启动直接覆盖——第一轮的定时器会误杀第二轮探针、第一轮回调会取消第二轮
+        的定时器，连续两次点击必然互相干扰）。
+        """
+        btn = getattr(self, "_btn_test_locator", None)
+        if btn is not None:
+            try:
+                btn.configure(state="disabled" if running else "normal")
+            except Exception:
+                pass
+        if getattr(self, "_probe_elapsed_timer", None) is not None:
+            try:
+                self.root.after_cancel(self._probe_elapsed_timer)
+            except Exception:
+                pass
+            self._probe_elapsed_timer = None
+        if running:
+            self._probe_started_at = time.time()
+            self._tick_probe_elapsed()
+
+    def _tick_probe_elapsed(self):
+        base = getattr(self, "_probe_started_at", None)
+        if base is None:
+            return
+        self.var_status.set(
+            "⏳ 正在检验定位（独立进程执行中，已等待 {:.0f}s）...".format(time.time() - base)
+        )
+        self._probe_elapsed_timer = self.root.after(1000, self._tick_probe_elapsed)
+
     def _launch_locator_probe(self, control):
-        """在子进程中执行定位搜索；探针崩溃只影响自身，主界面不受影响。"""
+        """在子进程中执行定位搜索；探针崩溃只影响自身，主界面不受影响。
+
+        新启动会先取消上一轮超时定时器、终止仍在运行的旧探针；watcher 回调
+        携带 _probe_seq，过期回调只清理临时文件、不更新状态与按钮。
+        """
         base_dir = os.path.dirname(os.path.abspath(__file__))
         probe_script = os.path.join(base_dir, "control_locator_probe.py")
         if not os.path.isfile(probe_script):
+            self._set_probe_running(False)
             self.var_status.set("⚠ 检验定位：探针脚本缺失：" + probe_script)
             return
+
+        self._probe_seq = getattr(self, "_probe_seq", 0) + 1
+        prev_timer = getattr(self, "_probe_timer", None)
+        if prev_timer is not None:
+            try:
+                self.root.after_cancel(prev_timer)
+            except Exception:
+                pass
+            self._probe_timer = None
+        prev_proc = getattr(self, "_probe_proc", None)
+        if prev_proc is not None and prev_proc.poll() is None:
+            try:
+                prev_proc.kill()
+            except Exception:
+                pass
+
         tmp_dir = os.path.join(base_dir, "logs", "probe")
         try:
             os.makedirs(tmp_dir, exist_ok=True)
@@ -7020,6 +7075,7 @@ class ControlMapBuilderApp:
             with open(control_path, "w", encoding="utf-8") as f:
                 json.dump(control, f, ensure_ascii=False)
         except Exception as exc:
+            self._set_probe_running(False)
             self.var_status.set("⚠ 检验定位：写入控件定义失败：" + str(exc))
             return
 
@@ -7037,6 +7093,7 @@ class ControlMapBuilderApp:
                 creationflags=creationflags,
             )
         except Exception as exc:
+            self._set_probe_running(False)
             self.var_status.set("⚠ 检验定位：启动探针失败：" + str(exc))
             return
 
@@ -7045,21 +7102,23 @@ class ControlMapBuilderApp:
         self._probe_start = time.time()
         self._probe_timed_out = False
 
-        watcher = threading.Thread(target=self._wait_probe_exit, args=(proc, output_path), daemon=True)
+        watcher = threading.Thread(target=self._wait_probe_exit, args=(proc, output_path, self._probe_seq), daemon=True)
         watcher.start()
         # 超时兜底：探针挂死（如 UIA 死锁）时强杀，避免进程残留
-        self._probe_timer = self.root.after(int(self._PROBE_WAIT_SECONDS * 1000), self._on_probe_timeout)
+        self._probe_timer = self.root.after(int(self._PROBE_WAIT_SECONDS * 1000), self._on_probe_timeout, self._probe_seq)
 
-    def _wait_probe_exit(self, proc, output_path):
+    def _wait_probe_exit(self, proc, output_path, seq):
         start = getattr(self, "_probe_start", time.time())
         try:
             returncode = proc.wait()
         except Exception as exc:
-            self.root.after(0, lambda rc=-1, e=exc: self._handle_probe_result(output_path, rc, start, str(e)))
+            self.root.after(0, lambda: self._handle_probe_result(output_path, -1, start, seq, str(exc)))
             return
-        self.root.after(0, lambda rc=returncode: self._handle_probe_result(output_path, rc, start))
+        self.root.after(0, lambda: self._handle_probe_result(output_path, returncode, start, seq))
 
-    def _on_probe_timeout(self):
+    def _on_probe_timeout(self, seq):
+        if seq != getattr(self, "_probe_seq", None):
+            return  # 过期定时器：新一轮检验已启动，不得误杀当前探针
         self._probe_timed_out = True
         proc = getattr(self, "_probe_proc", None)
         if proc is not None and proc.poll() is None:
@@ -7069,15 +7128,21 @@ class ControlMapBuilderApp:
                 pass
             self.var_status.set("⚠ 检验定位：探针超时（{}s），已终止。".format(int(self._PROBE_WAIT_SECONDS)))
         self._probe_proc = None
+        self._set_probe_running(False)
 
-    def _handle_probe_result(self, output_path, returncode, start, extra_error=""):
-        if hasattr(self, "_probe_timer") and self._probe_timer is not None:
+    def _handle_probe_result(self, output_path, returncode, start, seq, extra_error=""):
+        if seq != getattr(self, "_probe_seq", None):
+            # 过期回调：新一轮检验已启动，只清理本轮临时文件，不触碰状态与按钮
+            self._cleanup_probe_files(output_path)
+            return
+        if getattr(self, "_probe_timer", None) is not None:
             try:
                 self.root.after_cancel(self._probe_timer)
             except Exception:
                 pass
             self._probe_timer = None
         self._probe_proc = None
+        self._set_probe_running(False)
         if getattr(self, "_probe_timed_out", False):
             # 超时分支已报告状态，这里仅清理临时文件
             self._cleanup_probe_files(output_path)

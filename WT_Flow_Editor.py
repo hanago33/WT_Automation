@@ -3247,7 +3247,8 @@ class ControlMapImportDialog:
         tk.Button(action_row1, text="导入当前文件全部控件", command=self.import_all, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
         tk.Button(action_row1, text="编辑所选控件", command=self.edit_selected_control, bg="#fef3c7").pack(side=tk.LEFT, padx=3)
         tk.Button(action_row1, text="删除所选控件", command=self.delete_selected_controls, bg="#fee2e2").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row1, text="检验定位", command=self.test_selected_locator, bg="#e0e7ff").pack(side=tk.LEFT, padx=3)
+        self._btn_test_locator = tk.Button(action_row1, text="检验定位", command=self.test_selected_locator, bg="#e0e7ff")
+        self._btn_test_locator.pack(side=tk.LEFT, padx=3)
         tk.Button(action_row1, text="取消", command=self.on_cancel).pack(side=tk.LEFT, padx=3)
 
         action_row2 = tk.Frame(action_row)
@@ -4757,9 +4758,43 @@ class ControlMapImportDialog:
         # UIA 遍历在隔离子进程内执行，遇到失效 COM 指针触发原生堆损坏时
         # 只终止探针子进程，编辑器主窗口不受影响（之前在进程内线程跑会
         # 0xc0000374 崩溃、直接关掉整个编辑器）。
+        self._set_probe_running(True)
         self._launch_locator_probe(control_definition)
 
     _PROBE_WAIT_SECONDS = 90.0
+
+    def _set_probe_running(self, running):
+        """检验期间禁用按钮并显示已等待秒数。
+
+        同一时刻只允许一个探针在跑：按钮禁用挡住常规重复点击，_probe_seq 序号
+        兜底保证旧一轮的超时定时器/回调不会干扰新一轮（此前实例属性被第二次
+        启动直接覆盖——第一轮的定时器会误杀第二轮探针、第一轮回调会取消第二轮
+        的定时器，连续两次点击必然互相干扰）。
+        """
+        btn = getattr(self, "_btn_test_locator", None)
+        if btn is not None:
+            try:
+                btn.configure(state="disabled" if running else "normal")
+            except Exception:
+                pass
+        if getattr(self, "_probe_elapsed_timer", None) is not None:
+            try:
+                self.window.after_cancel(self._probe_elapsed_timer)
+            except Exception:
+                pass
+            self._probe_elapsed_timer = None
+        if running:
+            self._probe_started_at = time.time()
+            self._tick_probe_elapsed()
+
+    def _tick_probe_elapsed(self):
+        base = getattr(self, "_probe_started_at", None)
+        if base is None:
+            return
+        self.var_locator_result.set(
+            "⏳ 正在检验定位（独立进程执行中，已等待 {:.0f}s）...".format(time.time() - base)
+        )
+        self._probe_elapsed_timer = self.window.after(1000, self._tick_probe_elapsed)
 
     def _launch_locator_probe(self, control):
         """在子进程中执行定位搜索（control_locator_probe.py）。
@@ -4767,13 +4802,32 @@ class ControlMapImportDialog:
         探针把 UIA 遍历放到独立 subprocess：原生崩溃（STATUS_HEAP_CORRUPTION /
         0xc0000374，pywinauto 的 try/except 拦不住）只终止探针子进程，
         编辑器主窗口不受影响；主进程通过结果文件判断成功/失败/崩溃。
+        新启动会先取消上一轮超时定时器、终止仍在运行的旧探针；watcher 回调
+        携带 _probe_seq，过期回调只清理临时文件、不更新状态与按钮。
         """
         import subprocess as _subprocess
         base_dir = os.path.dirname(os.path.abspath(__file__))
         probe_script = os.path.join(base_dir, "control_locator_probe.py")
         if not os.path.isfile(probe_script):
+            self._set_probe_running(False)
             self.var_locator_result.set("⚠ 检验定位：探针脚本缺失：" + probe_script)
             return
+
+        self._probe_seq = getattr(self, "_probe_seq", 0) + 1
+        prev_timer = getattr(self, "_probe_timer", None)
+        if prev_timer is not None:
+            try:
+                self.window.after_cancel(prev_timer)
+            except Exception:
+                pass
+            self._probe_timer = None
+        prev_proc = getattr(self, "_probe_proc", None)
+        if prev_proc is not None and prev_proc.poll() is None:
+            try:
+                prev_proc.kill()
+            except Exception:
+                pass
+
         tmp_dir = os.path.join(base_dir, "logs", "probe")
         try:
             os.makedirs(tmp_dir, exist_ok=True)
@@ -4788,6 +4842,7 @@ class ControlMapImportDialog:
             with open(control_path, "w", encoding="utf-8") as f:
                 json.dump(control, f, ensure_ascii=False)
         except Exception as exc:
+            self._set_probe_running(False)
             self.var_locator_result.set("⚠ 检验定位：写入控件定义失败：" + str(exc))
             return
 
@@ -4805,6 +4860,7 @@ class ControlMapImportDialog:
                 creationflags=creationflags,
             )
         except Exception as exc:
+            self._set_probe_running(False)
             self.var_locator_result.set("⚠ 检验定位：启动探针失败：" + str(exc))
             return
 
@@ -4813,21 +4869,23 @@ class ControlMapImportDialog:
         self._probe_start = time.time()
         self._probe_timed_out = False
 
-        watcher = threading.Thread(target=self._wait_probe_exit, args=(proc, output_path), daemon=True)
+        watcher = threading.Thread(target=self._wait_probe_exit, args=(proc, output_path, self._probe_seq), daemon=True)
         watcher.start()
         # 超时兜底：探针挂死（如 UIA 死锁）时强杀，避免进程残留
-        self._probe_timer = self.window.after(int(self._PROBE_WAIT_SECONDS * 1000), self._on_probe_timeout)
+        self._probe_timer = self.window.after(int(self._PROBE_WAIT_SECONDS * 1000), self._on_probe_timeout, self._probe_seq)
 
-    def _wait_probe_exit(self, proc, output_path):
+    def _wait_probe_exit(self, proc, output_path, seq):
         start = getattr(self, "_probe_start", time.time())
         try:
             returncode = proc.wait()
         except Exception as exc:
-            self.window.after(0, lambda rc=-1, e=exc: self._handle_probe_result(output_path, rc, start, str(e)))
+            self.window.after(0, lambda: self._handle_probe_result(output_path, -1, start, seq, str(exc)))
             return
-        self.window.after(0, lambda rc=returncode: self._handle_probe_result(output_path, rc, start))
+        self.window.after(0, lambda: self._handle_probe_result(output_path, returncode, start, seq))
 
-    def _on_probe_timeout(self):
+    def _on_probe_timeout(self, seq):
+        if seq != getattr(self, "_probe_seq", None):
+            return  # 过期定时器：新一轮检验已启动，不得误杀当前探针
         self._probe_timed_out = True
         proc = getattr(self, "_probe_proc", None)
         if proc is not None and proc.poll() is None:
@@ -4839,15 +4897,21 @@ class ControlMapImportDialog:
                 "⚠ 检验定位：探针超时（{}s），已终止。".format(int(self._PROBE_WAIT_SECONDS))
             )
         self._probe_proc = None
+        self._set_probe_running(False)
 
-    def _handle_probe_result(self, output_path, returncode, start, extra_error=""):
-        if hasattr(self, "_probe_timer") and self._probe_timer is not None:
+    def _handle_probe_result(self, output_path, returncode, start, seq, extra_error=""):
+        if seq != getattr(self, "_probe_seq", None):
+            # 过期回调：新一轮检验已启动，只清理本轮临时文件，不触碰状态与按钮
+            self._cleanup_probe_files(output_path)
+            return
+        if getattr(self, "_probe_timer", None) is not None:
             try:
                 self.window.after_cancel(self._probe_timer)
             except Exception:
                 pass
             self._probe_timer = None
         self._probe_proc = None
+        self._set_probe_running(False)
         if getattr(self, "_probe_timed_out", False):
             # 超时分支已报告状态，这里仅清理临时文件
             self._cleanup_probe_files(output_path)

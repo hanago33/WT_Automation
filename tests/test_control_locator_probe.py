@@ -142,6 +142,41 @@ class ProbeSearchTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("boom", result["error"])
 
+    def test_early_exit_stops_at_high_score(self):
+        # >=100 分高置信命中立即返回：后续候选不再评分（与执行器早退语义一致）
+        w1, w2 = _FakeWidget(), _FakeWidget()
+        win = _FakeWindow()
+        scored = []
+
+        def spy_score(wrapper, control_definition):
+            scored.append(wrapper)
+            return 150
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(probe.flow_locator, "iter_flow_search_windows", return_value=[win]))
+        stack.enter_context(patch.object(probe.flow_locator, "get_wrapper_handle", side_effect=lambda w: id(w)))
+        stack.enter_context(patch.object(probe.flow_locator, "score_control_match", side_effect=spy_score))
+        stack.enter_context(patch.object(
+            probe.flow_locator, "iter_fast_locator_candidates",
+            side_effect=lambda window, control_definition: [w1, w2],
+        ))
+        stack.enter_context(patch.object(probe.flow_locator, "get_wrapper_debug_snapshot", return_value={}))
+        with stack:
+            result = probe.search_control(_base_control(), budgets={"max_windows": 2})
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(len(scored), 1, "高分命中后不应继续评分后续候选")
+        self.assertEqual(result["match_count"], 1)
+        self.assertTrue(result["early_exit"])
+
+    def test_no_early_exit_below_threshold(self):
+        # 全部低于高置信阈值时仍收集所有匹配（保持全局最优报告）
+        win = _FakeWindow()
+        with self._patch_locator([win], fast_by_window={id(win): [_FakeWidget(), _FakeWidget()]}) as _stack:
+            result = probe.search_control(_base_control(), budgets={"max_windows": 2})
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["match_count"], 2)
+        self.assertFalse(result.get("early_exit"))
+
 
 class BoundedDescendantsTests(unittest.TestCase):
     def test_caps_by_element_count(self):
