@@ -120,6 +120,48 @@ def _build_context(flow_path: str = "", project_desc: str = ""):
     )
 
 
+import re as _re
+
+_FILE_PATH_RE = _re.compile(r"[A-Za-z]:\\[^\n\"'<>|]*\.json")
+
+def _inject_local_file_context(message: str):
+    """在本地 Agent 的对话中，自动识别用户消息里的本地 .json 路径并读取内容作为上下文。
+
+    Agent 进程运行在用户本机，本身有权访问这些文件；这样用户直接把路径贴进对话框即可让
+    Agent “看到”文件并基于它回答/修改，不必手动粘贴全部内容。
+    """
+    if not message:
+        return message, []
+    import os as _os
+    hits: list[str] = []
+    for m in _FILE_PATH_RE.finditer(message):
+        p = m.group(0)
+        if _os.path.exists(p) and _os.path.isfile(p):
+            hits.append(p)
+    if not hits:
+        return message, []
+    blocks: list[str] = []
+    loaded: list[str] = []
+    for p in hits[:3]:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception:
+            continue
+        if len(content) > 60000:
+            content = content[:60000] + "\n...[文件过长，已截断前半部分]..."
+        blocks.append(f"### 用户提供的本地文件: {p}\n```json\n{content}\n```")
+        loaded.append(p)
+    if not blocks:
+        return message, []
+    injected = (
+        "以下是用户在对话中给出的本地流程文件内容，请基于它们理解需求并回答问题或进行修改：\n\n"
+        + "\n\n".join(blocks)
+        + "\n\n---\n\n用户原始消息：" + message
+    )
+    return injected, loaded
+
+
 def handle_api(path: str, handler) -> None:
     """简易路由分发。"""
     parsed = urlparse(path)
@@ -263,6 +305,62 @@ def handle_api(path: str, handler) -> None:
                 "kb_areas": kb.get("areas", {}),
                 "skills": len(get_builtin_skills()),
             })
+
+        # ── 浏览器选择流程文件后，把内容保存为临时 json，供后续流程接口按路径读取 ──
+        if route == "/api/flow/ingest" and handler.command == "POST":
+            import os as _os
+            import json as _json
+            import re as _re
+            import tempfile as _tempfile
+            import time as _time
+            data = _read_body(handler)
+            raw = (data.get("content") or "")
+            filename = (data.get("filename") or "flow.json").strip() or "flow.json"
+            if not raw.strip():
+                return _json_response(handler, {"status": "error", "message": "文件内容为空"}, 400)
+            try:
+                parsed = _json.loads(raw)
+            except Exception as exc:
+                return _json_response(handler, {"status": "error", "message": f"JSON 解析失败：{exc}"}, 400)
+            tmp_dir = _os.path.join(_tempfile.gettempdir(), "wt_agent_flows")
+            _os.makedirs(tmp_dir, exist_ok=True)
+            try:
+                existing = sorted(
+                    [_os.path.join(tmp_dir, f) for f in _os.listdir(tmp_dir) if f.endswith(".json")],
+                    key=_os.path.getmtime,
+                )
+                for old in existing[:-19]:
+                    try:
+                        _os.remove(old)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            safe = _re.sub(r'[\\/:*?"<>|]', "_", _os.path.basename(filename))
+            tmp_path = _os.path.join(tmp_dir, f"{int(_time.time()*1000)}_{safe}")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                _json.dump(parsed, f, ensure_ascii=False, indent=2)
+            return _json_response(handler, {"status": "ingested", "path": tmp_path, "filename": filename})
+
+        # ── 将 Agent 生成的步骤写回流程文件（用于“编辑后落盘”）──
+        if route == "/api/flow/apply-edit" and handler.command == "POST":
+            data = _read_body(handler)
+            flow_path = (data.get("flow_path") or "").strip()
+            steps = data.get("steps")
+            if not flow_path or not os.path.exists(flow_path):
+                return _json_response(handler, {"status": "error", "message": "原流程路径无效"}, 400)
+            if not isinstance(steps, list):
+                return _json_response(handler, {"status": "error", "message": "缺少 steps 列表"}, 400)
+            try:
+                with open(flow_path, "r", encoding="utf-8") as f:
+                    flow = json.load(f)
+                flow["steps"] = steps
+                flow["lastUpdated"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                with open(flow_path, "w", encoding="utf-8") as f:
+                    json.dump(flow, f, ensure_ascii=False, indent=2)
+                return _json_response(handler, {"status": "ok", "path": flow_path})
+            except Exception as exc:
+                return _json_response(handler, {"status": "error", "message": f"写回失败：{exc}"}, 500)
 
         # ── 流程解释 / 编辑 / 比对 ──
         if route == "/api/flow/explain" and handler.command == "POST":
@@ -501,23 +599,26 @@ def handle_api(path: str, handler) -> None:
             agent = _build_agent(config_data)
             context = _build_context(flow_path, project_desc)
 
-            # 判断是对话还是转换
+            # 判断是对话还是转换（sequence/step 也支持从消息里自动读取本地 json）
+            augmented, loaded_files = _inject_local_file_context(message)
             mode = data.get("mode", "chat")
             if mode in ("sequence", "step"):
                 if mode == "sequence":
-                    steps = agent.nl_to_sequence(message, context, conversation_id=conversation_id, compress=compress)
+                    steps = agent.nl_to_sequence(augmented, context, conversation_id=conversation_id, compress=compress)
                 else:
-                    steps = agent.nl_to_step(message, context, conversation_id=conversation_id, compress=compress)
-                resp: dict[str, Any] = {"type": "steps", "steps": steps, "mode": mode}
+                    steps = agent.nl_to_step(augmented, context, conversation_id=conversation_id, compress=compress)
+                resp: dict[str, Any] = {"type": "steps", "steps": steps, "mode": mode, "loaded_files": loaded_files}
                 # 生成失败时返回诊断信息（如模型不支持 function calling），供前端提示
                 diag = getattr(agent, "_last_generation_diagnostic", None)
                 if not steps and diag:
                     resp["warning"] = diag
                 return _json_response(handler, resp)
             else:
-                reply = agent.chat(message, context, conversation_id=conversation_id,
+                reply = agent.chat(augmented, context, conversation_id=conversation_id,
                                    kb_enabled=kb_enabled, compress=compress)
-                return _json_response(handler, {"type": "chat", "reply": reply, "conversation_id": conversation_id})
+                if loaded_files:
+                    reply = "（已自动读取本地文件：" + "、".join(loaded_files) + "，已作为上下文提供给模型）\n\n" + reply
+                return _json_response(handler, {"type": "chat", "reply": reply, "conversation_id": conversation_id, "loaded_files": loaded_files})
 
         # 会话管理 API
         if route == "/api/conversations" and handler.command == "GET":
@@ -987,6 +1088,17 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
 }
 .seq-saved code { word-break:break-all; color:#085c34; font-family:Consolas,monospace; font-size:11px; }
 .seq-saved .btn { width:auto; margin-left:auto; }
+.ft-edit-preview { background:#fff; border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px 14px; margin-top:8px; }
+.ft-preview-head { font-weight:600; color:var(--text); margin-bottom:8px; }
+.ft-audit { font-size:12.5px; background:#FFF6E9; border:1px solid #F3D8A8; color:#8A5A12; border-radius:8px; padding:8px 10px; margin:6px 0; }
+.ft-audit.ok { background:#EAF7F0; border-color:#A9DFC4; color:#0B7A45; }
+.ft-audit ul { margin:4px 0 0 18px; padding:0; }
+.ft-patch { font-size:12px; margin:6px 0; }
+.ft-patch pre { background:#F6F3F1; border-radius:8px; padding:8px; max-height:220px; overflow:auto; }
+.ft-preview-actions { display:flex; gap:10px; margin-top:12px; }
+.ft-btn { border:1px solid var(--border); background:#fff; color:var(--text); border-radius:8px; padding:7px 16px; font-size:13px; cursor:pointer; }
+.ft-btn-primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+.ft-btn-primary:hover { background:var(--accent-hover); }
 </style>
 </head>
 <body>
@@ -1129,8 +1241,21 @@ body { font-family:var(--font); background:var(--bg); height:100vh; display:flex
         </div>
         <div class="config-section">
           <label>流程文件 / 报告路径</label>
-          <input type="text" id="ft-flow" placeholder="flow_definition.json 路径">
-          <input type="text" id="ft-flow-b" placeholder="比对用第二份流程（可选）" style="margin-top:6px;">
+          <div style="font-size:12px;color:#8a8a8a;margin:4px 0 8px;line-height:1.5;">
+            点“选择”载入的是<b>临时副本</b>（用于分析/预览，Agent 改完不会动你原文件）。
+            若要让 Agent <b>直接修改你电脑上的原始链路文件</b>，请在此框手动粘贴原始文件的真实绝对路径（例如
+            <code style="font-size:11px;">D:\\My_RF_Project\\WT_Automation\\flow_packages\\flow_definition_xxx.json</code>），再点“✏️ 编辑”。
+          </div>
+          <div style="display:flex; gap:6px;">
+            <input type="text" id="ft-flow" placeholder="flow_definition.json 路径（可点右侧“选择”按钮）" style="flex:1;">
+            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('ft-flow-file').click()">选择</button>
+          </div>
+          <input type="file" id="ft-flow-file" accept=".json,application/json" style="display:none" onchange="onFlowFile('ft-flow', this)">
+          <div style="display:flex; gap:6px; margin-top:6px;">
+            <input type="text" id="ft-flow-b" placeholder="比对用第二份流程（可选）" style="flex:1;">
+            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('ft-flow-b-file').click()">选择</button>
+          </div>
+          <input type="file" id="ft-flow-b-file" accept=".json,application/json" style="display:none" onchange="onFlowFile('ft-flow-b', this)">
         </div>
         <div class="config-section">
           <label>指令 / 问题 / 日志内容</label>
@@ -2199,38 +2324,137 @@ async function _flowPost(url, body) {
   }
 }
 
+async function onFlowFile(targetId, input) {
+  let file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    let text = await file.text();
+    addMessage('user', '📂 已选择文件：' + file.name);
+    let resp = await fetch('/api/flow/ingest', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({filename: file.name, content: text})
+    });
+    let data = await resp.json();
+    if (data && data.path) {
+      document.getElementById(targetId).value = data.path;
+      showToast('已载入：' + file.name, 'success');
+      addMessage('agent', '✅ 已载入流程文件：' + file.name + '\n临时路径：' + data.path + '\n\n现在可在上方输入修改指令后点“✏️ 编辑”，或点“💡 解释 / 🧹 审核 / 🔧 修复”分析这份流程。');
+    } else {
+      showToast('载入失败：' + ((data && data.message) || '未知错误'), 'error');
+      addMessage('agent', '❌ 文件载入失败：' + ((data && data.message) || '未知错误'));
+    }
+  } catch (e) {
+    showToast('无法读取文件：' + e.message, 'error');
+  }
+}
+
 async function flowExplain() {
   let path = document.getElementById('ft-flow').value.trim();
   let instr = document.getElementById('ft-instr').value.trim();
-  if (!path) { showToast('请填写流程文件路径', 'error'); return; }
+  if (!path) { showToast('请填写流程文件路径（可点右侧“选择”按钮）', 'error'); return; }
   addMessage('user', '💡 解释流程：' + path + (instr ? '\n' + instr : ''));
   let data = await _flowPost('/api/flow/explain', {flow_path: path, question: instr});
-  if (data) addMessage('agent', data.answer || '(无响应)');
+  if (!data) return;
+  if (data.status === 'error') { addMessage('agent', '❌ ' + (data.message || '流程文件不存在或解析失败')); return; }
+  if (data.error) { addMessage('agent', '❌ ' + data.error); return; }
+  addMessage('agent', data.answer || '(无响应)');
 }
 
 async function flowEdit() {
   let path = document.getElementById('ft-flow').value.trim();
   let instr = document.getElementById('ft-instr').value.trim();
-  if (!path) { showToast('请填写流程文件路径', 'error'); return; }
+  if (!path) { showToast('请填写流程文件路径（可点右侧“选择”按钮）', 'error'); return; }
   if (!instr) { showToast('请填写修改指令', 'error'); return; }
   addMessage('user', '✏️ 编辑流程：' + instr);
+  addLoadingMessage();
   let data = await _flowPost('/api/flow/edit', {flow_path: path, instruction: instr, write_back: false});
-  if (data) {
-    if (data.ok) {
-      addMessage('agent', '✅ 已生成修改后步骤（共 ' + data.steps.length + ' 步）。\n\n' + (data.raw || ''));
-    } else {
-      addMessage('agent', '⚠️ 模型未返回可解析的 JSON 步骤，原始回复：\n\n' + (data.raw || ''));
-    }
+  removeLoadingMessage();
+  if (!data) return;
+  if (data.status === 'error') { addMessage('agent', '❌ ' + (data.message || '流程文件不存在或解析失败')); return; }
+  if (data.error) { addMessage('agent', '❌ ' + data.error); return; }
+  if (!data.ok) {
+    addMessage('agent', '⚠️ 模型未返回可解析的 JSON 步骤，原始回复：\n\n' + (data.raw || ''));
+    return;
   }
+
+  // ---- 预览：结构化 diff + 审核问题 + 补丁模式，需用户确认后才落盘 ----
+  let modeText = data.mode === 'patch' ? '结构化局部补丁' : '整段重写（降级）';
+  let html = '<div class="ft-edit-preview">';
+  html += '<div class="ft-preview-head">✅ 已据指令生成修改（模式：<b>' + modeText + '</b>，共 ' + (data.steps ? data.steps.length : 0) + ' 步）。请核对后再应用：</div>';
+
+  // 审核问题清单
+  let issues = data.audit_issues || [];
+  if (issues.length) {
+    html += '<div class="ft-audit"><b>⚠️ 审核发现（请重点核对）：</b><ul>';
+    for (const it of issues) {
+      html += '<li>[' + (it.severity || 'warn') + '] ' + escapeHtml(it.message || JSON.stringify(it)) + '</li>';
+    }
+    html += '</ul></div>';
+  } else {
+    html += '<div class="ft-audit ok">✅ 静态审核未发现明显问题。</div>';
+  }
+
+  // 补丁明细
+  if (data.mode === 'patch' && data.patches && data.patches.length) {
+    html += '<details class="ft-patch"><summary>查看补丁明细（' + data.patches.length + ' 条）</summary><pre>' +
+            escapeHtml(JSON.stringify(data.patches, null, 2)) + '</pre></details>';
+  }
+  if (data.patch_errors && data.patch_errors.length) {
+    html += '<div class="ft-audit">⚠️ 部分补丁未应用：' + escapeHtml(data.patch_errors.join('；')) + '</div>';
+  }
+
+  html += '<div class="ft-preview-actions">';
+  html += '<button class="ft-btn ft-btn-primary" id="ft-apply-edit">确认应用修改</button>';
+  html += '<button class="ft-btn" id="ft-cancel-edit">取消</button>';
+  html += '</div></div>';
+
+  let msg = addMessage('agent', html, true);
+
+  document.getElementById('ft-apply-edit').onclick = async () => {
+    try {
+      let saveResp = await fetch('/api/flow/apply-edit', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({flow_path: path, steps: data.steps})
+      });
+      let saveData = await saveResp.json();
+      let box = msg.querySelector('.ft-edit-preview');
+      if (saveData && saveData.status === 'ok') {
+        let isTemp = (saveData.path || '').indexOf('wt_agent_flows') !== -1;
+        if (isTemp) {
+          box.innerHTML = '✅ 已生成修改步骤（共 ' + data.steps.length + ' 步），并写入<b>临时副本</b>（浏览器安全限制，无法直接写你的原文件）：<br>' + escapeHtml(saveData.path) + '<br><br>请核对无误后，将临时文件内容覆盖到你的原始链路文件。';
+        } else {
+          box.innerHTML = '✅ 已<b>直接修改原始链路文件</b>（共 ' + data.steps.length + ' 步），已写回：<br>' + escapeHtml(saveData.path);
+        }
+      } else {
+        box.innerHTML = '✅ 已生成步骤（共 ' + data.steps.length + ' 步），但写回失败：' + escapeHtml((saveData && saveData.message) || '未知错误');
+      }
+    } catch (e) {
+      msg.querySelector('.ft-edit-preview').innerHTML = '✅ 已生成步骤（共 ' + data.steps.length + ' 步），但写回出错：' + escapeHtml(e.message);
+    }
+  };
+  document.getElementById('ft-cancel-edit').onclick = () => {
+    let box = msg.querySelector('.ft-edit-preview');
+    if (box) box.innerHTML = '🚫 已取消应用，原始文件未改动。';
+  };
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 async function flowDiff() {
   let a = document.getElementById('ft-flow').value.trim();
   let b = document.getElementById('ft-flow-b').value.trim();
-  if (!a || !b) { showToast('请填写两份流程文件路径', 'error'); return; }
+  if (!a || !b) { showToast('请填写两份流程文件路径（可点右侧“选择”按钮）', 'error'); return; }
   addMessage('user', '🔀 比对流程 A/B');
   let data = await _flowPost('/api/flow/diff', {flow_a: a, flow_b: b});
-  if (data) addMessage('agent', data.answer || '(无响应)');
+  if (!data) return;
+  if (data.status === 'error') { addMessage('agent', '❌ ' + (data.message || '流程文件不存在或解析失败')); return; }
+  if (data.error) { addMessage('agent', '❌ ' + data.error); return; }
+  addMessage('agent', data.answer || '(无响应)');
 }
 
 async function logDiagnose() {
@@ -2239,7 +2463,10 @@ async function logDiagnose() {
   if (!instr) { showToast('请粘贴日志内容或报告路径', 'error'); return; }
   addMessage('user', '🩺 日志诊断');
   let data = await _flowPost('/api/log/diagnose', {log_input: instr, flow_path: flow});
-  if (data) addMessage('agent', data.answer || '(无响应)');
+  if (!data) return;
+  if (data.status === 'error') { addMessage('agent', '❌ ' + (data.message || '处理失败')); return; }
+  if (data.error) { addMessage('agent', '❌ ' + data.error); return; }
+  addMessage('agent', data.answer || '(无响应)');
 }
 
 // 流程链路检查审核纠错：确定性规则（动作/控件/类型匹配/参数）+ 模型语义审核

@@ -12,7 +12,10 @@ from typing import Any
 # Action Schema（与 WT 项目 wt_action_schema.py 一致，但完全自包含）
 # ---------------------------------------------------------------------------
 
-ALLOWED_CONTINUE_WHEN_CONDITIONS = ("exists", "present", "visible", "enabled", "gone")
+ALLOWED_CONTINUE_WHEN_CONDITIONS = (
+    "exists", "present", "visible", "enabled", "gone",
+    "nonempty", "non_empty", "value_equals", "toggle", "checked", "toggle_state",
+)
 ALLOWED_RELATIVE_REGION_ANCHORS = ("center", "left_center", "right_center")
 ALLOWED_ON_ERROR_MODES = ("continue", "retry", "stop", "fallback", "ask")
 ALLOWED_PARENT_WINDOW_FRAMEWORK_IDS = ("WPF", "Win32", "uia", "WinForm")

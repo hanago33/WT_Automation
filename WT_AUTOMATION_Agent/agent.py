@@ -1353,30 +1353,96 @@ class DslAgent:
         return self.chat(prompt, kb_enabled=True, compress=False)
 
     def edit_flow(self, flow: dict[str, Any], instruction: str, write_back: bool = False) -> dict[str, Any]:
-        """按自然语言指令修改一份流程的步骤，返回 {ok, steps, raw}。
+        """按自然语言指令修改一份流程的步骤，返回 {ok, steps, raw, mode, patches, audit, errors}。
+
+        采用「领域 grounding + 结构化局部补丁」策略：
+        1. 注入编辑专用知识库（真实链路文件 flow_packages + 真实控件库 control_maps）
+           与 control_search 检索结果，约束 control_id 真实存在、动作-控件匹配；
+        2. 优先让模型输出字段级 patch（apply_edit_patch 合并 + schema 校验）；
+        3. 若模型只返回整段数组，则退化为整段重写（旧行为），保证对话编辑不中断。
+        4. 编辑后自动跑 audit_flow 规则校验，给出可确认的问题清单。
 
         若 write_back=True 且解析成功，则直接写回传入的 flow 字典（由调用方负责落盘）。
         """
         self._ensure_ready()
         steps = flow.get("steps", [])
+
+        # ---- 领域 grounding：优先参考用户真实链路文件 + 控件库 ----
+        grounding = ""
+        try:
+            edit_kb = knowledge_base.build_edit_knowledge_base()
+            kb_ctx = edit_kb.build_context(instruction, top_k=4, max_chars=2500)
+            if kb_ctx:
+                grounding += "【相关流程/控件库片段（来自你的真实资产）】\n" + kb_ctx + "\n\n"
+        except Exception:  # grounding 失败不应阻断编辑
+            pass
+        try:
+            ctrl_ctx = control_search.search_text(instruction, top_k=5)
+            if ctrl_ctx:
+                grounding += "【控件库检索结果（control_id 必须来自这里）】\n" + ctrl_ctx + "\n\n"
+        except Exception:
+            pass
+
+        flow_text = flow_ops.flow_to_text(flow, include_controls=True)
+        patch_hint = (
+            "优先用「结构化局部补丁」表达修改，只输出一个 JSON 数组，元素形如：\n"
+            '  {"op":"set_field","step_index":0,"field":"controlId","value":"真实controlId"}\n'
+            '  {"op":"replace_step","step_index":2,"step":{完整步骤对象}}\n'
+            '  {"op":"insert_step","step_index":3,"step":{完整步骤对象}}   // 插到该索引前\n'
+            '  {"op":"remove_step","step_index":4}\n'
+            '  {"op":"rename_step","step_index":1,"name":"新名称"}\n'
+            "step_index 从 0 开始。若修改非常复杂、不便用 patch 表达，"
+            "则只输出修改后的【完整步骤 JSON 数组】。两种情形都不要包含解释文字或代码块标记。"
+        )
         prompt = (
-            "你是一名 WT 自动化流程工程师。下面是当前流程的步骤列表（JSON 数组）。"
-            "请根据用户指令修改，并只输出修改后的完整步骤 JSON 数组，"
-            "不要包含任何解释文字、也不要使用代码块标记。\n\n"
-            f"【当前步骤】\n{json.dumps(steps, ensure_ascii=False, indent=2)}\n\n"
+            "你是一名 WT 自动化流程工程师。请根据用户指令修改当前流程。\n\n"
+            f"{grounding}"
+            f"【当前流程】\n{flow_text}\n\n"
             f"【修改指令】{instruction}\n\n"
-            "要求：保持每个步骤原有字段结构；新增步骤请补全字段；"
-            "control_id 必须使用控件库中真实存在的标识（如 MUPMicroscaleInformationViewModel_Button_...）。"
+            f"{patch_hint}\n\n"
+            "约束：保持步骤原有字段结构；control_id 必须使用控件库中真实存在的标识；"
+            "新增/替换步骤请补全 name、action、controlId 等字段。"
         )
         reply = self.chat(prompt, kb_enabled=False, compress=False)
-        new_steps = _extract_json_array(reply)
+
+        # ---- 解析：patch 优先，整段降级 ----
+        parsed = _extract_json_array(reply)
+        mode = "none"
+        new_steps = steps
+        patch_errors: list[str] = []
+        applied_patches: list[dict[str, Any]] = []
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "op" in parsed[0]:
+            mode = "patch"
+            res = flow_ops.apply_edit_patch(flow, parsed)
+            new_steps = res["flow"].get("steps", steps)
+            patch_errors = res["errors"]
+            applied_patches = parsed
+        elif isinstance(parsed, list):
+            mode = "full"
+            new_steps = parsed
+
+        ok = bool(parsed) and (mode == "full" or not patch_errors)
+
+        # ---- 编辑后自动审核 ----
+        audit = {}
+        try:
+            audit = self.audit_flow({"steps": new_steps}).get("rules", {})
+        except Exception:
+            pass
+
         result: dict[str, Any] = {
             "instruction": instruction,
-            "ok": bool(new_steps),
-            "steps": new_steps if new_steps else steps,
+            "ok": ok,
+            "steps": new_steps,
+            "old_steps": steps,
             "raw": reply,
+            "mode": mode,
+            "patches": applied_patches,
+            "patch_errors": patch_errors,
+            "audit": audit,
+            "audit_issues": (audit.get("issues") if isinstance(audit, dict) else []) or [],
         }
-        if new_steps and write_back:
+        if ok and write_back:
             flow["steps"] = new_steps
         return result
 

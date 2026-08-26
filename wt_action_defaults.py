@@ -6,6 +6,7 @@ ACTION_DEFAULT_CONFIGS = {
     "type_text": {"timeoutSeconds": 3.0, "waitBefore": 0.0, "waitAfter": 0.15},
     "type_text_relative": {"timeoutSeconds": 3.0, "waitBefore": 0.0, "waitAfter": 0.15},
     "click_relative_region": {"timeoutSeconds": 2.5, "waitBefore": 0.0, "waitAfter": 0.12},
+    "click_relative_anchor": {"timeoutSeconds": 2.5, "waitBefore": 0.3, "waitAfter": 0.8, "anchorAlign": "right", "offsetX": 0, "offsetY": 0, "clickKind": "single"},
     "select_dropdown_item_runtime": {"timeoutSeconds": 3.0, "waitBefore": 0.0, "waitAfter": 0.15},
     "send_keys": {"timeoutSeconds": 3.0, "waitBefore": 0.0, "waitAfter": 0.12},
     "drag_and_drop": {"timeoutSeconds": 3.0, "waitBefore": 0.0, "waitAfter": 0.2},

@@ -1,3 +1,5 @@
+import io
+import json
 import os
 import sys
 import unittest
@@ -176,7 +178,10 @@ class LabelTextSiblingFallbackTests(unittest.TestCase):
         wrapper.element_info.control_type = "Pane"
         parent = MagicMock()
         wrapper.parent = MagicMock(return_value=parent)
-        parent.children = MagicMock(return_value=siblings or [wrapper])
+        children = list(siblings or [])
+        if wrapper not in children:
+            children.append(wrapper)  # 真实 DOM 中 wrapper 自身也在父级 children 里
+        parent.children = MagicMock(return_value=children)
         return wrapper
 
     def _make_text_block(self, text):
@@ -215,6 +220,53 @@ class LabelTextSiblingFallbackTests(unittest.TestCase):
         self.assertTrue(wt_flow_locator.wrapper_matches_label_text(wrapper, "地形"))
 
 
+class SharedAutomationIdDataFixTests(unittest.TestCase):
+    """综合卡片标题模板坑的数据层修复回归（不依赖全局 name 否决逻辑）：
+
+    step_23/35 的控件定义已清空共享 automationId（WRAComputation_Text_Header），
+    定位只靠 name 精确匹配；同一模板 automationId 的相邻卡片（如综合1 标题）
+    不得再以高置信命中。防止将来重新采集把 automationId 加回去导致误选。
+    """
+
+    FLOW_PATH = os.path.join(PROJECT_DIR, "flow_packages", "flow_definition_导出综合计算结果.json")
+
+    def _control_definition(self, step_id, control_id):
+        payload = json.load(io.open(self.FLOW_PATH, encoding="utf-8-sig"))
+        for step in payload["steps"]:
+            if step["id"] == step_id:
+                for control in step["controls"]:
+                    if control["id"] == control_id:
+                        return control
+        raise AssertionError("控件定义未找到: %s/%s" % (step_id, control_id))
+
+    def _score(self, definition, wrapper_name, wrapper_aid):
+        wrapper = MagicMock()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(wt_flow_locator, "get_wrapper_text", return_value=wrapper_name))
+            stack.enter_context(patch.object(wt_flow_locator, "get_wrapper_control_type", return_value="Text"))
+            stack.enter_context(patch.object(wt_flow_locator, "get_wrapper_automation_id", return_value=wrapper_aid))
+            stack.enter_context(patch.object(wt_flow_locator, "get_wrapper_class_name", return_value="TextBlock"))
+            stack.enter_context(patch.object(wt_flow_locator, "get_wrapper_runtime_text_candidates", return_value=[]))
+            return wt_flow_locator.get_control_definition_match_score(wrapper, definition)
+
+    def test_step23_definition_picks_only_zonghe2(self):
+        cdef = self._control_definition("step_23", "step_19_control_1")
+        # 数据层前提：共享 automationId 已清空
+        self.assertEqual(str((cdef.get("inspectData", {}) or {}).get("automationId", "")).strip(), "", "step_23 仍带共享 automationId")
+        score_other = self._score(cdef, "综合1", "WRAComputation_Text_Header")
+        score_target = self._score(cdef, "综合2", "WRAComputation_Text_Header")
+        self.assertLess(score_other, 100)          # 名字不匹配者不得高置信
+        self.assertGreaterEqual(score_target, 120)  # 真目标精确命中
+
+    def test_step35_definition_picks_only_zonghe3(self):
+        cdef = self._control_definition("step_35", "step_29_control_1")
+        self.assertEqual(str((cdef.get("inspectData", {}) or {}).get("automationId", "")).strip(), "", "step_35 仍带共享 automationId")
+        score_other = self._score(cdef, "综合2", "WRAComputation_Text_Header")
+        score_target = self._score(cdef, "综合3", "WRAComputation_Text_Header")
+        self.assertLess(score_other, 100)
+        self.assertGreaterEqual(score_target, 120)
+
+
 class ClickRetryToggleGuardTests(unittest.TestCase):
     """ToggleButton/Expander 头点击不重试，避免"展开又折叠"。"""
 
@@ -239,3 +291,4 @@ class ClickRetryToggleGuardTests(unittest.TestCase):
             stack.enter_context(patch.object(wt_flow_locator, "get_wrapper_is_keyboard_focusable", return_value="False"))
             result = wt_flow_locator.should_retry_click_after_focus_switch(control, fg_before, fg_after)
         self.assertTrue(result)
+

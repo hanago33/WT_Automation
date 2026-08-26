@@ -70,7 +70,9 @@ def validate_step_definition(step, package_ids=None):
             if isinstance(control, dict) and str(control.get("id", "")).strip()
         }
 
-        if schema.get("target_required") and not control_id:
+        # send_keys 支持"无目标控件"：向当前焦点发送按键（如"名称输入后 Tab 切到描述框"场景）。
+        # 其余动作仍要求必须配置目标控件。
+        if schema.get("target_required") and not control_id and action_name != "send_keys":
             errors.append(f"步骤 {label} 的动作 `{action_name}` 缺少目标控件。")
         if control_id and control_id not in known_control_ids:
             errors.append(f"步骤 {label} 的目标控件 `{control_id}` 不存在于当前步骤细分控件清单中。")

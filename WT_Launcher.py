@@ -32,6 +32,8 @@ from wt_action_schema import ALLOWED_RELATIVE_REGION_ANCHORS
 from wt_flow_validation import validate_flow_definition
 from wt_flow_editor_utils import normalize_control_window_title
 import wt_task_queue_window
+import wt_project_workdir_parser
+from wt_flow_graph import FlowGraphWindow
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -317,6 +319,22 @@ DEFAULT_OUTPUT_DIR = PROJECT_SETTINGS.get("OUTPUT_DIR", "")
 DEFAULT_PROJECTION_FILE_PATH = PROJECT_SETTINGS.get("PROJECTION_FILE_PATH", "")
 DEFAULT_MODEL_NAME = PROJECT_SETTINGS.get("MODEL_NAME", "")
 DEFAULT_BASE_URL = PROJECT_SETTINGS.get("UI_TARS_VLM_BASE_URL", "")
+# 项目计算参数默认值（人工确认项；打开「项目参数」弹窗时预填，可按项目修改）
+DEFAULT_PROJECT_PARAMS = {
+    "radius": "5000",
+    "cfdHRes": "22.5",
+    "cfdBuf": "25",
+    "cfdMax": "4",
+    "cfdMin": "4",
+    "cpVersion": "Cp0.429",
+    "mastId": "M1",
+    "wind50": "50",
+    # 综合计算设置：海拔/空气密度依项目而定，人工确认（海拔预留 0，空气密度默认海平面标准值）
+    "elevation": "0",
+    "airDensity": "1.225",
+    # 风机类型（板块4 新建风机类型）：人工定义
+    "turbineType": "",
+}
 
 
 class RelativeRegionHelperDialog:
@@ -1369,6 +1387,30 @@ class LauncherApp:
         self.task_queue_user = str(launcher_state.get("taskQueueUser") or "").strip()
         self.task_queue_token = str(launcher_state.get("taskQueueToken") or "").strip()
         self.simple_remote_var = tk.BooleanVar(value=bool(launcher_state.get("simpleModeRemote", False)))
+        # 市场项目工作文件夹（自动解析键入值，仅在选择后对 Simple 板块运行生效；未指定不影响现有流程）
+        self.project_work_dir = str(launcher_state.get("projectWorkDir") or "").strip()
+        self.project_params = launcher_state.get("projectParams") or {}
+        if not isinstance(self.project_params, dict):
+            self.project_params = {}
+        # Cp 版本下拉选项（固定几个 + 用户自行添加，持久化）
+        raw_cp_options = launcher_state.get("cpVersionOptions")
+        if isinstance(raw_cp_options, list):
+            self.cp_version_options = [str(item).strip() for item in raw_cp_options if str(item).strip()]
+        else:
+            self.cp_version_options = []
+        if not self.cp_version_options:
+            self.cp_version_options = [str(DEFAULT_PROJECT_PARAMS.get("cpVersion", "Cp0.429"))]
+        # 风机型号下拉选项（固定几个 + 用户自行添加，持久化）
+        raw_tt_options = launcher_state.get("turbineTypeOptions")
+        if isinstance(raw_tt_options, list):
+            self.turbine_type_options = [str(item).strip() for item in raw_tt_options if str(item).strip()]
+        else:
+            self.turbine_type_options = []
+        default_tt = str(DEFAULT_PROJECT_PARAMS.get("turbineType", "")).strip()
+        if default_tt and default_tt not in self.turbine_type_options:
+            self.turbine_type_options.append(default_tt)
+        # 当前项目识别出的测风塔编号（供「测风塔对象编号」下拉选项）
+        self.project_mast_ids = []
         self._initial_ui_mode = "simple" if launcher_state.get("uiMode") == "simple" else "advanced"
         self.enable_ai_intervention_var = tk.BooleanVar(value=bool(launcher_state.get("enableAiIntervention", False)))
         # 执行中自动更新控件模板开关：勾选后每次运行截图并与上次模板对比、不一致才替换，
@@ -1606,6 +1648,35 @@ class LauncherApp:
         sep = tk.Frame(toolbar, width=1, bg=theme["border"])
         sep.pack(side=tk.LEFT, fill=tk.Y, padx=12)
 
+        # ── 项目工作文件夹（自动解析键入值；不指定则不影响现有流程）──
+        self.btn_simple_workdir = tk.Button(
+            toolbar, text="选择项目文件夹", command=self._simple_select_work_dir,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=10, pady=4, cursor="hand2",
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_workdir.pack(side=tk.LEFT, padx=(0, 4))
+        self.simple_workdir_label = tk.Label(
+            toolbar, text="", bg=theme["toolbar"], fg=theme["muted"],
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.simple_workdir_label.pack(side=tk.LEFT, padx=(0, 8))
+        self.btn_simple_params = tk.Button(
+            toolbar, text="项目参数", command=self._simple_edit_project_params,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=10, pady=4, cursor="hand2",
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_params.pack(side=tk.LEFT, padx=(0, 4))
+        self.btn_simple_clear_workdir = tk.Button(
+            toolbar, text="清除", command=self._simple_clear_work_dir,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=10, pady=4, cursor="hand2", state=tk.DISABLED,
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_clear_workdir.pack(side=tk.LEFT, padx=(0, 4))
+        self._simple_update_work_dir_label()
+
         self.btn_simple_run = tk.Button(
             toolbar, text="▶ 运行所选板块", command=self._run_simple_mode,
             bg="#059669", fg="white", font=("Microsoft YaHei UI", 10, "bold"),
@@ -1674,6 +1745,13 @@ class LauncherApp:
             activebackground=theme["secondary_active"],
         )
         self.btn_simple_submit_chain.pack(side=tk.LEFT, padx=(8, 0))
+        self.btn_simple_flow_graph = tk.Button(
+            toolbar, text="流程图", command=self._open_flow_graph,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=6, cursor="hand2",
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_flow_graph.pack(side=tk.LEFT, padx=(8, 0))
 
         self.simple_status_var = tk.StringVar(value="就绪")
         self.simple_status_label = tk.Label(
@@ -1968,10 +2046,352 @@ class LauncherApp:
             state["simpleModeFlows"] = simple_flows
             state["simpleModeEnabled"] = simple_enabled
             state["simpleModeRemote"] = bool(self.simple_remote_var.get())
+            state["projectWorkDir"] = getattr(self, "project_work_dir", "")
+            state["projectParams"] = getattr(self, "project_params", {})
+            state["cpVersionOptions"] = getattr(self, "cp_version_options", [])
+            state["turbineTypeOptions"] = getattr(self, "turbine_type_options", [])
             state["uiMode"] = self.ui_mode_var.get()
             save_json_file(LAUNCHER_STATE_FILE, state)
         except Exception:
             pass
+
+    def _simple_update_work_dir_label(self):
+        """更新工具栏上的项目工作文件夹路径回显。"""
+        if not hasattr(self, "simple_workdir_label"):
+            return
+        path = str(getattr(self, "project_work_dir", "") or "").strip()
+        if path and os.path.isdir(path):
+            self.simple_workdir_label.config(
+                text="📁 {}".format(path),
+                fg="#059669",
+            )
+            self.btn_simple_params.config(state=tk.NORMAL)
+            self.btn_simple_clear_workdir.config(state=tk.NORMAL)
+        else:
+            self.simple_workdir_label.config(text="未指定（按原配置运行）", fg=self.theme["muted"])
+            self.btn_simple_params.config(state=tk.DISABLED)
+            self.btn_simple_clear_workdir.config(state=tk.DISABLED)
+
+    def _simple_clear_work_dir(self):
+        """取消选择项目工作文件夹，回到「未指定（按原配置运行）」状态。"""
+        if not str(getattr(self, "project_work_dir", "") or "").strip():
+            return
+        if not messagebox.askyesno("清除项目文件夹", "确定取消选择当前项目文件夹吗？\n清除后运行将恢复为按原流程配置执行。"):
+            return
+        self.project_work_dir = ""
+        self.project_params = {}
+        self.project_mast_ids = []
+        self._simple_update_work_dir_label()
+        self._simple_save_state()
+        self._simple_set_status("已清除项目文件夹，恢复按原配置运行", "idle")
+
+    def _open_flow_graph(self):
+        """打开流程链路可视化窗口（只读），默认示范「发送综合计算」板块。"""
+        FlowGraphWindow(self.root, BASE_DIR, default_section="comprehensive",
+                        theme=self.theme)
+
+    def _simple_select_work_dir(self):
+        """选择市场项目工作文件夹（含 03-WT输入 / 04-WT输出）。"""
+        path = self._simple_pick_directory()
+        if not path:
+            return
+        self.project_work_dir = path
+        # 自动读取项目内可选的 project.params.json（人工确认的项目计算参数）
+        self.project_params = wt_project_workdir_parser.load_project_params_from_work_dir(path)
+        # 识别项目中的测风塔编号，供「测风塔对象编号」下拉选择
+        self.project_mast_ids = []
+        try:
+            parsed = wt_project_workdir_parser.parse_project_work_dir(path, self.project_params)
+            if parsed:
+                mast_ids = parsed.get("runtime_config", {}).get("mastIds") or []
+                if isinstance(mast_ids, list):
+                    self.project_mast_ids = [str(item) for item in mast_ids]
+        except Exception:
+            self.project_mast_ids = []
+        self._simple_update_work_dir_label()
+        self._simple_save_state()
+        self._simple_set_status("已选择项目文件夹：{}".format(path), "idle")
+
+    def _simple_pick_directory(self):
+        """自绘目录选择对话框。
+
+        不用 filedialog.askdirectory：本进程已声明 Per-Monitor DPI Aware V2，
+        在部分 Windows + Tk 8.6 组合下原生目录对话框会出现“弹不出 / 主线程挂起”的
+        兼容性问题（askopenfilename/asksaveasfilename 走新版 IFileDialog 不受影响）。
+        此处用 Toplevel + 目录列表自行实现，完全绕开原生对话框。
+        """
+        initial = str(getattr(self, "project_work_dir", "") or "").strip()
+        if not initial or not os.path.isdir(initial):
+            initial = os.path.expanduser("~")
+        result = {"path": ""}
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("选择市场项目工作文件夹（含 03-WT输入 / 04-WT输出）")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        wt_dpi.geometry(dialog, 680, 520)
+        dialog.minsize(wt_dpi.scale(560), wt_dpi.scale(400))
+        dialog.configure(bg=self.theme["bg"])
+        theme = self.theme
+
+        path_var = tk.StringVar(value=initial)
+        listbox = tk.Listbox(
+            dialog, font=("Microsoft YaHei UI", 10), bg="#ffffff", fg=theme["text"],
+            selectbackground=theme["primary"], selectforeground="white", activestyle="none",
+        )
+        listbox.pack(fill=tk.BOTH, expand=True, padx=14, pady=(6, 4))
+
+        def _refresh():
+            cur = path_var.get().strip().rstrip("\\/")
+            entries = []
+            try:
+                if cur and os.path.isdir(cur):
+                    entries = sorted(
+                        d for d in os.listdir(cur)
+                        if os.path.isdir(os.path.join(cur, d))
+                    )
+            except OSError:
+                entries = []
+            listbox.delete(0, tk.END)
+            for d in entries:
+                listbox.insert(tk.END, d)
+            path_var.set(cur or os.path.expanduser("~"))
+
+        def _enter():
+            sel = listbox.curselection()
+            if not sel:
+                return
+            name = listbox.get(sel[0])
+            cur = path_var.get().strip().rstrip("\\/")
+            path_var.set(os.path.join(cur, name))
+            _refresh()
+
+        def _go_up():
+            cur = os.path.abspath(path_var.get().strip() or os.path.expanduser("~"))
+            parent = os.path.dirname(cur)
+            if parent and parent != cur:
+                path_var.set(parent)
+                _refresh()
+
+        def _on_entry_return(_event=None):
+            _refresh()
+
+        def _ok():
+            path = path_var.get().strip().rstrip("\\/")
+            if path and os.path.isdir(path):
+                result["path"] = path
+                dialog.destroy()
+            else:
+                messagebox.showwarning("提示", "目录不存在：\n{}".format(path), parent=dialog)
+
+        def _cancel():
+            dialog.destroy()
+
+        def _on_close():
+            dialog.destroy()
+
+        top_row = tk.Frame(dialog, bg=theme["bg"])
+        top_row.pack(fill=tk.X, padx=14, pady=(12, 4))
+        tk.Label(top_row, text="目录", width=6, anchor="w",
+                 bg=theme["bg"], fg=theme["muted"]).pack(side=tk.LEFT)
+        entry = tk.Entry(top_row, textvariable=path_var, font=("Microsoft YaHei UI", 10))
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        entry.bind("<Return>", _on_entry_return)
+
+        nav_row = tk.Frame(dialog, bg=theme["bg"])
+        nav_row.pack(fill=tk.X, padx=14, pady=(0, 4))
+        tk.Button(nav_row, text="↑ 上一级", command=_go_up,
+                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+                  padx=10, pady=4, cursor="hand2").pack(side=tk.LEFT)
+        tk.Label(nav_row, text="双击目录进入", bg=theme["bg"],
+                 fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(10, 0))
+
+        listbox.bind("<Double-Button-1>", lambda _e: _enter())
+        listbox.bind("<Return>", lambda _e: _enter())
+
+        bottom = tk.Frame(dialog, bg=theme["bg"])
+        bottom.pack(fill=tk.X, padx=14, pady=10)
+        tk.Button(bottom, text="选择此目录", command=_ok,
+                  bg="#059669", fg="white", relief=tk.FLAT, padx=18, pady=6,
+                  cursor="hand2").pack(side=tk.LEFT)
+        tk.Button(bottom, text="取消", command=_cancel,
+                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+                  padx=18, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=(8, 0))
+
+        dialog.protocol("WM_DELETE_WINDOW", _on_close)
+        _refresh()
+        self.root.wait_window(dialog)
+        return result["path"] or ""
+
+    def _simple_edit_project_params(self):
+        """编辑项目计算参数（人工确认项：半径 / CFD网格 / Cp版本 / 测风对象 / 50年风速）。"""
+        if not str(getattr(self, "project_work_dir", "") or "").strip():
+            messagebox.showinfo("提示", "请先选择项目工作文件夹。")
+            return
+        # 按板块分组，便于辨识：(标题, 字段列表, 说明文字)
+        sections = [
+            ("新建工程项目", [
+                ("radius", "计算半径"),
+            ], None),
+            ("新建风机类型", [
+                ("turbineType", "风机类型/型号"),
+            ], "同时用于发送综合计算的「全文检索」检索并选中风机型号"),
+            ("发送 CFD 计算", [
+                ("cfdHRes", "CFD 水平分辨率"),
+                ("cfdBuf", "CFD 边界缓冲"),
+                ("cfdMax", "CFD 最大网格"),
+                ("cfdMin", "CFD 最小网格"),
+            ], None),
+            ("发送综合计算", [
+                ("cpVersion", "Cp 版本"),
+                ("mastId", "测风对象编号"),
+                ("wind50", "50年回归风速"),
+                ("elevation", "海拔 (m)"),
+                ("airDensity", "空气密度 (kg/m³)"),
+            ], None),
+        ]
+        dialog = tk.Toplevel(self.root)
+        dialog.title("项目计算参数（人工确认）")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        wt_dpi.geometry(dialog, 480, 700)
+        dialog.minsize(wt_dpi.scale(420), wt_dpi.scale(560))
+        dialog.configure(bg=self.theme["bg"])
+        entries = {}
+        tk.Label(
+            dialog, text="项目计算参数", font=("Microsoft YaHei UI", 12, "bold"),
+            bg=self.theme["bg"], fg=self.theme["text"],
+        ).pack(pady=(12, 2))
+        tk.Label(
+            dialog, text="按板块分组；无法从 03-WT输入 自动推断，已预填默认值，可按项目修改后保存",
+            font=("Microsoft YaHei UI", 9), bg=self.theme["bg"], fg=self.theme["muted"],
+        ).pack(pady=(0, 8))
+        form = tk.Frame(dialog, bg=self.theme["bg"])
+        form.pack(fill=tk.BOTH, expand=True, padx=18)
+        current = dict(getattr(self, "project_params", {}) or {})
+        combo_widgets = {}
+        for section_title, field_list, section_note in sections:
+            tk.Label(
+                form, text=section_title, font=("Microsoft YaHei UI", 10, "bold"),
+                bg=self.theme["bg"], fg=self.theme["primary"],
+            ).pack(anchor="w", pady=(10, 2))
+            if section_note:
+                tk.Label(
+                    form, text=section_note, font=("Microsoft YaHei UI", 9),
+                    bg=self.theme["bg"], fg=self.theme["muted"],
+                ).pack(anchor="w", pady=(0, 2))
+            for key, label_text in field_list:
+                row = tk.Frame(form, bg=self.theme["bg"])
+                row.pack(fill=tk.X, pady=3)
+                tk.Label(row, text=label_text, width=16, anchor="w",
+                         bg=self.theme["bg"], fg=self.theme["text"]).pack(side=tk.LEFT)
+                var = tk.StringVar(value=str(current.get(key, DEFAULT_PROJECT_PARAMS.get(key, ""))))
+                if key == "cpVersion":
+                    # Cp 版本：固定几个 + 可添加，下拉选择
+                    combo = ttk.Combobox(
+                        row, textvariable=var, values=list(self.cp_version_options),
+                        state="normal", font=("Microsoft YaHei UI", 10),
+                    )
+                    combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    try:
+                        combo.configure(style="Modern.TCombobox")
+                    except tk.TclError:
+                        pass
+                    tk.Button(
+                        row, text="＋", width=3, cursor="hand2",
+                        command=lambda v=var: self._simple_add_cp_version(v),
+                        bg=self.theme["secondary"], fg=self.theme["text"], relief=tk.FLAT,
+                    ).pack(side=tk.LEFT, padx=(4, 0))
+                    combo_widgets[key] = combo
+                elif key == "turbineType":
+                    # 风机类型/型号：固定几个 + 可添加，下拉选择（与 Cp 版本一致）
+                    combo = ttk.Combobox(
+                        row, textvariable=var, values=list(self.turbine_type_options),
+                        state="normal", font=("Microsoft YaHei UI", 10),
+                    )
+                    combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    try:
+                        combo.configure(style="Modern.TCombobox")
+                    except tk.TclError:
+                        pass
+                    tk.Button(
+                        row, text="＋", width=3, cursor="hand2",
+                        command=lambda v=var: self._simple_add_turbine_type(v),
+                        bg=self.theme["secondary"], fg=self.theme["text"], relief=tk.FLAT,
+                    ).pack(side=tk.LEFT, padx=(4, 0))
+                    combo_widgets[key] = combo
+                elif key == "mastId":
+                    # 测风塔对象编号：下拉选择（选项=项目识别出的测风塔数量）
+                    combo = ttk.Combobox(
+                        row, textvariable=var, values=list(self.project_mast_ids or []),
+                        state="normal", font=("Microsoft YaHei UI", 10),
+                    )
+                    combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    try:
+                        combo.configure(style="Modern.TCombobox")
+                    except tk.TclError:
+                        pass
+                    combo_widgets[key] = combo
+                else:
+                    tk.Entry(row, textvariable=var, width=18).pack(side=tk.LEFT, fill=tk.X, expand=True)
+                entries[key] = var
+
+        def _save():
+            new_params = dict(getattr(self, "project_params", {}) or {})
+            for key, var in entries.items():
+                value = var.get().strip()
+                if value:
+                    new_params[key] = value
+                else:
+                    new_params.pop(key, None)
+            self.project_params = new_params
+            self._simple_save_state()
+            dialog.destroy()
+            self._simple_set_status("项目计算参数已保存（{} 项）".format(len(new_params)), "idle")
+
+        btn_row = tk.Frame(dialog, bg=self.theme["bg"])
+        btn_row.pack(fill=tk.X, pady=12)
+        tk.Button(btn_row, text="保存", command=_save,
+                  bg="#059669", fg="white", relief=tk.FLAT, padx=16, pady=6).pack(side=tk.LEFT, padx=(18, 6))
+        tk.Button(btn_row, text="取消", command=dialog.destroy,
+                  bg=self.theme["secondary"], fg=self.theme["text"],
+                  relief=tk.FLAT, padx=16, pady=6).pack(side=tk.LEFT)
+
+    def _simple_add_cp_version(self, target_var=None):
+        """添加新的 Cp 版本到下拉选项列表（持久化到 launcher_state）。"""
+        value = simpledialog.askstring("添加 Cp 版本", "输入新的 Cp 版本号：", parent=self.root)
+        if not value:
+            return
+        value = value.strip()
+        if not value:
+            return
+        if value not in self.cp_version_options:
+            self.cp_version_options.append(value)
+        if target_var is not None:
+            target_var.set(value)
+        try:
+            self._simple_save_state()
+        except Exception:
+            pass
+        self._simple_set_status("已添加 Cp 版本：{}".format(value), "idle")
+
+    def _simple_add_turbine_type(self, target_var=None):
+        """添加新的风机型号到下拉选项列表（持久化到 launcher_state）。"""
+        value = simpledialog.askstring("添加风机型号", "输入新的风机型号：", parent=self.root)
+        if not value:
+            return
+        value = value.strip()
+        if not value:
+            return
+        if value not in self.turbine_type_options:
+            self.turbine_type_options.append(value)
+        if target_var is not None:
+            target_var.set(value)
+        try:
+            self._simple_save_state()
+        except Exception:
+            pass
+        self._simple_set_status("已添加风机型号：{}".format(value), "idle")
 
     def _run_simple_mode(self):
         """运行 Simple 模式中勾选的板块（顺序执行，线程安全）。"""
@@ -2252,6 +2672,8 @@ class LauncherApp:
         self._simple_set_status("▶ {}/{} {} 启动中".format(idx, total, sec["title"]), "running")
         original_path = self._get_flow_definition_path()
         self.flow_definition_path_var.set(flow_path)
+        # 仅当指定了项目工作文件夹时，本次运行启用自动解析注入；未指定则完全保持原逻辑
+        self._simple_run_project_inject = bool(str(getattr(self, "project_work_dir", "") or "").strip())
         try:
             self._launch_automation([], banner="========== Simple: {} ==========".format(sec["title"]))
         except Exception as exc:
@@ -3740,6 +4162,10 @@ class LauncherApp:
                 "simpleModeFlows": simple_flows,
                 "simpleModeEnabled": self._simple_enabled_state() if hasattr(self, "simple_section_vars") else {},
                 "simpleModeRemote": bool(getattr(self, "simple_remote_var", tk.BooleanVar(value=False)).get()),
+                "projectWorkDir": getattr(self, "project_work_dir", ""),
+                "projectParams": getattr(self, "project_params", {}),
+                "cpVersionOptions": getattr(self, "cp_version_options", []),
+                "turbineTypeOptions": getattr(self, "turbine_type_options", []),
                 "serverMonitorUrl": getattr(self, "server_monitor_url", SERVER_MONITOR_DEFAULT_URL),
                 "taskQueueUrl": getattr(self, "task_queue_url", TASK_SERVER_DEFAULT_URL),
                 "taskQueueUser": getattr(self, "task_queue_user", ""),
@@ -3984,7 +4410,27 @@ class LauncherApp:
     def start_automation(self):
         self._launch_automation([], banner="========== 启动新的自动化流程 ==========")
 
+    def _write_project_tmp_flow(self, flow_path, text_overrides, path_prefix_overrides):
+        """将项目解析覆盖应用到流程 payload，写临时流程文件供子进程读取；原文件不动。"""
+        try:
+            payload, _err = load_json_file(flow_path)
+            if not isinstance(payload, dict):
+                return None
+            new_payload = wt_project_workdir_parser.apply_overrides_to_payload(
+                payload, text_overrides, path_prefix_overrides
+            )
+            tmp_dir = os.path.join(BASE_DIR, "workspace")
+            os.makedirs(tmp_dir, exist_ok=True)
+            tmp_path = os.path.join(tmp_dir, "flow_definition_project_tmp.json")
+            save_json_file(tmp_path, new_payload)
+            return tmp_path
+        except Exception as exc:
+            self._append_log("写入临时流程文件失败，按原流程运行：{}".format(exc), tag="warning")
+            return None
+
     def _launch_automation(self, extra_args, banner="========== 启动新的自动化流程 =========="):
+        # Simple 板块运行前设置的一次性注入标志：读取后立即清除，避免残留影响后续运行
+        self._simple_run_project_inject = bool(getattr(self, "_simple_run_project_inject", False))
         if self.process and self.process.poll() is None:
             messagebox.showinfo("提示", "自动化流程已经在运行中。")
             return
@@ -4048,9 +4494,37 @@ class LauncherApp:
 
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         process_env = self._apply_model_env(os.environ.copy())
-        process_env["GM_RUNTIME_CONFIG_JSON"] = json.dumps(load_flow_runtime_config(flow_definition_path), ensure_ascii=False)
-        process_env[FLOW_DEFINITION_ENV_KEY] = flow_definition_path
-        command = [sys.executable, AUTOMATION_SCRIPT]
+        runtime_config = load_flow_runtime_config(flow_definition_path)
+        effective_flow_path = flow_definition_path
+        # ── 项目工作文件夹自动解析（仅 Simple 板块运行且指定了项目文件夹时启用，未指定不影响现有流程）──
+        if getattr(self, "_simple_run_project_inject", False):
+            self._simple_run_project_inject = False
+            project_work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+            if project_work_dir and os.path.isdir(project_work_dir):
+                try:
+                    parsed = wt_project_workdir_parser.parse_project_work_dir(
+                        project_work_dir,
+                        project_params=getattr(self, "project_params", {}) or {},
+                        flow_path=flow_definition_path,
+                    )
+                except Exception as exc:
+                    self._append_log("项目文件夹解析失败，按原流程运行：{}".format(exc), tag="warning")
+                    parsed = None
+                if parsed:
+                    parsed_rc = parsed.get("runtime_config", {}) or {}
+                    if isinstance(parsed_rc, dict):
+                        runtime_config.update(parsed_rc)
+                    text_ovr = parsed.get("text_overrides", {}) or {}
+                    path_ovr = parsed.get("path_prefix_overrides", {}) or {}
+                    if text_ovr or path_ovr:
+                        tmp_path = self._write_project_tmp_flow(flow_definition_path, text_ovr, path_ovr)
+                        if tmp_path:
+                            effective_flow_path = tmp_path
+        process_env["GM_RUNTIME_CONFIG_JSON"] = json.dumps(runtime_config, ensure_ascii=False)
+        process_env[FLOW_DEFINITION_ENV_KEY] = effective_flow_path
+        # -u：python 无缓冲运行，子进程日志按行实时输出到主控台
+        # （否则对管道 stdout 默认块缓冲，Simple 等场景主控台迟迟看不到日志）。
+        command = [sys.executable, "-u", AUTOMATION_SCRIPT]
         if not self.show_monitor_var.get():
             command.append("--no-monitor")
         # 运行前置顶开关（默认开启）：关闭时跳过启动前把 WT 主窗口置顶的动作。
@@ -5398,10 +5872,14 @@ class LauncherApp:
 
         return_code = process.poll()
         if return_code is None:
-            self._append_log("导入控件进程已启动，正在等待窗口就绪。", tag="system")
+            # 日志去重：进程存活期间的反复轮询不再刷屏，只提示一次"等待窗口就绪"
+            # （启动本身需扫描控件库文件，可能耗时数秒）。
+            if not getattr(self, "_control_import_wait_logged", False):
+                self._append_log("导入控件进程已启动，正在等待窗口就绪。", tag="system")
+                self._control_import_wait_logged = True
             self.status_var.set("状态：导入控件启动中")
             self.current_step_var.set("当前步骤：等待导入控件窗口就绪")
-            self.root.after(500, lambda: self._check_control_import_standalone_startup(process))
+            self.root.after(1000, lambda: self._check_control_import_standalone_startup(process))
             return
 
         error_output = ""
@@ -6312,7 +6790,132 @@ class LauncherApp:
         self.root.destroy()
 
 
+# ── 自动提权（UIPI 内容树隔离处置，2026-08-25）────────────────────────
+# 背景：MUP(MUPSmartClient) 以管理员/高完整性运行，普通权限 WT 对它的 UIA 内容树
+# 被 UIPI 整棵隔离（窗口能枚举到但 descendants=0，全部步骤报"未命中控件"）。
+# Launcher 启动时若检测到"MUP 高完整性 + 本进程非高完整性"，用 ShellExecute runas
+# 以管理员身份重启自身，使后续 Launcher/采集/Run 子进程继承提权令牌、能读到 MUP 内容。
+# 使用 --no-elevate 可禁用；提权后的子进程带 _ELEVATED_RELAUNCH_FLAG 防死循环。
+_ELEVATED_RELAUNCH_FLAG = "--wt-launched-elevated"
+_ELEVATION_HINT_SHOWN = False
+
+
+def _process_integrity_tier(pid):
+    """进程完整性级别：'high'/'medium'/'low'/''（未知）。读取失败按未知处理。"""
+    if not pid:
+        return ""
+    try:
+        import re as _re
+        import win32api as _wa
+        import win32security as _ws
+        h = _wa.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ""
+        try:
+            th = _ws.OpenProcessToken(h, _ws.TOKEN_QUERY)
+            info = _ws.GetTokenInformation(th, _ws.TokenIntegrityLevel)
+            sid = info[0]
+            s = _ws.ConvertSidToStringSid(sid)
+            m = _re.search(r"S-1-16-(\d+)", s or "")
+            rid = int(m.group(1)) if m else 0
+        finally:
+            try:
+                _wa.CloseHandle(h)
+            except Exception:
+                pass
+        if rid >= 0x3000:
+            return "high"
+        if rid >= 0x2000:
+            return "medium"
+        if rid > 0:
+            return "low"
+        return ""
+    except Exception:
+        return ""
+
+
+def _runs_target_elevated():
+    """是否存在以高完整性运行的 MUPSmartClient(MUP) 目标进程。"""
+    try:
+        import psutil
+    except Exception:
+        return False
+    try:
+        for p in psutil.process_iter(["pid", "name", "exe"]):
+            try:
+                name = (p.info.get("name") or "").lower()
+                exe = (p.info.get("exe") or "").lower()
+            except Exception:
+                continue
+            if "smartclient" not in name and not ("meteodyn" in exe and "universe" in exe):
+                continue
+            if _process_integrity_tier(p.info.get("pid")) == "high":
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _should_relaunch_elevated():
+    """需要自动提权的条件：未显式禁用、自身非高完整性、且存在高完整性的 MUP 目标。"""
+    if _ELEVATED_RELAUNCH_FLAG in sys.argv or "--no-elevate" in sys.argv:
+        return False
+    if _process_integrity_tier(os.getpid()) == "high":
+        return False
+    if not _runs_target_elevated():
+        return False
+    return True
+
+
+def _relaunch_elevated():
+    """ShellExecute runas 以管理员身份重启自身（保留原命令行参数），返回是否已投递。"""
+    try:
+        if getattr(sys, "frozen", False):
+            argv = subprocess.list2cmdline(sys.argv) + " " + _ELEVATED_RELAUNCH_FLAG
+            target = sys.executable
+        else:
+            args = sys.argv if sys.argv else [os.path.basename(sys.argv[0])]
+            argv = subprocess.list2cmdline(args) + " " + _ELEVATED_RELAUNCH_FLAG
+            target = sys.executable
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", target, argv, os.getcwd(), 1
+        )
+        return result > 32
+    except Exception:
+        return False
+
+
+def _show_elevation_hint():
+    """用户拒绝了提权（或提权失败）时，用 MessageBox 说明后果，避免静默失败再被误判。"""
+    ctypes.windll.user32.MessageBoxW(
+        None,
+        "检测到目标软件(MUPSmartClient/Meteodyn Universe)以管理员权限运行，"
+        "而本工具当前是普通权限。\n\n"
+        "Windows 的 UIPI 隔离会阻止普通权限进程读取 MUP 的控件内容树，"
+        "导致所有步骤报“未命中控件”。\n\n"
+        "建议：以管理员身份启动本工具，或将 MUP 改为普通权限启动。\n\n"
+        "（可先继续运行；若步骤失败，请按上述方式调整权限）",
+        "WT Automation - 权限提示",
+        0x40 | 0x1000,  # MB_ICONINFORMATION | MB_SYSTEMMODAL
+    )
+
+
+def _maybe_relaunch_elevated():
+    """启动早期的自动提权入口：需要时先弹 UAC 以管理员重启，否则返回 False 正常启动。"""
+    global _ELEVATION_HINT_SHOWN
+    if not _should_relaunch_elevated():
+        return False
+    if _relaunch_elevated():
+        return True  # 已投递提权重启，本进程退出
+    if not _ELEVATION_HINT_SHOWN:
+        _ELEVATION_HINT_SHOWN = True
+        _show_elevation_hint()
+    return False
+
+
 def main():
+    if _maybe_relaunch_elevated():
+        return
     wt_dpi.enable_process_dpi_awareness()
     root = tk.Tk()
     wt_dpi.compute_scale(root)

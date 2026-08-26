@@ -72,6 +72,9 @@ CONTROL_MAP_DIR = os.path.join(BASE_DIR, "control_maps")
 DEFAULT_BACKEND = "smart"
 DEFAULT_MAX_DEPTH = 10
 
+# 自动合并入库时，总控件信息.json 历史备份最多保留的份数（超出按时间删旧留新）
+MAX_MASTER_BACKUPS = 5
+
 
 CONTROL_MAP_THEME = {
     "bg": "#f4f7fb",
@@ -359,11 +362,9 @@ def build_locator_recommendation(parsed, index=-1, ui_path=None):
     # 过滤掉 SVG path 几何数据、超长乱码等无效 name
     if name and (_is_garbage_name(name) or len(name) > 80):
         name = ""
-    # 关联标签文本（labelText）：标签伴随定位法的定位值，同样过滤乱码。
+    # 关联标签文本（labelText）：标签伴随定位法的定位值，同样过滤乱码/碎片。
     # 该值来自真实的标签元素（运行时按标签找邻近控件），比回填的 name 更可靠。
-    label_text = str(parsed.get("labelText", "")).strip()
-    if label_text and (_is_garbage_name(label_text) or len(label_text) > 80):
-        label_text = ""
+    label_text = _clean_label_text(parsed.get("labelText", ""))
 
     candidates = [
         ("automation_id,control_type", [automation_id, control_type], 100, "automation_id + control_type"),
@@ -414,6 +415,21 @@ def _is_garbage_name(name):
     if len(name) > 40 and re.match(r"^[A-Za-z0-9+/=]+$", name):
         return True
     return False
+
+
+def _clean_label_text(text):
+    """丢弃"碎片标签"：纯标点/乱码 → 空串。保留长度>=1 的真实标签。
+
+    注意：**不按"长度<2"丢弃单字符标签**——MUP 综合编辑器里海拔输入框的紧邻
+    标签就是单字符 '在'（"空气密度在[海拔]"语境），按长度判碎片会误删合法标签。
+    仅丢弃 _is_garbage_name 判定的乱码/纯标点/SVG 与超长串。
+    """
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    if _is_garbage_name(cleaned) or len(cleaned) > 80:
+        return ""
+    return cleaned
 
 
 def build_aux_checks(parsed):
@@ -3059,7 +3075,11 @@ def _build_control_definition_from_flat(flat_item, existing_ids):
         if sync_value and not str(inspect_data.get(sync_key, "")).strip():
             inspect_data[sync_key] = sync_value
     display_name = (
-        str(flat_item.get("savedControlName", "")).strip()
+        # 优先 helpText 提炼的功能名（与采集端树显示 _display_control_name 一致），
+        # 避免"采集端显示'创建一个综合'、保存后却变成 automationId 分词'综合2'"的不一致。
+        str(flat_item.get("functionText", "")).strip()
+        or _extract_functional_name(flat_item)
+        or str(flat_item.get("savedControlName", "")).strip()
         or str(flat_item.get("suggestedControlName", "")).strip()
         or str(flat_item.get("displayName", "")).strip()
         or "新控件"
@@ -3096,7 +3116,7 @@ def _build_control_definition_from_flat(flat_item, existing_ids):
         "rawInspectText": str(flat_item.get("rawInspectText", "")).strip(),
         "auxChecks": [str(item).strip() for item in flat_item.get("auxChecks", []) if str(item).strip()],
         # 标签关联与交互元数据（流程编排直接可用：标签定位、快捷键、可驱动性预判）
-        "labelText": str(flat_item.get("labelText", "")).strip(),
+        "labelText": _clean_label_text(flat_item.get("labelText", "")),
         "labelRelation": str(flat_item.get("labelRelation", "")).strip(),
         "labeledByAutomationId": str(flat_item.get("labeledByAutomationId", "")).strip(),
         "accessKey": str(flat_item.get("accessKey", "")).strip(),
@@ -3105,7 +3125,7 @@ def _build_control_definition_from_flat(flat_item, existing_ids):
         "helpText": str(flat_item.get("helpText", "")).strip(),
         "functionText": str(flat_item.get("functionText", "")).strip(),
         # 标签伴随/关联元数据（流程编排可直接按关联标签定位输入控件）
-        "relatedLabelName": str(flat_item.get("relatedLabelName", "")).strip(),
+        "relatedLabelName": _clean_label_text(flat_item.get("relatedLabelName", "")),
         "labelCompanion": bool(flat_item.get("labelCompanion")),
         "regionRelated": bool(flat_item.get("regionRelated")),
         "nameSource": str(flat_item.get("nameSource", "")).strip(),
@@ -4489,6 +4509,28 @@ def _backfill_label_text_to_controls(flat_controls):
                 _rescore_backfilled_control(item)
 
 
+def _reconcile_label_with_name(flat_controls):
+    """标签一致化：弱定位输入框若 labelText 与自身 name 矛盾（多为向后兜底把
+    "下一个字段的标签"误连进来，例如描述编辑框被误连为"服务"），以自身 name 为准
+    回填 labelText，避免 name/label 自相矛盾导致运行时按 label 消歧时错配。"""
+    if not flat_controls:
+        return
+    for item in flat_controls:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        label = str(item.get("labelText", "")).strip()
+        if not name or label == name:
+            continue
+        relation = str(item.get("labelRelation", "")).strip()
+        if "sibling" in relation or "following" in relation:
+            item["labelText"] = name
+            item["labelRelation"] = "name-consistent"
+            related = str(item.get("relatedLabelName", "")).strip()
+            if related and related != name:
+                item["relatedLabelName"] = name
+
+
 def _rescore_backfilled_control(item):
     """标签回填后的定位器重算与质量重分级。
 
@@ -4577,6 +4619,20 @@ def _extract_panel_title(item, flat_controls):
         return ""
     if not (0 <= parent_index < len(flat_controls)):
         return ""
+    # 权威来源：interest-area 面板标题以 automationId=InterestAreasView_Tile_Header
+    # 的 TileHeader Text 兄弟为准（其 name 即"测风点/风机/结果点/绘图/配置/风廓线/
+    # Lidar/中尺度单元"）。Edit/Delete/Import 同父容器还共享其它字段标签兄弟
+    # （"载入"/"计算尾流效应"/"类型"/"高度 (m)"等），这些按 flat_controls 顺序出现在
+    # 前面，若按"首个短文本"取值会取到错误标签。故优先返回该兄弟的 name。
+    for sibling in flat_controls:
+        if sibling is item or sibling.get("parentIndex", None) != parent_index:
+            continue
+        if str(sibling.get("automationId", "")).strip() == "InterestAreasView_Tile_Header":
+            text = str(sibling.get("name", "") or "").strip()
+            if text and "," not in text[:30] and len(text) <= 30:
+                return text
+            break
+    # 兜底：无 TileHeader 兄弟时，仍取首个非 SVG 短文本兄弟（兼容非 interest-area 面板）。
     for sibling in flat_controls:
         if sibling is item or sibling.get("parentIndex", None) != parent_index:
             continue
@@ -5391,6 +5447,7 @@ def build_control_map_payload(
     _normalize_textbox_wrappers(merged_controls)
     _backfill_sibling_label_for_inputs(merged_controls)
     _backfill_label_text_to_controls(merged_controls)
+    _reconcile_label_with_name(merged_controls)
     existing_ids = set()
     merged_definitions = [
         _build_control_definition_from_flat(item, existing_ids)
@@ -6891,7 +6948,12 @@ class ControlMapBuilderApp:
             return False
 
     def cmd_test_selected_locator(self):
-        """使用流程执行器同一套定位规则检验并指向实际命中控件（后台线程，不阻塞 UI）。"""
+        """使用流程执行器同一套定位规则检验并指向实际命中控件。
+
+        定位搜索在独立子进程（control_locator_probe.py）中执行：
+        UIA 遍历遇到失效元素指针触发原生堆损坏时，只终止探针子进程，
+        采集器主窗口不受影响（此前在线程内直接跑会发生 0xc0000374 崩溃关窗）。
+        """
         index = self._get_selected_tree_index()
         flat_controls = self.current_payload.get("flatControls", []) if isinstance(self.current_payload, dict) else []
         if index is None or not (0 <= index < len(flat_controls)):
@@ -6931,133 +6993,169 @@ class ControlMapBuilderApp:
             self.var_status.set("⚠ 检验定位：该控件没有可用于定位的属性")
             return
 
-        self.var_status.set("⏳ 正在检验定位（后台执行中）...")
+        self.var_status.set("⏳ 正在检验定位（独立进程执行中）...")
         self.root.update_idletasks()
+        self._launch_locator_probe(control)
 
-        import threading
-        t = threading.Thread(
-            target=self._run_locator_in_background,
-            args=(control,),
-            daemon=True,
-        )
-        t.start()
+    _PROBE_WAIT_SECONDS = 90.0
 
-    def _run_locator_in_background(self, control):
-        """在后台线程中执行定位检验（避免阻塞 Tk 主循环）。"""
-        import pythoncom
-        pythoncom.CoInitialize()
+    def _launch_locator_probe(self, control):
+        """在子进程中执行定位搜索；探针崩溃只影响自身，主界面不受影响。"""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        probe_script = os.path.join(base_dir, "control_locator_probe.py")
+        if not os.path.isfile(probe_script):
+            self.var_status.set("⚠ 检验定位：探针脚本缺失：" + probe_script)
+            return
+        tmp_dir = os.path.join(base_dir, "logs", "probe")
         try:
-            import pyautogui
-            import wt_flow_locator as flow_locator
-            import time
-            
-            start = time.time()
-            
-            windows = list(flow_locator.iter_flow_search_windows(
-                {},
-                window_title_hint=str(control.get("windowTitle", "")).strip(),
-                control_definition=control,
-            ))
-            if not windows:
-                title = control.get("windowTitle") or "当前应用窗口"
-                self.root.after(0, lambda t=title: self.var_status.set(f"⚠ 检验定位：未找到目标窗口：{t}"))
-                return
+            os.makedirs(tmp_dir, exist_ok=True)
+        except Exception:
+            tmp_dir = base_dir
+        stamp = time.strftime("%Y%m%d_%H%M%S") + "_" + str(getattr(self, "_probe_counter", 0))
+        self._probe_counter = getattr(self, "_probe_counter", 0) + 1
+        control_path = os.path.join(tmp_dir, "probe_control_{}.json".format(stamp))
+        output_path = os.path.join(tmp_dir, "probe_result_{}.json".format(stamp))
 
-            matched = []
-            seen = set()
-
-            def _match_candidates(candidate_iter, _window):
-                for candidate in candidate_iter:
-                    handle = flow_locator.get_wrapper_handle(candidate) or id(candidate)
-                    if handle in seen:
-                        continue
-                    seen.add(handle)
-                    # 优化1：直接调用 score_control_match，避免 wrapper_matches_control_definition 重复评分
-                    score = flow_locator.score_control_match(candidate, control)
-                    if score > 0:
-                        matched.append((score, candidate, _window))
-
-            # 阶段1：快速候选
-            for window in windows:
-                _match_candidates(flow_locator.iter_fast_locator_candidates(window, control), window)
-
-            # 阶段2：RawView fallback
-            if not matched and control.get("inspectData", {}):
-                try:
-                    from wt_flow_locator import control_definition_expects_raw_view, iter_raw_view_fallback_candidates
-                    if control_definition_expects_raw_view(control):
-                        for window in windows:
-                            try:
-                                _match_candidates(iter_raw_view_fallback_candidates(window, control), window)
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-
-            # 阶段3：descendants 兜底（最慢，大 WPF 窗口可达数十秒）
-            if not matched:
-                expected_type = str(
-                    control.get("controlType", "")
-                    or control.get("inspectData", {}).get("controlType", "")
-                ).strip()
-                for window in windows:
-                    try:
-                        if expected_type:
-                            desc = window.descendants(control_type=expected_type)
-                        else:
-                            desc = window.descendants()
-                        _match_candidates(desc, window)
-                    except Exception:
-                        try:
-                            _match_candidates(window.descendants(), window)
-                        except Exception:
-                            pass
-
-            elapsed = time.time() - start
-
-            def _show_result():
-                if not matched:
-                    self.var_status.set(
-                        f"⚠ 检验定位：未找到匹配控件（{control.get('targetMethod','')}={control.get('targetValue','')}，耗时 {elapsed:.1f}s）"
-                    )
-                    return
-                matched.sort(key=lambda e: e[0], reverse=True)
-                best_score, found, win = matched[0]
-                rect = found.rectangle()
-                center_x = (rect.left + rect.right) // 2
-                center_y = (rect.top + rect.bottom) // 2
-                try:
-                    win.set_focus()
-                except Exception:
-                    pass
-                pyautogui.moveTo(center_x, center_y, duration=0.2)
-                outline_drawn = self._show_locator_highlight(rect)
-                if not outline_drawn:
-                    try:
-                        found.draw_outline(colour="red", thickness=3)
-                    except Exception:
-                        pass
-                snap = flow_locator.get_wrapper_debug_snapshot(found)
-                parts = [
-                    f"✓ 定位成功 (评分:{best_score}, {elapsed:.1f}s)",
-                    f"名称:{snap.get('name', '') or '(无)'}",
-                    f"类型:{snap.get('controlType', '') or '(未知)'}",
-                    f"AID:{snap.get('automationId', '') or '(无)'}",
-                    f"位置:({center_x},{center_y})",
-                    "(多匹配)" if len(matched) > 1 else "(唯一)",
-                ]
-                self.var_status.set(" ".join(part for part in parts if part))
-
-            self.root.after(0, _show_result)
+        try:
+            with open(control_path, "w", encoding="utf-8") as f:
+                json.dump(control, f, ensure_ascii=False)
         except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            self.root.after(0, lambda e=exc: self.var_status.set(f"⚠ 检验出错：{e}"))
-        finally:
+            self.var_status.set("⚠ 检验定位：写入控件定义失败：" + str(exc))
+            return
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, probe_script, control_path, output_path],
+                cwd=base_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                bufsize=1,
+                creationflags=creationflags,
+            )
+        except Exception as exc:
+            self.var_status.set("⚠ 检验定位：启动探针失败：" + str(exc))
+            return
+
+        self._probe_proc = proc
+        self._probe_output_path = output_path
+        self._probe_start = time.time()
+        self._probe_timed_out = False
+
+        watcher = threading.Thread(target=self._wait_probe_exit, args=(proc, output_path), daemon=True)
+        watcher.start()
+        # 超时兜底：探针挂死（如 UIA 死锁）时强杀，避免进程残留
+        self._probe_timer = self.root.after(int(self._PROBE_WAIT_SECONDS * 1000), self._on_probe_timeout)
+
+    def _wait_probe_exit(self, proc, output_path):
+        start = getattr(self, "_probe_start", time.time())
+        try:
+            returncode = proc.wait()
+        except Exception as exc:
+            self.root.after(0, lambda rc=-1, e=exc: self._handle_probe_result(output_path, rc, start, str(e)))
+            return
+        self.root.after(0, lambda rc=returncode: self._handle_probe_result(output_path, rc, start))
+
+    def _on_probe_timeout(self):
+        self._probe_timed_out = True
+        proc = getattr(self, "_probe_proc", None)
+        if proc is not None and proc.poll() is None:
             try:
-                pythoncom.CoUninitialize()
+                proc.kill()
             except Exception:
                 pass
+            self.var_status.set("⚠ 检验定位：探针超时（{}s），已终止。".format(int(self._PROBE_WAIT_SECONDS)))
+        self._probe_proc = None
+
+    def _handle_probe_result(self, output_path, returncode, start, extra_error=""):
+        if hasattr(self, "_probe_timer") and self._probe_timer is not None:
+            try:
+                self.root.after_cancel(self._probe_timer)
+            except Exception:
+                pass
+            self._probe_timer = None
+        self._probe_proc = None
+        if getattr(self, "_probe_timed_out", False):
+            # 超时分支已报告状态，这里仅清理临时文件
+            self._cleanup_probe_files(output_path)
+            return
+        elapsed = time.time() - start
+
+        result = None
+        try:
+            if os.path.isfile(output_path):
+                with open(output_path, "r", encoding="utf-8") as f:
+                    result = json.load(f)
+        except Exception:
+            result = None
+
+        if not isinstance(result, dict):
+            if extra_error:
+                self.var_status.set("⚠ 检验定位失败：" + str(extra_error))
+            elif returncode == 0:
+                self.var_status.set("⚠ 检验定位：结果文件不可读（{:.1f}s）".format(elapsed))
+            else:
+                self.var_status.set(
+                    "⚠ 检验定位：定位进程异常退出（code {}, {:.1f}s）——可能因 UIA 原生崩溃，"
+                    "已隔离在子进程，主窗口未受影响。".format(returncode, elapsed)
+                )
+            self._cleanup_probe_files(output_path)
+            return
+
+        status = result.get("status")
+        if status == "found":
+            self._show_probe_found(result, elapsed)
+        else:
+            err = result.get("error") or "未知错误"
+            method = result.get("targetMethod") or "?"
+            value = result.get("targetValue") or "?"
+            self.var_status.set("⚠ 检验定位：{err}（{method}={value}，耗时 {elapsed:.1f}s）".format(
+                err=err, method=method, value=value, elapsed=elapsed
+            ))
+        self._cleanup_probe_files(output_path)
+
+    def _cleanup_probe_files(self, output_path):
+        """清理探针临时文件。"""
+        try:
+            if output_path and os.path.isfile(output_path):
+                os.remove(output_path)
+            control_path = output_path.replace("probe_result_", "probe_control_")
+            if control_path != output_path and os.path.isfile(control_path):
+                os.remove(control_path)
+        except Exception:
+            pass
+
+    def _show_probe_found(self, result, elapsed):
+        """在主线程展示命中的高亮框与状态（视觉行为与原先一致）。"""
+        import pyautogui
+        center = result.get("center")
+        rect = result.get("rect")
+        if rect:
+            rect_obj = type("Rect", (), {
+                "left": rect.get("left"),
+                "top": rect.get("top"),
+                "right": rect.get("right"),
+                "bottom": rect.get("bottom"),
+            })()
+            self._show_locator_highlight(rect_obj)
+        if center:
+            try:
+                pyautogui.moveTo(center["x"], center["y"], duration=0.2)
+            except Exception:
+                pass
+        snap = result.get("snapshot") or {}
+        parts = [
+            f"✓ 定位成功 (评分:{result.get('score', 0)}, {elapsed:.1f}s)",
+            f"名称:{snap.get('name', '') or '(无)'}",
+            f"类型:{snap.get('controlType', '') or '(未知)'}",
+            f"AID:{snap.get('automationId', '') or '(无)'}",
+            "位置:({}, {})".format(center["x"], center["y"]) if center else "位置:(?)",
+            "(多匹配)" if result.get("match_count", 0) > 1 else "(唯一)",
+        ]
+        self.var_status.set(" ".join(part for part in parts if part))
 
     def cmd_scan_and_save(self):
         self._start_fulltree_scan(auto_save=True)
@@ -8483,6 +8581,8 @@ class ControlMapBuilderApp:
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 backup_path = os.path.join(backup_dir, f"总控件信息_{stamp}.json")
                 shutil.copy2(master_path, backup_path)
+                # 仅保留最近若干份历史备份，避免每次合并无限累积
+                self._prune_master_backups(backup_dir, keep=MAX_MASTER_BACKUPS)
         except Exception:
             backup_path = ""
 
@@ -8502,6 +8602,35 @@ class ControlMapBuilderApp:
                 self.root.after(0, lambda: self._on_auto_merge_done(stats, None, backup_path))
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _prune_master_backups(self, backup_dir, keep=MAX_MASTER_BACKUPS, prefix="总控件信息_"):
+        """保留 backup_dir 中前缀为 prefix 的最近 keep 份自动备份，删除其余历史文件。
+
+        仅匹配 '<prefix><时间戳>.json' 形态（自动合并产生），不触碰：
+          - standard_catalog_*/report_* 等其它备份；
+          - 形如 '<prefix><时间戳>_<标签>.json' 的人工里程碑备份（如 pre-IA-label-fix），
+            这些带标签的副本永远保留。
+        删除按修改时间从旧到新进行，保留最新 keep 份自动备份。
+        """
+        import re as _re
+        auto_pat = _re.compile(r"^" + _re.escape(prefix) + r"(\d{8}_\d{6})\.json$")
+        milestone_pat = _re.compile(r"^" + _re.escape(prefix) + r"\d{8}_\d{6}_.+\.json$")
+        try:
+            names = os.listdir(backup_dir)
+        except OSError:
+            return
+        auto_files = []
+        for f in names:
+            full = os.path.join(backup_dir, f)
+            if f.endswith(".json") and auto_pat.match(f) and os.path.isfile(full):
+                auto_files.append(full)
+            # 带标签的里程碑（milestone_pat）与 catalog/report 等一律不动
+        auto_files.sort(key=os.path.getmtime, reverse=True)
+        for old in auto_files[keep:]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
 
     def _on_auto_merge_done(self, stats, error, backup_path):
         self._auto_merge_running = False
@@ -8937,9 +9066,10 @@ class ControlMapBuilderApp:
             tgt_count = len(tgt_flat)
 
             # 模拟合并（只预估增量，不动数据）
+            tgt_panel_map = _build_ia_panel_title_map(tgt_flat)
             tgt_index = {}
             for ctrl in tgt_flat:
-                key = _merge_dedup_key(ctrl, mode)
+                key = _merge_dedup_key(ctrl, mode, tgt_panel_map)
                 tgt_index[key] = ctrl
 
             added = 0
@@ -8947,8 +9077,10 @@ class ControlMapBuilderApp:
             for p in _src_payloads_cache:
                 if p is None:
                     continue
-                for ctrl in p.get("flatControls", []) or p.get("controlDefinitions", []):
-                    key = _merge_dedup_key(ctrl, mode)
+                src_flat = p.get("flatControls", []) or p.get("controlDefinitions", [])
+                src_panel_map = _build_ia_panel_title_map(src_flat)
+                for ctrl in src_flat:
+                    key = _merge_dedup_key(ctrl, mode, src_panel_map)
                     if key in tgt_index:
                         if override:
                             updated += 1
@@ -9105,13 +9237,80 @@ class ControlMapBuilderApp:
         _paint_button(tk.Button(bottom_bar, text="关闭", command=dlg.destroy)).pack(side=tk.RIGHT, padx=3)
 
 
-def _merge_dedup_key(item, mode):
+# interest-area 面板节点标签集合（与 merge_standard_control_library._IA_NODES 保持一致），
+# 用于合并去重时按面板标题区分模板复制控件（各节点同名 automationId 的 Add/Edit/Delete… 按钮）。
+_IA_AUTOMATION_PREFIX = "InterestAreas_Button_"
+_IA_NODES = {"测风点", "风机", "结果点", "绘图", "配置", "风廓线", "Lidar", "中尺度单元"}
+
+
+def _build_ia_panel_title_map(flat_controls):
+    """从 flat controls 的 InterestAreasView_Tile_Header 兄弟构建 {parent_index: 面板节点名}。
+
+    与 canonical merge（merge_standard_control_library.load_all 的 panel_title_by_parent）一致：
+    模板复制按钮与同面板 TileHeader 共享同一 parentIndex，故可用按钮自身的 parentIndex 反查节点名。
+    用于修复旧采集格式（labelText 为空、recommendedTargetValue 第 3 段为数字）下的节点消歧。
+    """
+    result = {}
+    if not isinstance(flat_controls, list):
+        return result
+    for c in flat_controls:
+        if not isinstance(c, dict):
+            continue
+        if str(c.get("automationId", "")).strip() != "InterestAreasView_Tile_Header":
+            continue
+        pid = c.get("parentIndex")
+        if pid is None:
+            continue
+        text = str(c.get("name", "") or "").strip()
+        if text and "," not in text[:30] and len(text) <= 30:
+            result[pid] = text
+    return result
+
+
+def _interestarea_node_label(item, panel_title_map=None):
+    """提取 interest-area 模板复制控件的面板节点标签，用于合并去重时按节点消歧。
+
+    优先级（与 canonical normalize_control 的 disc 逻辑一致）：
+      1) TileHeader 兄弟面板节点名（panel_title_map，最权威）
+      2) labelText / relatedLabelName
+      3) 兜底解析 recommendedTargetValue 第 3 段节点名
+    非 interest-area 或非模板复制控件返回空串（不影响其它控件去重）。
+    """
+    if not isinstance(item, dict):
+        return ""
+    aid = str(item.get("automationId", "") or (item.get("inspectData") or {}).get("automationId", "")).strip()
+    if not aid.startswith(_IA_AUTOMATION_PREFIX):
+        return ""
+    # 1) TileHeader 兄弟面板节点名（最权威，兼容旧采集格式）
+    if isinstance(panel_title_map, dict):
+        pid = item.get("parentIndex")
+        if pid is not None and pid in panel_title_map:
+            return panel_title_map[pid]
+    # 2) labelText / relatedLabelName
+    for f in ("labelText", "relatedLabelName"):
+        v = str(item.get(f, "") or "").strip()
+        if v and "," not in v:
+            return v
+    # 3) recommendedTargetValue 第 3 段节点名
+    rtv = str(item.get("recommendedTargetValue", "") or "").strip()
+    if rtv:
+        parts = [p.strip() for p in rtv.split(",")]
+        if len(parts) >= 3 and parts[2] in _IA_NODES:
+            return parts[2]
+    return ""
+
+
+def _merge_dedup_key(item, mode, panel_title_map=None):
     """根据去重模式从 flat control 提取 dedup key（与 control_live_detector 一致）。
 
     mode 取值:
       "automationId+controlType+name" — 优先 AID，回退 (name, ct)
       "uiPath"                         — uiPath 字符串
       "name+controlType"               — (name, ct)
+
+    注意：interest-area 模板复制控件（各面板同名 automationId 的按钮）仅靠
+    aid+ct+name 无法区分（name 为空、uiPath 相同），必须追加面板节点标签消歧，
+    否则合并入库时 8 个节点的按钮会被误并为 1 条（见知识库模式 L）。
     """
     ins = item.get("inspectData", {}) or {}
     if mode == "automationId+controlType+name":
@@ -9119,14 +9318,26 @@ def _merge_dedup_key(item, mode):
         ct = str(item.get("controlType", "") or ins.get("controlType", "")).strip().lower()
         name = str(item.get("name", "") or ins.get("name", "") or item.get("displayName", "")).strip().lower()
         if aid:
-            return ("aid", aid, ct, name)
+            key = ["aid", aid, ct, name]
+            node = _interestarea_node_label(item, panel_title_map)
+            if node:
+                key.append("ia:" + node)
+            return tuple(key)
         return ("name", name, ct)
     elif mode == "uiPath":
-        return ("ui", str(item.get("uiPath", "") or ins.get("uiPath", "")).strip().lower())
+        key = ["ui", str(item.get("uiPath", "") or ins.get("uiPath", "")).strip().lower()]
+        node = _interestarea_node_label(item, panel_title_map)
+        if node:
+            key.append("ia:" + node)
+        return tuple(key)
     elif mode == "name+controlType":
         name = str(item.get("name", "") or ins.get("name", "") or item.get("displayName", "")).strip().lower()
         ct = str(item.get("controlType", "") or ins.get("controlType", "")).strip().lower()
-        return ("nc", name, ct)
+        key = ["nc", name, ct]
+        node = _interestarea_node_label(item, panel_title_map)
+        if node:
+            key.append("ia:" + node)
+        return tuple(key)
     return ("raw", id(item))
 
 
@@ -9144,9 +9355,10 @@ def _merge_payloads_into_target(target_payload, source_payloads, mode, authority
     tgt_before = len(tgt_controls)
 
     # 构建去重索引 {(key_tuple): ctrl}
+    tgt_panel_map = _build_ia_panel_title_map(tgt_controls)
     index = {}
     for ctrl in tgt_controls:
-        key = _merge_dedup_key(ctrl, mode)
+        key = _merge_dedup_key(ctrl, mode, tgt_panel_map)
         index[key] = ctrl
 
     added = 0
@@ -9154,8 +9366,10 @@ def _merge_payloads_into_target(target_payload, source_payloads, mode, authority
     for pay in source_payloads:
         if pay is None:
             continue
-        for ctrl in pay.get("flatControls", []) or pay.get("controlDefinitions", []):
-            key = _merge_dedup_key(ctrl, mode)
+        src_controls = pay.get("flatControls", []) or pay.get("controlDefinitions", [])
+        src_panel_map = _build_ia_panel_title_map(src_controls)
+        for ctrl in src_controls:
+            key = _merge_dedup_key(ctrl, mode, src_panel_map)
             if key in index:
                 # 重复 key：始终做「字段级补空合并」，保证 source 独有字段不丢失。
                 # 只填补 target 中为空/缺失的字段，不覆盖 target 已有的权威值。

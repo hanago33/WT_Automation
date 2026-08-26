@@ -96,6 +96,26 @@ class UipathWindowTitleTests(unittest.TestCase):
         )
         self.assertEqual(control["windowTitle"], "*")
 
+    def test_normalize_step_preserves_step_tags(self):
+        """编辑器保存走 normalize_step，不能剥离 stepTags（参数表 stepMode 过滤依赖）。"""
+        step = {
+            "id": "step_9",
+            "name": "选择-风机机型",
+            "actionType": "action",
+            "strategy": "action",
+            "stepTags": ["create", "copyfull"],
+            "controls": [],
+            "actionConfig": {"action": "click", "text": "${stepParams.defaultturbine}"},
+        }
+        out = wt_flow_editor_utils.normalize_step(step, 0, {})
+        self.assertEqual(out["stepTags"], ["create", "copyfull"])
+        self.assertEqual(out["actionConfig"]["text"], "${stepParams.defaultturbine}")
+
+    def test_normalize_step_omits_step_tags_when_absent(self):
+        step = {"id": "s1", "name": "n", "actionType": "action"}
+        out = wt_flow_editor_utils.normalize_step(step, 0, {})
+        self.assertNotIn("stepTags", out)
+
 
 if __name__ == "__main__":
     unittest.main()

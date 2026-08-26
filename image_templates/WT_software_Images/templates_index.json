@@ -1,13 +1,13 @@
 {
   "meta": {
-    "templateCount": 8,
+    "templateCount": 9,
     "categoryCount": 1,
-    "lastUpdated": "2026-08-05T10:13:53"
+    "lastUpdated": "2026-08-24T17:33:52"
   },
   "categories": [
     {
       "id": "projection",
-      "count": 8
+      "count": 9
     }
   ],
   "templates": [
@@ -80,6 +80,20 @@
         "h": 35
       },
       "updatedAt": "2026-06-30T20:45:52"
+    },
+    {
+      "category": "projection",
+      "file_name": "新建一个综合",
+      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\projection\\新建一个综合.png",
+      "relative_image_path": "projection\\新建一个综合.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260824_173306.png",
+      "region": {
+        "x": 319,
+        "y": 181,
+        "w": 41,
+        "h": 42
+      },
+      "updatedAt": "2026-08-24T17:33:52"
     },
     {
       "category": "projection",

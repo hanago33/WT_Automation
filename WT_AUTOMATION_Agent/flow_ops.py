@@ -14,6 +14,9 @@ import json
 import os
 from typing import Any
 
+from WT_AUTOMATION_Agent import schemas
+from WT_AUTOMATION_Agent.schemas import ACTION_SCHEMAS
+
 
 def load_flow(path: str) -> dict[str, Any] | None:
     """加载 flow_definition.json，失败返回 None。"""
@@ -157,3 +160,97 @@ def diff_flows_structural(flow_a: dict[str, Any], flow_b: dict[str, Any]) -> str
     if not any_diff:
         lines.append("（两份流程在名称/动作/控件/文本上完全一致）")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 结构化局部补丁（替代 edit_flow 的整段 JSON 重写）
+# ---------------------------------------------------------------------------
+# patch 契约（LLM 输出，后端合并）：
+#   {"op": "set_field",    "step_index": int, "field": str, "value": Any}
+#   {"op": "replace_step", "step_index": int, "step": dict}
+#   {"op": "insert_step",  "step_index": int, "step": dict}   # 插到该索引前
+#   {"op": "remove_step",  "step_index": int}
+#   {"op": "rename_step",  "step_index": int, "name": str}    # 仅改名称
+# step_index 从 0 开始；越界/类型错误会被忽略并记入 errors。
+
+
+def _validate_patch_step_action(patch: dict[str, Any]) -> str | None:
+    """对 replace_step/insert_step 的 action 做必填校验，返回错误信息或 None。"""
+    step = patch.get("step") or {}
+    action = step.get("action")
+    if action not in ACTION_SCHEMAS:
+        return f"step_index={patch.get('step_index')} 的 action={action!r} 不是合法动作类型"
+    schema = ACTION_SCHEMAS[action]
+    if schema.get("target_required") and not step.get("controlId"):
+        return f"step_index={patch.get('step_index')} 的 action={action!r} 要求 controlId 必填"
+    if schema.get("input_required"):
+        key = schema.get("input_key")
+        if key and not step.get(key):
+            return f"step_index={patch.get('step_index')} 的 action={action!r} 要求必填字段 {key!r}"
+    return None
+
+
+def apply_edit_patch(flow: dict[str, Any], patches: list[dict[str, Any]]) -> dict[str, Any]:
+    """对 flow 应用局部 patch，返回 {flow, errors}。原 flow 不被修改。"""
+    import copy
+    new_flow = copy.deepcopy(flow)
+    steps = list(new_flow.get("steps", []))
+    errors: list[str] = []
+    for patch in patches:
+        op = (patch or {}).get("op")
+        try:
+            if op == "set_field":
+                idx = int(patch["step_index"])
+                if 0 <= idx < len(steps):
+                    steps[idx][patch["field"]] = patch.get("value")
+                else:
+                    errors.append(f"set_field 越界 step_index={idx} (共{len(steps)}步)")
+            elif op == "rename_step":
+                idx = int(patch["step_index"])
+                if 0 <= idx < len(steps):
+                    steps[idx]["name"] = patch.get("name", steps[idx].get("name"))
+                else:
+                    errors.append(f"rename_step 越界 step_index={idx}")
+            elif op in ("replace_step", "insert_step"):
+                err = _validate_patch_step_action(patch)
+                if err:
+                    # 校验失败：跳过该 patch，保留原步骤，仅记账，避免把非法数据写入链路
+                    errors.append(err)
+                    continue
+                idx = int(patch["step_index"])
+                if op == "replace_step":
+                    if 0 <= idx < len(steps):
+                        steps[idx] = patch["step"]
+                    else:
+                        errors.append(f"replace_step 越界 step_index={idx}")
+                else:  # insert_step
+                    idx = max(0, min(idx, len(steps)))
+                    steps.insert(idx, patch["step"])
+            elif op == "remove_step":
+                idx = int(patch["step_index"])
+                if 0 <= idx < len(steps):
+                    steps.pop(idx)
+                else:
+                    errors.append(f"remove_step 越界 step_index={idx}")
+            else:
+                errors.append(f"未知 patch op={op!r}")
+        except (KeyError, TypeError, ValueError) as e:
+            errors.append(f"patch 格式错误 {patch!r}: {e}")
+    new_flow["steps"] = steps
+    return {"flow": new_flow, "errors": errors}
+
+
+def normalize_edit_result(result: Any, original_steps: list[Any]) -> dict[str, Any]:
+    """把 LLM 的原始输出规整为 {patches, full_steps, mode}。
+
+    - 若输出为 patch 数组（含 op 字段）→ mode='patch'
+    - 若输出为完整 steps 数组 → mode='full'
+    - 否则 → mode='none'
+    original_steps 用于 full 模式校验长度合理性（仅记录，不强制）。
+    """
+    if isinstance(result, list):
+        if result and isinstance(result[0], dict) and "op" in result[0]:
+            return {"patches": result, "full_steps": None, "mode": "patch"}
+        if result and isinstance(result[0], dict) and ("action" in result[0] or "controlId" in result[0] or "name" in result[0]):
+            return {"patches": None, "full_steps": result, "mode": "full"}
+    return {"patches": None, "full_steps": None, "mode": "none"}

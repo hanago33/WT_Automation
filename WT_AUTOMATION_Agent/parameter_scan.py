@@ -27,6 +27,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+class StepModeFilterUnavailable(ValueError):
+    """参数表含 stepMode 列且存在请求模式的行，但模板步骤全无 stepTags。
+
+    stepMode 行级过滤无法生效。此时若继续展开会把所有模式的全套步骤塞给每行
+    （如新建行混入复制步骤、复制链定位综合1失败），代价是运行期才暴露的错误。
+    应中止启动而非静默全跑。
+    """
+
+
 # ---------------------------------------------------------------------------
 # 数据模型
 # ---------------------------------------------------------------------------
@@ -263,6 +272,52 @@ class ParameterScanner:
         scanned_steps: list[dict[str, Any]] = []
         step_counter = 0
 
+        # 行级步骤过滤（阶段1/2）：若参数表含 stepMode 列，则按行的 stepMode 过滤
+        # 模板步骤；含 towerMode 列时，再按行的 towerMode 做第二维过滤（单塔/多塔）。
+        # 模板步骤通过 stepTags 声明模式（create/copy/copyfull）、towerTags 声明塔模式
+        # （single/multi）。空/缺 = 通用，所有行执行。无对应列时退化为旧行为（全步包含）。
+        column_lower = [c.lower() for c in result.column_names]
+        filter_enabled = "stepmode" in column_lower
+        valid_modes = {"create", "copy", "copyfull"}
+        tower_filter_enabled = "towermode" in column_lower
+        valid_tower_modes = {"single", "multi"}
+
+        # 硬失败：请求模式过滤但模板零 stepTags → stepMode 过滤无法生效。直接中止，
+        # 避免"每行全跑全部模式步骤"的静默错排（如新建行混入复制链、复制链定位综合1
+        # 失败；该错误在运行期才暴露，代价高）。编辑器保存流程会剥离 stepTags 是主因。
+        if filter_enabled:
+            requests_mode = any(
+                str(row.values.get("stepmode", "")).strip().lower() in valid_modes
+                for row in result.rows
+            )
+            any_step_tags = any(
+                ParameterScanner._normalize_step_tags(step.get("stepTags"))
+                for step in template_steps
+                if isinstance(step, dict)
+            )
+            if requests_mode and not any_step_tags:
+                raise StepModeFilterUnavailable(
+                    "参数表含 stepMode 列且存在非空模式行，但模板步骤全无 stepTags 字段。"
+                    "stepMode 行级过滤无法生效（编辑器保存流程会剥离 stepTags）。"
+                    "请为模板步骤注入 stepTags 后再运行；流程文件绕过编辑器直接编辑 JSON。"
+                )
+        # towerMode 维度的同样硬失败保护
+        if tower_filter_enabled:
+            requests_tower = any(
+                str(row.values.get("towermode", "")).strip().lower() in valid_tower_modes
+                for row in result.rows
+            )
+            any_tower_tags = any(
+                ParameterScanner._normalize_step_tags(step.get("towerTags"))
+                for step in template_steps
+                if isinstance(step, dict)
+            )
+            if requests_tower and not any_tower_tags:
+                raise StepModeFilterUnavailable(
+                    "参数表含 towerMode 列且存在非空塔模式行，但模板步骤全无 towerTags 字段。"
+                    "towerMode 行级过滤无法生效。请为模板步骤注入 towerTags 后再运行。"
+                )
+
         for param_row in result.rows:
             # 参数行分隔注释（仅非第一行时添加）
             if scanned_steps:
@@ -294,7 +349,50 @@ class ParameterScanner:
                     "fallbacks": [],
                 })
 
+            # 本行模式：仅当启用过滤且模式合法时生效；否则视为不过滤（全步包含）
+            if filter_enabled:
+                row_mode = str(param_row.values.get("stepmode", "")).strip().lower()
+                if row_mode not in valid_modes:
+                    if row_mode:
+                        print(
+                            f"[parameter_scan] 参数表第 {param_row.index + 1} 行 "
+                            f"stepMode='{row_mode}' 非法，按全步处理"
+                            f"（合法值: {sorted(valid_modes)}）"
+                        )
+                    row_mode = None
+            else:
+                row_mode = None
+            # 塔模式维度：无 towermode 列时默认"single"（历史流程均为单塔），
+            # 这样单塔步骤(towerTags=single)照常执行、多塔组(towerTags=multi)被排除；
+            # 值非法时视为不过滤（与 stepMode 非法退化一致）。
+            if tower_filter_enabled:
+                tower_mode = str(param_row.values.get("towermode", "")).strip().lower()
+                if tower_mode not in valid_tower_modes:
+                    if tower_mode:
+                        print(
+                            f"[parameter_scan] 参数表第 {param_row.index + 1} 行 "
+                            f"towerMode='{tower_mode}' 非法，按全步处理"
+                            f"（合法值: {sorted(valid_tower_modes)}）"
+                        )
+                    tower_mode = None
+            else:
+                tower_mode = "single"
+
             for template_step in template_steps:
+                # 行级过滤（双维 AND）：某维未启用/值非法时该维不过滤；
+                # 步骤该维标签为空=通用；否则须含本行对应模式值。
+                if row_mode is not None:
+                    step_tags = ParameterScanner._normalize_step_tags(
+                        template_step.get("stepTags")
+                    )
+                    if step_tags and row_mode not in step_tags:
+                        continue
+                if tower_mode is not None:
+                    tower_tags = ParameterScanner._normalize_step_tags(
+                        template_step.get("towerTags")
+                    )
+                    if tower_tags and tower_mode not in tower_tags:
+                        continue
                 step_counter += 1
                 new_step = deepcopy(template_step)
 
@@ -302,8 +400,12 @@ class ParameterScanner:
                 original_id = new_step.get("id", f"step_{step_counter}")
                 new_step["id"] = f"{original_id}_scan{param_row.index}_{step_counter}"
 
-                # 注入参数
-                new_step["stepParams"] = param_row.to_step_params()
+                # 注入参数：合并模板步骤自带默认 stepParams 与参数行值（行值覆盖同名键）。
+                # 否则参数表缺列会把步骤默认值（如 defaultturbine/weathername/mettowername）
+                # 冲掉，导致 ${stepParams.xxx} 占位符失效、输入字面量。
+                merged_params = dict(template_step.get("stepParams") or {})
+                merged_params.update(param_row.to_step_params())
+                new_step["stepParams"] = merged_params
 
                 # 更新描述
                 orig_desc = new_step.get("description", "")
@@ -355,6 +457,23 @@ class ParameterScanner:
             output_path=output_path,
             max_rows=max_rows,
         )
+
+    @staticmethod
+    def _normalize_step_tags(tags: Any) -> set[str]:
+        """将 stepTags 规整为小写模式集合。
+
+        stepTags 可为：None / []（通用，返回空集）、字符串（逗号分隔）、列表。
+        模式取值：create / copy / copyfull（详见 scan 行级过滤逻辑）。
+        """
+        if not tags:
+            return set()
+        if isinstance(tags, str):
+            tags = [t for t in tags.split(",") if t.strip()]
+        result: set[str] = set()
+        for t in tags:
+            if isinstance(t, str):
+                result.add(t.strip().lower())
+        return result
 
     # ------------------------------------------------------------------
     # 步骤 Excel 分析 —— 发现可参数化字段（与 flow_excel_io.py 联动）

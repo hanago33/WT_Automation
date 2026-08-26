@@ -2,7 +2,7 @@
   "version": "1.0",
   "project": "WT_Automation",
   "description": "WT 自动化流程链路：从进入 CFD 模块到点击『发送 CFD 计算』所需的全部步骤。控件信息主要来自录音 control_maps/recordings/20260730_155717_CFD新计算1_window_control_map.json；步骤顺序参考『发送CFD计算流程包：.txt』。",
-  "lastUpdated": "2026-08-21T11:07:41",
+  "lastUpdated": "2026-08-21T14:45:17",
   "runtimeConfig": {
     "gmExe": "",
     "sourceFilePath": "",
@@ -439,7 +439,8 @@
         "onError": "continue",
         "precondition": {
           "condition": "visible",
-          "expected": "off"
+          "expected": "off",
+          "controlId": "WindDirectionSelector_Button_OpenSelector_风向选择_Button"
         }
       },
       "auxChecks": [],
@@ -858,8 +859,8 @@
           "role": "来自控件库扫描：",
           "enabled": true,
           "windowTitle": "*",
-          "targetMethod": "automation_id,control_type,label_text",
-          "targetValue": "MTDGroupComboBoxMultiSelection_CheckBox,CheckBox,2 - 中性",
+          "targetMethod": "name,control_type",
+          "targetValue": "2 - 中性,CheckBox",
           "templateKey": "",
           "uiPath": "Window_Main > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel > MUPMicroScaleView > MUPDASMainView > DASMainView_TabControl_Main > MUP.Module.DAS.Creation.MUPDASCreatorViewModel > MUPDASCreatorView > ScrollViewer > MUPDASMeteoEnvironmentParametersView > DASParameters_GroupComboBoxWithWarning_Stability > DASParameters_ComboBoxWithWarning_Stability > GroupComboBoxWithWarning_ComboBox_SelectedItems > 2 - 中性 > MTDGroupComboBoxMultiSelection_CheckBox",
           "notes": "热稳定度下拉弹出项『2 - 中性』，仅在 step_6 展开后可见(isVisible=False 时未展开)。用 name=2 - 中性 定位唯一项。",
@@ -1135,8 +1136,9 @@
         "retryInterval": 1.0,
         "onError": "continue",
         "precondition": {
-          "condition": "toggle",
-          "expected": "off"
+          "condition": "visible",
+          "expected": "off",
+          "controlId": "DASParameters_NumericUpDownWithWarning_HorRes_最小水平分辨率_Custom"
         }
       },
       "auxChecks": [],
@@ -1559,8 +1561,9 @@
         "retryInterval": 1.0,
         "onError": "continue",
         "precondition": {
-          "condition": "toggle",
-          "expected": "off"
+          "condition": "visible",
+          "expected": "off",
+          "controlId": "DASParameters_NumericUpDownWithWarning_NumberThreads_核数_Custom"
         }
       },
       "auxChecks": [],

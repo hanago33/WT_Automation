@@ -76,6 +76,7 @@ Thumbs.db
 
 # Temporary dev / IDE output
 .codebuddy/
+.qoder/
 .tmp_pdf_extract/
 operation_blueprints/
 test_control_library.signal

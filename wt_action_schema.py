@@ -1,6 +1,9 @@
 # encoding: utf-8
 
-ALLOWED_CONTINUE_WHEN_CONDITIONS = ("exists", "present", "visible", "enabled", "gone")
+ALLOWED_CONTINUE_WHEN_CONDITIONS = (
+    "exists", "present", "visible", "enabled", "gone",
+    "nonempty", "non_empty", "value_equals", "toggle", "checked", "toggle_state",
+)
 ALLOWED_RELATIVE_REGION_ANCHORS = ("center", "left_center", "right_center")
 ALLOWED_ON_ERROR_MODES = ("continue", "retry", "stop", "fallback", "ask")
 ALLOWED_PARENT_WINDOW_FRAMEWORK_IDS = ("WPF", "Win32", "uia", "WinForm")
@@ -106,13 +109,13 @@ ACTION_SCHEMAS = {
     },
     "click_relative_anchor": {
         "label": "锚点相对点击",
-        "description": "先定位锚点控件(controlId)，再以其可见矩形中心为基准、按像素偏移 (offsetX, offsetY) 点击。比固定区域更抗布局/缩放漂移，适合附近有稳定锚点控件、但目标点本身拿不到的情形。",
+        "description": "先定位锚点控件(controlId)，选择对齐基准 anchorAlign（center=中心/left=左缘/right=右缘/top=上缘/bottom=下缘），再以基准点为原点按像素偏移 (offsetX, offsetY) 点击。比固定区域更抗布局/缩放漂移，anchorAlign=right 常用于点控件最右侧的内部图标（如 MTDFlexibleComboBox 的配置按钮）。",
         "target_required": True,
         "input_required": False,
         "input_key": "",
         "input_label": "输入/参数",
         "show_timeout": True,
-        "suggested_columns": ("controlId(锚点)", "offsetX", "offsetY", "clickKind"),
+        "suggested_columns": ("controlId(锚点)", "anchorAlign", "offsetX", "offsetY", "clickKind"),
     },
     "select_dropdown_item_runtime": {
         "label": "运行时下拉选择",
@@ -122,6 +125,16 @@ ACTION_SCHEMAS = {
         "input_key": "",
         "input_label": "输入/参数",
         "show_timeout": True,
+    },
+    "check_all_toggles": {
+        "label": "批量勾选 CheckBox",
+        "description": "定位所有匹配的切换控件（如 automationId=CbValid 的风向行 CheckBox），逐行读 ToggleState：已勾选跳过，未勾选先物理点击、未翻转再程序化 Toggle 收敛，禁用项跳过。存在勾选失败或未找到目标时步骤判失败。",
+        "target_required": True,
+        "input_required": False,
+        "input_key": "",
+        "input_label": "输入/参数",
+        "show_timeout": True,
+        "suggested_columns": ("controlId(批量 CheckBox)",),
     },
     "wait_for_control": {
         "label": "等待控件",

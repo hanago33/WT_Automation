@@ -1,6 +1,8 @@
 # encoding: utf-8
 
 import ctypes
+import faulthandler
+import gc
 import io
 import json
 import os
@@ -14,6 +16,25 @@ from ctypes import wintypes
 from functools import lru_cache
 from threading import Thread
 import threading
+import warnings
+
+# pywinauto 0.6.9 的 set_focus() 对部分 UIA 控件（元素已失效/控件不支持 SetFocus）
+# 会抛 COMError 并发出 "The window has not been focused due to COMError..." 的
+# RuntimeWarning。这类聚焦失败对自动化流程通常非致命（后续定位/点击动作仍会执行），
+# 这里按"精确匹配消息"仅抑制这一条，避免它在高频定位/点击时刷屏、掩盖真正错误。
+warnings.filterwarnings(
+    "ignore",
+    message=r"The window has not been focused due to .*",
+    category=RuntimeWarning,
+)
+
+# 启用 faulthandler：当子进程因原生崩溃（如 UIA/COM 段错误）而硬退出时，
+# 会在 stderr（已合并进 stdout）dump 出 Python 调用栈，避免"开始执行步骤后
+# 直接失败、无任何错误详情"的盲区。文件句柄 2 即 stderr。
+try:
+    faulthandler.enable(file=sys.stderr, all_threads=True)
+except Exception:
+    pass
 
 import pyautogui
 from pywinauto import Desktop
@@ -29,6 +50,7 @@ import wt_run_status
 import wt_task_queue
 from wt_flow_validation import validate_flow_definition
 from wt_flow_editor_utils import normalize_control_window_title
+from WT_AUTOMATION_Agent.parameter_scan import ParameterScanner, StepModeFilterUnavailable
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -84,6 +106,190 @@ _WT_BUSINESS_STEPS_CONFIGURED = False
 _WT_PROJECTION_HELPERS_CONFIGURED = False
 _WT_WINDOW_HELPERS_CONFIGURED = False
 _WT_RUN_REPORTING_CONFIGURED = False
+
+
+class _TaskbarProgress:
+    """Windows 任务栏进度条（ITaskbarList3，ctypes 直连 vtable，无第三方类型库依赖）。
+
+    绑定到监视器窗口（GUI 模式，有任务栏按钮且用户可见）或控制台窗口（CLI 模式），
+    在任务栏图标上显示进度与状态色。不创建新窗口、不置顶、不抢焦点，
+    完全不影响自动化步骤执行——解决"进度监测窗口放主页面后看不到、
+    置顶又可能干扰执行"的矛盾。非 Windows / COM 初始化失败时静默降级为 no-op。
+
+    注：comtypes.GetActiveObject 只返回 POINTER(IUnknown)（无接口方法），
+    必须用 ctypes 按 vtable 偏移调用 SetProgressValue/SetProgressState。
+    """
+    TBPF_NOPROGRESS = 0x0
+    TBPF_NORMAL = 0x1
+    TBPF_ERROR = 0x4
+    TBPF_PAUSED = 0x8
+
+    # ITaskbarList3 vtable 偏移（基于 IUnknown）：
+    # 0-2 IUnknown, 3 HrInit, 4-7 ITaskbarList, 8 MarkFullscreenWindow,
+    # 9 SetProgressValue, 10 SetProgressState
+    _VTBL_HRINIT = 3
+    _VTBL_SET_PROGRESS_VALUE = 9
+    _VTBL_SET_PROGRESS_STATE = 10
+
+    def __init__(self, host_hwnd=None):
+        self._hwnd = 0
+        self._obj = None
+        self._set_value = None
+        self._set_state = None
+        hwnd = host_hwnd or _resolve_taskbar_host_hwnd()
+        if not hwnd:
+            return
+        self._hwnd = int(hwnd)
+        try:
+            ole32 = ctypes.windll.ole32
+
+            class GUID(ctypes.Structure):
+                _fields_ = [
+                    ("Data1", ctypes.c_ulong),
+                    ("Data2", ctypes.c_ushort),
+                    ("Data3", ctypes.c_ushort),
+                    ("Data4", ctypes.c_ubyte * 8),
+                ]
+
+            CLSID_TaskbarList = GUID(0x56FDF344, 0xFD6D, 0x11D0, (0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90))
+            IID_ITaskbarList3 = GUID(0xEA1AFB91, 0x9E28, 0x4B86, (0x90, 0xE9, 0x9E, 0x9F, 0x8A, 0x5E, 0xEF, 0xAF))
+            ole32.CoCreateInstance.argtypes = [
+                ctypes.POINTER(GUID),
+                ctypes.c_void_p,
+                ctypes.c_uint,
+                ctypes.POINTER(GUID),
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            ole32.CoCreateInstance.restype = ctypes.c_long
+            obj = ctypes.c_void_p()
+            # CLSCTX_INPROC_SERVER = 0x1
+            hr = ole32.CoCreateInstance(
+                ctypes.byref(CLSID_TaskbarList), None, 0x1,
+                ctypes.byref(IID_ITaskbarList3), ctypes.byref(obj),
+            )
+            if hr != 0 or not obj.value:
+                return
+            self._obj = obj
+            vtbl = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
+            hrinit = ctypes.cast(
+                vtbl[self._VTBL_HRINIT],
+                ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p),
+            )
+            self._set_value = ctypes.cast(
+                vtbl[self._VTBL_SET_PROGRESS_VALUE],
+                ctypes.WINFUNCTYPE(
+                    ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p,
+                    ctypes.c_ulonglong, ctypes.c_ulonglong,
+                ),
+            )
+            self._set_state = ctypes.cast(
+                vtbl[self._VTBL_SET_PROGRESS_STATE],
+                ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint),
+            )
+            # ITaskbarList 要求先 HrInit，否则 SetProgress* 返回错误
+            if hrinit:
+                hrinit(obj)
+        except Exception:
+            self._obj = None
+            self._set_value = None
+            self._set_state = None
+
+    def set_state(self, state):
+        if self._set_state and self._obj and self._hwnd:
+            try:
+                self._set_state(self._obj, ctypes.c_void_p(self._hwnd), int(state))
+            except Exception:
+                pass
+
+    def set_value(self, current, total):
+        if self._set_value and self._obj and self._hwnd and total > 0:
+            try:
+                self._set_value(self._obj, ctypes.c_void_p(self._hwnd), int(current), int(total))
+            except Exception:
+                pass
+
+    def clear(self):
+        self.set_state(self.TBPF_NOPROGRESS)
+
+
+def _resolve_taskbar_host_hwnd():
+    """选择任务栏进度宿主窗口。
+
+    优先级：监视器窗口（GUI 模式，任务栏有按钮、用户可见）→ 控制台窗口（CLI 模式）。
+    注意：经 WT_Launcher 以 CREATE_NO_WINDOW 启动的自动化子进程没有控制台，
+    只能依赖监视器窗口作为宿主。
+    """
+    try:
+        if monitor_window is not None and getattr(monitor_window, "root", None) is not None:
+            hwnd = monitor_window.root.winfo_id()
+            if hwnd:
+                return int(hwnd)
+    except Exception:
+        pass
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            return int(hwnd)
+    except Exception:
+        pass
+    return 0
+
+
+# 任务栏进度条（在主线程创建，daemon 执行线程仅做方法调用）
+_taskbar_progress = None
+# 任务栏/控制台进度状态（供步骤结果回调更新）
+_progress_current = 0
+_progress_total = 0
+
+
+def _init_taskbar_progress():
+    global _taskbar_progress
+    if _taskbar_progress is None:
+        _taskbar_progress = _TaskbarProgress()
+    return _taskbar_progress
+
+
+def _update_taskbar_progress(current, total, status="running"):
+    """更新任务栏进度条：进度值 + 状态色（运行绿 / 失败红 / 暂停黄）。"""
+    tb = _init_taskbar_progress()
+    if tb is None:
+        return
+    if status == "success":
+        tb.set_value(total, total)
+        tb.set_state(tb.TBPF_NORMAL)
+    elif status == "failed":
+        tb.set_state(tb.TBPF_ERROR)
+    elif status == "paused":
+        tb.set_state(tb.TBPF_PAUSED)
+    else:
+        tb.set_value(current, total)
+        tb.set_state(tb.TBPF_NORMAL)
+
+
+def _update_progress_title(current, total, step_name="", status="success"):
+    """进度文字：写入监视器窗口标题 + 控制台标题。
+
+    监视器窗口标题在任务栏悬停即可看到（'WT自动化 [第 X/Y 步] 步骤名 [成功]'），
+    无需置顶窗口、不干扰自动化执行；有控制台时同步设置控制台标题。
+    """
+    try:
+        if total <= 0:
+            return
+        status_text = {"success": "成功", "failed": "失败", "paused": "暂停", "skipped": "跳过"}.get(status, "运行中")
+        title = f"WT自动化 [第 {current}/{total} 步] {step_name} [{status_text}]"
+        if monitor_window is not None and getattr(monitor_window, "root", None) is not None:
+            # 本函数可能在后台自动化线程中被调用；Tk 调用一律由调用方经
+            # _ui_safe_call 调度到主线程，此处禁止直接调 root.title()。
+            try:
+                monitor_window.root.title(title)
+            except Exception:
+                pass
+        try:
+            ctypes.windll.kernel32.SetConsoleTitleW(title)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 pyautogui.PAUSE = 0.15
 pyautogui.FAILSAFE = True
@@ -168,6 +374,15 @@ class MonitorWindow:
         )
         self.status_label.pack(pady=(2, 4))
 
+        # 主线程创建任务栏进度对象（绑定本窗口，任务栏图标显示进度/状态色）。
+        # daemon 执行线程只做方法调用，避免跨线程创建 COM 对象不稳定。
+        global monitor_window, _taskbar_progress
+        monitor_window = self
+        try:
+            _taskbar_progress = _TaskbarProgress(host_hwnd=self.root.winfo_id())
+        except Exception:
+            _taskbar_progress = None
+
     def _set_topmost(self, enabled):
         try:
             self.root.wm_attributes("-topmost", bool(enabled))
@@ -206,7 +421,9 @@ class MonitorWindow:
         self.text_widget.insert(tk.END, "\n")
         self.text_widget.see(tk.END)
         self.text_widget.config(state=tk.DISABLED)
-        self.root.update()
+        # 注意：不再调用 self.root.update()。本方法可能被后台自动化线程调用，
+        # 跨线程进入 Tcl 事件循环会导致解释器重入崩溃（access violation）。
+        # Tk 会在下一个 idle 周期自动刷新，无需手动 pump。
 
     def update_status(self, status):
         text = "状态：{}".format(status)
@@ -220,19 +437,48 @@ class MonitorWindow:
         elif "警告" in status or "跳过" in status:
             fg = MONITOR_THEME["warning"]
         self.status_label.config(text=text, fg=fg)
-        self.root.update()
+        # 同上：不调用 self.root.update()，避免后台线程重入 Tcl 事件循环。
 
     def set_success(self):
         self._bring_to_front_for_notice()
         self.status_label.config(text="状态：流程完成！", fg=MONITOR_THEME["success"])
-        self.root.bell()
-        self.root.update()
+        try:
+            self.root.bell()
+        except Exception:
+            pass
+        # 同上：不调用 self.root.update()。
 
     def set_error(self):
         self._bring_to_front_for_notice()
         self.status_label.config(text="状态：流程失败！", fg=MONITOR_THEME["danger"])
-        self.root.bell()
-        self.root.update()
+        try:
+            self.root.bell()
+        except Exception:
+            pass
+        # 同上：不调用 self.root.update()。
+
+
+def _ui_safe_call(callback):
+    """线程安全地把 Tk 回调调度到主线程执行。
+
+    monitor 模式下主线程运行 mainloop，用 after 调度；若主线程不在 mainloop
+    （如 --no-monitor / 主线程同步执行），则直接调用兜底。
+    背景：run_automation 在后台自动化线程中运行，直接调用 Tk widget 方法
+    （尤其 root.update()/root.title()）会跨线程重入 Tcl 事件循环，导致原生崩溃。
+    """
+    mw = monitor_window
+    if mw is not None and getattr(mw, "root", None) is not None:
+        try:
+            if mw.root.winfo_exists():
+                mw.root.after(0, callback)
+                return True
+        except Exception:
+            pass
+    try:
+        callback()
+    except Exception:
+        pass
+    return False
 
 
 def log_step(step_name):
@@ -257,8 +503,10 @@ def log_step(step_name):
             kind = "warning"
         else:
             kind = "info"
-        monitor_window.log(log_line, kind=kind)
-        monitor_window.update_status(step_name)
+        # log/update_status 可能在后台自动化线程被调用，须调度到主线程执行，
+        # 避免跨线程 Tcl 重入崩溃。
+        _ui_safe_call(lambda: monitor_window.log(log_line, kind=kind))
+        _ui_safe_call(lambda: monitor_window.update_status(step_name))
 
 
 
@@ -305,8 +553,10 @@ SW_MAXIMIZE = 3
 
 def _force_utf8_stdio():
 	if sys.platform == "win32":
-		sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-		sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+		# line_buffering=True：日志按行实时刷出到管道，主控台/监控窗口才能实时显示，
+		# 否则 python 对管道 stdout 默认块缓冲（攒满 8KB 或进程退出才 flush）。
+		sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
+		sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", line_buffering=True)
 
 
 def _safe_get_value(getter, default=""):
@@ -417,7 +667,8 @@ def _load_flow_payload():
 				seen_step_ids.add(step_id)
 		return step_ids
 
-	target_payload = _normalize_payload(_read_payload(FLOW_DEFINITION_FILE, "读取流程链路定义失败，跳过运行时控件匹配"))
+	raw_target_payload = _read_payload(FLOW_DEFINITION_FILE, "读取流程链路定义失败，跳过运行时控件匹配")
+	target_payload = _normalize_payload(raw_target_payload)
 	registry_payload = _normalize_payload(_read_payload(FLOW_PACKAGE_REGISTRY_FILE, "读取流程包仓库失败，跳过流程包补全"))
 	if not _has_payload_content(target_payload):
 		merged_payload = registry_payload
@@ -457,6 +708,12 @@ def _load_flow_payload():
 			"steps": merged_steps,
 		}
 
+	# 参数表驱动展开（路线B · 非 Agent）：若流程顶层声明 paramTable，
+	# 则按参数表把含 ${stepParams.xxx} 占位的模板展开为完整步骤序列。
+	# 展开失败安全降级为原始 steps，不影响无 paramTable 的既有路径。
+	# paramTable 取自原始未 normalize 的 target（_normalize_payload 会丢弃未知字段）。
+	merged_payload = _apply_param_table_expansion(merged_payload, raw_target_payload)
+
 	validation_errors = validate_flow_definition(merged_payload)
 	if validation_errors:
 		raise RuntimeError(
@@ -464,6 +721,78 @@ def _load_flow_payload():
 			+ " | ".join(str(item) for item in validation_errors[:8])
 		)
 	return merged_payload
+
+
+def _apply_param_table_expansion(merged_payload, target_payload):
+	"""若流程顶层含 paramTable 字段，按参数表展开模板步骤。
+
+	展开结果覆盖 merged_payload["steps"]（每行参数 × 模板步，每步带 stepParams）。
+	flowPackages 保留（packageRef 引用的包定义仍需存在）。
+	无 paramTable / 展开异常时原样返回，零回归。
+	"""
+	if not isinstance(target_payload, dict):
+		return merged_payload
+	param_table = str(target_payload.get("paramTable", "")).strip()
+	if not param_table:
+		return merged_payload
+	if not os.path.isabs(param_table):
+		param_table = os.path.join(os.path.dirname(FLOW_DEFINITION_FILE), param_table)
+	if not os.path.exists(param_table):
+		log_step(f"[paramTable] 参数表不存在，跳过展开：{param_table}")
+		return merged_payload
+	template_steps_for_scan = merged_payload.get("steps", [])
+	# stepTags 缺失的硬失败在 ParameterScanner.scan 内判定（过滤启用且存在请求模式的行
+	# 但模板零 stepTags 时才抛 StepModeFilterUnavailable），此处不再冗余宽泛告警。
+	try:
+		# 真实综合流程的模板步骤位于 flow.steps（已规整进 merged_payload["steps"]），
+		# 直接用 ParameterScanner.scan 以合并后的步骤为模板展开，避免 scan_from_flow
+		# 只读顶层 steps 导致空模板。flowPackages 保留供 packageRef 解析。
+		scanned = ParameterScanner.scan(param_table, template_steps=template_steps_for_scan)
+	except StepModeFilterUnavailable as exc:
+		# 硬失败：stepMode 过滤无法生效时若静默全跑，会把所有模式的全套步骤排给每行，
+		# 运行期才暴露（如新建行混入复制链、复制链定位综合1失败）。直接中止启动。
+		raise RuntimeError(f"[paramTable] {exc}") from exc
+	except Exception as exc:
+		log_step(f"[paramTable] 展开失败，降级为原始步骤：{exc}")
+		return merged_payload
+	scanned_steps = scanned.get("steps", []) if isinstance(scanned, dict) else []
+	if not isinstance(scanned_steps, list) or not scanned_steps:
+		log_step("[paramTable] 参数表无有效数据行，跳过展开。")
+		return merged_payload
+	# 包 stepIds 同步映射：参数表展开会把模板步骤 id 改为 `{原id}_scan{行}_{序号}`，
+	# 若不改写，flowPackages 中登记整流程的包（stepIds 引用原模板 id）在校验时会报
+	# "引用了不存在的步骤"。把每个原 id 替换为展开后对应的一批 id，保持包与 steps 一致。
+	base_to_expanded = {}
+	for s in scanned_steps:
+		if not isinstance(s, dict):
+			continue
+		sid = str(s.get("id", "")).strip()
+		base = sid.rsplit("_scan", 1)[0] if "_scan" in sid else sid
+		if base:
+			base_to_expanded.setdefault(base, []).append(sid)
+	mapped_packages = []
+	for pkg in merged_payload.get("flowPackages", []):
+		if not isinstance(pkg, dict):
+			mapped_packages.append(pkg)
+			continue
+		new_pkg = dict(pkg)
+		new_step_ids = []
+		for pid in pkg.get("stepIds", []) or []:
+			pid = str(pid).strip()
+			if pid in base_to_expanded:
+				new_step_ids.extend(base_to_expanded[pid])
+			elif pid:
+				new_step_ids.append(pid)
+		new_pkg["stepIds"] = new_step_ids
+		mapped_packages.append(new_pkg)
+	expanded = {
+		"runtimeConfig": merged_payload.get("runtimeConfig", {}),
+		"flowPackages": mapped_packages,
+		"steps": [s for s in scanned_steps if isinstance(s, dict)],
+	}
+	row_count = sum(1 for s in scanned_steps if str(s.get("stage", "")) == "separator") + (1 if scanned_steps and str(scanned_steps[0].get("stage", "")) != "separator" else 0)
+	log_step(f"[paramTable] 已按参数表展开：{len(expanded['steps'])} 个步骤（参数表：{os.path.basename(param_table)}）。")
+	return expanded
 
 
 @lru_cache(maxsize=1)
@@ -562,10 +891,65 @@ def _get_flow_step(step_id):
 	return _load_flow_definition().get(step_id, {})
 
 
+# 运行循环在单步执行前放置 {step_id, context}；定位器在控件定位时通过流程定义取器读取它，
+# 把控件名里的 ${...} 占位按实际运行上下文解析（跟随导入文件/设置命名变化的动态控件）。
+_ACTIVE_FLOW_CTX = threading.local()
+
+
+def _get_flow_step_resolved(step_id):
+	"""返回 step；若当前运行循环正执行该 step，则对 controls 做 ${...} 动态解析。
+
+	使流程库里写死的控件名（如 'testMESO'/'WT6250D2'/'综合3'）可改为
+	${stepParams.x}/${steps.<stepId>.<output>}/${runtime.x} 占位，运行时按实际
+	文件名/设置名定位，避免换项目/换文件后失配。不在运行循环内或与当前 step 不符时
+	原样返回（保持旧行为）。
+	"""
+	step = _get_flow_step(step_id)
+	if not isinstance(step, dict):
+		return step
+	active = getattr(_ACTIVE_FLOW_CTX, "snapshot", None)
+	if not active or active.get("step_id") != step_id:
+		return step
+	controls = step.get("controls")
+	if isinstance(controls, list) and controls:
+		try:
+			resolved = _resolve_dynamic_value(
+				[dict(c) for c in controls if isinstance(c, dict)],
+				step_id,
+				active.get("context") or {},
+			)
+		except Exception:
+			resolved = None
+		if isinstance(resolved, list):
+			step = dict(step)
+			step["controls"] = resolved
+	return step
+
+
+def _get_main_window_candidates():
+	"""提供目标软件(MUP)主窗口候选（hwnd 字典列表），供定位器 fallback 权威取窗。
+
+	复用预检同款 find_main_windows：按进程名 MUPSmartClient 识别主窗，UIPI 免疫，
+	比定位器自身的进程名枚举更可靠（实测运行中 MUP 枚举偶发为空导致误回退到自己 Tk 窗）。
+	"""
+	try:
+		main_windows = _get_wt_window_helpers().find_main_windows(
+			MAIN_WINDOW_TITLE_RE,
+			class_name_keywords=("MUPSmartClient",),
+		)
+		return list(main_windows or [])
+	except Exception:
+		return []
+
+
 def _get_flow_locator():
 	global _FLOW_LOCATOR_CONFIGURED
 	if not _FLOW_LOCATOR_CONFIGURED:
-		wt_flow_locator.configure_flow_locator(get_step_definition=_get_flow_step, log_step=log_step)
+		wt_flow_locator.configure_flow_locator(
+			get_step_definition=_get_flow_step_resolved,
+			log_step=log_step,
+			get_main_window_candidates=_get_main_window_candidates,
+		)
 		_FLOW_LOCATOR_CONFIGURED = True
 	return wt_flow_locator
 
@@ -693,7 +1077,7 @@ def _get_flow_executor():
 	global _FLOW_EXECUTOR_CONFIGURED
 	if not _FLOW_EXECUTOR_CONFIGURED:
 		wt_flow_executor.configure_flow_executor(
-			get_step_definition=_get_flow_step,
+			get_step_definition=_get_flow_step_resolved,
 			get_flow_package=_get_flow_package,
 			get_step_params=_get_step_params,
 			resolve_dynamic_value=_resolve_dynamic_value,
@@ -701,6 +1085,7 @@ def _get_flow_executor():
 			click_flow_control=_click_flow_control,
 			click_relative_region=_click_relative_region,
 		click_relative_anchor=_click_relative_anchor,
+			check_all_toggles=_check_all_unchecked_toggle_controls,
 			focus_flow_control=_focus_flow_control,
 			type_text_into_flow_control=_type_text_into_flow_control,
 			type_text_into_relative_region=_type_text_into_relative_region,
@@ -849,6 +1234,7 @@ _FLOW_LOCATOR_FORWARDED = (
 	"click_flow_control",
 	"click_relative_anchor",
 	"click_relative_region",
+	"check_all_unchecked_toggle_controls",
 	"click_menu_candidate_by_text",
 	"focus_flow_control",
 	"type_text_into_wrapper",
@@ -906,6 +1292,16 @@ _install_module_proxies(_get_wt_business_steps, _WT_BUSINESS_STEPS_FORWARDED)
 
 
 def _record_step_result(run_report, step_id, step_name, status, action_type="", strategy="", elapsed=0.0, error="", extra=None):
+	# 任务栏进度 + 控制台标题：每步结束更新（不创建窗口、不置顶、不抢焦点）
+	global _progress_current, _progress_total
+	try:
+		if status in ("success", "failed", "skipped"):
+			_progress_current += 1
+		# 本函数在后台自动化线程中调用；Tk/COM 收尾一律调度到主线程执行。
+		_ui_safe_call(lambda: _update_taskbar_progress(_progress_current, _progress_total, status="running"))
+		_ui_safe_call(lambda: _update_progress_title(_progress_current, _progress_total, step_name=step_name, status=status))
+	except Exception:
+		pass
 	return _get_wt_run_reporting().report_step_result(
 		run_report,
 		step_id,
@@ -1624,16 +2020,53 @@ def _build_execution_plan():
 
 
 def _resolve_steps_to_run(step_ids, steps_arg=None, from_step=None, to_step=None, default_step_ids=None):
+	# 参数表展开后步骤 id 变为 `{原id}_scan{行}_{序号}`，外部（--steps/--from-step/
+	# --to-step）传入的模板步骤 id（如 step_1）不再精确命中。构建 模板base id -> 展开id
+	# 映射，未命中时按 base 展开，保证参数表模式下列表/区间参数仍能正确解析到执行计划。
+	base_map = {}
+	for sid in step_ids:
+		sid_str = str(sid).strip()
+		base = sid_str.rsplit("_scan", 1)[0] if "_scan" in sid_str else sid_str
+		if base:
+			base_map.setdefault(base, []).append(sid_str)
+
+	def _resolve_one(raw):
+		step_id = _normalize_step_id(raw)
+		if not step_id:
+			return None
+		if step_id in step_ids:
+			return [step_id]
+		expanded = base_map.get(step_id)
+		if expanded:
+			return list(expanded)
+		return None
+
 	if steps_arg:
 		raw_items = [item.strip() for item in str(steps_arg).split(",") if item.strip()]
-		normalized = []
+		exact_ids = set()
+		requested_bases = set()
 		dropped = []
 		for item in raw_items:
 			step_id = _normalize_step_id(item)
-			if step_id and step_id in step_ids and step_id not in normalized:
-				normalized.append(step_id)
-			elif step_id not in normalized:
+			if step_id and step_id in step_ids:
+				# 精确命中：记录精确 id，并把其 base 一并记入（若该 base 另有展开实例）
+				exact_ids.add(step_id)
+				requested_bases.add(step_id.rsplit("_scan", 1)[0] if "_scan" in step_id else step_id)
+			elif step_id and step_id in base_map:
+				# 模板 base id：映射为展开后全部实例
+				requested_bases.add(step_id)
+			else:
 				dropped.append(item)
+		# 按展开顺序收集：参数矩阵每行是一整套流程，必须保持 step_ids 的线性执行顺序，
+		# 不能按模板 base 分组（否则会把所有行的 step_1 先跑完再跑 step_2，完全乱序）。
+		normalized = []
+		for sid in step_ids:
+			if sid in exact_ids:
+				normalized.append(sid)
+				continue
+			base = sid.rsplit("_scan", 1)[0] if "_scan" in sid else sid
+			if base in requested_bases:
+				normalized.append(sid)
 		if dropped:
 			# 防假成功：无效步骤名不再静默丢弃——明确告警，便于调用方及时发现
 			log_step(
@@ -1644,6 +2077,8 @@ def _resolve_steps_to_run(step_ids, steps_arg=None, from_step=None, to_step=None
 		from_id = _normalize_step_id(from_step)
 		if from_id in step_ids:
 			start_index = step_ids.index(from_id)
+		elif from_id in base_map and base_map[from_id]:
+			start_index = step_ids.index(base_map[from_id][0])
 		else:
 			start_index = 0
 		end_index = len(step_ids)
@@ -1651,6 +2086,8 @@ def _resolve_steps_to_run(step_ids, steps_arg=None, from_step=None, to_step=None
 			to_id = _normalize_step_id(to_step)
 			if to_id in step_ids:
 				end_index = step_ids.index(to_id) + 1
+			elif to_id in base_map and base_map[to_id]:
+				end_index = step_ids.index(base_map[to_id][-1]) + 1
 		return step_ids[start_index:end_index]
 	if default_step_ids is not None:
 		return list(default_step_ids)
@@ -1810,6 +2247,15 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 	# （同一进程内可能多次调用 run_automation，如任务队列 worker 串行执行）。
 	_STOP_REQUESTED.clear()
 	queue_db = task_db or wt_task_queue.DEFAULT_DB_PATH
+	# 整个流程执行期间禁用 GC：pywinauto/comtypes 的 UIA 元素数组在垃圾回收时释放
+	# COM 对象（__del__ → Release），若目标软件 UIA provider 已失效会触发
+	# "Windows fatal exception: access violation" / "code 0xc0000374"（堆损坏），
+	# 导致子进程崩溃且无任何错误详情。定位、点击、键入、下拉等所有 UIA 操作都可能
+	# 触发，故在流程级统一禁用 GC，并【保持禁用直到进程退出】——finally 不再恢复，
+	# 否则结束/异常 unwind 阶段收集 comtypes 对象会触发原生崩溃（模式 H 结束变体）。
+	_gc_was_enabled = gc.isenabled()
+	if _gc_was_enabled:
+		gc.disable()
 	try:
 		_force_utf8_stdio()
 		_refresh_flow_caches()
@@ -1877,6 +2323,20 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 		execution_plan_map = {item["id"]: item for item in execution_plan}
 		completed_count = 0
 		total_count = len(steps_to_run)
+		# 任务栏/控制台进度初始化
+		global _progress_current, _progress_total
+		_progress_current = 0
+		_progress_total = total_count
+		_ui_safe_call(lambda: _update_taskbar_progress(0, total_count, status="running"))
+		_ui_safe_call(lambda: _update_progress_title(0, total_count, step_name="流程开始", status="running"))
+		try:
+			tb = _init_taskbar_progress()
+			if tb is not None and tb._obj and tb._set_value:
+				log_step(f"[任务栏进度] 已启用: hwnd={tb._hwnd}")
+			else:
+				log_step("[任务栏进度] 不可用（无宿主窗口或 COM 初始化失败），仅显示标题进度")
+		except Exception:
+			pass
 		for item in execution_plan:
 			step_id = item["id"]
 			if step_id not in steps_to_run:
@@ -1933,6 +2393,33 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 					last_log="正在执行步骤: {}".format(step_name),
 					db_path=queue_db,
 				)
+			# 失败联动短路：步骤配置 requiresPreviousSuccess 且上一步非 success 时跳过，
+			# 避免"前置步骤失败后仍继续空操作却报成功"（如复制链在未选中综合1时
+			# 继续点击行尾菜单/复制按钮）。只对显式配置该标志的步骤生效。
+			_link_base_id = str(step_id).rsplit("_scan", 1)[0] if "_scan" in str(step_id) else str(step_id)
+			_link_step_def = _get_flow_step(_link_base_id) or {}
+			if completed_count > 0 and bool(_link_step_def.get("requiresPreviousSuccess")):
+				_link_results = (context.get("run_report") or {}).get("stepResults", []) or []
+				_link_prev_status = str((_link_results[-1] or {}).get("status", "")).strip() if _link_results else ""
+				if _link_prev_status != "success":
+					_link_name = str(_link_step_def.get("name", "")).strip() or step_id
+					log_step(
+						f"前置步骤失败联动跳过: step={step_id}, name={_link_name}, prev_status={_link_prev_status or '(none)'}"
+					)
+					try:
+						_get_wt_run_reporting().report_step_result(
+							context.get("run_report"),
+							step_id,
+							_link_name,
+							"skipped",
+							action_type=str(_link_step_def.get("actionType", "")).strip(),
+							strategy=str(_link_step_def.get("strategy", "")).strip(),
+							error="前置步骤失败联动跳过",
+						)
+					except Exception:
+						pass
+					completed_count += 1
+					continue
 			# 惰性快照：首个待执行步骤（launch_gm 之后）执行前拍"运行前基线"
 			if context.get("mupDataSnapshotBefore") is None:
 				try:
@@ -1940,7 +2427,11 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 					context["mupDataSnapshotBefore"] = snapshot()
 				except Exception:
 					context["mupDataSnapshotBefore"] = {}
-			_execute_step_by_id(step_id, execution_plan_map, context, skip_setup=skip_setup)
+			_ACTIVE_FLOW_CTX.snapshot = {"step_id": step_id, "context": context}
+			try:
+				_execute_step_by_id(step_id, execution_plan_map, context, skip_setup=skip_setup)
+			finally:
+				_ACTIVE_FLOW_CTX.snapshot = None
 			completed_count += 1
 			if task_id:
 				next_step = steps_to_run[completed_count] if completed_count < total_count else ""
@@ -1965,7 +2456,9 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 		if task_id:
 			wt_task_queue.mark_success(task_id, run_id=context.get("runId", ""), last_log="WT自动化流程完成", db_path=queue_db)
 		if monitor_window:
-			monitor_window.set_success()
+			_ui_safe_call(monitor_window.set_success)
+		_ui_safe_call(lambda: _update_taskbar_progress(_progress_total, _progress_total, status="success"))
+		_ui_safe_call(lambda: _update_progress_title(_progress_total, _progress_total, step_name="流程完成", status="success"))
 	except Exception as e:
 		error_msg = f"错误：{str(e)}"
 		log_step(error_msg)
@@ -1992,11 +2485,26 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 		if task_id:
 			wt_task_queue.mark_failed(task_id, error=str(e), run_id=context.get("runId", "") if "context" in locals() else "", db_path=queue_db)
 		if monitor_window:
-			monitor_window.log(error_msg)
-			monitor_window.set_error()
+			_ui_safe_call(lambda: monitor_window.log(error_msg))
+			_ui_safe_call(monitor_window.set_error)
+		_ui_safe_call(lambda: _update_taskbar_progress(_progress_current, _progress_total, status="failed"))
+		_ui_safe_call(lambda: _update_progress_title(_progress_current, _progress_total, step_name="流程失败", status="failed"))
 		raise
 	finally:
 		running = False
+		# 保持 GC 禁用，不再恢复：run_automation 一旦结束（含异常 unwind），
+		# 局部变量里的 comtypes/UIA 对象（__del__→Release）若被 GC 收集会释放
+		# 失效 COM 指针，触发原生崩溃（access violation，模式 H 的"结束阶段变体"）。
+		# 崩溃栈特征：Garbage-collecting → comtypes unknwn.py Release → __del__，
+		# 发生在 daemon 线程、报告已落盘之后，main() 的 os._exit 来不及执行。
+		# 本进程是专用自动化子进程（含任务队列 worker），GC 由 main() 两分支在
+		# os._exit 前保持禁用即可；恢复会导致结束/异常路径出现收集窗口。
+		# （若未来确需在同一进程内多次调用 run_automation，应在调用方显式恢复。）
+		if _gc_was_enabled:
+			try:
+				gc.disable()
+			except Exception:
+				pass
 
 
 def automation_process():
@@ -2023,19 +2531,44 @@ def main():
 	to_step = args.to_step.strip() or None
 
 	if args.no_monitor:
-		run_automation(
-			steps_arg=steps_arg,
-			from_step=from_step,
-			to_step=to_step,
-			skip_setup=bool(args.skip_setup),
-			task_id=args.task_id or None,
-			task_user=args.task_user or None,
-			task_db=args.task_db.strip() or None,
-			pre_raise=bool(args.pre_raise),
-		)
+		try:
+			run_automation(
+				steps_arg=steps_arg,
+				from_step=from_step,
+				to_step=to_step,
+				skip_setup=bool(args.skip_setup),
+				task_id=args.task_id or None,
+				task_user=args.task_user or None,
+				task_db=args.task_db.strip() or None,
+				pre_raise=bool(args.pre_raise),
+			)
+			exit_code = 0
+		except BaseException:
+			# 失败信息已由 run_automation 打印/落盘，这里只标记退出码
+			exit_code = 1
+		# 禁用 GC：run 结束后不再回收 UIA comtypes 对象（__del__→Release 失效指针原生崩溃），
+		# 由下方 os._exit 硬退出直接跳过解释器清理。
+		try:
+			gc.disable()
+		except Exception:
+			pass
+		# 硬退出，跳过 Python 解释器清理阶段（Py_Finalize）：
+		# 流程中累积的 pywinauto/comtypes UIA 对象在进程退出时释放失效 COM 指针
+		# 会触发原生崩溃（access violation / 0xc0000374），退出码非 0，
+		# 被 WT_Launcher 误判为"流程执行失败"（此时运行报告实际已是 success）。
+		print(f"[exit-code] automation exit_code={exit_code}")
+		os._exit(exit_code)
 		return
 
 	monitor_window = MonitorWindow()
+	# 任务栏进度 COM 对象（ITaskbarList3，ctypes 直连 vtable）必须在【主线程】创建：
+	# monitor 模式下 run_automation 跑在后台 daemon 线程，若 COM 对象在那里创建
+	# （CoCreateInstance 自动 CoInitialize(MTA)），而成功/失败收尾经 _ui_safe_call 又
+	# 调度回主线程调用其 vtable，会形成"后台线程创建、主线程调用"的跨公寓 ctypes COM
+	# 直连，触发原生崩溃（access violation，无 traceback），进程以非 0 退出码死亡、
+	# 被 WT_Launcher 误判为"流程执行失败"（模式 H-2 残留根因）。
+	# 这里提前在主线程创建一次，run_automation 内 _init_taskbar_progress() 发现已存在会跳过。
+	_init_taskbar_progress()
 
 	def _request_stop():
 		# 拦截关闭按钮：先请求自动化优雅停止并落盘运行报告，而不是销毁窗口硬杀 daemon 线程
@@ -2043,6 +2576,8 @@ def main():
 		monitor_window.log("关闭请求已收到：当前步骤完成后停止并落盘报告", kind="warning")
 
 	run_finished = threading.Event()
+	# 自动化线程的最终退出码：0=正常完成，1=流程异常（错误已由 run_automation 打印/落盘）
+	_automation_exit_code = {"code": 0}
 
 	def _run_automation_and_mark():
 		try:
@@ -2056,7 +2591,15 @@ def main():
 				task_db=args.task_db.strip() or None,
 				pre_raise=bool(args.pre_raise),
 			)
+		except BaseException:
+			_automation_exit_code["code"] = 1
 		finally:
+			# 禁用 GC：run 线程返回时若触发 GC，会回收 UIA comtypes 对象并 __del__→Release
+			# 失效 COM 指针导致原生崩溃（main 的 os._exit 在 mainloop 退出后才执行，救不了这一下）。
+			try:
+				gc.disable()
+			except Exception:
+				pass
 			run_finished.set()
 
 	automation_thread = Thread(target=_run_automation_and_mark, daemon=True)
@@ -2077,6 +2620,11 @@ def main():
 	monitor_window.root.mainloop()
 	# mainloop 退出（正常完成或用户关闭）：等自动化线程彻底收尾，确保运行报告已落盘
 	automation_thread.join(timeout=30)
+	# 硬退出，跳过 Python 解释器清理阶段（Py_Finalize）：与 --no-monitor 分支同理，
+	# 避免 comtypes UIA 对象在进程退出时释放失效 COM 指针导致原生崩溃、
+	# 退出码非 0 被 WT_Launcher 误判为"流程执行失败"。
+	print(f"[exit-code] automation exit_code={_automation_exit_code['code']}")
+	os._exit(_automation_exit_code["code"])
 
 
 if __name__ == "__main__":

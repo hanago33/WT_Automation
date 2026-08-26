@@ -512,6 +512,10 @@ def normalize_step(step, index, default_step_controls_by_id):
     # 保留转换器生成的自适应降级链（字典列表，编辑器不编辑但需原样保留）
     if isinstance(step.get("fallbackChain"), list):
         normalized["fallbackChain"] = step["fallbackChain"]
+    # 保留 stepTags（参数表 stepMode 行级过滤依赖；编辑器不编辑但必须原样保留，
+    # 否则编辑器保存会剥离 stepTags → 过滤失效 → 每行全跑模板步骤）。
+    if "stepTags" in step:
+        normalized["stepTags"] = step["stepTags"]
     # 保留下划线前缀的元数据字段（如 _status / _sourceRecorderLine 等），避免保存时丢失
     for key, value in step.items():
         if str(key).startswith("_") and key not in normalized:

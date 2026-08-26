@@ -67,8 +67,30 @@ def load_all(input_dir):
         ffw = str(tw.get("frameworkId", "")).strip()
         scan_time = str((data.get("scanMeta", {}) or {}).get("scanTime", "")).strip()
         flat_list = data.get("flatControls", []) or []
+        # InterestAreas 面板标题查找表：flatControls 中 automationId=
+        # InterestAreasView_Tile_Header 的兄弟 Text 的 name 即所在面板节点
+        # （测风点/风机/结果点/绘图/配置/风廓线/Lidar/中尺度单元）。这是 Edit/
+        # Delete/Import(元素)/ToggleTileState 等共享 automationId 图标的权威判别
+        # 来源——它们同父容器还混有"载入/高度 (m)/计算尾流效应"等字段标签兄弟，
+        # 采集端的 labelText 常被这些字段标签污染，必须按父容器定位到 TileHeader。
+        panel_title_by_parent = {}
+        for flatc in flat_list:
+            if not isinstance(flatc, dict):
+                continue
+            if str(flatc.get("automationId", "")).strip() != "InterestAreasView_Tile_Header":
+                continue
+            pid = flatc.get("parentIndex")
+            if pid is None:
+                continue
+            text = str(flatc.get("name", "") or "").strip()
+            if text and "," not in text[:30] and len(text) <= 30:
+                panel_title_by_parent[pid] = text
         for idx, c in enumerate(data.get("controlDefinitions", []) or []):
-            rec = normalize_control(c, fwin, ffw, os.path.basename(fp), scan_time)
+            # 取与 controlDefinition 按下标对应的 flatControl 的父容器，查面板标题
+            title = ""
+            if idx < len(flat_list) and isinstance(flat_list[idx], dict):
+                title = panel_title_by_parent.get(flat_list[idx].get("parentIndex"), "") or ""
+            rec = normalize_control(c, fwin, ffw, os.path.basename(fp), scan_time, panel_title=title)
             if not rec:
                 continue
             # controlDefinitions 不含 locatorScore/locatorReason（仅在同源 flatControls 中）；
@@ -92,7 +114,9 @@ def _is_non_empty_list(lst):
     return isinstance(lst, list) and len(lst) > 0
 
 
-def normalize_control(c, fwin, ffw, src, scan_time=""):
+def normalize_control(c, fwin, ffw, src, scan_time="", panel_title=""):
+    """panel_title: 可选，interest-area 面板权威标题（来自 TileHeader 兄弟 name）。
+    """
     ins = c.get("inspectData", {}) or {}
     name = str(c.get("name", "") or ins.get("name", "")).strip()
     target_method = str(c.get("targetMethod", "")).strip()
@@ -150,6 +174,21 @@ def normalize_control(c, fwin, ffw, src, scan_time=""):
         "source": src,
         "scanTime": scan_time,
     }
+    # InterestAreas 图标按钮（Add/Edit/Delete/Import/ToggleTileState）共享同一
+    # automationId，靠"所在面板节点"判别彼此。面板节点以兄弟 TileHeader 的 name 为准
+    # （panel_title），采集期 labelText 常被同父的字段标签（"载入"/"计算尾流效应"/
+    # "高度 (m)"/"类型"等）污染，导致合并时分桶错误、夜间任务无法区分。此处用权威
+    # 面板标题统一修复 relatedLabelName/labelText，保证按节点分桶。TileHeader 缺失时
+    # 回退 targetValue 第 3 段的节点名（仍优于被污染的字段标签）。
+    _IA_NODES = ("测风点", "风机", "结果点", "绘图", "配置", "风廓线", "Lidar", "中尺度单元")
+    if automation_id.startswith("InterestAreas_Button_") and panel_title:
+        rec["relatedLabelName"] = panel_title
+        rec["labelText"] = panel_title
+    elif automation_id.startswith("InterestAreas_Button_"):
+        _vp = [p.strip() for p in target_value.split(",")]
+        if len(_vp) >= 3 and _vp[2] in _IA_NODES:
+            rec["relatedLabelName"] = _vp[2]
+            rec["labelText"] = _vp[2]
     return rec
 
 

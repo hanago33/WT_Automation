@@ -7,13 +7,25 @@
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
 from pathlib import Path
 from typing import Any
 
+from WT_AUTOMATION_Agent import flow_ops
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# 编辑专用语料根：真实链路文件 + 真实控件库（优先参考用户现有资产）。
+# flow_packages 含可运行 flow_definition_*.json；control_maps/library、standard
+# 为手工确认/标准控件定义，与 control_search 底座一致。
+EDIT_ROOTS = [
+    PROJECT_ROOT / "flow_packages",
+    PROJECT_ROOT / "control_maps" / "library",
+    PROJECT_ROOT / "control_maps" / "standard",
+]
 
 # 知识源根目录（仅扫描存在的目录）
 DEFAULT_ROOTS = [
@@ -84,8 +96,11 @@ class KnowledgeBase:
     def _index_dir(self, root: Path) -> None:
         for dirpath, _dirs, files in os.walk(root):
             for fn in files:
-                if fn.lower().endswith((".md", ".markdown", ".txt")):
+                low = fn.lower()
+                if low.endswith((".md", ".markdown", ".txt")):
                     self._index_file(Path(dirpath) / fn)
+                elif low.endswith(".json"):
+                    self._index_json_file(Path(dirpath) / fn)
 
     def _index_file(self, path: Path) -> None:
         try:
@@ -118,6 +133,24 @@ class KnowledgeBase:
             else:
                 cur_body.append(line)
         flush()
+
+    def _index_json_file(self, path: Path) -> None:
+        """索引 .json 资产（如 flow_definition_*.json）。
+
+        先尝试按 WT 链路文件解析并用 flow_to_text 转成可读文本，
+        失败时退化为整文件文本。不做 md 标题切分，直接整段切块。
+        """
+        try:
+            raw = path.read_text(encoding="utf-8", errors="ignore")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            return
+        rel = (str(path.relative_to(PROJECT_ROOT))
+               if PROJECT_ROOT in path.parents else path.name)
+        # flow_to_text 能把 steps 转成带控件描述的文本，检索更贴近业务语言
+        text = flow_ops.flow_to_text(data, include_controls=True) if isinstance(data, dict) else raw
+        for piece in _chunk_text(text):
+            self._add_chunk(rel, rel, piece)
 
     def _add_chunk(self, source: str, title: str, text: str) -> None:
         cid = len(self.chunks)
@@ -228,3 +261,19 @@ def rebuild() -> KnowledgeBase:
     _kb = KnowledgeBase()
     _kb.build()
     return _kb
+
+
+_edit_kb: KnowledgeBase | None = None
+
+
+def build_edit_knowledge_base() -> KnowledgeBase:
+    """构造「编辑专用」知识库：优先参考用户真实链路文件(flow_packages)
+    与真实控件库(control_maps/standard、control_maps/library)。
+
+    独立于默认 KB 单例，避免污染 repowiki/docs 的默认检索上下文。
+    """
+    global _edit_kb
+    if _edit_kb is None:
+        _edit_kb = KnowledgeBase()
+    _edit_kb.build(roots=EDIT_ROOTS)
+    return _edit_kb

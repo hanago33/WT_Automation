@@ -1,6 +1,7 @@
 # encoding: utf-8
 
 import ctypes
+import ctypes.wintypes  # 需显式导入，否则 ctypes.wintypes 运行时抛 AttributeError
 import re
 import time
 
@@ -68,13 +69,72 @@ def is_window_responsive(hwnd, timeout_ms=1000):
     return bool(response)
 
 
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def _get_window_owning_process_name(hwnd):
+    """取窗口所属进程的可执行文件名（跨 UIPI/权限隔离可用）。
+
+    GetWindowTextW/GetClassNameW 对提权窗口会被 UIPI 挡成空串，
+    但 GetWindowThreadProcessId（内核态取 PID）+ PROCESS_QUERY_LIMITED_INFORMATION
+    的 QueryFullProcessImageNameW（任务管理器同款）可在任意完整性级别读回进程名，
+    用于在管理员/普通权限混搭时仍能正确定位 MUP 主窗口。
+    """
+    process_id = ctypes.wintypes.DWORD()
+    get_wtid = _USER32.GetWindowThreadProcessId
+    get_wtid.restype = ctypes.wintypes.DWORD
+    get_wtid.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(ctypes.wintypes.DWORD)]
+    try:
+        if not get_wtid(hwnd, ctypes.byref(process_id)):
+            return ""
+    except Exception:
+        return ""
+    pid = int(process_id.value or 0)
+    if not pid:
+        return ""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        open_process = kernel32.OpenProcess
+        open_process.restype = ctypes.wintypes.HANDLE
+        open_process.argtypes = [ctypes.wintypes.DWORD, ctypes.c_int, ctypes.wintypes.DWORD]
+        handle = open_process(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return ""
+        try:
+            buffer = ctypes.create_unicode_buffer(32768)
+            # 注意：QueryFullProcessImageNameW 的第 4 个参数是"字符数"而非字节数，
+            # buffer 容量为 32768 字符。传字节数（sizeof(buffer)=65536）会让内核认为
+            # 缓冲区更大，路径足够长时可到写越界并破坏堆（0xc0000374 的潜在来源）。
+            size = ctypes.wintypes.DWORD(len(buffer))
+            query_name = getattr(kernel32, "QueryFullProcessImageNameW", None)
+            if query_name:
+                query_name.restype = ctypes.c_int
+                query_name.argtypes = [
+                    ctypes.wintypes.HANDLE,
+                    ctypes.wintypes.DWORD,
+                    ctypes.wintypes.LPWSTR,
+                    ctypes.POINTER(ctypes.wintypes.DWORD),
+                ]
+                if query_name(handle, 0, buffer, ctypes.byref(size)):
+                    return buffer.value
+        finally:
+            close_handle = kernel32.CloseHandle
+            close_handle.argtypes = [ctypes.wintypes.HANDLE]
+            close_handle(handle)
+    except Exception:
+        pass
+    return ""
+
+
 def find_main_windows(main_window_title_re, class_name_keywords=()):
     """枚举目标软件主窗口候选。
 
     - 默认按标题正则匹配（`main_window_title_re`），保持既有行为。
     - 传入 `class_name_keywords`（如 ("MUPSmartClient",)）时，标题为空或
-      不匹配正则的可见窗口，若其窗口类名包含任一关键词（不区分大小写）
-      也纳入候选——用于 MUP 主窗口标题为空、仅靠类名可识别的场景。
+      不匹配正则的可见窗口，若其窗口类名**或所属进程名**包含任一关键词
+      （不区分大小写）也纳入候选——用于 MUP 主窗口标题为空、仅靠类名可识别
+      的场景；进程名匹配不受 UIPI 影响（普通权限 WT 也能读到提权 MUP 主窗口），
+      避免前置顶误把 PowerShell 类后台窗口当主窗口置顶。
     """
     windows = []
     keywords = tuple(str(k) for k in (class_name_keywords or ()) if str(k).strip())
@@ -86,12 +146,20 @@ def find_main_windows(main_window_title_re, class_name_keywords=()):
         title = _GET_WINDOW_TEXT(hwnd)
         title_matched = bool(title) and main_window_title_re.search(title)
         class_matched = False
+        process_matched = False
         if not title_matched and keywords:
             class_buf = ctypes.create_unicode_buffer(256)
             if _USER32.GetClassNameW(hwnd, class_buf, 256):
                 class_name = class_buf.value or ""
                 class_matched = any(k.lower() in class_name.lower() for k in keywords)
-        if not title_matched and not class_matched:
+            # 标题/类名被 UIPI 挡空（提权 MUP 窗口）时，退级按进程名识别：
+            # MUPSmartClient.exe 的窗口即使普通权限也能被正确定位。
+            if not class_matched:
+                process_name = _get_window_owning_process_name(hwnd)
+                process_matched = bool(process_name) and any(
+                    k.lower() in process_name.lower() for k in keywords
+                )
+        if not title_matched and not class_matched and not process_matched:
             return True
         rect = _GET_WINDOW_RECT(hwnd)
         width = (rect.right - rect.left) if rect else 0
@@ -112,20 +180,31 @@ def find_main_windows(main_window_title_re, class_name_keywords=()):
     return windows
 
 
+# 主窗口最小可接受尺寸门槛。用于过滤 276x45 这类残留/后台小窗口，
+# 避免它们在真主窗口最小化（或标题为空无法识别）时被当作主窗口前置。
+MIN_MAIN_WINDOW_WIDTH = 400
+MIN_MAIN_WINDOW_HEIGHT = 300
+
+
 def choose_best_window(windows):
     if not windows:
         return None
 
     def sort_key(window):
-        title = window["title"]
         return (
-            1 if "[64-bit]" in title else 0,
-            1 if "[+LIDAR]" in title else 0,
             0 if window["minimized"] else 1,
             window["width"] * window["height"],
         )
 
-    return max(windows, key=sort_key)
+    # 存在足够大的窗口时，只在这些达标窗口中择优，排除 276x45 这类小窗口；
+    # 全部窗口都偏小时回退取面积最大的，保证有候选可用。
+    substantial = [
+        w for w in windows
+        if w["width"] >= MIN_MAIN_WINDOW_WIDTH
+        and w["height"] >= MIN_MAIN_WINDOW_HEIGHT
+    ]
+    pool = substantial or windows
+    return max(pool, key=sort_key)
 
 
 def _restore_if_minimized(hwnd):
@@ -219,21 +298,35 @@ def activate_and_maximize_main_window(main_window_title_re, timeout_seconds=60, 
 def ensure_main_window_foreground(main_window_title_re, timeout_seconds=15, class_name_keywords=()):
     """运行前窗口健康检查 + 置顶（bring to front）。
 
-    找到目标主窗口后：若最小化则恢复（SW_RESTORE，保留原窗口布局），
-    再置顶（SetForegroundWindow + BringWindowToTop）。
+    找到达标（达到 MIN_MAIN_WINDOW_* 门槛）的目标主窗口后：若最小化则恢复
+    （SW_RESTORE，保留原窗口布局），再置顶（SetForegroundWindow + BringWindowToTop）。
     不强制最大化、不改变窗口尺寸/位置，避免引入相对区域定位偏移。
-    找不到则持续重试直到超时并抛异常（供调用方决定是否中止启动）。
+
+    找不到窗口，或轮询超时后仍只有尺寸偏小的候选（如 276x45 的未就绪窗口，
+    不可能是正确主窗口）时抛异常——由调用方决定中止启动，绝不把偏小窗口
+    当作主窗口置顶后继续（避免第一步在错窗口上假成功、后续全部空转）。
 
     返回窗口信息 dict：
     {"hwnd": int, "title": str, "minimized": bool, "width": int, "height": int, "rect": {...} | None}
     """
     deadline = time.time() + timeout_seconds
     last_reason = "尚未开始检测"
+    last_resort = None  # 全部候选都偏小（未达门槛）时的兜底窗口
     while time.time() < deadline:
         windows = find_main_windows(main_window_title_re, class_name_keywords=class_name_keywords)
         best = choose_best_window(windows)
         if best is None:
             last_reason = "未找到匹配标题的目标软件主窗口"
+            time.sleep(0.5)
+            continue
+        # 只有偏小的候选（如 276x45 残留窗口）时不急于置顶：继续轮询等待
+        # 更大的主窗口出现，避免把错误的小窗口提升到前台并误报健康检查通过。
+        if best["width"] < MIN_MAIN_WINDOW_WIDTH or best["height"] < MIN_MAIN_WINDOW_HEIGHT:
+            last_resort = best
+            last_reason = (
+                f"仅找到尺寸偏小的候选窗口，等待更大的主窗口: "
+                f"hwnd={best['hwnd']} size={best['width']}x{best['height']}"
+            )
             time.sleep(0.5)
             continue
         hwnd = best["hwnd"]
@@ -265,6 +358,14 @@ def ensure_main_window_foreground(main_window_title_re, timeout_seconds=15, clas
             f"title={best['title']} size={best['width']}x{best['height']}"
         )
         return info
+    # 轮询超时后：若仅存在偏小候选（主窗口未就绪），明确中止，
+    # 绝不把 276x45 这类未就绪窗口当作主窗口置顶继续。
+    if last_resort is not None:
+        raise RuntimeError(
+            f"目标软件主窗口未就绪：仅找到尺寸偏小的候选窗口 "
+            f"hwnd={last_resort['hwnd']} size={last_resort['width']}x{last_resort['height']}。"
+            f"请先打开目标软件并等待主窗口加载到正常尺寸后重新运行"
+        )
     raise RuntimeError(f"运行前窗口健康检查失败: {last_reason}")
 
 

@@ -687,5 +687,36 @@ class RawViewWalkBFSTests(unittest.TestCase):
             self.assertIn(field, item, f"BFS 输出缺少字段: {field}")
 
 
+class CleanLabelTextTests(unittest.TestCase):
+    """采集器 label 碎片清洗：单字符残留(如 海拔 采成 '在')不得进入 labelText/relatedLabelName。"""
+
+    def test_single_char_punctuation_dropped(self):
+        # 仅纯标点视为碎片丢弃；单字 CJK/数字标签(如 海拔框紧邻的 '在')是合法标签，必须保留
+        self.assertEqual(bcm._clean_label_text("。"), "")
+        self.assertEqual(bcm._clean_label_text("..."), "")
+        self.assertEqual(bcm._clean_label_text("·"), "")
+
+    def test_single_char_valid_label_kept(self):
+        # 回归：MUP 综合编辑器海拔框(label='在')等单字真实标签不能被误删
+        for label in ("在", "点", "0", "X"):
+            self.assertEqual(bcm._clean_label_text(label), label, f"{label!r} 是合法(单字符)标签，应保留")
+
+    def test_short_valid_labels_kept(self):
+        for label in ("海拔", "风速", "风向", "版本"):
+            self.assertEqual(bcm._clean_label_text(label), label)
+
+    def test_multi_char_labels_kept(self):
+        self.assertEqual(bcm._clean_label_text("空气密度"), "空气密度")
+        self.assertEqual(bcm._clean_label_text("Wohler 指数"), "Wohler 指数")
+
+    def test_garbage_and_empty_dropped(self):
+        self.assertEqual(bcm._clean_label_text(""), "")
+        self.assertEqual(bcm._clean_label_text("M21032,987C21025,985,2"), "")
+        self.assertEqual(bcm._clean_label_text("..."), "")
+
+    def test_drops_surrounded_whitespace(self):
+        self.assertEqual(bcm._clean_label_text("  海拔  "), "海拔")
+
+
 if __name__ == "__main__":
     unittest.main()

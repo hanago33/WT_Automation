@@ -25,6 +25,7 @@ _LOG_STEP = lambda message: None
 _CLICK_FLOW_CONTROL = lambda *args, **kwargs: False
 _CLICK_RELATIVE_REGION = lambda *args, **kwargs: (False, {})
 _CLICK_RELATIVE_ANCHOR = lambda *args, **kwargs: (False, {})
+_CHECK_ALL_TOGGLES = lambda *args, **kwargs: False
 _FOCUS_FLOW_CONTROL = lambda *args, **kwargs: False
 _TYPE_TEXT_INTO_FLOW_CONTROL = lambda *args, **kwargs: False
 _TYPE_TEXT_INTO_RELATIVE_REGION = lambda *args, **kwargs: (False, {})
@@ -148,6 +149,7 @@ def configure_flow_executor(
     click_flow_control=None,
     click_relative_region=None,
     click_relative_anchor=None,
+    check_all_toggles=None,
     focus_flow_control=None,
     type_text_into_flow_control=None,
     type_text_into_relative_region=None,
@@ -166,7 +168,7 @@ def configure_flow_executor(
 ):
     global _GET_STEP_DEFINITION, _GET_FLOW_PACKAGE, _GET_STEP_PARAMS
     global _RESOLVE_DYNAMIC_VALUE, _LOG_STEP, _CLICK_FLOW_CONTROL, _CLICK_RELATIVE_REGION
-    global _CLICK_RELATIVE_ANCHOR
+    global _CLICK_RELATIVE_ANCHOR, _CHECK_ALL_TOGGLES
     global _FOCUS_FLOW_CONTROL, _TYPE_TEXT_INTO_FLOW_CONTROL, _TYPE_TEXT_INTO_RELATIVE_REGION
     global _SELECT_DROPDOWN_ITEM_RUNTIME
     global _DRAG_BETWEEN_FLOW_CONTROLS, _MOUSE_WHEEL_ON_FLOW_CONTROL
@@ -191,6 +193,8 @@ def configure_flow_executor(
         _CLICK_RELATIVE_REGION = click_relative_region
     if callable(click_relative_anchor):
         _CLICK_RELATIVE_ANCHOR = click_relative_anchor
+    if callable(check_all_toggles):
+        _CHECK_ALL_TOGGLES = check_all_toggles
     if callable(focus_flow_control):
         _FOCUS_FLOW_CONTROL = focus_flow_control
     if callable(type_text_into_flow_control):
@@ -240,6 +244,96 @@ def _maybe_run_ai_intervention_after_failure(step_id, context, original_error, f
     return {}
 
 
+def _is_internal_content_host_control(control_id, step_definition=None):
+    """判断控件是否为 WPF 内部内容宿主（PART_ContentHost）。
+
+    PART_ContentHost 是 TextBox 的内部编辑宿主（Pane/ScrollViewer），自身无
+    ValuePattern，父链也常读不到 TextBox 值，无法用值断言校验。通过控件 id、
+    targetValue 或 inspectData.automationId 中的 "PART_ContentHost" 识别。
+    """
+    if "PART_ContentHost" in str(control_id or ""):
+        return True
+    if not isinstance(step_definition, dict):
+        return False
+    action_config = step_definition.get("actionConfig", {})
+    if isinstance(action_config, dict):
+        if "PART_ContentHost" in str(action_config.get("controlId", "")):
+            return True
+    for control in step_definition.get("controls", []) or []:
+        if not isinstance(control, dict):
+            continue
+        if str(control.get("id", "")).strip() == str(control_id or "").strip():
+            if "PART_ContentHost" in str(control.get("targetValue", "")):
+                return True
+            inspect_data = control.get("inspectData", {})
+            if isinstance(inspect_data, dict) and "PART_ContentHost" in str(inspect_data.get("automationId", "")):
+                return True
+    return False
+
+
+def _normalize_locator_text(text):
+    """定位文本归一化：小写 + 折叠空白，用于标记匹配（与 locator 的 normalize 对齐）。"""
+    try:
+        return " ".join(str(text or "").strip().lower().split())
+    except Exception:
+        return ""
+
+
+def _is_unreadable_value_control(control_id, step_definition=None):
+    """判断控件是否无法用 ValuePattern 可靠读取值，从而跳过自动值断言。
+
+    自动 value_equals 断言的目的是"输入/选择动作生效后校验值"，但以下控件
+    即使动作成功也读不到输入结果，断言必然假失败（拖慢流程、误报 failed）：
+      - PART_DropDownButton：下拉框的展开按钮，无 ValuePattern
+      - Text/TextBlock/全文检索：标签文本，读到的不是输入框的值
+      - 无 label_text 消歧的 textbox：目标可能是多个同名输入框之一，读到的
+        可能是错误控件或离屏控件
+    """
+    if not control_id:
+        return False
+    target_value = ""
+    try:
+        controls = step_definition.get("controls", []) if isinstance(step_definition, dict) else []
+        for control in controls:
+            if str(control.get("id", "")).strip() == control_id:
+                target_value = " ".join([
+                    str(control.get("targetValue", "") or ""),
+                    str(control.get("targetMethod", "") or ""),
+                ])
+                inspect_data = control.get("inspectData", {})
+                if isinstance(inspect_data, dict):
+                    target_value += " " + " ".join([
+                        str(inspect_data.get("automationId", "") or ""),
+                        str(inspect_data.get("controlType", "") or ""),
+                        str(inspect_data.get("className", "") or ""),
+                    ])
+                break
+    except Exception:
+        return False
+    normalized = _normalize_locator_text(target_value)
+    if not normalized:
+        return False
+    # 下拉展开按钮 / 文本标签 / 内部宿主：均读不到输入值
+    # 注意：normalized 已全部小写化（见 _normalize_locator_text），markers 必须用小写
+    # 匹配，否则豁免永远不生效 → 对 Text/下拉按钮等误加 value_equals 断言而假失败。
+    unreadable_markers = [
+        "part_dropdownbutton",
+        "part_contenthost",
+        "textblock",
+        ",text,",
+        "control_type,text",
+        "controltype.text",
+        "text,",
+    ]
+    for marker in unreadable_markers:
+        if marker in normalized:
+            return True
+    # textbox 无 label_text 消歧：目标可能是多个同名输入框之一
+    if "textbox" in normalized and "label" not in normalized and "label_text" not in normalized:
+        return True
+    return False
+
+
 def _resolve_continue_when(action_config, step_definition=None):
     continue_when = action_config.get("continueWhen", {})
     value_assert_action = _is_value_assert_action(action_config)
@@ -252,6 +346,17 @@ def _resolve_continue_when(action_config, step_definition=None):
             str(action_config.get("controlRef", "")).strip(),
         ]).strip()
         if not control_id:
+            return None
+        # 自动值断言（autoAssert）仅对"能可靠读取值"的控件启用：
+        #  - PART_ContentHost（WPF TextBox 内部宿主，无 ValuePattern）
+        #  - PART_DropDownButton（下拉展开按钮，无 ValuePattern）
+        #  - Text/TextBlock 标签（全文检索等 label，读到的不是输入值）
+        #  - 无 label_text 消歧的裸 textbox（可能命中多个/离屏）
+        # 这些控件读不到输入结果，value_equals 断言必然"假失败"，即使键入已成功。
+        # 键入动作成功（type_text_into_wrapper 返回 True）即视为通过。
+        if _is_internal_content_host_control(control_id, step_definition):
+            return None
+        if _is_unreadable_value_control(control_id, step_definition):
             return None
         expected = _resolve_expected_value(action_config)
         default_timeout = sleep_seconds(action_config.get("timeoutSeconds", 3), 3)
@@ -363,6 +468,263 @@ def _snapshot_control_value(step_definition, control_id, window_title_hint=""):
         return dict(snap or {})
     except Exception as exc:
         return {"snapshotError": str(exc)}
+
+
+def _eval_precondition_skip(step_id, action_config, step_definition):
+    """按 actionConfig.precondition 判断是否应跳过动作（控件已处于目标切换态）。
+
+    仅当步骤显式配置 precondition 且 condition 为 toggle/checked 时生效；未配置的
+    旧步骤完全不受影响。仅对实现 TogglePattern 的控件有效——非切换控件读不到
+    toggleState，视为不满足条件、照常执行动作（旧行为不变）。
+
+    语义：precondition.expected 描述"执行动作前控件应处的切换态"。当前态 == expected
+    才需要执行动作（例如 uncheck 步骤 expected="on"：仅在已勾选时点击取消；check 步骤
+    expected="off"：仅在未勾选时点击勾选）。当前态 != expected（已处于相反/无关态）则
+    跳过，等价于"check only if unchecked / uncheck only if checked"。
+    """
+    pre = action_config.get("precondition") if isinstance(action_config, dict) else None
+    if not isinstance(pre, dict):
+        return None
+    cond = str(pre.get("condition", "")).strip().lower()
+    # 前置等待：轮询引用控件直到可见/存在（最长 timeoutSeconds），用于吸收界面
+    # 刷新延迟（如切换分区后列表项尚未渲染）。超时一律不跳过、照常执行动作让
+    # 其自然失败——只做"等"，不做"跳"，不影响旧语义。
+    if cond in {"wait_visible", "wait_exists", "wait_present"}:
+        control_id = str(
+            pre.get("controlId", "") or action_config.get("controlId", "") or action_config.get("controlRef", "")
+        ).strip()
+        if not control_id:
+            return None
+        window_title_hint = str(pre.get("windowTitleHint", "") or action_config.get("windowTitleHint", "")).strip()
+        timeout = float(str(pre.get("timeoutSeconds", "10")).strip() or "10")
+        step_def = step_definition if isinstance(step_definition, dict) else {}
+        step_arg = str(step_def.get("id", "")).strip() or str(step_id)
+        deadline = time.time() + max(0.2, timeout)
+        found = False
+        while time.time() < deadline:
+            try:
+                candidate = _call_with_control_map_path(
+                    _LOCATE_FLOW_CONTROL, step_def, step_arg,
+                    control_id=control_id,
+                    timeout_seconds=min(0.8, max(0.2, deadline - time.time())),
+                    window_title_hint=window_title_hint,
+                )
+            except Exception:
+                candidate = None
+            if candidate is not None:
+                if cond == "wait_visible":
+                    try:
+                        from wt_flow_locator import get_wrapper_is_offscreen
+                        off = str(get_wrapper_is_offscreen(candidate)).strip().lower()
+                        if off in {"false", "0", ""}:
+                            found = True
+                            break
+                    except Exception:
+                        found = True
+                        break
+                else:
+                    found = True
+                    break
+            time.sleep(0.4)
+        if callable(_LOG_STEP):
+            _LOG_STEP(
+                "前置[wait_visible] step=%s: 引用控件 %s %s (timeout=%.1fs)"
+                % (step_arg, control_id, "已就绪" if found else "等待超时，继续执行", timeout)
+            )
+        if not found:
+            # 诊断：wait_visible 超时通常是"目标项根本没出现在 UIA 树里"。
+            # 若前台窗口存在 WRA 结果列表（automationId=WRAResults_ListBox_WRAResults），
+            # 用原生 FindAll 毫秒级取出其直接子项结构与名称倾倒到日志，
+            # 区分"列表为空 / 项未暴露 / 名称结构不同"三种情况。
+            # 注意：任何真实 UIA 遍历都必须停在 GC 禁用区间内，否则 comtypes 对象
+            # 在 __del__/Release 时可能触发 0xc0000374 堆损坏（见 find_flow_control 说明）。
+            _gc_was_enabled = False
+            try:
+                import gc as _gc
+                _gc_was_enabled = _gc.isenabled()
+                if _gc_was_enabled:
+                    _gc.disable()
+                from wt_flow_locator import (
+                    _try_get_window_by_handle,
+                    get_foreground_window_handle,
+                    _iter_uia_findall_by_automation_id,
+                    get_wrapper_text,
+                    get_wrapper_control_type,
+                    get_wrapper_class_name,
+                    get_wrapper_automation_id,
+                )
+                fg_window = _try_get_window_by_handle(get_foreground_window_handle())
+                if fg_window is not None:
+                    list_hits = list(
+                        _iter_uia_findall_by_automation_id(fg_window, "WRAResults_ListBox_WRAResults")
+                    )
+                    if list_hits:
+                        list_wrapper = list_hits[0]
+                        tile_lines = []
+                        try:
+                            children = list(list_wrapper.children())
+                        except Exception:
+                            children = []
+                        for tile in children[:8]:
+                            tile_lines.append(
+                                "name={}, type={}, class={}, aid={}".format(
+                                    repr(get_wrapper_text(tile) or ""),
+                                    get_wrapper_control_type(tile),
+                                    get_wrapper_class_name(tile),
+                                    get_wrapper_automation_id(tile),
+                                )
+                            )
+                            try:
+                                for sub in list(tile.children())[:4]:
+                                    tile_lines.append(
+                                        "  子: name={}, type={}, aid={}".format(
+                                            repr(get_wrapper_text(sub) or ""),
+                                            get_wrapper_control_type(sub),
+                                            get_wrapper_automation_id(sub),
+                                        )
+                                    )
+                            except Exception:
+                                pass
+                        _LOG_STEP(
+                            "前置[wait_visible] 诊断: 找到结果列表, 子项=%d -> %s"
+                            % (len(children), " | ".join(tile_lines[:28])[:1400])
+                        )
+                        # 显式释放 UIA wrapper 引用，避免跨调用延迟回收
+                        del list_hits, list_wrapper, children, tile_lines, tile, sub
+                    else:
+                        _LOG_STEP("前置[wait_visible] 诊断: 前台窗口未找到 WRAResults 结果列表")
+                        del list_hits
+            except Exception as _diag_exc:
+                if callable(_LOG_STEP):
+                    _LOG_STEP("前置[wait_visible] 诊断失败(忽略): %s" % (_diag_exc,))
+            finally:
+                if _gc_was_enabled:
+                    _gc.enable()
+        return None
+    # 可见性前置条件：用于"仅支持 Invoke、不暴露 ToggleState"的分区瓦片
+    # (如 MTDTileView_Button_ToggleState)。通过引用控件的屏幕可见性(IsOffscreen)
+    # 判断分区是否已展开/激活：
+    #   expected="off" → 仅当引用控件不可见(折叠/未激活)时执行动作(点击以展开/激活)，可见则跳过；
+    #   expected="on"  → 仅当引用控件可见时执行动作，不可见则跳过。
+    # 控件定位失败一律视为不可见 → 执行动作(点击以激活)，保证不漏操作。
+    if cond in {"visible", "invisible", "offscreen", "is_visible"}:
+        expected = str(pre.get("expected", "")).strip().lower()
+        if expected not in {"on", "off", "1", "0"}:
+            expected = "off"  # 默认：仅在不可见时执行(点击激活/展开)
+        control_id = str(
+            pre.get("controlId", "") or action_config.get("controlId", "") or action_config.get("controlRef", "")
+        ).strip()
+        if not control_id:
+            controls = step_definition.get("controls", []) if isinstance(step_definition, dict) else []
+            for c in controls:
+                if isinstance(c, dict) and str(c.get("id", "")).strip():
+                    control_id = str(c.get("id", "")).strip()
+                    break
+        if not control_id:
+            return None
+        window_title_hint = str(pre.get("windowTitleHint", "") or action_config.get("windowTitleHint", "")).strip()
+        timeout = float(str(pre.get("timeoutSeconds", "1.5")).strip() or "1.5")
+        step_def = step_definition if isinstance(step_definition, dict) else {}
+        step_arg = str(step_def.get("id", "")).strip() or str(step_id)
+        try:
+            control = _call_with_control_map_path(
+                _LOCATE_FLOW_CONTROL, step_def, step_arg,
+                control_id=control_id,
+                timeout_seconds=min(1.0, timeout),
+                window_title_hint=window_title_hint,
+            )
+        except Exception:
+            control = None
+        if control is None:
+            visible_now = False  # 定位不到 → 视为不可见 → 执行动作
+            if callable(_LOG_STEP):
+                _LOG_STEP("前置[visible] step=%s: 引用控件 %s 未定位(分区折叠/未激活) → 执行动作(点击展开)" % (step_arg, control_id))
+        else:
+            try:
+                from wt_flow_locator import get_wrapper_is_offscreen
+                off = str(get_wrapper_is_offscreen(control)).strip().lower()
+                visible_now = off in {"false", "0", ""}
+            except Exception:
+                visible_now = True  # 读取异常→保守按可见(跳过)，避免误折叠
+        if expected in {"off", "0"}:
+            if visible_now:
+                return "precondition 未满足(目标可见态=off)：引用控件已可见(分区已激活)，跳过执行"
+            if control is not None and callable(_LOG_STEP):
+                _LOG_STEP("前置[visible] step=%s: 引用控件 %s 不可见(分区折叠) → 执行点击以展开/激活" % (step_arg, control_id))
+            return None  # 不可见 → 执行点击以激活/展开
+        else:
+            if not visible_now:
+                return "precondition 未满足(目标可见态=on)：引用控件不可见，跳过执行"
+            return None
+    if cond not in {"toggle", "checked", "toggle_state"}:
+        return None
+    expected = str(pre.get("expected", "")).strip().lower()
+    if expected not in {"on", "off", "1", "0", "indeterminate", "2"}:
+        return None
+    # 解析目标控件：优先 precondition.controlId，其次动作控件，再次步骤首个控件。
+    control_id = str(
+        pre.get("controlId", "") or action_config.get("controlId", "") or action_config.get("controlRef", "")
+    ).strip()
+    if not control_id:
+        controls = step_definition.get("controls", []) if isinstance(step_definition, dict) else []
+        for c in controls:
+            if isinstance(c, dict) and str(c.get("id", "")).strip():
+                control_id = str(c.get("id", "")).strip()
+                break
+    if not control_id:
+        return None
+    window_title_hint = str(pre.get("windowTitleHint", "") or action_config.get("windowTitleHint", "")).strip()
+    timeout = float(str(pre.get("timeoutSeconds", "1.5")).strip() or "1.5")
+    step_def = step_definition if isinstance(step_definition, dict) else {}
+    step_arg = str(step_def.get("id", "")).strip() or str(step_id)
+    # 1) 控件必须存在；不存在则不跳过（保留旧行为，让动作自然失败/报错）。
+    try:
+        control = _call_with_control_map_path(
+            _LOCATE_FLOW_CONTROL, step_def, step_arg,
+            control_id=control_id,
+            timeout_seconds=min(1.0, timeout),
+            window_title_hint=window_title_hint,
+        )
+    except Exception:
+        control = None
+    if control is None:
+        return None
+    # [fix] 失焦时 WPF 分区瓦片的 CurrentToggleState 可能读到陈旧值(折叠却读成展开)，
+    # 读取前先激活所属主窗口，强制 UIA 缓存刷新后再读，规避误 skip。
+    try:
+        _w = getattr(control, "window", None)
+        if callable(_w):
+            _win = _w()
+            if _win is not None:
+                _win.set_focus()
+    except Exception:
+        pass
+    # 2) 直接读取切换态原始值，区分"确定态"与"不可读"。
+    try:
+        from wt_flow_locator import get_wrapper_toggle_state
+        raw_state = str(get_wrapper_toggle_state(control) or "")
+    except Exception:
+        raw_state = ""
+    if callable(_LOG_STEP):
+        _LOG_STEP("前置[toggle] step=%s: 控件 %s ToggleState=%s (expected=%s)" % (step_id, control_id, raw_state, expected))
+    on_set = {"1", "on"}
+    off_set = {"0", "off"}
+    ind_set = {"2", "indeterminate"}
+    exp_norm = expected  # expected 已归一为 on/off/indeterminate
+    if raw_state not in on_set | off_set | ind_set:
+        # 状态不可读：按确定性默认态执行动作（click），避免漏勾选/漏取消。
+        # 默认态下 check 步骤(期望 off)点击=勾选、uncheck 步骤(期望 on)点击=取消，
+        # 均得到正确结果；若后续能确保控件可读（如先展开所在面板），则走下方精确判定。
+        _LOG_STEP(
+            f"前置条件状态不可读，按默认态执行动作: step={step_id}, control={control_id}, expected={expected}"
+        )
+        return None
+    # 3) 状态可读：仅在当前态 == expected（动作执行前应有的态）时执行动作；否则跳过。
+    if (raw_state in on_set and exp_norm in on_set) \
+            or (raw_state in off_set and exp_norm in off_set) \
+            or (raw_state in ind_set and exp_norm in ind_set):
+        return None  # 当前已是 expected 态，需执行动作
+    return "precondition 未满足(目标切换态={})，控件已处于相反/无关状态，跳过执行".format(expected)
 
 
 def _write_failed_continue_when_evidence(step_id, continue_when, step_definition=None):
@@ -886,6 +1248,7 @@ def run_action_step(step_id, context):
         except Exception:
             raise ValueError(f"action click_relative_anchor 的 offsetX/offsetY 必须为数字: {step_id}")
         click_kind = "double" if str(action_config.get("clickKind", "")).strip().lower() == "double" else "single"
+        anchor_align = str(action_config.get("anchorAlign", "")).strip() or "center"
         ok, anchor_meta = _call_with_control_map_path(
             _CLICK_RELATIVE_ANCHOR, step_definition,
             step_id,
@@ -894,6 +1257,7 @@ def run_action_step(step_id, context):
             timeout_seconds=timeout_seconds,
             window_title_hint=window_title_hint,
             click_kind=click_kind,
+            anchor_align=anchor_align,
         )
         if not ok:
             raise RuntimeError(f"action click_relative_anchor 未命中锚点控件: {step_id}")
@@ -913,7 +1277,8 @@ def run_action_step(step_id, context):
             raise RuntimeError(f"action type_text 未命中控件: step={step_id}, control={control_id}")
         result = text
     elif action_name == "send_keys":
-        if control_id:
+        focus_first = str(action_config.get("focusFirst", "")).strip().lower()
+        if focus_first not in {"false", "0", "no"} and control_id:
             if not _call_with_control_map_path(
                 _FOCUS_FLOW_CONTROL, step_definition,
                 step_id,
@@ -1050,6 +1415,27 @@ def run_action_step(step_id, context):
         message = str(action_config.get("message", text)).strip()
         _LOG_STEP(message or f"action log: {step_id}")
         result = message
+    elif action_name == "check_all_toggles":
+        if not control_id:
+            raise ValueError(f"action check_all_toggles 缺少 controlId: {step_id}")
+        summary = _call_with_control_map_path(
+            _CHECK_ALL_TOGGLES,
+            step_definition,
+            step_id,
+            control_id,
+            timeout_seconds=timeout_seconds,
+            window_title_hint=window_title_hint,
+        )
+        if not summary:
+            raise RuntimeError(
+                f"action check_all_toggles 未命中: step={step_id}, control={control_id}"
+            )
+        _LOG_STEP(
+            "已执行 check_all_toggles: step={step}, control={control}, result={result}".format(
+                step=step_id, control=control_id, result=summary
+            )
+        )
+        result = summary
     else:
         raise ValueError(f"不支持的 action 类型: {action_name or '(empty)'}")
 
@@ -1417,6 +1803,14 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
             if not isinstance(action_config, dict):
                 action_config = {}
             action_config = _resolve_step_policy(action_config)  # stepPolicy → 旧字段归一化（返回新 dict，不写穿缓存）
+            # 前置条件跳过：仅对显式配置 precondition 的步骤生效（如按需 check/uncheck
+            # 勾选框），未配置的步骤完全不受影响；仅对实现 TogglePattern 的控件有效。
+            _pre_skip = _eval_precondition_skip(step_id, action_config, step_definition)
+            if _pre_skip:
+                _LOG_STEP(f"前置条件满足，跳过动作执行: step={step_id}, reason={_pre_skip}")
+                step_status = "skipped"
+                step_error = _pre_skip
+                return
             on_error = str(action_config.get("onError", "")).strip().lower() or "stop"
             fallback_template = str(action_config.get("fallbackTemplate", "")).strip()
             if not fallback_template:

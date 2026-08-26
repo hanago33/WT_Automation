@@ -1993,21 +1993,25 @@ class SemiAutoInspectCollectorDialog:
         self.status_var.set("已停止监听剪贴板。")
 
     def _find_target_window(self, keyword, backend):
-        from pywinauto import Desktop
+        """按标题关键字找顶层窗口（win32-first：枚举不触碰 UIA，命中后按句柄连接）。"""
+        import wt_flow_locator as flow_locator
 
         keyword = str(keyword or "").strip()
-        desktop = Desktop(backend=backend)
-        windows = []
-        for window in desktop.windows():
-            title = _safe_get_value(lambda: window.window_text(), "")
-            if not title:
-                continue
-            if keyword.lower() in title.lower():
-                windows.append(window)
+        windows = [
+            info for info in flow_locator.iter_visible_top_level_windows()
+            if (info.get("title") or "").strip()
+            and keyword.lower() in (info.get("title") or "").lower()
+        ]
         if not windows:
             raise RuntimeError(f"未找到匹配窗口关键字的顶层窗口：{keyword}")
-        windows.sort(key=lambda item: len(_safe_get_value(lambda: item.window_text(), "")))
-        return windows[0]
+        windows.sort(key=lambda item: len(item.get("title") or ""))
+        # 只连接命中的单个窗口，避免 Desktop(backend="uia").windows() 全桌面枚举的原生崩溃面
+        from pywinauto.application import Application
+        target_handle = windows[0]["hwnd"]
+        try:
+            return Application(backend=backend).connect(handle=target_handle).window(handle=target_handle)
+        except Exception:
+            return Application(backend="uia").connect(handle=target_handle).window(handle=target_handle)
 
     @staticmethod
     def _point_in_rect(rect, x, y):
@@ -2763,16 +2767,14 @@ class ControlLocatorTesterDialog:
             return
 
         try:
-            desktop = self.Desktop(backend="uia")
+            # win32-first：纯 Win32 枚举可见顶层窗口（不触碰 UIA 全桌面树，
+            # 避开 Desktop(backend="uia").windows() 的原生崩溃面）
+            import wt_flow_locator as flow_locator
             windows = []
-            for w in desktop.windows():
-                try:
-                    title = w.window_text()
-                    if title:
-                        class_name = w.class_name()
-                        windows.append((title, class_name))
-                except Exception:
-                    pass
+            for info in flow_locator.iter_visible_top_level_windows():
+                title = (info.get("title") or "").strip()
+                if title:
+                    windows.append((title, info.get("className") or ""))
             windows.sort(key=lambda x: x[0].lower())
             for title, class_name in windows:
                 self.window_listbox.insert(tk.END, f"{title} [{class_name}]")
@@ -2815,12 +2817,14 @@ class ControlLocatorTesterDialog:
             return
 
         try:
-            desktop = self.Desktop(backend="uia")
-            all_windows = [w for w in desktop.windows() if _safe_get_value(lambda: w.window_text(), "").strip()]
+            # win32-first：窗口列表纯 Win32 枚举，命中后再按句柄包 UIA，
+            # 避免 Desktop(backend="uia").windows() 全桌面枚举的原生崩溃面
+            import wt_flow_locator as flow_locator
+            all_windows = [w for w in flow_locator.iter_visible_top_level_windows() if (w.get("title") or "").strip()]
             if target_title:
                 matched_windows = [
                     w for w in all_windows
-                    if target_title.lower() in _safe_get_value(lambda: w.window_text(), "").lower()
+                    if target_title.lower() in (w.get("title") or "").lower()
                 ]
             else:
                 matched_windows = all_windows
@@ -2831,7 +2835,11 @@ class ControlLocatorTesterDialog:
                 self.result_text.insert("1.0", message)
                 return
 
-            target_window = matched_windows[0]
+            target_window = flow_locator.wrap_window_by_handle(matched_windows[0].get("hwnd"))
+            if target_window is None:
+                self.result_text.delete("1.0", tk.END)
+                self.result_text.insert("1.0", "目标窗口 UIA 包装失败，请重试或更换目标窗口")
+                return
             locator_value = self.var_locator_value.get().strip()
             locator_method = self.var_locator_method.get().strip()
 
@@ -2949,12 +2957,14 @@ class ControlLocatorTesterDialog:
             return
 
         try:
-            desktop = self.Desktop(backend="uia")
-            all_windows = [w for w in desktop.windows() if _safe_get_value(lambda: w.window_text(), "").strip()]
+            # win32-first：窗口列表纯 Win32 枚举，命中后再按句柄包 UIA，
+            # 避免 Desktop(backend="uia").windows() 全桌面枚举的原生崩溃面
+            import wt_flow_locator as flow_locator
+            all_windows = [w for w in flow_locator.iter_visible_top_level_windows() if (w.get("title") or "").strip()]
             if target_title:
                 matched_windows = [
                     w for w in all_windows
-                    if target_title.lower() in _safe_get_value(lambda: w.window_text(), "").lower()
+                    if target_title.lower() in (w.get("title") or "").lower()
                 ]
             else:
                 matched_windows = all_windows
@@ -2965,7 +2975,11 @@ class ControlLocatorTesterDialog:
                 self.result_text.insert("1.0", message)
                 return
 
-            target_window = matched_windows[0]
+            target_window = flow_locator.wrap_window_by_handle(matched_windows[0].get("hwnd"))
+            if target_window is None:
+                self.result_text.delete("1.0", tk.END)
+                self.result_text.insert("1.0", "目标窗口 UIA 包装失败，请重试或更换目标窗口")
+                return
 
             # 构建搜索属性
             search_props = {}
@@ -4737,175 +4751,187 @@ class ControlMapImportDialog:
             self.var_locator_result.set("⚠ 该控件没有可用于定位的属性")
             return
 
-        self.var_locator_result.set("⏳ 正在检验定位（后台执行中）...")
+        self.var_locator_result.set("⏳ 正在检验定位（独立进程执行中）...")
 
-        import threading
-        t = threading.Thread(
-            target=self._run_locator_test_background,
-            args=(control_definition,),
-            daemon=True,
-        )
-        t.start()
+        # 复用采集器同款 control_locator_probe.py 子进程隔离：
+        # UIA 遍历在隔离子进程内执行，遇到失效 COM 指针触发原生堆损坏时
+        # 只终止探针子进程，编辑器主窗口不受影响（之前在进程内线程跑会
+        # 0xc0000374 崩溃、直接关掉整个编辑器）。
+        self._launch_locator_probe(control_definition)
 
-    def _run_locator_test_background(self, control_definition):
-        """后台线程执行定位检验（匹配逻辑与控件库采集器/流程执行器同源）。
+    _PROBE_WAIT_SECONDS = 90.0
 
-        分三阶段降级：快速候选 → RawView → 全量遍历。全量遍历最慢（大 WPF 窗口
-        可达数十秒），且 pywinauto 调用无法从外部中断，故用「阶段进度提示 +
-        总超时提醒」避免用户对着"运行中"干等；超时只提示、不中断遍历。
+    def _launch_locator_probe(self, control):
+        """在子进程中执行定位搜索（control_locator_probe.py）。
+
+        探针把 UIA 遍历放到独立 subprocess：原生崩溃（STATUS_HEAP_CORRUPTION /
+        0xc0000374，pywinauto 的 try/except 拦不住）只终止探针子进程，
+        编辑器主窗口不受影响；主进程通过结果文件判断成功/失败/崩溃。
         """
-        import pythoncom
-        pythoncom.CoInitialize()
-        started_at = time.monotonic()
-        # 总超时提醒阈值：超过后提示"目标控件很可能不可见"，防止长时间无反馈
-        timeout_warn_seconds = 30
-        timer = None
-        _warned_timeout = {"done": False}
-
-        def _set_result(text):
-            try:
-                self.window.after(0, lambda: self.var_locator_result.set(text))
-            except Exception:
-                pass
-
-        def _arm_timeout_warning():
-            nonlocal timer
-            if timer is not None:
-                return
-            timer = threading.Timer(timeout_warn_seconds, _timeout_warning)
-            timer.daemon = True
-            timer.start()
-
-        def _timeout_warning():
-            if _warned_timeout["done"]:
-                return
-            _warned_timeout["done"] = True
-            elapsed = time.monotonic() - started_at
-            _set_result(
-                f"⚠ 已检验 {elapsed:.0f}s 仍未命中：目标控件很可能不在当前界面可见。"
-                "请确认已打开对应页面/弹窗后重试；也可用『控件定位检验器』单独验证定位参数。"
-            )
-
-        def _disarm_timeout_warning():
-            nonlocal timer
-            if timer is not None:
-                try:
-                    timer.cancel()
-                except Exception:
-                    pass
-                timer = None
+        import subprocess as _subprocess
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        probe_script = os.path.join(base_dir, "control_locator_probe.py")
+        if not os.path.isfile(probe_script):
+            self.var_locator_result.set("⚠ 检验定位：探针脚本缺失：" + probe_script)
+            return
+        tmp_dir = os.path.join(base_dir, "logs", "probe")
+        try:
+            os.makedirs(tmp_dir, exist_ok=True)
+        except Exception:
+            tmp_dir = base_dir
+        stamp = time.strftime("%Y%m%d_%H%M%S") + "_" + str(getattr(self, "_probe_counter", 0))
+        self._probe_counter = getattr(self, "_probe_counter", 0) + 1
+        control_path = os.path.join(tmp_dir, "probe_control_{}.json".format(stamp))
+        output_path = os.path.join(tmp_dir, "probe_result_{}.json".format(stamp))
 
         try:
-            import wt_flow_locator as flow_locator
-
-            windows = list(flow_locator.iter_flow_search_windows(
-                {},
-                window_title_hint=str(control_definition.get("windowTitle", "")).strip(),
-                control_definition=control_definition,
-            ))
-            if not windows:
-                title = control_definition.get("windowTitle") or "当前应用窗口"
-                _set_result(f"⚠ 未找到目标窗口：{title}")
-                return
-
-            matched = []
-            seen = set()
-
-            def _match_candidates(candidate_iter, _window):
-                for candidate in candidate_iter:
-                    handle = flow_locator.get_wrapper_handle(candidate) or id(candidate)
-                    if handle in seen:
-                        continue
-                    seen.add(handle)
-                    score = flow_locator.score_control_match(candidate, control_definition)
-                    if score >= 0:
-                        matched.append((score, candidate, _window))
-
-            # 阶段1：UIA 引擎侧条件过滤的快速候选（毫秒级）
-            for window in windows:
-                _match_candidates(flow_locator.iter_fast_locator_candidates(window, control_definition), window)
-
-            # 阶段2：RawView 兜底（IsControlElement=False 的孤儿控件，与执行器 find_flow_control 一致）
-            if not matched and flow_locator.control_definition_expects_raw_view(control_definition):
-                _set_result("⏳ 快速定位未命中，正在 Raw View 兜底扫描...")
-                for window in windows:
-                    _match_candidates(flow_locator.iter_raw_view_fallback_candidates(window, control_definition), window)
-
-            # 阶段3：descendants 全量遍历兜底（最慢，大 WPF 窗口可达数十秒）
-            if not matched:
-                _set_result(
-                    "⏳ 快速定位未命中，正在全量遍历 UIA 树（可能需数十秒；"
-                    "若目标控件不在当前界面可见将无法命中）..."
-                )
-                _arm_timeout_warning()
-                expected_type = str(
-                    control_definition.get("controlType", "")
-                    or control_definition.get("inspectData", {}).get("controlType", "")
-                ).strip()
-                for window in windows:
-                    descendants = []
-                    if expected_type:
-                        try:
-                            descendants = window.descendants(control_type=expected_type)
-                        except Exception:
-                            descendants = []
-                    if not descendants:
-                        try:
-                            descendants = window.descendants()
-                        except Exception:
-                            descendants = []
-                    _match_candidates(descendants, window)
-
-            if not matched:
-                _disarm_timeout_warning()
-                _set_result(
-                    f"⚠ 未找到匹配控件（{control_definition.get('targetMethod', '')}={control_definition.get('targetValue', '')}）"
-                )
-                return
-
-            _disarm_timeout_warning()
-            matched.sort(key=lambda item: item[0], reverse=True)
-            best_score, found, target_window = matched[0]
-            rect = None
-            center_x = center_y = 0
-            try:
-                rect = found.rectangle()
-                center_x = (rect.left + rect.right) // 2
-                center_y = (rect.top + rect.bottom) // 2
-            except Exception:
-                pass
-
-            snapshot = {}
-            try:
-                snapshot = flow_locator.get_wrapper_debug_snapshot(found)
-            except Exception:
-                pass
-            exact_matches = len(matched)
-
-            elapsed = time.monotonic() - started_at
-            status_text = " ".join([
-                f"✓ 定位成功 (评分:{best_score}, 耗时:{elapsed:.1f}s)",
-                f"名称:{snapshot.get('name', '') or '(无)'}",
-                f"类型:{snapshot.get('controlType', '') or snapshot.get('className', '') or '(未知)'}",
-                f"AID:{snapshot.get('automationId', '') or '(无)'}",
-                f"位置:({center_x},{center_y})",
-                f"{'(多匹配)' if exact_matches > 1 else '(唯一)'}",
-            ])
-
-            def _show_result():
-                self.var_locator_result.set(status_text)
-                # 高亮涉及 Tk 覆盖层与 pywinauto 绘制，须回主线程执行
-                if rect is not None and not self._show_locator_highlight(rect):
-                    try:
-                        found.draw_outline(colour="red", thickness=3)
-                    except Exception:
-                        pass
-
-            self.window.after(0, _show_result)
+            with open(control_path, "w", encoding="utf-8") as f:
+                json.dump(control, f, ensure_ascii=False)
         except Exception as exc:
-            _disarm_timeout_warning()
-            _set_result(f"⚠ 检验出错：{exc}")
+            self.var_locator_result.set("⚠ 检验定位：写入控件定义失败：" + str(exc))
+            return
 
+        creationflags = getattr(_subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            proc = _subprocess.Popen(
+                [sys.executable, probe_script, control_path, output_path],
+                cwd=base_dir,
+                stdout=_subprocess.PIPE,
+                stderr=_subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                bufsize=1,
+                creationflags=creationflags,
+            )
+        except Exception as exc:
+            self.var_locator_result.set("⚠ 检验定位：启动探针失败：" + str(exc))
+            return
+
+        self._probe_proc = proc
+        self._probe_output_path = output_path
+        self._probe_start = time.time()
+        self._probe_timed_out = False
+
+        watcher = threading.Thread(target=self._wait_probe_exit, args=(proc, output_path), daemon=True)
+        watcher.start()
+        # 超时兜底：探针挂死（如 UIA 死锁）时强杀，避免进程残留
+        self._probe_timer = self.window.after(int(self._PROBE_WAIT_SECONDS * 1000), self._on_probe_timeout)
+
+    def _wait_probe_exit(self, proc, output_path):
+        start = getattr(self, "_probe_start", time.time())
+        try:
+            returncode = proc.wait()
+        except Exception as exc:
+            self.window.after(0, lambda rc=-1, e=exc: self._handle_probe_result(output_path, rc, start, str(e)))
+            return
+        self.window.after(0, lambda rc=returncode: self._handle_probe_result(output_path, rc, start))
+
+    def _on_probe_timeout(self):
+        self._probe_timed_out = True
+        proc = getattr(self, "_probe_proc", None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            self.var_locator_result.set(
+                "⚠ 检验定位：探针超时（{}s），已终止。".format(int(self._PROBE_WAIT_SECONDS))
+            )
+        self._probe_proc = None
+
+    def _handle_probe_result(self, output_path, returncode, start, extra_error=""):
+        if hasattr(self, "_probe_timer") and self._probe_timer is not None:
+            try:
+                self.window.after_cancel(self._probe_timer)
+            except Exception:
+                pass
+            self._probe_timer = None
+        self._probe_proc = None
+        if getattr(self, "_probe_timed_out", False):
+            # 超时分支已报告状态，这里仅清理临时文件
+            self._cleanup_probe_files(output_path)
+            return
+        elapsed = time.time() - start
+
+        result = None
+        try:
+            if os.path.isfile(output_path):
+                with open(output_path, "r", encoding="utf-8") as f:
+                    result = json.load(f)
+        except Exception:
+            result = None
+
+        if not isinstance(result, dict):
+            if extra_error:
+                self.var_locator_result.set("⚠ 检验定位失败：" + str(extra_error))
+            elif returncode == 0:
+                self.var_locator_result.set("⚠ 检验定位：结果文件不可读（{:.1f}s）".format(elapsed))
+            else:
+                self.var_locator_result.set(
+                    "⚠ 检验定位：定位进程异常退出（code {}, {:.1f}s）——可能因 UIA 原生崩溃，"
+                    "已隔离在子进程，编辑器未受影响。".format(returncode, elapsed)
+                )
+            self._cleanup_probe_files(output_path)
+            return
+
+        status = result.get("status")
+        if status == "found":
+            self._show_probe_found(result, elapsed)
+        else:
+            err = result.get("error") or "未知错误"
+            method = result.get("targetMethod") or "?"
+            value = result.get("targetValue") or "?"
+            self.var_locator_result.set(
+                "⚠ 检验定位：{err}（{method}={value}，耗时 {elapsed:.1f}s）".format(
+                    err=err, method=method, value=value, elapsed=elapsed
+                )
+            )
+        self._cleanup_probe_files(output_path)
+
+    def _cleanup_probe_files(self, output_path):
+        """清理探针临时文件。"""
+        try:
+            if output_path and os.path.isfile(output_path):
+                os.remove(output_path)
+            control_path = output_path.replace("probe_result_", "probe_control_")
+            if control_path != output_path and os.path.isfile(control_path):
+                os.remove(control_path)
+        except Exception:
+            pass
+
+    def _show_probe_found(self, result, elapsed):
+        """在主线程展示命中的高亮框与状态（视觉行为与原先一致，且避开 draw_outline）。"""
+        try:
+            import pyautogui
+        except Exception:
+            pyautogui = None
+        center = result.get("center")
+        rect = result.get("rect")
+        if rect:
+            # 探针输出是 dict，_show_locator_highlight 需要带 .left/.top/.right/.bottom 的对象
+            rect_obj = type("Rect", (), {
+                "left": rect.get("left"),
+                "top": rect.get("top"),
+                "right": rect.get("right"),
+                "bottom": rect.get("bottom"),
+            })()
+            self._show_locator_highlight(rect_obj)
+        if center and pyautogui is not None:
+            try:
+                pyautogui.moveTo(center["x"], center["y"], duration=0.2)
+            except Exception:
+                pass
+        snap = result.get("snapshot") or {}
+        parts = [
+            f"✓ 定位成功 (评分:{result.get('score', 0)}, {elapsed:.1f}s)",
+            f"名称:{snap.get('name', '') or '(无)'}",
+            f"类型:{snap.get('controlType', '') or '(未知)'}",
+            f"AID:{snap.get('automationId', '') or '(无)'}",
+            "位置:({}, {})".format(center["x"], center["y"]) if center else "位置:(?)",
+            "(多匹配)" if result.get("match_count", 0) > 1 else "(唯一)",
+        ]
+        self.var_locator_result.set(" ".join(part for part in parts if part))
 
     def delete_selected_controls(self):
         """从控件库文件中删除选中的控件"""
@@ -10500,3 +10526,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

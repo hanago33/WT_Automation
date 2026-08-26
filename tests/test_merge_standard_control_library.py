@@ -317,5 +317,94 @@ class TestRunMergeEndToEnd(MergeTestBase):
         self.assertIn("issues", report)
 
 
+class TestInterestAreasPerNodeLabel(MergeTestBase):
+    """interest-area 图标按钮（Edit/Delete/Import 等共享 automationId）必须按所在
+    面板节点（TileHeader 兄弟）判别，而非被同父字段标签（"计算尾流效应"/"载入"/
+    "类型"等）污染。采集期 labelText 被污染时，合并端应以 TileHeader 的 name 修复
+    relatedLabelName/labelText，保证"测风点/风机"等节点互不塌缩、互不混淆。
+    """
+
+    def _snapshot(self, suffix="", with_flats=True):
+        # controlDefinitions 与 flatControls 按下标一一对应（与采集端一致）。
+        # TileHeader 与各图标按钮都是独立控件、同父容器（同 parentIndex）。
+        # 此处显式把每条 (def, flat) 并列放置，保证下标对齐。
+        header_rows = [
+            # (parentIndex, node, functionText)
+            (100, "配置", "风场配置"),
+            (200, "测风点", "测风点"),
+            (300, "风机", "风机"),
+        ]
+        button_rows = [
+            # (parentIndex, aid, polluted_label, functionText, node)
+            (100, "InterestAreas_Button_Edit", "配置", "编辑所选中的配置", "配置"),
+            (200, "InterestAreas_Button_Import", "高度 (m)",
+             "从一个文件导入元素（可接受格式：X Y 高度1 高度2...", "测风点"),
+            (200, "InterestAreas_Button_Edit", "计算尾流效应", "编辑选中的元素", "测风点"),
+            (300, "InterestAreas_Button_Import", "全部元素",
+             "从一个文件导入元素（可接受格式：X Y 高度1 高度2...", "风机"),
+            (300, "InterestAreas_Button_Edit", "载入", "编辑选中的元素", "风机"),
+        ]
+
+        defs = []
+        flats = []
+        for pid, node, hfn in header_rows:
+            ins = {"automationId": "InterestAreasView_Tile_Header", "className": "TextBlock",
+                   "controlType": "Text", "frameworkId": "WPF",
+                   "boundingRectangle": "[l=1,t=2,r=3,b=4]", "functionText": hfn}
+            defs.append({
+                "name": node, "controlType": "Text", "windowTitle": "主窗口",
+                "targetMethod": "automation_id,control_type,name,help_text",
+                "targetValue": "InterestAreasView_Tile_Header,Text,%s,%s" % (node, hfn),
+                "labelText": "", "uiPath": "Win > H > %d" % pid, "functionText": hfn,
+                "inspectData": ins,
+            })
+            flats.append({"automationId": "InterestAreasView_Tile_Header", "name": node,
+                          "controlType": "Text", "parentIndex": pid, "functionText": hfn})
+        for pid, aid, plabel, ft, node in button_rows:
+            ins = {"automationId": aid, "className": "Button", "controlType": "Button",
+                   "frameworkId": "WPF", "boundingRectangle": "[l=1,t=2,r=3,b=4]",
+                   "labelText": plabel, "functionText": ft}
+            defs.append({
+                "name": "SVG", "controlType": "Button", "windowTitle": "主窗口",
+                "targetMethod": "automation_id,control_type,label_text,help_text",
+                "targetValue": "%s,Button,%s,%s" % (aid, node, ft),
+                "labelText": plabel, "uiPath": "Win > P > %d" % pid,
+                "functionText": ft, "inspectData": ins,
+            })
+            flats.append({"automationId": aid, "name": "SVG", "controlType": "Button",
+                          "parentIndex": pid, "functionText": ft})
+        _write_snapshot(self.recordings, ("ia_%s_control_map.json" % suffix) if suffix else "ia_control_map.json",
+                        defs, flat_controls=flats if with_flats else None)
+
+    def _merge_ia(self):
+        self._snapshot()
+        return self._merge()
+
+    def test_edit_import_label_repaired_by_tile_header(self):
+        grp = self._merge_ia()
+        edits = [c for c in grp["controls"]
+                 if c.get("automationId") == "InterestAreas_Button_Edit"]
+        imports = [c for c in grp["controls"]
+                   if c.get("automationId") == "InterestAreas_Button_Import"]
+        # Edit：配置/测风点/风机 三节点不塌缩、不混淆，label 修复为节点名
+        self.assertEqual({c.get("relatedLabelName") for c in edits},
+                         {"配置", "测风点", "风机"})
+        self.assertEqual({c.get("labelText") for c in edits},
+                         {"配置", "测风点", "风机"})
+        # Import：测风点/风机 两条，label 修复为节点名（非"高度 (m)"/"全部元素"）
+        self.assertEqual({c.get("relatedLabelName") for c in imports},
+                         {"测风点", "风机"})
+        self.assertEqual({c.get("labelText") for c in imports},
+                         {"测风点", "风机"})
+
+    def test_no_tile_header_falls_back_to_target_value_node(self):
+        self._snapshot(suffix="cd_only", with_flats=False)
+        grp = self._merge()
+        edit = next(c for c in grp["controls"]
+                    if c.get("automationId") == "InterestAreas_Button_Edit"
+                    and c.get("relatedLabelName") == "测风点")
+        self.assertEqual(edit["labelText"], "测风点")
+
+
 if __name__ == "__main__":
     unittest.main()

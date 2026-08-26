@@ -83,6 +83,71 @@ class WindowMinimizeRestoreTests(unittest.TestCase):
         self.assertGreaterEqual(calls["restore"], 1, "最小化窗口必须在就绪判定前被恢复")
 
 
+# ---------------------------------------------------------------------------
+# P1-1b 前置顶窗口识别：UIPI 下按进程名定位 MUP 主窗口
+# ---------------------------------------------------------------------------
+
+class MainWindowProcessMatchTests(unittest.TestCase):
+    """标题/类名被 UIPI 挡空时，find_main_windows 应按进程名识别 MUP 主窗口。
+
+    复现场景：普通权限 WT 前置顶提权运行的 MUP 时，GetWindowTextW/GetClassNameW
+    返回空，原实现会漏掉 MUP 主窗口、把 PowerShell 类后台窗口误当主窗口置顶。
+    进程名（QueryFullProcessImageNameW + PROCESS_QUERY_LIMITED_INFORMATION）
+    跨完整性级别可读，应据此命中真正的 MUPSmartClient 主窗口。
+    """
+
+    def _find(self, process_names, title_text="", class_name_result=0):
+        class FakeUser32:
+            def IsWindowVisible(self, hwnd):
+                return True
+            def IsIconic(self, hwnd):
+                return False
+            def GetClassNameW(self, hwnd, buf, size):
+                # 模拟 UIPI：提权窗口类名读回 0（空）
+                return class_name_result
+            def GetWindowRect(self, hwnd, rect):
+                return False
+            def EnumWindows(self, callback, lparam):
+                for hwnd, _name in process_names.items():
+                    callback(hwnd, 0)
+                return True
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(wt_window_helpers, "_get_window_owning_process_name",
+                                             side_effect=lambda hwnd: process_names.get(hwnd, "")))
+            wt_window_helpers.configure_wt_window_helpers(
+                user32=FakeUser32(),
+                enum_windows_proc=lambda func: func,
+                get_window_text=lambda hwnd: title_text,
+                get_window_rect=lambda hwnd: type("R", (), {
+                    "left": 0, "top": 0,
+                    "right": 800 if hwnd != 2002 else 400,
+                    "bottom": 600 if hwnd != 2002 else 300,
+                })(),
+                log_step=lambda message: None,
+            )
+            return wt_window_helpers.find_main_windows(
+                re.compile("Meteodyn Universe"),
+                class_name_keywords=("MUPSmartClient",),
+            )
+
+    def test_uipi_blocked_title_class_still_finds_mup_by_process_name(self):
+        # 2002 是最大/最显眼的 PowerShell 类后台窗口（标题/类名均空），
+        # 2001 是真正 MUP 主窗口（标题/类名同样被 UIPI 挡空，但进程名是 MUPSmartClient）。
+        windows = self._find({2002: "WindowsTerminal.exe", 2001: "MUPSmartClient.exe"})
+        handles = {w["hwnd"] for w in windows}
+        self.assertIn(2001, handles, "UIPI 挡空标题/类名后必须按进程名命中 MUP 主窗口")
+        self.assertNotIn(2002, handles, "PowerShell/Terminal 后台窗口不得误命中")
+
+    def test_process_matching_does_not_fire_when_title_matches(self):
+        # 标题能正常匹配时，即便进程名不同也不得剔除（保持既有标题匹配行为）。
+        windows = self._find({2001: "MUPSmartClient.exe", 2002: "powershell.exe"},
+                             title_text="Meteodyn Universe")
+        handles = {w["hwnd"] for w in windows}
+        self.assertIn(2001, handles)
+        self.assertIn(2002, handles, "标题命中分支不应因进程名匹配被提前剔除")
+
+
 class OpenDialogNoBlindEnterTests(unittest.TestCase):
     def test_confirm_open_file_dialog_raises_when_dialog_missing(self):
         with patch.object(wt_window_helpers, "find_open_dialog", return_value=None):

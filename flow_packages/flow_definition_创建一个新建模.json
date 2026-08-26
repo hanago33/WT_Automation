@@ -49,7 +49,7 @@
       "stage": "custom",
       "strategy": "action",
       "actionType": "action",
-      "topLevel": false,
+      "topLevel": true,
       "enabled": true,
       "codeSymbol": "",
       "codeReference": "",
@@ -177,7 +177,7 @@
       "stage": "converted",
       "strategy": "action",
       "actionType": "action",
-      "topLevel": false,
+      "topLevel": true,
       "enabled": true,
       "codeSymbol": "",
       "codeReference": "",
@@ -2982,6 +2982,62 @@
       "type": "fallback_template_recovery",
       "fallbackTemplate": "image_templates\\Icons\\新建_按钮.png",
       "originalError": "action click 未命中控件: step=step_2, control=DashboardView_Button_NewSite_Dashboard_New_Site_按钮_Button"
+    },
+    {
+      "stepId": "step_5",
+      "timestamp": "2026-08-19T10:57:03",
+      "runId": "wt_run_20260819_105645_860_001",
+      "type": "step_failure",
+      "error": "模板未匹配到: path=D:\\My_RF_Project\\WT_Automation\\image_templates\\draw_down\\私有.png; last_error= | 原始错误: action double_click 未命中控件: step=step_5, control=control_map_304",
+      "actionType": "action"
+    },
+    {
+      "stepId": "step_5",
+      "timestamp": "2026-08-19T10:57:52",
+      "runId": "wt_run_20260819_105734_764_001",
+      "type": "step_failure",
+      "error": "模板未匹配到: path=D:\\My_RF_Project\\WT_Automation\\image_templates\\draw_down\\私有.png; last_error= | 原始错误: action double_click 未命中控件: step=step_5, control=control_map_304",
+      "actionType": "action"
+    },
+    {
+      "stepId": "step_5",
+      "timestamp": "2026-08-19T11:33:26",
+      "runId": "wt_run_20260819_113308_992_001",
+      "type": "step_failure",
+      "error": "模板未匹配到: path=D:\\My_RF_Project\\WT_Automation\\image_templates\\draw_down\\私有.png; last_error= | 原始错误: action double_click 未命中控件: step=step_5, control=control_map_304",
+      "actionType": "action"
+    },
+    {
+      "stepId": "step_5",
+      "timestamp": "2026-08-19T11:44:05",
+      "runId": "wt_run_20260819_114347_229_001",
+      "type": "step_failure",
+      "error": "模板未匹配到: path=D:\\My_RF_Project\\WT_Automation\\image_templates\\draw_down\\私有.png; last_error= | 原始错误: action double_click 未命中控件: step=step_5, control=control_map_304",
+      "actionType": "action"
+    },
+    {
+      "stepId": "step_5",
+      "timestamp": "2026-08-19T11:45:23",
+      "runId": "wt_run_20260819_114506_926_001",
+      "type": "step_failure",
+      "error": "模板未匹配到: path=D:\\My_RF_Project\\WT_Automation\\image_templates\\draw_down\\私有.png; last_error= | 原始错误: action double_click 未命中控件: step=step_5, control=control_map_304",
+      "actionType": "action"
+    },
+    {
+      "stepId": "step_5",
+      "timestamp": "2026-08-19T11:46:08",
+      "runId": "wt_run_20260819_114551_852_001",
+      "type": "step_failure",
+      "error": "模板未匹配到: path=D:\\My_RF_Project\\WT_Automation\\image_templates\\draw_down\\私有.png; last_error= | 原始错误: action double_click 未命中控件: step=step_5, control=control_map_304",
+      "actionType": "action"
+    },
+    {
+      "stepId": "step_5",
+      "timestamp": "2026-08-19T13:50:57",
+      "runId": "wt_run_20260819_135038_530_001",
+      "type": "step_failure",
+      "error": "模板未匹配到: path=D:\\My_RF_Project\\WT_Automation\\image_templates\\draw_down\\私有.png; last_error= | 原始错误: action double_click 未命中控件: step=step_5, control=control_map_304",
+      "actionType": "action"
     }
   ]
 }
