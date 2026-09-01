@@ -3,6 +3,7 @@
 """任务队列 + 服务器监控统一客户端窗口，供 WT_Launcher 使用。"""
 
 import hashlib
+import http.client
 import json
 import os
 import threading
@@ -81,8 +82,14 @@ class TaskQueueWindow:
             (initial_monitor_url or DEFAULT_MONITOR_URL).strip().rstrip("/")
             or DEFAULT_MONITOR_URL
         )
+        # 任务队列服务可复用的 HTTP 连接（配合服务端 HTTP/1.1 keep-alive），
+        # 由 _http_lock 串行化，避免多线程并发复用同一条连接出错。
+        self._http_lock = threading.Lock()
+        self._http_conn = None
         self._fetching = False
         self._monitor_fetching = False
+        # 运行中任务日志自动刷新的防并发守卫（同一时刻只允许一个日志拉取线程）
+        self._log_fetching = False
         self._after_id = None
         self._monitor_after_id = None
         self._closing = False
@@ -519,6 +526,7 @@ class TaskQueueWindow:
         url = self.url_var.get().strip().rstrip("/")
         if url:
             self.base_url = url
+            self._http_conn = None
         monitor_url = self.monitor_url_var.get().strip().rstrip("/")
         if monitor_url:
             self.monitor_base_url = monitor_url
@@ -618,6 +626,27 @@ class TaskQueueWindow:
                 self.keyword_var.get(),
             )
         )
+        self._maybe_refresh_selected_logs(tasks)
+
+    def _maybe_refresh_selected_logs(self, tasks):
+        """运行中任务的日志随轮询自动刷新（每轮最多一次，且防并发重复拉取）。
+
+        手动选中已由 _on_task_select 拉取；这里仅当当前选中的任务处于 running
+        且没有其他日志拉取线程在途时，追加一次拉取，让"远程看日志"跟随进度更新。
+        """
+        task_id = self._selected_task_id()
+        if not task_id or getattr(self, "_log_fetching", False):
+            return
+        task = next(
+            (t for t in (tasks or []) if str(t.get("taskId", "")) == task_id),
+            None,
+        )
+        if task is None or str(task.get("status", "")) != "running":
+            return
+        self._log_fetching = True
+        threading.Thread(
+            target=self._fetch_logs_worker, args=(task_id,), daemon=True
+        ).start()
 
     def _on_filter_changed(self, _event=None):
         self._render_task_list(
@@ -716,21 +745,26 @@ class TaskQueueWindow:
     def _on_task_select(self, _event=None):
         task_id = self._selected_task_id()
         if task_id:
+            self._log_fetching = True
             threading.Thread(
                 target=self._fetch_logs_worker, args=(task_id,), daemon=True
             ).start()
 
     def _fetch_logs_worker(self, task_id):
         try:
-            payload = self._get_json(
-                "/api/tasks/{}/logs?tail=300".format(urllib.parse.quote(task_id))
-            )
-        except Exception as exc:
-            self._post_ui(
-                lambda: self._render_logs(["[日志获取失败] {}".format(exc)])
-            )
-            return
-        self._post_ui(lambda: self._render_logs(payload.get("lines", [])))
+            try:
+                payload = self._get_json(
+                    "/api/tasks/{}/logs?tail=300".format(urllib.parse.quote(task_id))
+                )
+            except Exception as exc:
+                self._post_ui(
+                    lambda: self._render_logs(["[日志获取失败] {}".format(exc)])
+                )
+                return
+            self._post_ui(lambda: self._render_logs(payload.get("lines", [])))
+        finally:
+            # 无论成功/失败都释放防并发守卫，供下一轮自动刷新复用
+            self._log_fetching = False
 
     def _render_logs(self, lines):
         self.log_text.config(state=tk.NORMAL)
@@ -803,17 +837,73 @@ class TaskQueueWindow:
         except Exception:
             pass
 
+    def _make_conn(self, host, port, use_https):
+        if use_https:
+            return http.client.HTTPSConnection(host, port, timeout=6)
+        return http.client.HTTPConnection(host, port, timeout=6)
+
+    def _queue_request(self, method, path, body=None):
+        """通过复用的 HTTP 连接访问任务队列服务（配合服务端 HTTP/1.1 keep-alive）。
+
+        - 复用单条 TCP 连接，把轮询从“每次新建连接”降为“连接建立一次、多次复用”；
+        - 界面线程与轮询线程并发访问时由 _http_lock 串行化，同一时刻只有一条请求
+          在连接上飞行；
+        - 连接失效（服务端关闭 / 超时）时丢弃重建，但**仅对幂等方法
+          （GET/HEAD/OPTIONS）重试一次**：POST 等非幂等操作（提交任务、上传流程、
+          暂停/终止/取消）若在响应返回前断连，服务端可能已执行，重试会造成重复提交
+          或重复控制，因此直接抛错，交由上层提示用户。
+        """
+        base = urllib.parse.urlparse(self.base_url)
+        host = base.hostname or "127.0.0.1"
+        port = base.port or (443 if base.scheme == "https" else 80)
+        use_https = base.scheme == "https"
+        full = self.base_url + path
+        parsed_full = urllib.parse.urlparse(full)
+        target = parsed_full.path + ("?" + parsed_full.query if parsed_full.query else "")
+        headers = {
+            "Accept": "application/json",
+            "Authorization": "Bearer " + self.token_var.get().strip(),
+        }
+        data = None
+        if body is not None:
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        idempotent = method in ("GET", "HEAD", "OPTIONS")
+        with self._http_lock:
+            for attempt in range(2 if idempotent else 1):
+                conn = self._http_conn
+                if conn is None:
+                    conn = self._make_conn(host, port, use_https)
+                    self._http_conn = conn
+                try:
+                    conn.request(method, target, body=data, headers=headers)
+                    response = conn.getresponse()
+                    raw = response.read()
+                    status = response.status
+                    response.close()
+                    if status >= 400:
+                        raise urllib.error.HTTPError(
+                            full, status, response.reason or "", {}, None
+                        )
+                    if not raw:
+                        return None
+                    return json.loads(raw.decode("utf-8"))
+                except urllib.error.HTTPError:
+                    raise
+                except (http.client.HTTPException, OSError) as exc:
+                    # 连接可能已失效，丢弃重建；仅幂等方法可安全重试一次
+                    self._http_conn = None
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    if attempt == 0 and idempotent:
+                        continue
+                    raise urllib.error.URLError(str(exc) or "connection error")
+        raise urllib.error.URLError("connection error")
+
     def _get_json(self, path):
-        url = self.base_url + path
-        request = urllib.request.Request(
-            url,
-            headers={
-                "Accept": "application/json",
-                "Authorization": "Bearer " + self.token_var.get().strip(),
-            },
-        )
-        with urllib.request.urlopen(request, timeout=4) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return self._queue_request("GET", path)
 
     def _get_json_monitor(self, path):
         url = self.monitor_base_url + path
@@ -824,20 +914,7 @@ class TaskQueueWindow:
             return json.loads(response.read().decode("utf-8"))
 
     def _post_json(self, path, payload):
-        url = self.base_url + path
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(
-            url,
-            data=data,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Authorization": "Bearer " + self.token_var.get().strip(),
-            },
-        )
-        with urllib.request.urlopen(request, timeout=4) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return self._queue_request("POST", path, payload)
 
     def _service_action(self, action, service):
         labels = {
@@ -1110,10 +1187,23 @@ class TaskQueueWindow:
             "上传流程成功", "流程已上传到服务器，可直接填写参数后提交。", parent=dialog
         )
 
-    def submit_simple_sections_dialog(self, sections, completed_callback=None):
+    @staticmethod
+    def _call_submit_callback(completed_callback, task_ids=None, results=None):
+        """安全回调提交完成/取消（调用方可能已销毁或回调本身抛错）。"""
+        if not completed_callback:
+            return
+        try:
+            completed_callback(list(task_ids or []), list(results or []))
+        except Exception:
+            pass
+
+    def submit_simple_sections_dialog(
+        self, sections, completed_callback=None, on_task_submitted=None
+    ):
         sections = [s for s in sections if s and s.get("path")]
         if not sections:
             messagebox.showinfo("提交所选板块", "没有可提交的板块（请先勾选并配置流程文件）。")
+            self._call_submit_callback(completed_callback)
             return
         dialog = tk.Toplevel(self.window)
         dialog.title("提交所选板块到远程队列")
@@ -1191,12 +1281,19 @@ class TaskQueueWindow:
                 selected,
                 completed_callback,
                 skip_identical=skip_var.get(),
+                on_task_submitted=on_task_submitted,
             )
+
+        def on_cancel():
+            dialog.destroy()
+            # 用户取消/关闭对话框：必须通知调用方，避免"提交中"标志与按钮永久卡死
+            self._call_submit_callback(completed_callback)
 
         tk.Button(buttons, text="提交", command=on_submit, bg="#059669", fg="white",
                   relief=tk.FLAT, padx=18, pady=5, cursor="hand2").pack(side=tk.LEFT)
-        tk.Button(buttons, text="取消", command=dialog.destroy, bg="#e2e8f0", fg="#1f2937",
+        tk.Button(buttons, text="取消", command=on_cancel, bg="#e2e8f0", fg="#1f2937",
                   relief=tk.FLAT, padx=14, pady=5, cursor="hand2").pack(side=tk.LEFT, padx=(8, 0))
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
 
     @staticmethod
     def _pick_extra_chain_files(parent, extra_files, label_var):
@@ -1216,33 +1313,48 @@ class TaskQueueWindow:
             "、".join(os.path.basename(p) for p in extra_files),
         ))
 
-    def submit_simple_sections(self, sections, completed_callback=None, skip_identical=False):
+    def submit_simple_sections(
+        self, sections, completed_callback=None, skip_identical=False, on_task_submitted=None
+    ):
         sections = [s for s in sections if s and s.get("path")]
         if not sections:
             messagebox.showinfo(
                 "提交所选板块", "没有可提交的板块（请先勾选并配置流程文件）。"
             )
+            self._call_submit_callback(completed_callback)
             return
         user = self.user_var.get().strip()
         token = self.token_var.get().strip()
         if not user:
             messagebox.showwarning("提交所选板块", "请先在顶部填写用户名。")
             self.window.lift()
+            self._call_submit_callback(completed_callback)
             return
         if not token:
             messagebox.showwarning("提交所选板块", "请先在顶部填写服务令牌。")
             self.window.lift()
+            self._call_submit_callback(completed_callback)
             return
         self.window.lift()
         self._render_logs(["开始提交 {} 个板块到远程队列...".format(len(sections))])
         threading.Thread(
             target=self._submit_simple_sections_worker,
             args=(list(sections), user, completed_callback),
-            kwargs={"skip_identical": bool(skip_identical)},
+            kwargs={
+                "skip_identical": bool(skip_identical),
+                "on_task_submitted": on_task_submitted,
+            },
             daemon=True,
         ).start()
 
-    def _submit_simple_sections_worker(self, sections, user, completed_callback=None, skip_identical=False):
+    def _submit_simple_sections_worker(
+        self,
+        sections,
+        user,
+        completed_callback=None,
+        skip_identical=False,
+        on_task_submitted=None,
+    ):
         results = []
         task_ids = []
         known_flows = {}
@@ -1309,6 +1421,12 @@ class TaskQueueWindow:
                 task_id = str(task.get("taskId") or "")
                 if task_id:
                     task_ids.append(task_id)
+                    # 每成功入队一个任务立即通知调用方，使"提交中停止"能终止已提交任务
+                    if on_task_submitted:
+                        try:
+                            on_task_submitted(task_id)
+                        except Exception:
+                            pass
                 results.append(
                     (title, "已提交（内容未变化，跳过上传）" if skipped_upload else "已提交")
                 )
@@ -1367,6 +1485,34 @@ class TaskQueueWindow:
         return self._get_json(
             "/api/tasks/{}".format(urllib.parse.quote(task_id))
         )
+
+    def get_tasks_batch(self, task_ids):
+        """批量查询任务状态：用 1 次请求替代 N 次 get_task_detail。
+
+        依赖服务端 /api/tasks?ids=...（新增参数）。旧服务端不识别该参数时
+        会返回 400/404，此时返回 None，调用方应回退到逐个查询。
+        """
+        ids = [str(item).strip() for item in (task_ids or []) if str(item).strip()]
+        if not ids:
+            return {}
+        limit = min(500, max(len(ids), 1))
+        try:
+            payload = self._get_json(
+                "/api/tasks?ids={}&limit={}".format(
+                    urllib.parse.quote(",".join(ids), safe=""), limit
+                )
+            )
+        except urllib.error.HTTPError as exc:
+            # 服务端不支持批量查询时，交由调用方降级为逐个查询
+            if exc.code in (400, 404, 501):
+                return None
+            raise
+        tasks = (payload or {}).get("tasks") or []
+        return {
+            str(item.get("taskId") or ""): item
+            for item in tasks
+            if isinstance(item, dict)
+        }
 
     def control_task(self, task_id, action):
         task_id = str(task_id or "").strip()
@@ -1540,7 +1686,8 @@ class TaskQueueWindow:
 
     @staticmethod
     def _poll_delay_ms(streak):
-        seconds = min(30, 2 ** min(max(0, streak), 5))
+        # 稳态 2s（与界面文案/文档一致），失败时按 2→4→8→16→30s 退避
+        seconds = min(30, max(POLL_MS / 1000.0, 2 ** min(max(0, streak), 5)))
         return int(seconds * 1000)
 
     def _poll_loop(self):

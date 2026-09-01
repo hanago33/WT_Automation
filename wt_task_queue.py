@@ -9,6 +9,7 @@ open the local database directly. Only the Python standard library is used.
 import json
 import os
 import sqlite3
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -149,7 +150,31 @@ def _connect(db_path):
     return conn
 
 
-def init_db(db_path=DEFAULT_DB_PATH):
+# 建表 DDL 只需在每个进程内对同一 db_path 执行一次；后续查询直接复用。
+# 原实现每次 get_task / list_tasks / get_queue_stats 等都完整跑一遍
+# PRAGMA + CREATE TABLE + 4 个 CREATE INDEX，客户端轮询越频繁开销越明显。
+_DB_INIT_LOCK = threading.Lock()
+_DB_INITIALIZED = set()
+
+
+def init_db(db_path=DEFAULT_DB_PATH, force=False):
+    """确保任务库表结构就绪；同一进程内对同一 db_path 只真正建表一次。
+
+    运维清库等需要重建表结构的场景，传 force=True 强制执行。
+    """
+    if db_path == ":memory:":
+        # 内存库每次 sqlite3.connect 都是全新实例，跳过建表会破坏测试
+        _init_db_once(db_path)
+        return
+    key = os.path.abspath(db_path)
+    with _DB_INIT_LOCK:
+        if not force and key in _DB_INITIALIZED:
+            return
+        _init_db_once(db_path)
+        _DB_INITIALIZED.add(key)
+
+
+def _init_db_once(db_path):
     conn = _connect(db_path)
     try:
         if db_path != ":memory:":
@@ -277,15 +302,29 @@ def submit_task(
     return get_task(task_id, db_path=db_path)
 
 
-def list_tasks(user=None, scope="all", limit=200, db_path=DEFAULT_DB_PATH):
+def list_tasks(user=None, scope="all", limit=200, db_path=DEFAULT_DB_PATH, task_ids=None):
+    """列出任务。
+
+    传 task_ids 时只取回这一批任务，客户端可用 1 次请求替代 N 次 get_task，
+    避免轮询场景下的 N+1 查询。不传时行为与旧版本完全一致。
+    """
     init_db(db_path)
     conn = _connect(db_path)
     try:
         query = "SELECT * FROM tasks"
         params = []
+        conditions = []
+        ids = [str(item).strip() for item in (task_ids or []) if str(item).strip()]
+        if ids:
+            # 数量上限与 limit 对齐，避免拼出过长的 IN 子句
+            ids = ids[: max(1, int(limit))]
+            conditions.append("task_id IN ({})".format(",".join("?" * len(ids))))
+            params.extend(ids)
         if scope == "mine" and user:
-            query += " WHERE user = ?"
+            conditions.append("user = ?")
             params.append(user)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY created_at ASC, rowid ASC LIMIT ?"
         params.append(int(limit))
         rows = conn.execute(query, params).fetchall()
@@ -323,7 +362,8 @@ def claim_next_pending(db_path=DEFAULT_DB_PATH):
             return None
         conn.execute(
             """
-            UPDATE tasks SET status = ?, started_at = COALESCE(started_at, ?),
+            UPDATE tasks SET status = ?,
+                started_at = CASE WHEN started_at = '' THEN ? ELSE started_at END,
                 updated_at = ?, terminate_requested = 0
             WHERE task_id = ?
             """,
@@ -347,8 +387,8 @@ def mark_started(task_id, run_id=None, db_path=DEFAULT_DB_PATH):
         conn.execute(
             """
             UPDATE tasks SET status = ?, run_id = COALESCE(?, run_id),
-                started_at = COALESCE(started_at, ?), updated_at = ?,
-                terminate_requested = 0
+                started_at = CASE WHEN started_at = '' THEN ? ELSE started_at END,
+                updated_at = ?, terminate_requested = 0
             WHERE task_id = ?
             """,
             (STATUS_RUNNING, run_id or "", now, now, task_id),
@@ -404,6 +444,12 @@ def update_progress(
 
 
 def mark_success(task_id, run_id=None, last_log=None, db_path=DEFAULT_DB_PATH):
+    """把任务标记为成功；仅当任务当前为 running 时生效（状态守卫）。
+
+    状态守卫用于防止"迟到 worker"覆盖已被其他路径改变的任务：例如服务端重启后
+    孤儿恢复把任务标为 failed，若旧 worker 进程存活并稍后完成，守卫会让这次
+    mark_success 变成 no-op，避免任务状态被来回覆盖。
+    """
     init_db(db_path)
     now = _now_iso()
     conn = _connect(db_path)
@@ -413,9 +459,17 @@ def mark_success(task_id, run_id=None, last_log=None, db_path=DEFAULT_DB_PATH):
             UPDATE tasks SET status = ?, run_id = COALESCE(?, run_id),
                 ended_at = ?, error = '', last_log = COALESCE(?, last_log),
                 pause_requested = 0, terminate_requested = 0, updated_at = ?
-            WHERE task_id = ?
+            WHERE task_id = ? AND status = ?
             """,
-            (STATUS_SUCCESS, run_id or "", now, last_log or "", now, task_id),
+            (
+                STATUS_SUCCESS,
+                run_id or "",
+                now,
+                last_log or "",
+                now,
+                task_id,
+                STATUS_RUNNING,
+            ),
         )
         conn.commit()
     finally:
@@ -424,6 +478,12 @@ def mark_success(task_id, run_id=None, last_log=None, db_path=DEFAULT_DB_PATH):
 
 
 def mark_failed(task_id, error="", run_id=None, db_path=DEFAULT_DB_PATH):
+    """把任务标记为失败；仅当任务当前为 running 或 failed 时生效（状态守卫）。
+
+    failed 前驱保留给重试收尾（handle_failure 从 failed 状态再次写失败）；
+    running 是运行中失败的正常前驱。其余状态（success/pending/canceled 等）
+    说明任务已被其他路径改变，迟到 worker 的失败上报为 no-op。
+    """
     init_db(db_path)
     now = _now_iso()
     conn = _connect(db_path)
@@ -433,9 +493,18 @@ def mark_failed(task_id, error="", run_id=None, db_path=DEFAULT_DB_PATH):
             UPDATE tasks SET status = ?, run_id = COALESCE(?, run_id),
                 ended_at = ?, error = ?, pause_requested = 0,
                 terminate_requested = 0, updated_at = ?
-            WHERE task_id = ?
+            WHERE task_id = ? AND status IN (?, ?)
             """,
-            (STATUS_FAILED, run_id or "", now, error, now, task_id),
+            (
+                STATUS_FAILED,
+                run_id or "",
+                now,
+                error,
+                now,
+                task_id,
+                STATUS_RUNNING,
+                STATUS_FAILED,
+            ),
         )
         conn.commit()
     finally:
@@ -444,6 +513,11 @@ def mark_failed(task_id, error="", run_id=None, db_path=DEFAULT_DB_PATH):
 
 
 def mark_paused(task_id, resume_from_step=None, db_path=DEFAULT_DB_PATH):
+    """把任务标记为暂停；仅当任务当前为 running 或 pending 时生效（状态守卫）。
+
+    pending 前驱来自 request_pause：排队中的任务可直接暂停（跳过运行）；
+    running 是运行中收到暂停请求后的正常前驱。
+    """
     init_db(db_path)
     now = _now_iso()
     conn = _connect(db_path)
@@ -453,18 +527,26 @@ def mark_paused(task_id, resume_from_step=None, db_path=DEFAULT_DB_PATH):
                 """
                 UPDATE tasks SET status = ?, pause_requested = 0, ended_at = ?,
                     resume_from_step = ?, updated_at = ?
-                WHERE task_id = ?
+                WHERE task_id = ? AND status IN (?, ?)
                 """,
-                (STATUS_PAUSED, now, resume_from_step, now, task_id),
+                (
+                    STATUS_PAUSED,
+                    now,
+                    resume_from_step,
+                    now,
+                    task_id,
+                    STATUS_RUNNING,
+                    STATUS_PENDING,
+                ),
             )
         else:
             conn.execute(
                 """
                 UPDATE tasks SET status = ?, pause_requested = 0, ended_at = ?,
                     updated_at = ?
-                WHERE task_id = ?
+                WHERE task_id = ? AND status IN (?, ?)
                 """,
-                (STATUS_PAUSED, now, now, task_id),
+                (STATUS_PAUSED, now, now, task_id, STATUS_RUNNING, STATUS_PENDING),
             )
         conn.commit()
     finally:
@@ -473,6 +555,12 @@ def mark_paused(task_id, resume_from_step=None, db_path=DEFAULT_DB_PATH):
 
 
 def mark_terminated(task_id, error="", db_path=DEFAULT_DB_PATH):
+    """把任务标记为终止；仅当任务当前为 running 或 paused 时生效（状态守卫）。
+
+    优雅关闭/超时/手动终止都从 running 进入 terminated；paused 任务也可能被
+    终止。其余状态（success/failed/pending 等）说明任务已被其他路径收尾，
+    迟到请求为 no-op。
+    """
     init_db(db_path)
     now = _now_iso()
     conn = _connect(db_path)
@@ -481,9 +569,17 @@ def mark_terminated(task_id, error="", db_path=DEFAULT_DB_PATH):
             """
             UPDATE tasks SET status = ?, terminate_requested = 0, ended_at = ?,
                 error = ?, updated_at = ?
-            WHERE task_id = ?
+            WHERE task_id = ? AND status IN (?, ?)
             """,
-            (STATUS_TERMINATED, now, error, now, task_id),
+            (
+                STATUS_TERMINATED,
+                now,
+                error,
+                now,
+                task_id,
+                STATUS_RUNNING,
+                STATUS_PAUSED,
+            ),
         )
         conn.commit()
     finally:
@@ -620,6 +716,49 @@ def handle_failure(task_id, error="", db_path=DEFAULT_DB_PATH):
     if attempts < max_attempts:
         return schedule_retry(task_id, error=error, db_path=db_path)
     return mark_failed(task_id, error=error, db_path=db_path)
+
+
+def recover_orphan_running_tasks(db_path=DEFAULT_DB_PATH, max_age_seconds=120):
+    """服务端重启后恢复孤儿任务：把遗留的 running 任务标记为失败。
+
+    服务端把任务状态与子进程生命周期绑定在内存（_running）中；进程退出后，遗留的
+    running 任务没有任何进程再更新它，而 claim_next_pending 检测到存在 running 任务
+    时不会派发新任务，导致整条队列卡死。服务端启动时调用本函数把这些孤儿任务标记为
+    失败（错误信息可辨），队列即可继续派发，不会永久阻塞。
+
+    这里选择"标记失败"而非自动重排队：worker 子进程可能独立存活，自动重跑会造成
+    同一任务重复执行；标记失败后由用户在队列窗口手动重试，避免重复。
+
+    max_age_seconds：仅恢复 updated_at 距今超过该阈值的 running 任务。updated_at
+    在认领/进度刷新时都会被更新，代表"最近活跃"：刚被另一实例认领的任务
+    updated_at 很新，不会被误杀；崩溃遗留的孤儿任务已长时间无更新，会被恢复。
+    代价是崩溃后该阈值内重启不会自动恢复，可由队列窗口手动处理。
+
+    返回被标记失败的任务数量。
+    """
+    init_db(db_path)
+    cutoff = (
+        datetime.now() - timedelta(seconds=max(0, int(max_age_seconds)))
+    ).isoformat(timespec="seconds")
+    conn = _connect(db_path)
+    orphan_ids = []
+    try:
+        rows = conn.execute(
+            """
+            SELECT task_id FROM tasks
+            WHERE status = ? AND (updated_at = '' OR updated_at <= ?)
+            """,
+            (STATUS_RUNNING, cutoff),
+        ).fetchall()
+        orphan_ids = [row["task_id"] for row in rows]
+    finally:
+        conn.close()
+    error = (
+        "服务端重启导致任务中断，已标记为失败（worker 状态已丢失），可手动重试"
+    )
+    for task_id in orphan_ids:
+        mark_failed(task_id, error=error, db_path=db_path)
+    return len(orphan_ids)
 
 
 def get_queue_stats(db_path=DEFAULT_DB_PATH):

@@ -136,6 +136,16 @@ ACTION_SCHEMAS = {
         "show_timeout": True,
         "suggested_columns": ("controlId(批量 CheckBox)",),
     },
+    "select_list_items": {
+        "label": "批量选中候选项",
+        "description": "按类别锚展开候选容器内的纯 Text 项（如 MBAElementConfigurationView 的测风点/风机候选），批量点击选择。名单为空或 ALL 为全选；逗号分隔名单为精确匹配，名单未命中任一项时步骤判失败。",
+        "target_required": True,
+        "input_required": False,
+        "input_key": "text",
+        "input_label": "候选名单(逗号分隔，空/ALL=全选)",
+        "show_timeout": True,
+        "suggested_columns": ("controlId(类别锚)", "候选名单"),
+    },
     "wait_for_control": {
         "label": "等待控件",
         "description": "等待目标控件出现、可见或满足条件。",

@@ -37,6 +37,8 @@ _FLOW_VERSION_LOCK = threading.Lock()
 STATUS_PENDING = wt_task_queue.STATUS_PENDING
 STATUS_RUNNING = wt_task_queue.STATUS_RUNNING
 STATUS_FAILED = wt_task_queue.STATUS_FAILED
+STATUS_SUCCESS = wt_task_queue.STATUS_SUCCESS
+STATUS_TERMINATED = wt_task_queue.STATUS_TERMINATED
 
 
 def _read_json_file(file_path, default=None):
@@ -200,6 +202,12 @@ def default_worker_launcher(
 
 class TaskQueueHandler(BaseHTTPRequestHandler):
     server_version = "WTTaskQueue/1.0"
+    # 开启 HTTP/1.1 keep-alive：默认 HTTP/1.0 下每个请求都要新建一条 TCP 连接，
+    # 客户端轮询（Simple 每 2 秒多次查询任务状态）会把握手开销成倍放大。
+    # _send_json 已正确设置 Content-Length，长连接下不会挂起等待响应体。
+    protocol_version = "HTTP/1.1"
+    # 空闲连接读超时（秒），避免长连接长期占用服务线程
+    timeout = 60
 
     def log_message(self, format, *args):
         pass
@@ -650,11 +658,16 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             if scope == "mine" and not user:
                 self._send_error(400, "user is required when scope=mine")
                 return
+            # ids=a,b,c（可选）：一次取回指定任务，供客户端把 N 次 /api/tasks/{id}
+            # 合并为 1 次请求。不传该参数时行为与旧版本完全一致。
+            raw_ids = str(query.get("ids", [""])[0] or "").strip()
+            task_ids = [item.strip() for item in raw_ids.split(",") if item.strip()] or None
             tasks = wt_task_queue.list_tasks(
                 user=user,
                 scope=scope,
                 limit=limit,
                 db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+                task_ids=task_ids,
             )
             self._send_json({"tasks": tasks})
             return
@@ -870,6 +883,14 @@ class TaskServer(ThreadingHTTPServer):
         self._scheduler_stop = threading.Event()
         self._scheduler_thread = None
         wt_task_queue.init_db(queue_db)
+        # 服务端重启后恢复孤儿任务：上次运行中（running）的任务进程已随旧服务端
+        # 退出而失联，标记为失败以解除"存在 running 任务即不派发"的队列卡死。
+        recovered = wt_task_queue.recover_orphan_running_tasks(queue_db)
+        if recovered:
+            log_server_event(
+                "recovered {} orphan running task(s) after restart".format(recovered),
+                log_path=server_log_path,
+            )
 
     def start_scheduler(self):
         self._run_log_cleanup()
@@ -1100,6 +1121,15 @@ class TaskServer(ThreadingHTTPServer):
                 error="terminate requested",
                 db_path=self.queue_db,
             )
+            if terminated is None or terminated.get("status") != STATUS_TERMINATED:
+                # 状态守卫拦截：任务已被其他路径收尾，仅记日志、不重复通知
+                log_server_event(
+                    "task {} terminate skipped (current status {})".format(
+                        task_id, (terminated or {}).get("status", "unknown")
+                    ),
+                    log_path=self.server_log_path,
+                )
+                return
             log_server_event(
                 "task {} terminated".format(task_id),
                 log_path=self.server_log_path,
@@ -1111,6 +1141,15 @@ class TaskServer(ThreadingHTTPServer):
             succeeded = wt_task_queue.mark_success(
                 task_id, db_path=self.queue_db
             )
+            if succeeded is None or succeeded.get("status") != STATUS_SUCCESS:
+                # 状态守卫拦截：迟到完成/并发收尾，任务已被改为其他终态
+                log_server_event(
+                    "task {} success skipped (current status {})".format(
+                        task_id, (succeeded or {}).get("status", "unknown")
+                    ),
+                    log_path=self.server_log_path,
+                )
+                return
             log_server_event(
                 "task {} finished success".format(task_id),
                 log_path=self.server_log_path,

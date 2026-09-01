@@ -680,6 +680,45 @@ text = <span class="function">ocr_extract</span>(screenshot, location)</code>
                         </div>
                     </div>
                 </div>
+
+                <div class="module-detail-card">
+                    <div class="module-detail-icon">
+                        <svg width="36" height="36" viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M4 18l6 6 22-22"/>
+                            <rect x="4" y="8" width="28" height="20" rx="2" opacity="0.5"/>
+                        </svg>
+                    </div>
+                    <div class="module-detail-content">
+                        <span class="module-tag">发布工具</span>
+                        <h3>apply_release.py / .exe</h3>
+                        <p>内网应用发布包：把 zip 解压后的文件按相对路径覆盖到目标仓库，并依据 deleted.txt 删除清单清理退役文件，自动跳过清单与脚本自身。</p>
+                        <div class="code-snippet">
+                            <code><span class="comment"># 内网机应用发布包</span>
+<span class="keyword">python</span> apply_release.py D:/WT_Automation
+<span class="comment"># 覆盖 N 个文件 + 删除 M 个文件</span></code>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="module-detail-card">
+                    <div class="module-detail-icon">
+                        <svg width="36" height="36" viewBox="0 0 36 36" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="18" cy="18" r="14"/>
+                            <path d="M18 10v8l6 4"/>
+                            <path d="M10 18h16"/>
+                        </svg>
+                    </div>
+                    <div class="module-detail-content">
+                        <span class="module-tag">诊断工具</span>
+                        <h3>_diag_checkbox.py</h3>
+                        <p>控件诊断脚本：枚举 MUP 窗口中所有 CheckBox 与关键 Text 控件的位置结构、父链与 foundIndex，辅助定位疑难控件，依赖 wt_flow_locator 的 wrapper 封装。</p>
+                        <div class="code-snippet">
+                            <code><span class="comment"># 枚举 MUP 窗口 CheckBox</span>
+<span class="keyword">from</span> wt_flow_locator <span class="keyword">import</span> get_wrapper_rectangle
+<span class="function">walk</span>(target)  <span class="comment"># CheckBox / Text 全量扫描</span></code>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
@@ -906,7 +945,28 @@ text = <span class="function">ocr_extract</span>(screenshot, location)</code>
                                 <path d="M16 15v12M16 15L5 9M16 15l11-6"/>
                             </svg>
                         </div>
-                        <h3>V4.0.0 · 2026-07-24（当前版本）</h3>
+                        <h3>V4.1.0 · 2026-08-26（当前版本）</h3>
+                    </div>
+                    <p>定位增强 + 发布与诊断工具链：wt_flow_locator 与 wt_flow_executor 大幅强化，新增内网发布包应用与控件诊断脚本，录制素材持续扩充。</p>
+                    <ul class="feature-list">
+                        <li>wt_flow_locator：新增 UIPI 误检锁存（30s TTL）、self-heal 自愈合覆盖存储、标签/兄弟/子文本块匹配、NDJSON 调试事件追踪</li>
+                        <li>wt_flow_executor：控件库路径注入激活 Stage A/B 模糊匹配 + bbox 兜底，执行中自动采集控件模板（auto_captured），AI 干预回退链完善</li>
+                        <li>新增 apply_release.py / apply_release.exe：内网发布包按相对路径覆盖目标仓库并处理 deleted.txt 删除清单</li>
+                        <li>新增 _diag_checkbox.py：枚举 MUP 窗口 CheckBox 与关键 Text 控件结构，辅助定位诊断</li>
+                        <li>control_maps/recordings 新增多份窗口控制映射（CFD 测风点、窗口丢失、控制图等场景）</li>
+                        <li>已在 154 个控件库 JSON、49 个图像模板上完成回归验证</li>
+                    </ul>
+                </div>
+
+                <div class="card feature-card-large">
+                    <div class="card-header">
+                        <div class="feature-icon-large icon-purple">
+                            <svg width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M16 3l11 6v12l-11 6-11-6V9l11-6z"/>
+                                <path d="M16 15v12M16 15L5 9M16 15l11-6"/>
+                            </svg>
+                        </div>
+                        <h3>V4.0.0 · 2026-07-24</h3>
                     </div>
                     <p>控件采集引擎全面增强 + AI Agent 能力扩展 + 安全加固与知识库完善，131 项单元测试全部通过。</p>
                     <ul class="feature-list">

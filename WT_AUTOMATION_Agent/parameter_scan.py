@@ -244,6 +244,7 @@ class ParameterScanner:
         sheet_name: str = "Sheet1",
         output_path: str | None = None,
         max_rows: int = 0,
+        tower_mode_override: str | None = None,
     ) -> dict[str, Any]:
         """核心扫描函数：读 Excel → 为每行参数复制模板步骤 → 注入 stepParams。
 
@@ -253,6 +254,9 @@ class ParameterScanner:
             sheet_name: Excel Sheet 名称
             output_path: 保存路径（可选）
             max_rows: 最大行数（0=全部）
+            tower_mode_override: 可选。非 None 时强制覆盖所有行的 towerMode 列
+                （如 "single"/"multi"），用于运行期按项目条件自动决定单塔/多塔，
+                不改动参数表文件。
 
         返回：
             完整的 flow_definition 字典，可直接保存为 .json 执行
@@ -268,6 +272,19 @@ class ParameterScanner:
                 "runtimeConfig": {},
                 "flowPackages": [],
             }
+
+        # 运行期 towerMode 覆盖：强制把每一行的 towerMode 置为同一值
+        # （如项目解析出多个测风塔 → multi），不改参数表文件。
+        if tower_mode_override is not None:
+            _override = str(tower_mode_override).strip().lower()
+            if _override in ("single", "multi"):
+                for _row in result.rows:
+                    _row.values["towermode"] = _override
+            else:
+                print(
+                    f"[parameter_scan] tower_mode_override='{tower_mode_override}' 非法，忽略覆盖"
+                    f"（合法值: ['multi', 'single']）"
+                )
 
         scanned_steps: list[dict[str, Any]] = []
         step_counter = 0

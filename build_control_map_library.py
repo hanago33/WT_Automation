@@ -5927,7 +5927,7 @@ class ControlMapBuilderApp:
         tk.Button(button_row2, text="🔍 搜索控件", command=self.cmd_search_controls, bg=CONTROL_MAP_THEME["warning_soft"]).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row2, text="📥 合并入库", command=self.cmd_merge_into_library, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row2, text="复制所选定位", command=self.cmd_copy_selected_locator).pack(side=tk.LEFT, padx=3)
-        self._btn_test_locator = tk.Button(button_row2, text="检验定位", command=self.cmd_test_selected_locator, bg=CONTROL_MAP_THEME["primary_soft"])
+        self._btn_test_locator = tk.Button(button_row2, text="检验定位", command=self._toggle_probe_button, bg=CONTROL_MAP_THEME["primary_soft"])
         self._btn_test_locator.pack(side=tk.LEFT, padx=3)
         self.var_tree_view_mode = tk.StringVar(value="flat")
         tk.Checkbutton(button_row2, text="层级树视图", variable=self.var_tree_view_mode, onvalue="hierarchy", offvalue="flat", command=self._refresh_tree).pack(side=tk.LEFT, padx=8)
@@ -7001,9 +7001,9 @@ class ControlMapBuilderApp:
     _PROBE_WAIT_SECONDS = 90.0
 
     def _set_probe_running(self, running):
-        """检验期间禁用按钮并显示已等待秒数。
+        """检验期间把按钮切换为"⏹ 停止"，点击可中止探针并显示已等待秒数。
 
-        同一时刻只允许一个探针在跑：按钮禁用挡住常规重复点击，_probe_seq 序号
+        同一时刻只允许一个探针在跑：按钮切换挡住常规重复启动，_probe_seq 序号
         兜底保证旧一轮的超时定时器/回调不会干扰新一轮（此前实例属性被第二次
         启动直接覆盖——第一轮的定时器会误杀第二轮探针、第一轮回调会取消第二轮
         的定时器，连续两次点击必然互相干扰）。
@@ -7011,7 +7011,10 @@ class ControlMapBuilderApp:
         btn = getattr(self, "_btn_test_locator", None)
         if btn is not None:
             try:
-                btn.configure(state="disabled" if running else "normal")
+                btn.configure(
+                    text="⏹ 停止" if running else "检验定位",
+                    state="normal",
+                )
             except Exception:
                 pass
         if getattr(self, "_probe_elapsed_timer", None) is not None:
@@ -7024,12 +7027,42 @@ class ControlMapBuilderApp:
             self._probe_started_at = time.time()
             self._tick_probe_elapsed()
 
+    def _toggle_probe_button(self):
+        """按钮回调：探针空闲时启动检验，运行中则停止当前探针。"""
+        proc = getattr(self, "_probe_proc", None)
+        if proc is not None and proc.poll() is None:
+            self._stop_probe()
+        else:
+            self.cmd_test_selected_locator()
+
+    def _stop_probe(self):
+        """手动停止当前探针：杀子进程、取消超时定时器，watcher 回调按过期处理。"""
+        elapsed = int(time.time() - getattr(self, "_probe_started_at", time.time()))
+        seq = getattr(self, "_probe_seq", 0) + 1
+        self._probe_seq = seq  # watcher/超时回调携带旧序号 → 走过期分支只清理临时文件
+        timer = getattr(self, "_probe_timer", None)
+        if timer is not None:
+            try:
+                self.root.after_cancel(timer)
+            except Exception:
+                pass
+            self._probe_timer = None
+        proc = getattr(self, "_probe_proc", None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        self._probe_proc = None
+        self.var_status.set("⚠ 检验定位：已手动停止（{}s）".format(elapsed))
+        self._set_probe_running(False)
+
     def _tick_probe_elapsed(self):
         base = getattr(self, "_probe_started_at", None)
         if base is None:
             return
         self.var_status.set(
-            "⏳ 正在检验定位（独立进程执行中，已等待 {:.0f}s）...".format(time.time() - base)
+            "⏳ 正在检验定位（独立进程执行中，已等待 {:.0f}s，可点停止中止）...".format(time.time() - base)
         )
         self._probe_elapsed_timer = self.root.after(1000, self._tick_probe_elapsed)
 

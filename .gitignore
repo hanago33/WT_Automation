@@ -98,3 +98,30 @@ test_detector.py
 external_capture_config.json
 tools/external_capture/axewindows_bridge/bin/
 tools/external_capture/axewindows_bridge/obj/
+
+# 内网同步工具输出
+release_out/
+.zcode/
+
+# 诊断 / 临时输出
+_diag_*
+_names_out.txt
+
+# 各类备份
+*.bak_*
+docs/*.backup_*
+
+# 录制调试快照（大体积，非运行必需；已跟踪历史文件不受影响）
+control_maps/recordings/
+
+# 构建产物 / 打包输出（PyInstaller 的 dist 输出目录，任意层级）
+dist/
+
+# 运行时缓存索引（含本机绝对路径，跨机器不一致，勿入库）
+control_maps/.library_index.json
+
+# 诊断/临时输出（点开头变体）
+.diag_*
+
+# 开发机专用调试脚本（含本机绝对路径）
+run_scan3.bat

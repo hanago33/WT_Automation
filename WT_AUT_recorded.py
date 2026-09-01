@@ -723,6 +723,18 @@ def _load_flow_payload():
 	return merged_payload
 
 
+def _load_json_env_runtime():
+	"""读取 GM_RUNTIME_CONFIG_JSON 环境变量（Simple 界面注入的项目解析结果），返回 dict。"""
+	raw_env_payload = str(os.environ.get(RUNTIME_CONFIG_ENV_KEY, "")).strip()
+	if not raw_env_payload:
+		return {}
+	try:
+		env_runtime = json.loads(raw_env_payload)
+	except Exception:
+		return {}
+	return env_runtime if isinstance(env_runtime, dict) else {}
+
+
 def _apply_param_table_expansion(merged_payload, target_payload):
 	"""若流程顶层含 paramTable 字段，按参数表展开模板步骤。
 
@@ -743,11 +755,44 @@ def _apply_param_table_expansion(merged_payload, target_payload):
 	template_steps_for_scan = merged_payload.get("steps", [])
 	# stepTags 缺失的硬失败在 ParameterScanner.scan 内判定（过滤启用且存在请求模式的行
 	# 但模板零 stepTags 时才抛 StepModeFilterUnavailable），此处不再冗余宽泛告警。
+	# ── 单塔/多塔自动决定：按项目解析出的测风塔数量覆盖参数表 towerMode 列 ──
+	# Simple 界面选择项目文件夹后，把项目解析结果（含 mastIds）经 GM_RUNTIME_CONFIG_JSON
+	# 环境变量传给子进程；这里读环境覆盖值（优先级最高），其次流程 runtimeConfig。
+	tower_mode_override = None
+	_mast_ids: list[str] = []
+	for _src in (
+		{"payload": merged_payload.get("runtimeConfig", {})},
+		{"payload": _load_json_env_runtime()},
+	):
+		_rc = _src["payload"]
+		if not isinstance(_rc, dict):
+			continue
+		_mast_ids_value = _rc.get("mastIds")
+		if isinstance(_mast_ids_value, list) and _mast_ids_value:
+			_mast_ids = [str(item) for item in _mast_ids_value if str(item).strip()]
+			break
+	# 显式 towerMode（如 Simple 界面已决定）优先，其次按测风塔数量推断。
+	for _src in ({"payload": merged_payload.get("runtimeConfig", {})}, {"payload": _load_json_env_runtime()}):
+		_rc = _src["payload"]
+		if not isinstance(_rc, dict):
+			continue
+		_tm = str(_rc.get("towerMode", "")).strip().lower()
+		if _tm in ("single", "multi"):
+			tower_mode_override = _tm
+			break
+	if tower_mode_override is None and len(_mast_ids) >= 2:
+		tower_mode_override = "multi"
+	if tower_mode_override is not None:
+		log_step(f"[paramTable] 按项目条件决定塔模式：towerMode={tower_mode_override}（测风塔数={len(_mast_ids)}）")
 	try:
 		# 真实综合流程的模板步骤位于 flow.steps（已规整进 merged_payload["steps"]），
 		# 直接用 ParameterScanner.scan 以合并后的步骤为模板展开，避免 scan_from_flow
 		# 只读顶层 steps 导致空模板。flowPackages 保留供 packageRef 解析。
-		scanned = ParameterScanner.scan(param_table, template_steps=template_steps_for_scan)
+		scanned = ParameterScanner.scan(
+			param_table,
+			template_steps=template_steps_for_scan,
+			tower_mode_override=tower_mode_override,
+		)
 	except StepModeFilterUnavailable as exc:
 		# 硬失败：stepMode 过滤无法生效时若静默全跑，会把所有模式的全套步骤排给每行，
 		# 运行期才暴露（如新建行混入复制链、复制链定位综合1失败）。直接中止启动。
@@ -763,10 +808,13 @@ def _apply_param_table_expansion(merged_payload, target_payload):
 	# 若不改写，flowPackages 中登记整流程的包（stepIds 引用原模板 id）在校验时会报
 	# "引用了不存在的步骤"。把每个原 id 替换为展开后对应的一批 id，保持包与 steps 一致。
 	base_to_expanded = {}
+	scanned_ids = set()
 	for s in scanned_steps:
 		if not isinstance(s, dict):
 			continue
 		sid = str(s.get("id", "")).strip()
+		if sid:
+			scanned_ids.add(sid)
 		base = sid.rsplit("_scan", 1)[0] if "_scan" in sid else sid
 		if base:
 			base_to_expanded.setdefault(base, []).append(sid)
@@ -781,8 +829,11 @@ def _apply_param_table_expansion(merged_payload, target_payload):
 			pid = str(pid).strip()
 			if pid in base_to_expanded:
 				new_step_ids.extend(base_to_expanded[pid])
-			elif pid:
+			elif pid in scanned_ids:
+				# 非模板步骤（展开后仍以原 id 存在）保留
 				new_step_ids.append(pid)
+			# 其余：模板 id 被行级过滤（如多塔模式下单塔专属步骤）排除，直接丢弃，
+			# 否则校验会报"流程包引用了不存在的步骤"。
 		new_pkg["stepIds"] = new_step_ids
 		mapped_packages.append(new_pkg)
 	expanded = {
@@ -836,6 +887,19 @@ def _load_runtime_config():
 			return str(value).strip().lower() in ("1", "true", "yes", "on")
 		return bool(default_value)
 
+	# 保留环境/流程注入的扩展键（mastIds/turbineType/synthesisDesc/towerMode 等），
+	# 供 ${runtime.xxx} 占位替换与运行期逻辑（如单塔/多塔自动决定）使用。
+	extra_runtime = {}
+	for source in (env_runtime, flow_runtime):
+		if not isinstance(source, dict):
+			continue
+		for key, value in source.items():
+			if key in extra_runtime:
+				continue
+			if value is None or value == "":
+				continue
+			extra_runtime[key] = value
+
 	return {
 		"gmExe": _pick_value("gmExe", "GM_EXE", DEFAULT_GM_EXE),
 		"sourceFilePath": _pick_value("sourceFilePath", "SOURCE_FILE_PATH", DEFAULT_SOURCE_FILE_PATH),
@@ -847,6 +911,7 @@ def _load_runtime_config():
 		# 且自动把模板关联为步骤兜底；关闭=完全不采集/不更新/不关联兜底（默认关闭，
 		# 避免“假成功”时的错误截图污染模板库）。
 		"templateAutoUpdate": _pick_bool("templateAutoUpdate", "TEMPLATE_AUTO_UPDATE", False),
+		**extra_runtime,
 	}
 
 
@@ -1086,6 +1151,7 @@ def _get_flow_executor():
 			click_relative_region=_click_relative_region,
 		click_relative_anchor=_click_relative_anchor,
 			check_all_toggles=_check_all_unchecked_toggle_controls,
+			select_list_items=_select_list_items_runtime,
 			focus_flow_control=_focus_flow_control,
 			type_text_into_flow_control=_type_text_into_flow_control,
 			type_text_into_relative_region=_type_text_into_relative_region,
@@ -1235,6 +1301,7 @@ _FLOW_LOCATOR_FORWARDED = (
 	"click_relative_anchor",
 	"click_relative_region",
 	"check_all_unchecked_toggle_controls",
+	"select_list_items_runtime",
 	"click_menu_candidate_by_text",
 	"focus_flow_control",
 	"type_text_into_wrapper",
@@ -1628,7 +1695,18 @@ def _resolve_dynamic_value(value, step_id, context):
 	def _replace(match_obj):
 		expression = match_obj.group(1).strip()
 		if expression.startswith("runtime."):
-			return str(runtime_config.get(expression.split(".", 1)[1], match_obj.group(0)))
+			key = expression.split(".", 1)[1]
+			value = runtime_config.get(key)
+			if value not in (None, ""):
+				return str(value)
+			# 综合描述兜底：runtime.synthesisDesc 未注入时回退到综合名称，
+			# 避免 send_keys 把未解析的 ${runtime.synthesisDesc} 花括号当按键码
+			# （pywinauto 报 "Unknown code"）。
+			if key == "synthesisDesc":
+				fallback = step_params.get("synthesisname") or step_params.get("synthesisName")
+				if fallback not in (None, ""):
+					return str(fallback)
+			return match_obj.group(0)
 		if expression.startswith("stepParams."):
 			return str(step_params.get(expression.split(".", 1)[1], match_obj.group(0)))
 		if expression.startswith("flowRefParams."):
@@ -1642,6 +1720,14 @@ def _resolve_dynamic_value(value, step_id, context):
 				output_key = ".".join(parts[2:])
 				referenced_outputs = step_outputs.get(referenced_step_id, {})
 				return str(referenced_outputs.get(output_key, match_obj.group(0)))
+		# 裸键兼容：历史流程用 ${KEY} 直接引用 runtime_config，导出流程已用 ${runtime.KEY}
+		# 前缀，故仅在此作向后兼容回退，不改变现有前缀语义。
+		if expression in runtime_config:
+			return str(runtime_config[expression])
+		if expression in step_params:
+			return str(step_params[expression])
+		if expression in flow_ref_params:
+			return str(flow_ref_params[expression])
 		return match_obj.group(0)
 
 	return re.sub(r"\$\{([^{}]+)\}", _replace, value)

@@ -1348,6 +1348,10 @@ class LauncherApp:
 
         self.process = None
         self.output_queue = queue.Queue()
+        # 多塔串行队列生命周期标志：队列运行中为 True，全部结束（或停止）置 False
+        self._mast_queue_active = False
+        # 多塔队列停止请求：置 True 后队列在塔间隙中止
+        self._mast_queue_stop = False
         self.status_var = tk.StringVar(value="状态：准备就绪")
         self.current_step_var = tk.StringVar(value="当前步骤：等待启动")
         self.process_var = tk.StringVar(value="流程进程：未运行")
@@ -1387,6 +1391,12 @@ class LauncherApp:
         self.task_queue_user = str(launcher_state.get("taskQueueUser") or "").strip()
         self.task_queue_token = str(launcher_state.get("taskQueueToken") or "").strip()
         self.simple_remote_var = tk.BooleanVar(value=bool(launcher_state.get("simpleModeRemote", False)))
+        # Simple 远程队列共享状态：轮询线程与主线程都会读写，用可重入锁保护
+        self._simple_remote_lock = threading.RLock()
+        self._simple_remote_task_ids = {}
+        self._simple_remote_stop = False
+        self._simple_remote_outcomes = {}
+        self._simple_remote_total = 0
         # 市场项目工作文件夹（自动解析键入值，仅在选择后对 Simple 板块运行生效；未指定不影响现有流程）
         self.project_work_dir = str(launcher_state.get("projectWorkDir") or "").strip()
         self.project_params = launcher_state.get("projectParams") or {}
@@ -1411,6 +1421,19 @@ class LauncherApp:
             self.turbine_type_options.append(default_tt)
         # 当前项目识别出的测风塔编号（供「测风塔对象编号」下拉选项）
         self.project_mast_ids = []
+        # 加载项目文件夹时解析出的「解析参数」摘要（供「项目计算参数」对话框的「解析参数」标签页查看）
+        self.parsed_project_info = None
+        self.parsed_diag = None
+        # 若 launcher_state 已保存过项目文件夹，则启动时即预解析摘要，便于直接查看
+        if str(getattr(self, "project_work_dir", "") or "").strip():
+            try:
+                self.parsed_project_info = wt_project_workdir_parser.summarize_project_work_dir(
+                    self.project_work_dir, self.project_params or {})
+            except Exception as exc:
+                self.parsed_project_info = None
+                self.parsed_diag = {"error": str(exc)}
+            if self.parsed_project_info is None and self.parsed_diag is None:
+                self.parsed_diag = wt_project_workdir_parser.diagnose_project_work_dir(self.project_work_dir)
         self._initial_ui_mode = "simple" if launcher_state.get("uiMode") == "simple" else "advanced"
         self.enable_ai_intervention_var = tk.BooleanVar(value=bool(launcher_state.get("enableAiIntervention", False)))
         # 执行中自动更新控件模板开关：勾选后每次运行截图并与上次模板对比、不一致才替换，
@@ -2076,11 +2099,16 @@ class LauncherApp:
         """取消选择项目工作文件夹，回到「未指定（按原配置运行）」状态。"""
         if not str(getattr(self, "project_work_dir", "") or "").strip():
             return
-        if not messagebox.askyesno("清除项目文件夹", "确定取消选择当前项目文件夹吗？\n清除后运行将恢复为按原流程配置执行。"):
+        if not messagebox.askyesno(
+            "清除项目文件夹",
+            "确定取消选择当前项目文件夹吗？\n清除后运行将恢复为按原流程配置执行，\n同时清除已解析的项目参数信息（测风塔/机位点等）。",
+        ):
             return
         self.project_work_dir = ""
         self.project_params = {}
         self.project_mast_ids = []
+        self.parsed_project_info = None
+        self.parsed_diag = None
         self._simple_update_work_dir_label()
         self._simple_save_state()
         self._simple_set_status("已清除项目文件夹，恢复按原配置运行", "idle")
@@ -2100,6 +2128,7 @@ class LauncherApp:
         self.project_params = wt_project_workdir_parser.load_project_params_from_work_dir(path)
         # 识别项目中的测风塔编号，供「测风塔对象编号」下拉选择
         self.project_mast_ids = []
+        self.parsed_project_info = None
         try:
             parsed = wt_project_workdir_parser.parse_project_work_dir(path, self.project_params)
             if parsed:
@@ -2108,6 +2137,15 @@ class LauncherApp:
                     self.project_mast_ids = [str(item) for item in mast_ids]
         except Exception:
             self.project_mast_ids = []
+        # 解析「解析参数」摘要（测风塔信息 / 机位点信息 / 文件路径等），供项目参数对话框查看
+        self.parsed_diag = None
+        try:
+            self.parsed_project_info = wt_project_workdir_parser.summarize_project_work_dir(path, self.project_params)
+        except Exception as exc:
+            self.parsed_project_info = None
+            self.parsed_diag = {"error": str(exc)}
+        if self.parsed_project_info is None and self.parsed_diag is None:
+            self.parsed_diag = wt_project_workdir_parser.diagnose_project_work_dir(path)
         self._simple_update_work_dir_label()
         self._simple_save_state()
         self._simple_set_status("已选择项目文件夹：{}".format(path), "idle")
@@ -2178,11 +2216,24 @@ class LauncherApp:
 
         def _ok():
             path = path_var.get().strip().rstrip("\\/")
-            if path and os.path.isdir(path):
-                result["path"] = path
-                dialog.destroy()
-            else:
+            if not path or not os.path.isdir(path):
                 messagebox.showwarning("提示", "目录不存在：\n{}".format(path), parent=dialog)
+                return
+            # 校验是否为市场项目工作文件夹（含 03-WT输入 / 04-WT输出 子目录）
+            input_root = os.path.join(path, "03-WT输入")
+            output_root = os.path.join(path, "04-WT输出")
+            if not os.path.isdir(input_root) and not os.path.isdir(output_root):
+                if not messagebox.askyesno(
+                    "目录结构提示",
+                    "所选目录下未找到 03-WT输入 / 04-WT输出 子目录：\n{}\n\n"
+                    "确定要将此目录作为「项目工作文件夹」吗？\n"
+                    "（通常应该选择包含 03-WT输入 的项目根目录，"
+                    "而非其上级目录如 Desktop）".format(path),
+                    parent=dialog,
+                ):
+                    return
+            result["path"] = path
+            dialog.destroy()
 
         def _cancel():
             dialog.destroy()
@@ -2254,20 +2305,32 @@ class LauncherApp:
         dialog.title("项目计算参数（人工确认）")
         dialog.transient(self.root)
         dialog.grab_set()
-        wt_dpi.geometry(dialog, 480, 700)
-        dialog.minsize(wt_dpi.scale(420), wt_dpi.scale(560))
+        wt_dpi.geometry(dialog, 760, 800)
+        dialog.minsize(wt_dpi.scale(640), wt_dpi.scale(620))
         dialog.configure(bg=self.theme["bg"])
+
+        notebook = ttk.Notebook(dialog)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 2))
+
+        # ── 标签页 1：人工确认参数（原表单）──
+        confirm_tab = tk.Frame(notebook, bg=self.theme["bg"])
+        notebook.add(confirm_tab, text="① 人工确认参数")
         entries = {}
         tk.Label(
-            dialog, text="项目计算参数", font=("Microsoft YaHei UI", 12, "bold"),
+            confirm_tab, text="项目计算参数", font=("Microsoft YaHei UI", 12, "bold"),
             bg=self.theme["bg"], fg=self.theme["text"],
-        ).pack(pady=(12, 2))
+        ).pack(pady=(10, 2))
         tk.Label(
-            dialog, text="按板块分组；无法从 03-WT输入 自动推断，已预填默认值，可按项目修改后保存",
+            confirm_tab, text="按板块分组；无法从 03-WT输入 自动推断，已预填默认值，可按项目修改后保存",
             font=("Microsoft YaHei UI", 9), bg=self.theme["bg"], fg=self.theme["muted"],
-        ).pack(pady=(0, 8))
-        form = tk.Frame(dialog, bg=self.theme["bg"])
+        ).pack(pady=(0, 6))
+        form = tk.Frame(confirm_tab, bg=self.theme["bg"])
         form.pack(fill=tk.BOTH, expand=True, padx=18)
+
+        # ── 标签页 2：解析参数（加载项目文件夹时自动解析，只读）──
+        parsed_tab = tk.Frame(notebook, bg=self.theme["bg"])
+        notebook.add(parsed_tab, text="② 解析参数（只读）")
+        self._build_parsed_params_view(parsed_tab)
         current = dict(getattr(self, "project_params", {}) or {})
         combo_widgets = {}
         for section_title, field_list, section_note in sections:
@@ -2357,6 +2420,144 @@ class LauncherApp:
                   bg=self.theme["secondary"], fg=self.theme["text"],
                   relief=tk.FLAT, padx=16, pady=6).pack(side=tk.LEFT)
 
+    def _build_parsed_params_view(self, parent):
+        """构建「解析参数」标签页：展示加载项目文件夹时解析出的测风塔/机位点/文件信息（只读）。"""
+        theme = self.theme
+        info = getattr(self, "parsed_project_info", None)
+        if not info or not isinstance(info, dict):
+            diag = getattr(self, "parsed_diag", None) or {}
+            lines = ["未解析到项目参数，可能原因："]
+            if isinstance(diag, dict):
+                err = diag.get("error")
+                if err:
+                    lines.append("· 解析异常：{}".format(err))
+                work_dir = diag.get("work_dir") or str(getattr(self, "project_work_dir", "") or "").strip()
+                if work_dir:
+                    lines.append("· 当前项目文件夹：{}".format(work_dir))
+                for hint in (diag.get("hints") or []):
+                    lines.append("· {}".format(hint))
+            else:
+                lines.append("· 请确认项目文件夹包含 03-WT输入 / 04-WT输出，并重新选择项目文件夹后再打开本窗口")
+            tk.Label(
+                parent, text="\n".join(lines),
+                bg=theme["bg"], fg=theme["muted"], justify=tk.LEFT,
+                font=("Microsoft YaHei UI", 10), wraplength=640,
+            ).pack(anchor="w", padx=18, pady=(18, 8))
+            return
+
+        # 滚动容器，避免内容超出窗口高度
+        canvas = tk.Canvas(parent, bg=theme["bg"], highlightthickness=0)
+        scrollbar = tk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview, relief=tk.FLAT)
+        content = tk.Frame(canvas, bg=theme["bg"])
+        canvas_window = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _on_content_configure(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(_event=None):
+            canvas.itemconfig(canvas_window, width=canvas.winfo_width())
+
+        content.bind("<Configure>", _on_content_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        def _info_row(parent_frame, label, value):
+            row = tk.Frame(parent_frame, bg=theme["bg"])
+            row.pack(fill=tk.X, pady=1)
+            tk.Label(row, text=label, width=10, anchor="w",
+                     bg=theme["bg"], fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
+            tk.Label(row, text=value or "未解析", anchor="w", justify=tk.LEFT,
+                     bg=theme["bg"], fg=theme["text"], font=("Microsoft YaHei UI", 9),
+                     wraplength=600).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        def _section(title):
+            frame = tk.LabelFrame(content, text=title, padx=8, pady=6,
+                                  bg=theme["bg"], fg=theme["text"], bd=1, relief=tk.GROOVE)
+            frame.pack(fill=tk.X, padx=12, pady=6)
+            return frame
+
+        # ── 项目信息 ──
+        proj = _section("项目信息")
+        _info_row(proj, "项目名称", info.get("project_name", ""))
+        _info_row(proj, "项目文件夹", info.get("work_dir", ""))
+        _info_row(proj, "投影缩写", info.get("projection_abbrev", ""))
+        utm = "{}, {}".format(str(info.get("utm_x", "")).strip(), str(info.get("utm_y", "")).strip()).strip(", ")
+        _info_row(proj, "UTM 坐标", utm)
+
+        # ── 测风塔信息 ──
+        mast = _section("测风塔信息")
+        mast_entries = info.get("masts") or []
+        if mast_entries:
+            tree = ttk.Treeview(mast, columns=("name", "lon", "lat", "elev", "hub", "utm_x", "utm_y"),
+                                show="headings", height=min(6, max(1, len(mast_entries))))
+            for col, title, width in (
+                ("name", "名称", 90), ("lon", "经度", 80), ("lat", "纬度", 80),
+                ("elev", "海拔", 60), ("hub", "轮毂高", 70),
+                ("utm_x", "UTM X", 100), ("utm_y", "UTM Y", 100),
+            ):
+                tree.heading(col, text=title)
+                tree.column(col, width=width, minwidth=50, anchor="center")
+            for ent in mast_entries:
+                tree.insert("", tk.END, values=(
+                    ent.get("mastName", ""), ent.get("longitude", ""), ent.get("latitude", ""),
+                    ent.get("elevation", ""), ent.get("hubHeight", ""),
+                    ent.get("utmX", ""), ent.get("utmY", ""),
+                ))
+            tree.pack(fill=tk.X)
+            _info_row(mast, "数据来源", info.get("cft_info_file", ""))
+        else:
+            mast_ids = info.get("mast_ids") or []
+            if mast_ids:
+                _info_row(mast, "测风塔编号", "、".join(str(i) for i in mast_ids))
+
+        # ── 气象数据文件（全部测风塔的 tim/TI/TISD）──
+        mast_data = info.get("mast_data") or []
+        if mast_data:
+            mdata = _section("气象数据文件")
+            mtree = ttk.Treeview(mdata, columns=("name", "tim", "ti", "tis"),
+                                 show="headings", height=min(6, max(1, len(mast_data))))
+            mtree.heading("name", text="测风塔")
+            mtree.column("name", width=80, minwidth=60, anchor="center")
+            mtree.heading("tim", text="主数据 (tim)")
+            mtree.column("tim", width=250, minwidth=120, anchor="w")
+            mtree.heading("ti", text="湍流强度 (TI)")
+            mtree.column("ti", width=200, minwidth=100, anchor="w")
+            mtree.heading("tis", text="湍流相对标准偏差 (TISD)")
+            mtree.column("tis", width=200, minwidth=100, anchor="w")
+            for md in mast_data:
+                mtree.insert("", tk.END, values=(
+                    md.get("mastName", ""), md.get("tim", ""), md.get("ti", ""), md.get("tis", ""),
+                ))
+            mtree.pack(fill=tk.X)
+        else:
+            mdata_fallback = _section("气象数据文件")
+            _info_row(mdata_fallback, "主数据 (tim)", info.get("mast_tim", ""))
+            _info_row(mdata_fallback, "湍流强度 (TI)", info.get("mast_ti", ""))
+            _info_row(mdata_fallback, "湍流相对标准偏差 (TISD)", info.get("mast_tis", ""))
+
+        # ── 风机类型 / 功率曲线（机型 / 性能曲线版本）──
+        turb = _section("风机类型 / 功率曲线")
+        _info_row(turb, "机型", info.get("turbine_type", ""))
+        _info_row(turb, "性能曲线版本", info.get("cp_version", ""))
+        _info_row(turb, "风轮直径 (m)", info.get("rotor_diameter", ""))
+        _info_row(turb, "制造商", info.get("turbine_manufacturer", ""))
+        _info_row(turb, "功率曲线文件", info.get("turbine_curve", ""))
+
+        # ── 机位点信息 ──
+        turb_pos = _section("机位点信息")
+        turbines = info.get("turbines") or []
+        if turbines:
+            _info_row(turb_pos, "机位点编号", "、".join(str(t.get("name", "")) for t in turbines if t.get("name")))
+        _info_row(turb_pos, "坐标文件", info.get("turbine_pos_file", ""))
+
+        # ── 解析到的文件 ──
+        files = _section("解析到的文件")
+        _info_row(files, "地形图", info.get("terrain_file", ""))
+        _info_row(files, "输出目录", info.get("output_dir", ""))
+        _info_row(files, "输出分目录", "、".join(str(m) for m in (info.get("output_masts") or [])))
+
     def _simple_add_cp_version(self, target_var=None):
         """添加新的 Cp 版本到下拉选项列表（持久化到 launcher_state）。"""
         value = simpledialog.askstring("添加 Cp 版本", "输入新的 Cp 版本号：", parent=self.root)
@@ -2428,6 +2629,116 @@ class LauncherApp:
             return
         self._start_simple_queue(selected)
 
+    def _post_ui(self, callback):
+        """把回调投递到主线程执行；窗口已关闭时静默忽略。
+
+        语义对齐 ServerMonitorWindow._post_ui。LauncherApp 的 Simple 远程轮询
+        （后台线程）依赖它在主线程更新状态/按钮，缺失会导致线程抛 AttributeError
+        死亡、状态永久卡住。
+        """
+        try:
+            self.root.after(0, callback)
+        except Exception:
+            pass
+
+    def _remote_submit_ready(self):
+        """远程提交前的公共检查：远程队列空闲、服务器配置完整、本地无流程占用界面。"""
+        if getattr(self, "_simple_remote_submitting", False):
+            messagebox.showinfo("提示", "正在提交远程任务，请稍候。")
+            return False
+        if getattr(self, "_simple_remote_task_ids", None):
+            messagebox.showinfo("提示", "Simple 远程队列正在运行中，请先停止或等待完成。")
+            return False
+        if not self.task_queue_url or not self.task_queue_user or not self.task_queue_token:
+            messagebox.showwarning(
+                "提示",
+                "远程提交需要先配置服务器地址、用户名和服务令牌。\n请先打开任务队列窗口填写连接参数。",
+            )
+            return False
+        # 本地流程与远程任务会争抢同一套目标软件界面，提交前先确认本地空闲
+        if self.process and self.process.poll() is None:
+            messagebox.showinfo("提示", "本地已有自动化流程正在运行，请先等待其完成或停止。")
+            return False
+        if getattr(self, "_mast_queue_active", False):
+            messagebox.showinfo("提示", "多塔串行队列正在运行中，请先停止或等待完成。")
+            return False
+        return True
+
+    def _validate_sections_for_remote(self, sections):
+        """提交前校验流程定义，返回问题列表 [(板块标题, 原因), ...]。"""
+        problems = []
+        for sec in sections or []:
+            path = sec.get("path") or ""
+            title = sec.get("title") or sec.get("key") or ""
+            if not path or not os.path.isfile(path):
+                problems.append((title, "流程文件不存在"))
+                continue
+            payload, err = load_json_file(path)
+            if err or not isinstance(payload, dict):
+                problems.append((title, "流程文件无法解析：{}".format(err or "内容不是 JSON 对象")))
+                continue
+            try:
+                issues = validate_flow_definition(payload)
+            except Exception as exc:
+                issues = ["校验异常：{}".format(exc)]
+            if issues:
+                problems.append((title, "；".join(str(item) for item in issues[:3])))
+        return problems
+
+    def _drop_invalid_sections(self, sections, problems):
+        """提示存在校验问题的板块，确认后剔除；返回剔除后的列表，None 表示用户取消。"""
+        detail = "\n".join("- {}：{}".format(title, reason) for title, reason in problems[:8])
+        if not messagebox.askyesno(
+            "流程校验未通过",
+            "以下板块的流程定义存在问题，提交后很可能直接在服务器上失败：\n\n{}\n\n"
+            "是否跳过这些板块，仅提交其余板块？".format(detail),
+        ):
+            return None
+        bad_titles = {title for title, _ in problems}
+        return [s for s in sections if (s.get("title") or s.get("key")) not in bad_titles]
+
+    def _submit_sections_to_remote(self, sections, use_dialog=False):
+        """统一的远程提交入口：打开队列窗口、置按钮状态、跟踪提交结果与执行进度。
+
+        提交期间置 _simple_remote_submitting 标志并禁用提交按钮，防止重复点击产生
+        重复排队任务；每成功入队一个任务经 on_task_submitted 增量登记，使"停止排队"
+        在提交进行中也能终止已提交的任务（避免孤儿任务）。
+        """
+        self.open_task_queue()
+        window = getattr(self, "_task_queue_window", None)
+        if window is None:
+            return False
+        with self._simple_remote_lock:
+            self._simple_remote_submitting = True
+            self._simple_remote_stop = False
+            self._simple_remote_task_ids = {}
+            self._simple_remote_outcomes = {}
+            self._simple_remote_total = 0
+        self.btn_simple_run.config(state=tk.DISABLED)
+        self.btn_simple_submit_remote.config(state=tk.DISABLED)
+        self.btn_simple_stop.config(state=tk.NORMAL)
+        self._simple_set_status("正在提交 {} 个板块到远程队列".format(len(sections)), "running")
+        callback = lambda ids, results: self._simple_remote_submitted(ids, results)
+
+        def on_task_submitted(task_id):
+            with self._simple_remote_lock:
+                self._simple_remote_task_ids[str(task_id)] = True
+
+        if use_dialog:
+            # 弹窗可勾选板块、追加链路文件、设置"跳过内容未变化的流程"等选项
+            window.submit_simple_sections_dialog(
+                sections,
+                completed_callback=callback,
+                on_task_submitted=on_task_submitted,
+            )
+        else:
+            window.submit_simple_sections(
+                sections,
+                completed_callback=callback,
+                on_task_submitted=on_task_submitted,
+            )
+        return True
+
     def _submit_simple_to_remote_queue(self):
         """把 Simple 界面勾选且已配置流程文件的板块提交到远程任务队列。"""
         selected = []
@@ -2461,13 +2772,17 @@ class LauncherApp:
             )
             if not skip:
                 return
-        if getattr(self, "_simple_remote_task_ids", None):
-            messagebox.showinfo("提示", "Simple 远程队列正在运行中，请先停止或等待完成。")
+        if not self._remote_submit_ready():
             return
-        self.open_task_queue()
-        window = getattr(self, "_task_queue_window", None)
-        if window is not None:
-            window.submit_simple_sections_dialog(selected)
+        problems = self._validate_sections_for_remote(selected)
+        if problems:
+            selected = self._drop_invalid_sections(selected, problems)
+            if selected is None:
+                return
+        if not selected:
+            messagebox.showinfo("提示", "没有可提交的板块（校验通过的板块为空）。")
+            return
+        self._submit_sections_to_remote(selected, use_dialog=True)
 
     def _submit_chain_to_remote_queue(self):
         if not self.task_queue_url or not self.task_queue_user or not self.task_queue_token:
@@ -2482,24 +2797,8 @@ class LauncherApp:
             window.submit_local_flow_file()
 
     def _start_simple_remote(self, keys):
-        if getattr(self, "_simple_remote_task_ids", None):
-            messagebox.showinfo("提示", "Simple 远程队列正在运行中，请先停止或等待完成。")
+        if not self._remote_submit_ready():
             return False
-        if not self.task_queue_url or not self.task_queue_user or not self.task_queue_token:
-            messagebox.showwarning(
-                "提示",
-                "远程模式需要先配置服务器地址、用户名和服务令牌。\n请先打开任务队列窗口填写连接参数。",
-            )
-            return False
-        self.open_task_queue()
-        window = getattr(self, "_task_queue_window", None)
-        if window is None:
-            return False
-        self.btn_simple_run.config(state=tk.DISABLED)
-        self.btn_simple_stop.config(state=tk.NORMAL)
-        self._simple_remote_stop = False
-        self._simple_remote_task_ids = {}
-        self._simple_set_status("正在提交 {} 个板块到远程队列".format(len(keys)), "running")
         sections = []
         for key in keys:
             sec = next(s for s in self.SIMPLE_SECTIONS if s["key"] == key)
@@ -2508,96 +2807,351 @@ class LauncherApp:
                 "title": sec["title"],
                 "path": self.simple_section_vars.get(key, {}).get("path", ""),
             })
-        window.submit_simple_sections(
-            sections,
-            completed_callback=lambda ids, results: self._simple_remote_submitted(ids, results),
-        )
-        return True
+        problems = self._validate_sections_for_remote(sections)
+        if problems:
+            sections = self._drop_invalid_sections(sections, problems)
+            if sections is None:
+                return False
+        if not sections:
+            messagebox.showinfo("提示", "没有可提交的板块（校验通过的板块为空）。")
+            return False
+        return self._submit_sections_to_remote(sections, use_dialog=False)
 
     def _simple_remote_submitted(self, task_ids, results):
+        with self._simple_remote_lock:
+            self._simple_remote_submitting = False
         if self._simple_remote_stop:
-            self._simple_remote_task_ids = {}
+            # 提交期间用户点了停止：把已增量登记的任务交给后台线程逐个终止，
+            # 避免提交进行中停止产生无人管理的孤儿任务。
+            with self._simple_remote_lock:
+                to_terminate = list(self._simple_remote_task_ids)
+                self._simple_remote_task_ids = {}
+                self._simple_remote_outcomes = {}
+            self._simple_finish_remote_run("已停止提交")
+            window = getattr(self, "_task_queue_window", None)
+            if to_terminate and window is not None:
+                threading.Thread(
+                    target=self._terminate_remote_tasks,
+                    args=(list(to_terminate), window),
+                    daemon=True,
+                ).start()
             return
         submitted = 0
+        failed = 0
         for result in results or []:
-            if result[1] == "已提交":
+            # "已提交" / "已提交（内容未变化，跳过上传）" 都算成功
+            if str(result[1]).startswith("已提交"):
                 submitted += 1
+            else:
+                failed += 1
         if not task_ids:
-            self._simple_set_status("远程提交失败，未获取到任务 ID", "error")
-            self._simple_finish_remote_run()
+            # results 为空说明是对话框取消/未选板块，属正常中止而非错误
+            note = "已取消提交" if not results else "远程提交失败，未获取到任务 ID"
+            self._simple_finish_remote_run(note)
             return
-        for task_id in task_ids:
-            self._simple_remote_task_ids[task_id] = True
+        with self._simple_remote_lock:
+            for task_id in task_ids:
+                self._simple_remote_task_ids[task_id] = True
+            self._simple_remote_outcomes = {}
+            # 总数在提交时固定，供轮询显示"已完成 X / 共 Y"
+            self._simple_remote_total = len(task_ids)
+        if failed:
+            self._append_log(
+                "远程提交：成功 {} 个，失败 {} 个".format(submitted, failed), tag="warning"
+            )
         self._simple_set_status(
             "已提交 {} 个任务，等待执行".format(len(task_ids)),
             "running",
         )
-        import threading as _th
-        _th.Thread(target=self._simple_remote_poll, daemon=True).start()
+        # 提交后快照确认：用一次批量查询核实任务已被服务端接收。
+        # 若服务端刚重启导致任务丢失，立即发现并止损，避免轮询空转卡死。
+        window = getattr(self, "_task_queue_window", None)
+        missing = self._confirm_remote_tasks(task_ids, window) if window is not None else []
+        if missing:
+            detail = "、".join(missing[:5]) + ("…" if len(missing) > 5 else "")
+            self._append_log(
+                "远程快照确认：{} 个任务未在服务端找到（可能服务端重启丢失）：{}".format(
+                    len(missing), detail
+                ),
+                tag="error",
+            )
+            if len(missing) == len(task_ids):
+                self._simple_finish_remote_run(
+                    "提交的任务均未在服务端找到，请检查队列服务是否重启过"
+                )
+                return
+            self._simple_set_status(
+                "已提交 {} 个任务，其中 {} 个未在服务端找到".format(
+                    len(task_ids) - len(missing), len(missing)
+                ),
+                "warning",
+            )
+        threading.Thread(target=self._simple_remote_poll, daemon=True).start()
 
     def _simple_remote_poll(self):
+        """远程轮询入口：包一层顶层异常兜底，避免轮询线程静默死亡导致按钮卡死。"""
+        try:
+            self._simple_remote_poll_impl()
+        except Exception as exc:
+            self._append_log("远程轮询异常终止：{}".format(exc), tag="error")
+            self._post_ui(
+                lambda: self._simple_finish_remote_run(
+                    "远程轮询异常终止，请检查任务队列服务"
+                )
+            )
+
+    def _simple_remote_poll_impl(self):
+        """轮询已提交的远程任务状态（后台线程）。
+
+        - 用 _simple_remote_lock 保护任务集合，避免与"停止排队"并发读写；
+        - 优先用 1 次批量查询替代 N 次单查（服务端不支持时自动降级为逐个查询）；
+        - 查询连续失败时按 2→4→8→16→30 秒退避，成功一轮后归零；
+        - 进度按"已完成 X / 共 Y"展示，Y 在提交时固定，避免每轮分母跳变。
+        """
         window = getattr(self, "_task_queue_window", None)
         if window is None:
             self._post_ui(lambda: self._simple_finish_remote_run("任务队列窗口已关闭"))
             return
+        with self._simple_remote_lock:
+            self._simple_remote_outcomes = getattr(self, "_simple_remote_outcomes", None) or {}
+            total = int(getattr(self, "_simple_remote_total", 0) or 0)
+        fail_streak = 0
+        batch_enabled = True  # 服务端不支持批量查询时降级为逐个查询，不再重试批量
+        degraded_notified = False
         while True:
             if self._simple_remote_stop:
                 return
-            if not getattr(self, "_simple_remote_task_ids", None):
+            with self._simple_remote_lock:
+                remaining = list(self._simple_remote_task_ids)
+            if not remaining:
                 return
-            remaining = dict(self._simple_remote_task_ids)
-            done_count = 0
+            if not total:
+                total = len(remaining)
             running_detail = None
-            total = len(remaining)
-            index = 0
-            for task_id in list(remaining):
-                index += 1
+            query_failed = False
+            # 批量查询（1 次请求替代 N 次）；不支持时降级为逐个查询
+            details = None
+            if batch_enabled:
                 try:
-                    payload = window.get_task_detail(task_id)
-                    task = payload.get("task") or {} if isinstance(payload, dict) else {}
-                    status = str(task.get("status") or "")
-                    if status in ("success", "failed", "canceled", "terminated"):
-                        done_count += 1
-                        self._simple_remote_task_ids.pop(task_id, None)
-                    elif running_detail is None and status in ("pending", "running", "paused"):
-                        running_detail = task
+                    details = window.get_tasks_batch(remaining)
+                    if details is None:
+                        # 服务端不识别 ids 参数，后续轮次不再尝试批量
+                        batch_enabled = False
+                        if not degraded_notified:
+                            degraded_notified = True
+                            self._post_ui(
+                                lambda: self._simple_set_status(
+                                    "队列服务版本过旧，已切换为逐个查询（建议升级服务端）",
+                                    "warning",
+                                )
+                            )
                 except Exception as exc:
+                    query_failed = True
                     self._post_ui(
                         lambda e=exc: self._simple_set_status(
                             "远程查询失败：{}".format(e), "warning"
                         )
                     )
-                    time.sleep(2)
-                    break
-            else:
-                if running_detail is not None:
-                    step = str(running_detail.get("currentStepName") or "").strip()
-                    percent = running_detail.get("progressPercent")
-                    status_text = str(running_detail.get("status") or "")
-                    if isinstance(percent, (int, float)):
-                        info = "{:.0f}%".format(percent)
-                    else:
-                        info = status_text
-                    if step:
-                        info += " {}".format(step)
-                    self._post_ui(
-                        lambda i=info: self._simple_set_status(
-                            "远程执行中 {}/{}：{}".format(total - done_count, total, i),
-                            "running",
+            if details is None and not query_failed:
+                # 降级路径：逐个查询
+                for task_id in remaining:
+                    try:
+                        payload = window.get_task_detail(task_id)
+                        task = payload.get("task") or {} if isinstance(payload, dict) else {}
+                        _finished, detail = self._consume_simple_remote_result(task_id, task)
+                    except Exception as exc:
+                        query_failed = True
+                        self._post_ui(
+                            lambda e=exc: self._simple_set_status(
+                                "远程查询失败：{}".format(e), "warning"
+                            )
                         )
+                        break
+                    if running_detail is None and detail is not None:
+                        running_detail = detail
+            elif details is not None:
+                # 批量路径：直接取用结果
+                for task_id in remaining:
+                    _finished, detail = self._consume_simple_remote_result(
+                        task_id, details.get(task_id) or {}
                     )
-                if not self._simple_remote_task_ids and not self._simple_remote_stop:
-                    self._post_ui(lambda: self._simple_finish_remote_run())
-                    return
-                time.sleep(2)
+                    if running_detail is None and detail is not None:
+                        running_detail = detail
+            if query_failed:
+                fail_streak += 1
+                time.sleep(self._remote_poll_delay(fail_streak))
+                continue
+            fail_streak = 0
+            with self._simple_remote_lock:
+                left = len(self._simple_remote_task_ids)
+                stop_requested = bool(self._simple_remote_stop)
+            if running_detail is not None:
+                step = str(running_detail.get("currentStepName") or "").strip()
+                percent = running_detail.get("progressPercent")
+                status_text = str(running_detail.get("status") or "")
+                if isinstance(percent, (int, float)):
+                    info = "{:.0f}%".format(percent)
+                else:
+                    info = status_text
+                if step:
+                    info += " {}".format(step)
+                done = max(0, total - left)
+                self._post_ui(
+                    lambda i=info, d=done, t=total: self._simple_set_status(
+                        "远程执行中 {}/{}：{}".format(d, t, i),
+                        "running",
+                    )
+                )
+            if not left and not stop_requested:
+                self._post_ui(lambda: self._simple_finish_remote_run())
+                return
+            # 自适应节流：有运行中/排队中任务时 2s 刷新进度；全部排队等待时
+            # 拉长到 5s，减少无进展时的空转请求。
+            time.sleep(2 if running_detail is not None else 5)
+
+    def _confirm_remote_tasks(self, task_ids, window):
+        """提交后立即用一次批量查询确认任务已被服务端接收。
+
+        返回未在服务端找到的 task_id 列表。服务端版本过旧（批量接口不可用）
+        或查询失败时返回 []（跳过确认，不影响正常运行）。
+        """
+        if not task_ids or window is None:
+            return []
+        try:
+            details = window.get_tasks_batch(task_ids)
+        except Exception:
+            return []
+        if details is None:
+            return []
+        return [t for t in task_ids if t not in details]
+
+    def _consume_simple_remote_result(self, task_id, task):
+        """消费一条远程轮询结果（批量/逐个查询共用）。
+
+        任务进入终态（成功/失败/取消/终止）时移出待查集合并记录结果；
+        处于排队/运行/暂停时返回该任务供进度展示。
+
+        返回 (finished, running_detail)：
+        - finished：任务是否已结束；
+        - running_detail：运行中的任务 dict，否则 None。
+        """
+        status = str(task.get("status") or "") if isinstance(task, dict) else ""
+        if status in ("success", "failed", "canceled", "terminated"):
+            with self._simple_remote_lock:
+                self._simple_remote_task_ids.pop(task_id, None)
+                self._simple_remote_outcomes[task_id] = {
+                    "status": status,
+                    "error": str(task.get("error") or ""),
+                    "flow": os.path.basename(str(task.get("flowPath") or "")),
+                }
+            return True, None
+        if status in ("pending", "running", "paused"):
+            return False, task
+        return False, None
+
+    @staticmethod
+    def _remote_poll_delay(streak):
+        """轮询失败退避秒数：2 → 4 → 8 → 16 → 30 封顶，与任务队列窗口策略一致。"""
+        return float(min(30, 2 ** min(max(0, int(streak)), 5)))
 
     def _simple_finish_remote_run(self, note=""):
-        self._simple_remote_task_ids = {}
+        """远程任务全部结束：汇总成功/失败数量，并为失败任务提供重试入口。"""
+        with self._simple_remote_lock:
+            outcomes = dict(self._simple_remote_outcomes or {})
+            self._simple_remote_task_ids = {}
+            self._simple_remote_outcomes = {}
         self._simple_remote_stop = False
         self.btn_simple_run.config(state=tk.NORMAL)
+        self.btn_simple_submit_remote.config(state=tk.NORMAL)
         self.btn_simple_stop.config(state=tk.DISABLED)
-        text = note or "全部远程任务完成"
-        self._simple_set_status(text, "success" if not note else "idle")
+        if note:
+            self._simple_set_status(note, "idle")
+            return
+        if not outcomes:
+            self._simple_set_status("全部远程任务完成", "success")
+            return
+        success = [k for k, v in outcomes.items() if v.get("status") == "success"]
+        failed = [(k, v) for k, v in outcomes.items() if v.get("status") != "success"]
+        # 服务端 resume 仅对 failed / terminated / paused 生效，canceled 不支持重跑
+        retryable = [(k, v) for k, v in failed if v.get("status") in ("failed", "terminated")]
+        text = "远程任务完成：成功 {} / 失败 {}".format(len(success), len(failed))
+        self._simple_set_status(text, "success" if not failed else "warning")
+        self._append_log(text, tag="success" if not failed else "warning")
+        if not failed:
+            return
+        detail = "\n".join(
+            "- {}：{}{}".format(
+                v.get("flow") or k,
+                v.get("status"),
+                "（{}）".format(v.get("error")) if v.get("error") else "",
+            )
+            for k, v in failed[:8]
+        )
+        if retryable and messagebox.askyesno(
+            "远程任务有失败项",
+            "{}\n\n{}\n\n是否重试这些失败任务？".format(text, detail),
+        ):
+            self._retry_failed_remote_tasks([k for k, _ in retryable])
+
+    def _terminate_remote_tasks(self, task_ids, window):
+        """后台逐个终止已提交到服务器的任务（提交期间停止时使用，避免孤儿任务）。"""
+        terminated = 0
+        for task_id in task_ids:
+            try:
+                if window.control_task(task_id, "terminate"):
+                    terminated += 1
+            except Exception:
+                pass
+        if terminated:
+            self._append_log(
+                "已终止 {} 个已提交的远程任务".format(terminated), tag="warning"
+            )
+
+    def _retry_failed_remote_tasks(self, task_ids):
+        """对失败的远程任务调用 resume（后台线程），服务端会把任务回退到 pending。
+
+        原实现同步循环 control_task（每个最多阻塞 6s），N 个失败任务会卡死 UI 线程；
+        改为后台线程执行，结果经 _post_ui 回主线程更新状态。
+        """
+        task_ids = list(task_ids or [])
+        if not task_ids:
+            return
+        window = getattr(self, "_task_queue_window", None)
+        if window is None:
+            self.open_task_queue()
+            window = getattr(self, "_task_queue_window", None)
+        if window is None:
+            self._simple_set_status("重试失败：任务队列窗口不可用", "error")
+            return
+        self._simple_set_status(
+            "正在重试 {} 个失败任务...".format(len(task_ids)), "running"
+        )
+
+        def _worker(win):
+            ok = 0
+            fail = 0
+            for task_id in task_ids:
+                try:
+                    if win.control_task(task_id, "resume"):
+                        ok += 1
+                    else:
+                        fail += 1
+                except Exception:
+                    fail += 1
+            self._post_ui(lambda: self._retry_finished(ok, fail))
+
+        threading.Thread(target=_worker, args=(window,), daemon=True).start()
+
+    def _retry_finished(self, ok, fail):
+        """重试后台线程完成后的主线程收尾：日志 + 状态。"""
+        self._append_log(
+            "远程任务重试：成功 {} 个，失败 {} 个".format(ok, fail),
+            tag="success" if not fail else "warning",
+        )
+        self._simple_set_status(
+            "已重试 {} 个任务，失败 {} 个".format(ok, fail),
+            "success" if not fail else "warning",
+        )
 
     def _simple_run_one(self, section_key):
         info = self.simple_section_vars.get(section_key, {})
@@ -2623,15 +3177,34 @@ class LauncherApp:
         return True
 
     def _simple_stop_queue(self):
-        task_ids = list(getattr(self, "_simple_remote_task_ids", None) or [])
+        """停止 Simple 排队。
+
+        除清空待跑队列外，还终止正在运行的本地子进程（多塔串行队列则置停止标志并
+        终止当前塔）与已提交的远程任务。按钮在进程真正退出后才恢复，避免"点了停止
+        但当前板块仍在后台运行、且按钮已置灰无法再次停止"的问题。
+        """
+        with self._simple_remote_lock:
+            task_ids = list(self._simple_remote_task_ids or [])
+            self._simple_remote_task_ids = {}
         window = getattr(self, "_task_queue_window", None)
         self._simple_remote_stop = True
         self._simple_run_queue = []
         self._simple_run_index = 0
-        self._simple_remote_task_ids = {}
-        self.btn_simple_run.config(state=tk.NORMAL)
-        self.btn_simple_stop.config(state=tk.DISABLED)
-        self._simple_set_status("已停止排队", "idle")
+        # 联动：多塔串行队列运行中时一并请求停止
+        mast_active = bool(getattr(self, "_mast_queue_active", False))
+        if mast_active:
+            self._mast_queue_stop = True
+            self._append_log("正在停止多塔串行队列...", tag="warning")
+        # 本地子进程 / 多塔当前塔：复用与"停止流程"一致的终止逻辑（terminate → kill）
+        local_running = bool(self.process) and self.process.poll() is None
+        if local_running or mast_active:
+            self._simple_set_status("正在停止当前板块...", "warning")
+            threading.Thread(target=self._stop_process_worker, daemon=True).start()
+            threading.Thread(target=self._simple_wait_stopped, daemon=True).start()
+        else:
+            self.btn_simple_run.config(state=tk.NORMAL)
+            self.btn_simple_stop.config(state=tk.DISABLED)
+            self._simple_set_status("已停止排队", "idle")
         if task_ids and window is not None:
             def _terminate_tasks():
                 for task_id in task_ids:
@@ -2639,8 +3212,31 @@ class LauncherApp:
                         window.control_task(task_id, "terminate")
                     except Exception:
                         pass
-            import threading as _th
-            _th.Thread(target=_terminate_tasks, daemon=True).start()
+            threading.Thread(target=_terminate_tasks, daemon=True).start()
+
+    def _simple_wait_stopped(self, timeout=20.0):
+        """等待本地进程/多塔队列真正退出（后台线程），超时也放行以便恢复按钮。"""
+        deadline = time.time() + max(1.0, float(timeout))
+        while time.time() < deadline:
+            queue_active = bool(getattr(self, "_mast_queue_active", False))
+            proc = self.process
+            proc_running = bool(proc) and proc.poll() is None
+            if not queue_active and not proc_running:
+                break
+            time.sleep(0.2)
+        still_running = bool(getattr(self, "_mast_queue_active", False)) or (
+            bool(self.process) and self.process.poll() is None
+        )
+        self._post_ui(lambda: self._simple_after_stopped(still_running))
+
+    def _simple_after_stopped(self, still_running):
+        """停止收尾：恢复 Simple 按钮并按实际退出情况提示。"""
+        self.btn_simple_run.config(state=tk.NORMAL)
+        self.btn_simple_stop.config(state=tk.DISABLED)
+        if still_running:
+            self._simple_set_status("⚠ 停止超时，进程可能仍在运行", "warning")
+        else:
+            self._simple_set_status("已停止排队", "idle")
 
     def _simple_run_next(self):
         """启动下一个待运行板块（由 after 在主线程中调度，线程安全）。"""
@@ -2687,15 +3283,57 @@ class LauncherApp:
         import threading as _th
         _th.Thread(target=self._simple_wait_for_next, args=(idx, total, sec["title"]), daemon=True).start()
 
-    def _simple_wait_for_next(self, idx, total, title):
-        """等待当前进程退出，然后调度下一个板块（在后台线程中）。"""
+    def _simple_wait_for_next(self, idx, total, title, timeout=14400.0):
+        """等待当前板块/多塔队列完成，然后调度下一个板块（后台线程）。
+
+        多塔串行队列需等待队列整体完成（_mast_queue_active 置 False），而非单个塔退出，
+        否则 Simple 队列会在第一塔结束时提前推进下一个板块，与后续塔并发运行。
+        等待期间周期性回写"已等待时长"，避免长时间无提示被误判为卡死；
+        timeout 用于兜底（默认 4 小时），超时则中止排队并明确提示。
+        """
+        deadline = time.time() + max(1.0, float(timeout))
+        started = time.time()
+        last_hint = 0.0
+        timed_out = False
         try:
-            if self.process:
-                self.process.wait()
+            while True:
+                queue_active = bool(getattr(self, "_mast_queue_active", False))
+                proc = self.process
+                proc_running = bool(proc) and proc.poll() is None
+                if not queue_active and not proc_running:
+                    break
+                if time.time() > deadline:
+                    timed_out = True
+                    break
+                elapsed = time.time() - started
+                if elapsed - last_hint >= 30.0:
+                    last_hint = elapsed
+                    self._post_ui(
+                        lambda e=int(elapsed // 60), i=idx, n=total, t=title: self._simple_set_status(
+                            "⏳ {}/{} {} 运行中，已等待 {} 分钟".format(i, n, t, e),
+                            "running",
+                        )
+                    )
+                time.sleep(0.5)
         except Exception:
             pass
         time.sleep(0.5)
+        if timed_out:
+            self._mast_queue_stop = True
+            self._post_ui(
+                lambda t=title: self._simple_abort_queue("等待 {} 超时，已停止排队".format(t))
+            )
+            return
         self.root.after(0, self._simple_run_next)
+
+    def _simple_abort_queue(self, reason):
+        """中止 Simple 排队：清空待跑队列、恢复按钮并提示原因。"""
+        self._simple_run_queue = []
+        self._simple_run_index = 0
+        self.btn_simple_run.config(state=tk.NORMAL)
+        self.btn_simple_stop.config(state=tk.DISABLED)
+        self._simple_set_status("⚠ {}".format(reason), "error")
+        self._append_log("Simple 排队已中止：{}".format(reason), tag="warning")
 
 
     def _simple_import_flow(self, section_key):
@@ -3807,6 +4445,10 @@ class LauncherApp:
             else:
                 base_summary += " | 数据落盘：未检测到新增文件"
         self.run_report_summary_var.set(base_summary)
+        _mast_name = ""
+        _report_rc = report.get("runtimeConfig")
+        if isinstance(_report_rc, dict):
+            _mast_name = str(_report_rc.get("mastName", "") or "").strip()
         self.run_report_meta_var.set(
             "开始：{started} | 结束：{ended} | 总耗时：{elapsed:.3f} 秒 | 报告：{path}".format(
                 started=report.get("startedAt", "") or "-",
@@ -3814,6 +4456,7 @@ class LauncherApp:
                 elapsed=float(summary.get("totalElapsedSeconds", 0.0) or 0.0),
                 path=report.get("reportPath", "") or LAST_RUN_REPORT_FILE,
             )
+            + (f" | 测风塔：{_mast_name}" if _mast_name else "")
         )
 
         step_results = report.get("stepResults", []) if isinstance(report.get("stepResults"), list) else []
@@ -4428,9 +5071,161 @@ class LauncherApp:
             self._append_log("写入临时流程文件失败，按原流程运行：{}".format(exc), tag="warning")
             return None
 
+    def _write_project_tmp_flow_for_mast(self, flow_path, text_overrides, path_prefix_overrides, mast_name):
+        """多塔：按 mastName 写独立临时文件，避免覆盖。"""
+        try:
+            payload, _err = load_json_file(flow_path)
+            if not isinstance(payload, dict):
+                return None
+            new_payload = wt_project_workdir_parser.apply_overrides_to_payload(
+                payload, text_overrides, path_prefix_overrides
+            )
+            tmp_dir = os.path.join(BASE_DIR, "workspace")
+            os.makedirs(tmp_dir, exist_ok=True)
+            safe = "".join(c if c.isalnum() else "_" for c in str(mast_name or "mast"))
+            tmp_path = os.path.join(tmp_dir, f"flow_definition_project_tmp_{safe}.json")
+            save_json_file(tmp_path, new_payload)
+            return tmp_path
+        except Exception as exc:
+            self._append_log(f"写入多塔临时流程失败 mast={mast_name}: {exc}", tag="warning")
+            return None
+
+    def _launch_meteo_mast_queue(self, flow_definition_path, mast_parsed_list, base_runtime_config, banner, extra_args):
+        """Simple 多塔串行：每塔一临时流程，串行等待子进程退出。
+
+        队列生命周期内只发一次 exit 事件（全部完成/停止时），由 _handle_process_exit
+        统一刷新运行状态；塔间日志经 output_queue 回主线程输出（Tk 线程安全）。
+        """
+        total = len(mast_parsed_list)
+        self._append_log(f"检测到多塔 {total} 个，启动串行队列", tag="system")
+        self._mast_queue_active = True
+        self._mast_queue_stop = False
+
+        def _enqueue_log(message, tag="info"):
+            self.output_queue.put(("log", (message, tag)))
+
+        def _run_queue():
+            last_rc = 0
+            # 结果汇总：结束时按"成功/失败/跳过"播报，避免只上报一个退出码而丢失整体结果
+            done_ok = []
+            done_fail = []
+            done_skip = []
+            try:
+                for idx, parsed in enumerate(mast_parsed_list, 1):
+                    if self._mast_queue_stop:
+                        _enqueue_log("[launcher] 多塔队列已收到停止请求，中止后续塔", "warning")
+                        last_rc = -1
+                        break
+                    if not parsed:
+                        done_skip.append(f"mast{idx}")
+                        continue
+                    rc = parsed.get("runtime_config", {}) or {}
+                    mast = rc.get("mastName") or rc.get("selectedMast") or f"mast{idx}"
+                    _enqueue_log(f"[{idx}/{total}] 塔 {mast} 开始", "system")
+                    # ── 缺数据塔保护：未精确匹配到该塔气象数据时跳过，避免错塔数据入库 ──
+                    missing = rc.get("missingMastFiles") or []
+                    if missing:
+                        _enqueue_log(
+                            f"[{idx}/{total}] 塔 {mast} 缺少气象数据文件({', '.join(missing)})，跳过该塔",
+                            "warning",
+                        )
+                        last_rc = -1
+                        done_skip.append(mast)
+                        continue
+                    # 合并 runtime
+                    cur_runtime = dict(base_runtime_config)
+                    cur_runtime.update(rc)
+                    # 每塔独立跑「新建气象数据」：显式单塔，避免 mastIds 全量被下游误判为 multi
+                    cur_runtime["towerMode"] = "single"
+                    text_ovr = parsed.get("text_overrides", {}) or {}
+                    path_ovr = parsed.get("path_prefix_overrides", {}) or {}
+                    tmp_path = self._write_project_tmp_flow_for_mast(flow_definition_path, text_ovr, path_ovr, mast)
+                    if not tmp_path:
+                        tmp_path = flow_definition_path
+                    # 启动单塔子进程并等待
+                    process_env = self._apply_model_env(os.environ.copy())
+                    process_env["GM_RUNTIME_CONFIG_JSON"] = json.dumps(cur_runtime, ensure_ascii=False)
+                    process_env[FLOW_DEFINITION_ENV_KEY] = tmp_path
+                    command = [sys.executable, "-u", AUTOMATION_SCRIPT]
+                    if not self.show_monitor_var.get():
+                        command.append("--no-monitor")
+                    if not self.pre_raise_var.get():
+                        command.append("--no-pre-raise")
+                    command.extend(extra_args or [])
+                    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    try:
+                        proc = subprocess.Popen(
+                            command, cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="ignore", bufsize=1, creationflags=creationflags, env=process_env,
+                        )
+                    except Exception as exc:
+                        _enqueue_log(f"[{idx}/{total}] 塔 {mast} 启动失败: {exc}", "error")
+                        last_rc = -1
+                        done_fail.append(f"{mast}(启动失败)")
+                        continue
+                    self.process = proc
+                    # 同步读取输出到队列并等待结束（与单塔读取协议一致）
+                    for line in proc.stdout:
+                        self.output_queue.put(("line", line.rstrip()))
+                    rc2 = proc.wait()
+                    if rc2 != 0:
+                        _enqueue_log(f"[{idx}/{total}] 塔 {mast} 结束 退出码 {rc2}，继续下一塔", "warning")
+                        last_rc = rc2
+                        done_fail.append(f"{mast}(退出码 {rc2})")
+                    else:
+                        _enqueue_log(f"[{idx}/{total}] 塔 {mast} 完成", "success")
+                        done_ok.append(mast)
+                    if self._mast_queue_stop:
+                        _enqueue_log("[launcher] 多塔队列已停止", "warning")
+                        last_rc = -1
+                        break
+                    time.sleep(0.8)
+            finally:
+                self._mast_queue_active = False
+                self._mast_queue_stop = False
+                # 清理本次队列产生的临时流程文件
+                try:
+                    tmp_dir = os.path.join(BASE_DIR, "workspace")
+                    if os.path.isdir(tmp_dir):
+                        for fname in os.listdir(tmp_dir):
+                            if fname.startswith("flow_definition_project_tmp_") and fname.endswith(".json"):
+                                try:
+                                    os.remove(os.path.join(tmp_dir, fname))
+                                except OSError:
+                                    pass
+                except OSError:
+                    pass
+                if total:
+                    _enqueue_log(
+                        "多塔队列执行结束：成功 {} / 失败 {} / 跳过 {}（共 {} 塔）".format(
+                            len(done_ok), len(done_fail), len(done_skip), total
+                        ),
+                        "success" if not done_fail and not done_skip else "warning",
+                    )
+                    if done_fail:
+                        _enqueue_log("  失败塔：" + "、".join(done_fail), "warning")
+                    if done_skip:
+                        _enqueue_log("  跳过塔：" + "、".join(done_skip), "warning")
+                # 列出各塔报告路径（finalize 已按塔名落盘 logs/run_reports/run_report_<mast>.json）
+                _report_dir = os.path.join(BASE_DIR, "logs", "run_reports")
+                for _parsed in mast_parsed_list:
+                    _rc = (_parsed or {}).get("runtime_config", {}) or {}
+                    _mast = str(_rc.get("mastName", "") or "").strip()
+                    if not _mast:
+                        continue
+                    _safe = "".join(c if c.isalnum() else "_" for c in _mast) or "mast"
+                    _rpath = os.path.join(_report_dir, f"run_report_{_safe}.json")
+                    if os.path.isfile(_rpath):
+                        _enqueue_log(f"  塔 {_mast} 报告: {_rpath}", "info")
+                self.output_queue.put(("exit", last_rc))
+        threading.Thread(target=_run_queue, daemon=True).start()
+
     def _launch_automation(self, extra_args, banner="========== 启动新的自动化流程 =========="):
         # Simple 板块运行前设置的一次性注入标志：读取后立即清除，避免残留影响后续运行
         self._simple_run_project_inject = bool(getattr(self, "_simple_run_project_inject", False))
+        if getattr(self, "_mast_queue_active", False):
+            messagebox.showinfo("提示", "多塔串行队列正在运行中，请先停止或等待完成。")
+            return
         if self.process and self.process.poll() is None:
             messagebox.showinfo("提示", "自动化流程已经在运行中。")
             return
@@ -4501,6 +5296,43 @@ class LauncherApp:
             self._simple_run_project_inject = False
             project_work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
             if project_work_dir and os.path.isdir(project_work_dir):
+                # 多塔串行：若为气象流程且 CFT信息.txt 有多塔，则展开队列
+                # 判定支持流程 runtimeConfig 显式 multiMast 标记，避免依赖"气象"字符串改名后静默失效
+                _is_meteo_flow = ("气象" in flow_definition_path) or (
+                    isinstance(_payload, dict)
+                    and (
+                        "气象" in json.dumps(_payload, ensure_ascii=False)
+                        or bool((_payload.get("runtimeConfig") or {}).get("multiMast"))
+                    )
+                )
+                _mast_entries = wt_project_workdir_parser.list_mast_entries(project_work_dir)
+                if len(_mast_entries) > 1 and not _is_meteo_flow:
+                    self._append_log(
+                        "项目含多座测风塔，但当前流程未标记为多塔气象流程，仅运行默认塔",
+                        tag="warning",
+                    )
+                # 用户在 project_params 指定了具体塔（mastId）时尊重单塔选择，不展开队列
+                _want_mast = str((getattr(self, "project_params", {}) or {}).get("mastId", "") or "").strip()
+                _want_single = _want_mast in {str(e.get("mastName", "")).strip() for e in _mast_entries}
+                if _is_meteo_flow and not _want_single and len(_mast_entries) > 1:
+                    try:
+                        _all_parsed = wt_project_workdir_parser.parse_all_masts(
+                            project_work_dir,
+                            project_params=getattr(self, "project_params", {}) or {},
+                            flow_path=flow_definition_path,
+                        )
+                    except Exception as exc:
+                        self._append_log(f"多塔解析失败，按单塔运行：{exc}", tag="warning")
+                        _all_parsed = []
+                    if _all_parsed and len(_all_parsed) > 1:
+                        # 串行队列接管后续启动，当前 _launch_automation 直接返回
+                        self._launch_meteo_mast_queue(flow_definition_path, _all_parsed, runtime_config, banner, extra_args)
+                        self.status_var.set("状态：多塔队列已启动")
+                        self.process_var.set(f"流程进程：多塔队列 {len(_all_parsed)} 个")
+                        self._set_running_state(True)
+                        self._refresh_config_summary()
+                        return
+                # 单塔/非气象：原逻辑
                 try:
                     parsed = wt_project_workdir_parser.parse_project_work_dir(
                         project_work_dir,
@@ -4514,6 +5346,31 @@ class LauncherApp:
                     parsed_rc = parsed.get("runtime_config", {}) or {}
                     if isinstance(parsed_rc, dict):
                         runtime_config.update(parsed_rc)
+                    # ── 单塔/多塔自动决定 + 综合描述注入 ──
+                    # 按项目解析出的测风塔数量决定 towerMode：≥2 → multi，否则 single。
+                    # 仅当确实解析到测风塔列表时才注入，避免干扰未指定项目文件夹的默认行为。
+                    try:
+                        _mast_entries = wt_project_workdir_parser.list_mast_entries(project_work_dir)
+                    except Exception:
+                        _mast_entries = []
+                    _mast_ids = runtime_config.get("mastIds")
+                    if isinstance(_mast_ids, list) and _mast_ids:
+                        _mast_count = len(_mast_ids)
+                    else:
+                        _mast_count = len(_mast_entries)
+                    if _mast_count > 0:
+                        _tower_mode = "multi" if _mast_count >= 2 else "single"
+                        runtime_config["towerMode"] = _tower_mode
+                        _turbine = str(runtime_config.get("turbineType", "") or "").strip()
+                        _tower_cn = "多塔" if _tower_mode == "multi" else "单塔"
+                        runtime_config["synthesisDesc"] = (
+                            f"{_turbine} {_tower_cn}".strip()
+                            if _turbine else _tower_cn
+                        )
+                        self._append_log(
+                            f"项目条件：测风塔 {_mast_count} 座 → {_tower_cn}，综合描述={runtime_config.get('synthesisDesc')}",
+                            tag="system",
+                        )
                     text_ovr = parsed.get("text_overrides", {}) or {}
                     path_ovr = parsed.get("path_prefix_overrides", {}) or {}
                     if text_ovr or path_ovr:
@@ -4567,6 +5424,9 @@ class LauncherApp:
                 break
             if item_type == "line":
                 self._handle_output_line(payload)
+            elif item_type == "log":
+                message, tag = payload
+                self._append_log(message, tag=tag)
             elif item_type == "exit":
                 self._handle_process_exit(payload)
         self.root.after(120, self._poll_output_queue)
@@ -4602,8 +5462,17 @@ class LauncherApp:
         self.process = None
 
     def stop_automation(self):
-        if not self.process or self.process.poll() is not None:
+        process = self.process
+        queue_active = bool(getattr(self, "_mast_queue_active", False))
+        process_running = bool(process) and process.poll() is None
+        if not process_running and not queue_active:
             messagebox.showinfo("提示", "当前没有正在运行的流程。")
+            return
+        if queue_active and not process_running:
+            # 多塔队列处于塔间隙（当前子进程已退出、下一塔未启动）：直接请求停止队列
+            self._mast_queue_stop = True
+            self._append_log("正在停止多塔串行队列...", tag="warning")
+            self.status_var.set("状态：正在停止多塔队列")
             return
         should_stop = messagebox.askyesno(
             "停止流程",
@@ -4618,6 +5487,9 @@ class LauncherApp:
 
     def _stop_process_worker(self):
         process = self.process
+        # 多塔队列：请求停止后，队列在当前塔结束后中止（不启动下一塔）
+        if getattr(self, "_mast_queue_active", False):
+            self._mast_queue_stop = True
         if not process:
             return
         try:

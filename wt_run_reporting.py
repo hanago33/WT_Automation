@@ -138,6 +138,17 @@ def finalize_run_report(run_report, status, error=""):
     for target_path in [report_path, last_report_path]:
         _atomic_write_json(target_path, run_report)
 
+    # 多塔串行场景：runtimeConfig.mastName 存在时按塔名额外落盘一份，
+    # 避免 last_run_report.json 只保留最后一塔的报告；同塔多次运行保留最新一份。
+    _mast_rc = run_report.get("runtimeConfig", {})
+    if isinstance(_mast_rc, dict):
+        _mast_name = str(_mast_rc.get("mastName", "") or "").strip()
+        if _mast_name:
+            _safe = "".join(c if c.isalnum() else "_" for c in _mast_name) or "mast"
+            _mast_path = os.path.join(report_dir, f"run_report_{_safe}.json")
+            _atomic_write_json(_mast_path, run_report)
+            run_report["mastReportPath"] = _mast_path
+
     _summary = run_report.get("summary", {})
     if not isinstance(_summary, dict):
         _summary = {}

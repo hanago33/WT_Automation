@@ -26,6 +26,7 @@ _CLICK_FLOW_CONTROL = lambda *args, **kwargs: False
 _CLICK_RELATIVE_REGION = lambda *args, **kwargs: (False, {})
 _CLICK_RELATIVE_ANCHOR = lambda *args, **kwargs: (False, {})
 _CHECK_ALL_TOGGLES = lambda *args, **kwargs: False
+_SELECT_LIST_ITEMS = lambda *args, **kwargs: None
 _FOCUS_FLOW_CONTROL = lambda *args, **kwargs: False
 _TYPE_TEXT_INTO_FLOW_CONTROL = lambda *args, **kwargs: False
 _TYPE_TEXT_INTO_RELATIVE_REGION = lambda *args, **kwargs: (False, {})
@@ -150,6 +151,7 @@ def configure_flow_executor(
     click_relative_region=None,
     click_relative_anchor=None,
     check_all_toggles=None,
+    select_list_items=None,
     focus_flow_control=None,
     type_text_into_flow_control=None,
     type_text_into_relative_region=None,
@@ -168,7 +170,7 @@ def configure_flow_executor(
 ):
     global _GET_STEP_DEFINITION, _GET_FLOW_PACKAGE, _GET_STEP_PARAMS
     global _RESOLVE_DYNAMIC_VALUE, _LOG_STEP, _CLICK_FLOW_CONTROL, _CLICK_RELATIVE_REGION
-    global _CLICK_RELATIVE_ANCHOR, _CHECK_ALL_TOGGLES
+    global _CLICK_RELATIVE_ANCHOR, _CHECK_ALL_TOGGLES, _SELECT_LIST_ITEMS
     global _FOCUS_FLOW_CONTROL, _TYPE_TEXT_INTO_FLOW_CONTROL, _TYPE_TEXT_INTO_RELATIVE_REGION
     global _SELECT_DROPDOWN_ITEM_RUNTIME
     global _DRAG_BETWEEN_FLOW_CONTROLS, _MOUSE_WHEEL_ON_FLOW_CONTROL
@@ -195,6 +197,8 @@ def configure_flow_executor(
         _CLICK_RELATIVE_ANCHOR = click_relative_anchor
     if callable(check_all_toggles):
         _CHECK_ALL_TOGGLES = check_all_toggles
+    if callable(select_list_items):
+        _SELECT_LIST_ITEMS = select_list_items
     if callable(focus_flow_control):
         _FOCUS_FLOW_CONTROL = focus_flow_control
     if callable(type_text_into_flow_control):
@@ -506,7 +510,10 @@ def _eval_precondition_skip(step_id, action_config, step_definition):
                 candidate = _call_with_control_map_path(
                     _LOCATE_FLOW_CONTROL, step_def, step_arg,
                     control_id=control_id,
-                    timeout_seconds=min(0.8, max(0.2, deadline - time.time())),
+                    # 6.0s：fast 阶段原生 FindAll + 标签预过滤在候选多时实测需 ~4s
+                    #（如风机配置分组下拉 30+ 候选 × 多窗口），预算过短会每轮
+                    # 死在打分前，永远凑不齐候选项
+                    timeout_seconds=min(6.0, max(0.2, deadline - time.time())),
                     window_title_hint=window_title_hint,
                 )
             except Exception:
@@ -532,12 +539,13 @@ def _eval_precondition_skip(step_id, action_config, step_definition):
                 % (step_arg, control_id, "已就绪" if found else "等待超时，继续执行", timeout)
             )
         if not found:
-            # 诊断：wait_visible 超时通常是"目标项根本没出现在 UIA 树里"。
-            # 若前台窗口存在 WRA 结果列表（automationId=WRAResults_ListBox_WRAResults），
-            # 用原生 FindAll 毫秒级取出其直接子项结构与名称倾倒到日志，
-            # 区分"列表为空 / 项未暴露 / 名称结构不同"三种情况。
+            # 诊断：wait_visible/wait_exists 超时通常是"目标项根本没出现在 UIA 树里"。
+            # 可通过 precondition.diagnosticAutomationId 指定要倾倒的容器
+            # （默认 WRA 结果列表），用原生 FindAll 毫秒级取出其直接子项结构与名称，
+            # 区分"容器为空 / 项未暴露 / 名称结构不同 / 选项集合未加载完"等情况。
             # 注意：任何真实 UIA 遍历都必须停在 GC 禁用区间内，否则 comtypes 对象
             # 在 __del__/Release 时可能触发 0xc0000374 堆损坏（见 find_flow_control 说明）。
+            _diag_aid = str(pre.get("diagnosticAutomationId", "")).strip() or "WRAResults_ListBox_WRAResults"
             _gc_was_enabled = False
             try:
                 import gc as _gc
@@ -556,7 +564,7 @@ def _eval_precondition_skip(step_id, action_config, step_definition):
                 fg_window = _try_get_window_by_handle(get_foreground_window_handle())
                 if fg_window is not None:
                     list_hits = list(
-                        _iter_uia_findall_by_automation_id(fg_window, "WRAResults_ListBox_WRAResults")
+                        _iter_uia_findall_by_automation_id(fg_window, _diag_aid)
                     )
                     if list_hits:
                         list_wrapper = list_hits[0]
@@ -586,13 +594,37 @@ def _eval_precondition_skip(step_id, action_config, step_definition):
                             except Exception:
                                 pass
                         _LOG_STEP(
-                            "前置[wait_visible] 诊断: 找到结果列表, 子项=%d -> %s"
+                            "前置[wait_visible] 诊断: 容器 {} 子项=%d -> %s".format(_diag_aid)
                             % (len(children), " | ".join(tile_lines[:28])[:1400])
                         )
-                        # 显式释放 UIA wrapper 引用，避免跨调用延迟回收
-                        del list_hits, list_wrapper, children, tile_lines, tile, sub
+                        # 显式释放 UIA wrapper 引用，避免跨调用延迟回收；
+                        # 防御：异常路径下个别变量可能未定义（如首项 children 抛错）
+                        try:
+                            del list_hits, list_wrapper, children, tile_lines, tile, sub
+                        except Exception:
+                            pass
                     else:
-                        _LOG_STEP("前置[wait_visible] 诊断: 前台窗口未找到 WRAResults 结果列表")
+                        _LOG_STEP(
+                            "前置[wait_visible] 诊断: 前台窗口未找到容器 automationId=%s" % _diag_aid
+                        )
+                    # 倾倒目标进程的全部顶层窗口（标题/类名/句柄）：
+                    # 定位失败常因"多出一个窗口"（复制后弹窗/独立编辑器窗口等），
+                    # 列出候选窗口即可识别应用当前所处状态。
+                    try:
+                        from wt_flow_locator import _collect_dropdown_windows
+                        _win_lines = []
+                        for _w in _collect_dropdown_windows()[:8]:
+                            _win_lines.append(
+                                "title={!r}, class={}, hwnd={}".format(
+                                    get_wrapper_text(_w) or "",
+                                    get_wrapper_class_name(_w),
+                                    hex(int(get_wrapper_handle(_w) or 0)),
+                                )
+                            )
+                        if _win_lines:
+                            _LOG_STEP("前置[wait_visible] 诊断: 候选窗口 -> " + " | ".join(_win_lines))
+                    except Exception:
+                        pass
                         del list_hits
             except Exception as _diag_exc:
                 if callable(_LOG_STEP):
@@ -1415,6 +1447,28 @@ def run_action_step(step_id, context):
         message = str(action_config.get("message", text)).strip()
         _LOG_STEP(message or f"action log: {step_id}")
         result = message
+    elif action_name == "select_list_items":
+        if not control_id:
+            raise ValueError(f"action select_list_items 缺少 controlId: {step_id}")
+        summary = _call_with_control_map_path(
+            _SELECT_LIST_ITEMS,
+            step_definition,
+            step_id,
+            control_id,
+            timeout_seconds=timeout_seconds,
+            window_title_hint=window_title_hint,
+            target_items=text,
+        )
+        if not summary:
+            raise RuntimeError(
+                f"action select_list_items 未命中: step={step_id}, control={control_id}"
+            )
+        _LOG_STEP(
+            "已执行 select_list_items: step={step}, control={control}, result={result}".format(
+                step=step_id, control=control_id, result=summary
+            )
+        )
+        result = summary
     elif action_name == "check_all_toggles":
         if not control_id:
             raise ValueError(f"action check_all_toggles 缺少 controlId: {step_id}")
