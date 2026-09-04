@@ -33,6 +33,7 @@ from wt_flow_validation import validate_flow_definition
 from wt_flow_editor_utils import normalize_control_window_title
 import wt_task_queue_window
 import wt_project_workdir_parser
+import wt_mast_config_xml
 from wt_flow_graph import FlowGraphWindow
 
 
@@ -70,6 +71,58 @@ FLOW_DEFINITION_ENV_KEY = "WT_FLOW_DEFINITION_FILE"
 RECORDER_LAUNCH_CMD_FILE = os.path.join(BASE_DIR, "_launch_pywinauto_recorder.cmd")
 _PYAUTOGUI_MODULE = None
 _PYAUTOGUI_IMPORT_ERROR = None
+
+
+def _inject_mast_config_xml_override(flow_path, text_ovr, rc, log_fn=None):
+    """「配置导入」链路专用：按塔生成/覆盖导入配置 XML，并把其路径注入 text_overrides。
+
+    仅当 flow 副本含默认配置文本（DEFAULT_MAST_CONFIG_XML_TEXT）时生效；
+    普通链路不含该文本则原样返回 text_ovr（零副作用）。
+    返回合并后的 text_overrides。
+    """
+    try:
+        if not flow_path or not os.path.isfile(flow_path):
+            return text_ovr
+        with open(flow_path, "r", encoding="utf-8", errors="ignore") as fobj:
+            blob = fobj.read(2 ** 20)
+    except OSError:
+        return text_ovr
+    # flow 是 JSON：反斜杠路径在文件里以 \\ 转义存储；需用 ensure_ascii=False
+    # 保留中文原样后再取转义字面，才能与文件文本匹配。
+    _needle_json = json.dumps(wt_mast_config_xml.DEFAULT_MAST_CONFIG_XML_TEXT, ensure_ascii=False)[1:-1]
+    if _needle_json not in blob:
+        return text_ovr
+    mast = str((rc or {}).get("mastName", "") or "").strip()
+    tim = str((rc or {}).get("mastImportFilePath", "") or "").strip()
+    hub = str((rc or {}).get("hubHeight", "") or "").strip()
+    if not (mast and tim and hub) or not os.path.isfile(tim):
+        if log_fn:
+            try:
+                log_fn("配置导入链路：缺 mast/tim/hub 参数，跳过 XML 生成 mast={}".format(mast or "?"))
+            except TypeError:
+                pass
+        return text_ovr
+    try:
+        xml_path = wt_mast_config_xml.save_mast_config_xml(
+            tim, mast, hub, output_dir=os.path.dirname(tim)
+        )
+    except Exception as exc:
+        if log_fn:
+            try:
+                log_fn("生成测风塔配置 XML 失败 mast={}: {}".format(mast, exc), "warning")
+            except TypeError:
+                pass
+        return text_ovr
+    if not xml_path:
+        return text_ovr
+    if log_fn:
+        try:
+            log_fn("已生成/覆盖导入配置 XML: {}".format(xml_path))
+        except TypeError:
+            pass
+    _ovr = dict(text_ovr or {})
+    _ovr[wt_mast_config_xml.DEFAULT_MAST_CONFIG_XML_TEXT] = xml_path
+    return _ovr
 
 
 def load_project_settings():
@@ -5778,7 +5831,9 @@ class LauncherApp:
             cur_runtime = dict(load_flow_runtime_config(flow_path))
             cur_runtime.update(rc_parsed)
             cur_runtime["towerMode"] = "single"
-            text_ovr = parsed.get("text_overrides") or {}
+            text_ovr = _inject_mast_config_xml_override(
+                flow_path, parsed.get("text_overrides") or {}, rc_parsed, self._append_log
+            )
             path_ovr = parsed.get("path_prefix_overrides") or {}
             tmp_path = self._write_project_tmp_flow_for_mast(
                 flow_path, text_ovr, path_ovr, mast,
@@ -5864,7 +5919,9 @@ class LauncherApp:
                     cur_runtime.update(rc)
                     # 每塔独立跑「新建气象数据」：显式单塔，避免 mastIds 全量被下游误判为 multi
                     cur_runtime["towerMode"] = "single"
-                    text_ovr = parsed.get("text_overrides", {}) or {}
+                    text_ovr = _inject_mast_config_xml_override(
+                        flow_definition_path, parsed.get("text_overrides", {}) or {}, rc, self._append_log
+                    )
                     path_ovr = parsed.get("path_prefix_overrides", {}) or {}
                     tmp_path = self._write_project_tmp_flow_for_mast(flow_definition_path, text_ovr, path_ovr, mast)
                     if not tmp_path:
@@ -6116,7 +6173,9 @@ class LauncherApp:
                             f"项目条件：测风塔 {_mast_count} 座 → {_tower_cn}，综合描述={runtime_config.get('synthesisDesc')}",
                             tag="system",
                         )
-                    text_ovr = parsed.get("text_overrides", {}) or {}
+                    text_ovr = _inject_mast_config_xml_override(
+                        flow_definition_path, parsed.get("text_overrides", {}) or {}, parsed_rc, self._append_log
+                    )
                     path_ovr = parsed.get("path_prefix_overrides", {}) or {}
                     if text_ovr or path_ovr:
                         tmp_path = self._write_project_tmp_flow(flow_definition_path, text_ovr, path_ovr)

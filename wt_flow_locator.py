@@ -8011,6 +8011,13 @@ def _prescroll_top_once(windows, step_id):
         return True
     _PRESCROLL_FOCUSING = True
     try:
+        # 前台激活：复制/切换后 MUP 可能失焦，点击离屏坐标会落到别的窗口上，导致
+        # 唤醒点击无效（preScrollToTop 之前不激活前台，曾让唤醒静默失败）。用 win32
+        # 激活 MUP 主窗口（毫秒级、不依赖 UIA COM），确保下面的唤醒点击真正落在编辑器。
+        try:
+            _activate_process_main_window("MUPSmartClient")
+        except Exception:
+            pass
         # 首选：UIA 原生 FindAll(AutomationId=Expander_Item) 找"风电场参数"Expander，
         # 点击其"风电场参数"标题文字（而非 Expander 中心空白区——中心可能落在
         # 折叠箭头/空白处，点击无效）。WPF 点击离屏标题会自动 BringIntoView 滚动聚焦。
@@ -8076,6 +8083,10 @@ def _prescroll_top_once(windows, step_id):
             _LOG_STEP("[FlowLocator][preScrollToTop] step={} 未找到'风电场参数'Expander (FindAll=0)".format(step_id))
     finally:
         _PRESCROLL_FOCUSING = False
+    # [唤醒兜底] Expander 不在 UIA 树（新副本编辑器内容未实体化）时，对编辑器可视区做
+    # 一次物理空白点击：激活编辑器 Tab / 触发 WPF 布局实体化，使目标控件可被探测。
+    # 实证：整树遍历 200s+ 找不到时，人工在编辑器区域点一下即恢复（快查 3s 命中）。
+    _prescroll_wake_blank_click(windows, step_id)
     # 降级：滚动容器 / 滚轮（原有逻辑）
     _scroll_windows = list(windows or [])
     if not _scroll_windows:
@@ -8216,6 +8227,100 @@ def _prescroll_top_once(windows, step_id):
         except Exception:
             pass
     return True
+
+
+def _prescroll_wake_blank_click(windows, step_id):
+    """preScrollToTop 找不到"风电场参数"Expander 时的唤醒兜底：对编辑器可视区做一次
+    物理点击，激活新副本编辑器 Tab / 触发 WPF 布局实体化，使 UIA 树中目标控件可探测。
+
+    背景：复制综合后新编辑器可能处于未激活/内容未实体化状态，UIA 遍历既慢又找不到
+    （整树单次可达 200s+，且无法被 Python 侧超时中断）。实测"人工在编辑器区域点一下
+    即恢复"——这里用坐标在编辑器内容区右侧空白处点一次，等效人工唤醒且尽量不落在
+    具体按钮/输入框上（右侧空白带，避开左侧表单控件列）。
+    """
+    try:
+        _target_rect = None
+        # 优先定位编辑器滚动容器（内容实体化后即出现），其次退到整窗右下空白。
+        for _win_cand in (windows or []):
+            if _win_cand is None:
+                continue
+            try:
+                _hits = _iter_uia_findall_by_automation_id(_win_cand, "WRAAnalysisEditorView_ScrollViewer_Edition")
+            except Exception:
+                _hits = []
+            for _sc in (_hits or []):
+                try:
+                    _rc = get_wrapper_rectangle(_sc) or {}
+                    if int(_rc.get("width", 0) or 0) > 100 and int(_rc.get("height", 0) or 0) > 100:
+                        _target_rect = _rc
+                        break
+                except Exception:
+                    continue
+            if _target_rect:
+                break
+        if _target_rect is None:
+            # 编辑器滚动容器尚未实体化：退到候选主窗口右下区域（内容区空白带）
+            for _win_cand in (windows or []):
+                if _win_cand is None:
+                    continue
+                try:
+                    _rc = get_wrapper_rectangle(_win_cand) or {}
+                    if int(_rc.get("width", 0) or 0) > 300 and int(_rc.get("height", 0) or 0) > 300:
+                        _target_rect = _rc
+                        break
+                except Exception:
+                    continue
+        if _target_rect is None:
+            return
+        # 前台校验：点击坐标来自 MUP 候选窗口矩形，若 MUP 不在前台，物理点击会落在
+        # 其它应用上（多显示器/失焦场景）。比对前台窗口进程与候选窗口进程：不一致时
+        # 先激活 MUP；激活后仍不一致则放弃本次点击（由上层/下一轮再尝试）。
+        try:
+            _fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            _fg_pid = ctypes.c_ulong()
+            if _fg_hwnd:
+                ctypes.windll.user32.GetWindowThreadProcessId(_fg_hwnd, ctypes.byref(_fg_pid))
+            _exp_pid = 0
+            for _win_cand in (windows or []):
+                if _win_cand is None:
+                    continue
+                try:
+                    _exp_pid = int(get_wrapper_process_id(_win_cand) or 0)
+                except Exception:
+                    _exp_pid = 0
+                if _exp_pid:
+                    break
+            if _fg_hwnd and _exp_pid and int(_fg_pid.value or 0) != _exp_pid:
+                _activated = _activate_process_main_window("MUPSmartClient")
+                _fg2 = ctypes.windll.user32.GetForegroundWindow()
+                _fg2_pid = ctypes.c_ulong()
+                if _fg2:
+                    ctypes.windll.user32.GetWindowThreadProcessId(_fg2, ctypes.byref(_fg2_pid))
+                if not _fg2 or not _activated or int(_fg2_pid.value or 0) != _exp_pid:
+                    _LOG_STEP(
+                        "[FlowLocator][preScrollToTop] step={} 前台非 MUP，跳过空白唤醒点击".format(step_id)
+                    )
+                    return
+        except Exception:
+            pass
+        _l = int(_target_rect.get("left", 0) or 0)
+        _t = int(_target_rect.get("top", 0) or 0)
+        _w = int(_target_rect.get("width", 0) or 0)
+        _h = int(_target_rect.get("height", 0) or 0)
+        if _w <= 0 or _h <= 0:
+            return
+        # 内容区右侧空白带（x=0.9 宽），避开左侧表单控件列；y 取上部 1/4（卡片区
+        # 上方的空白标题带，非底部固定按钮栏）。
+        _px = _l + int(_w * 0.9)
+        _py = _t + int(_h * 0.25)
+        import pyautogui as _pg_w
+        _pg_w.click(_px, _py)
+        time.sleep(0.6)
+        _LOG_STEP("[FlowLocator][preScrollToTop] step={} 编辑器空白唤醒点击 ({},{})".format(
+            step_id, _px, _py))
+    except Exception as _wexc:
+        _LOG_STEP("[FlowLocator][preScrollToTop] step={} 空白唤醒点击失败(忽略): {}".format(
+            step_id, repr(_wexc)[:120]))
 
 
 def _wheel_scroll_top(window, step_id):
@@ -8472,6 +8577,17 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         _t3 = _t4 = time.perf_counter()
                         _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
                         return best_match
+                    # 整树预算守卫：调用方传极小 timeout（<=1s，如 wait_for_control 每轮
+                    # 0.4s 快速探测）时语义是"探测一下就交给上层轮询"，快查/Raw-FindAll
+                    # 未命中即应快速失败，而不是在此做分钟级 descendants 全量遍历（复制
+                    # 后编辑器未唤醒时实测整树单轮 200s+，且单次调用无法被 Python 超时
+                    # 中断）。正常步骤 timeout>=2.5s 不受影响，整树兜底保留。
+                    if float(timeout_seconds or 0) <= 1.0:
+                        _LOG_STEP(
+                            "[FlowLocator] 快速探测(预算≤1s)跳过整树遍历: step={}, control={}, budget={}s".format(
+                                step_id, control_id or "(first)", timeout_seconds)
+                        )
+                        continue
                     candidates = [window]
                     expected_type = normalize_control_type_name(
                         control_definition.get("controlType", ""),

@@ -540,10 +540,13 @@ class ContinueWhenCachePollingTests(unittest.TestCase):
         return ok, find_calls
 
     def test_value_equals_polls_held_wrapper_without_relocate(self):
-        # 值在第 2 轮轮询才就绪：定位只应发生一次，其余轮次复用已有 wrapper
+        # 值在第 2 轮轮询才就绪：第 2 轮复用 held wrapper 直接命中，不再定位。
+        # 9-1 wohler 修复（ValuePattern 滞后兜底）后，"值不匹配"当轮会补一次
+        # _fresh_control 重定位再读值，故共 2 次 find：
+        #   find1 = 首轮定位；find2 = 第 1 轮值不匹配的重定位兜底。
         ok, find_calls = self._run_wait(["0", "99"])
         self.assertTrue(ok)
-        self.assertEqual(len(find_calls), 1, "值校验轮询应复用已定位 wrapper，不应重复整树定位")
+        self.assertEqual(len(find_calls), 2, "首轮定位 1 次 + 值不匹配当轮重定位兜底 1 次")
 
     def test_cache_hit_via_empty_hint_fallback(self):
         # 校验轮询的 window_title_hint 与动作阶段不一致时，靠空 hint 兜底命中缓存，
@@ -575,10 +578,15 @@ class ContinueWhenCachePollingTests(unittest.TestCase):
         self.assertEqual(find_calls, [])
 
     def test_dead_wrapper_drops_and_relocates(self):
-        # 持有的 wrapper 失效后下一轮重新定位（控件销毁/重绘场景）
+        # 持有的 wrapper 失效后重新定位（控件销毁/重绘场景）。9-1 重定位兜底后，
+        # 每次"值不匹配"当轮各补 1 次 _fresh_control 定位，find 数因此放大：
+        #   find1 首轮定位 H1；find2 第1轮值不匹配重定位；find3 第2轮值不匹配重定位；
+        #   第2轮尾 is_wrapper_alive(H1)=False → held 置空；find4 第3轮重新定位 H4；
+        #   find5 第3轮值不匹配重定位；find6 第4轮值不匹配重定位；
+        #   第5轮 H4 值读到 99 命中（held 复用，不再定位）。
         ok, find_calls = self._run_wait(["0", "0", "99"], alive_results=[True, False, True, True])
         self.assertTrue(ok)
-        self.assertEqual(len(find_calls), 2, "wrapper 失效后应重新定位一次")
+        self.assertEqual(len(find_calls), 6, "定位 + 失效重定位 + 逐轮值不匹配重定位 = 6 次")
 
     def test_gone_condition_refreshes_each_poll(self):
         find_calls = []

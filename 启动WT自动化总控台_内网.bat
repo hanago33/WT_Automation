@@ -2,9 +2,20 @@
 setlocal
 cd /d "%~dp0"
 set "SCRIPT=%~dp0WT_Launcher.py"
-:: Portable Python path on the intranet machine (edit if extracted elsewhere)
+rem Portable Python path on the intranet machine (edit if extracted elsewhere)
 set "PYTHON=D:\wt_python\python.exe"
-title WT Launcher (Internal - Portable Python)
+set "PYTHONW=D:\wt_python\pythonw.exe"
+set "LOG_DIR=%~dp0logs"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+set "BOOT_LOG=%LOG_DIR%\launcher_headless.log"
+
+rem ============================================================
+rem  WT Launcher (Internal) - headless launcher (always elevated)
+rem  - Always starts as Administrator. UAC prompt appears once.
+rem  - Uses D:\wt_python\pythonw.exe when present, so no console
+rem    window stays open once the tkinter UI is running.
+rem  - Startup stderr is appended to logs\launcher_headless.log.
+rem ============================================================
 
 if not exist "%PYTHON%" (
     echo [ERROR] Portable Python not found: "%PYTHON%"
@@ -14,22 +25,32 @@ if not exist "%PYTHON%" (
     exit /b 1
 )
 
-echo Using portable Python: "%PYTHON%"
-"%PYTHON%" --version
-echo.
-
-:: Self-elevate: external control capture (UiaPeek / AxeBridge) requires admin rights
 net session >nul 2>&1
 if errorlevel 1 (
     echo Requesting administrator privileges...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs" >nul 2>&1
-    if errorlevel 1 (
-        echo Admin rights not granted. Running with normal privileges.
+    if exist "%PYTHONW%" (
+        rem Elevate straight into pythonw: no cmd flash.
+        powershell -NoProfile -Command "Start-Process -FilePath '%PYTHONW%' -ArgumentList '\"%SCRIPT%\"' -Verb RunAs" >nul 2>&1
     ) else (
-        exit /b
+        rem pythonw.exe missing: elevate this script again.
+        powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs" >nul 2>&1
     )
+    if errorlevel 1 (
+        echo.
+        echo WT Automation must run as Administrator.
+        echo Please re-run this launcher and accept the UAC prompt.
+        pause
+        exit /b 1
+    )
+    exit /b 0
 )
 
-echo Starting WT Launcher...
+if exist "%PYTHONW%" (
+    start "" "%PYTHONW%" "%SCRIPT%" >> "%BOOT_LOG%" 2>&1
+    exit /b 0
+)
+
+rem pythonw.exe missing: fall back to console mode (still elevated).
+echo [WARN] "%PYTHONW%" not found. Falling back to console mode.
 "%PYTHON%" "%SCRIPT%"
 pause
