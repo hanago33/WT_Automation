@@ -132,3 +132,28 @@ class TestOrphanRecoveryIntegration:
         task = tq.get_task(task_id, db_path=db)
         assert task["status"] == "failed"
         assert task["error"] == "late"
+
+
+class TestDeleteTask:
+    """删除任务：非 running 可删，running 拒绝，关联审计一并删除。"""
+
+    def test_delete_pending(self, db):
+        task_id = tq.submit_task("u1", "/flows/a.json", db_path=db)["taskId"]
+        tq.delete_task(task_id, db_path=db)
+        assert tq.get_task(task_id, db_path=db) is None
+
+    def test_delete_removes_audit(self, db):
+        task_id = tq.submit_task("u1", "/flows/a.json", db_path=db)["taskId"]
+        tq.add_audit_event(user="u1", action="submit", task_id=task_id, db_path=db)
+        tq.delete_task(task_id, db_path=db)
+        assert tq.get_task(task_id, db_path=db) is None
+
+    def test_delete_running_rejected(self, db):
+        task_id = _running(db)
+        with pytest.raises(tq.TaskStateError):
+            tq.delete_task(task_id, db_path=db)
+        assert tq.get_task(task_id, db_path=db)["status"] == "running"
+
+    def test_delete_missing_raises(self, db):
+        with pytest.raises(tq.TaskStateError):
+            tq.delete_task("no_such_task", db_path=db)

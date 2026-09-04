@@ -29,6 +29,11 @@ _GET_LAYER_TREE_TEMPLATE_DIR = lambda: ""
 _GET_DEBUG_SCREENSHOT_DIR = lambda: ""
 _GET_IMAGE_TEMPLATES = lambda: {}
 
+# UI-TARS 日志名唯一序号：Windows datetime.now() 微秒段精度约 15ms，
+# 同秒内快速连续调用（如连续超时重试）99%+ 生成相同文件名、日志互相覆盖。
+# 用进程内单调递增计数兜底，保证任意两次调用日志名必不相同。
+_UI_TARS_LOG_SEQ = 0
+
 
 def configure_wt_projection_helpers(
     log_step=None,
@@ -91,10 +96,12 @@ def run_ui_tars(prompt, step_name="AI介入操作"):
 
     _LOG_STEP(f"开始{step_name}")
     safe_step_name = _safe_log_filename_component(step_name)
+    global _UI_TARS_LOG_SEQ
+    _UI_TARS_LOG_SEQ += 1
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     log_base = os.path.join(
         os.path.dirname(__file__),
-        "ui_tars_{}_{}".format(safe_step_name, timestamp),
+        "ui_tars_{}_{}_{}".format(safe_step_name, timestamp, _UI_TARS_LOG_SEQ),
     )
     ui_tars_stdout = log_base + "_stdout.log"
     ui_tars_stderr = log_base + "_stderr.log"

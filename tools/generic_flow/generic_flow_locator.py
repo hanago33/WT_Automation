@@ -2219,8 +2219,6 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
         foreground_title = normalize_match_text(get_wrapper_text(foreground_before))
         if foreground_title and not is_placeholder_text(foreground_title):
             expected_window_titles = [foreground_title]
-    deadline = time.time() + max(0.2, float(timeout_seconds or 0))
-
     # 预收集目标进程窗口：仅枚举一次并复用，避免每轮循环重复枚举所有桌面窗口，
     # 且大幅减少无关窗口的遍历开销（Meteodyn 主窗口 Raw View 树很大）。
     dropdown_windows = _collect_dropdown_windows()
@@ -2248,6 +2246,10 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
             pre_option_values = injected
         except Exception:
             pass
+    # 枚举预算在预收集完成后再计时：_collect_dropdown_windows / 资产注入可能耗时数秒，
+    # 若在预收集前设置 deadline，枚举时间会被吃掉，导致 while 循环从未执行、
+    # 枚举逻辑完全不运行（症状：elapsed=0.0s、raw探针=0，下拉明明展开却选不中）。
+    deadline = time.time() + max(0.2, float(timeout_seconds or 0))
     if pre_option_values:
         deadline = min(deadline, time.time() + 1.5)
 
@@ -2302,6 +2304,17 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                         }
                 toggle_state = get_wrapper_toggle_state(dropdown_wrapper)
                 should_click = toggle_state in {"", "0", "Off", "off", "0.0", "Indeterminate"}
+                # 若步骤目标控件本身是"下拉选项 ListItem"（targetValue 含 ListItem/ListBoxItem/MenuItem），
+                # 说明下拉已由前置步骤展开、dropdown_wrapper 是可见选项而非下拉框本体：再点击它会
+                # 直接选中该项并收起下拉，导致后续枚举 0 命中（症状：raw探针=0、误选中非目标选项，
+                # 如三个下拉都选中"气压"）。跳过"自愈点击展开"，直接进入枚举命中目标选项。
+                # 用配置判断而非运行时类型：find_flow_control fallback 阶段返回的 wrapper 类型不可靠。
+                _dropdown_target_value = str((control_definition or {}).get("targetValue", "") or "")
+                if should_click and any(
+                    _key in _dropdown_target_value
+                    for _key in ("ListBoxItem", "ListItem", "MenuItem")
+                ):
+                    should_click = False
                 # 无论本次是否点击展开，都重新收集下拉窗口列表：step_16 之类的前置
                 # 步骤可能已把下拉展开（toggle=On），此时 Popup 窗口已存在但不在旧的
                 # dropdown_windows 里，不重新收集会导致后续枚举漏掉 RadComboBoxItem。
@@ -2820,7 +2833,105 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                 probe=json.dumps(raw_probe, ensure_ascii=False),
             )
         )
+    # 失败止血：失败前可能已"自愈点击展开"下拉，失败返回前收起残留 Popup 弹层，
+    # 避免残留弹层拦截后续步骤物理点击（与 wt_flow_locator 同款修复）。
+    # 发 ESC 前实时复查弹层仍在（枚举快照不可作发送依据）；期望进程 id 优先取
+    # 已定位下拉框自身，前台进程兜底。
+    try:
+        _dismiss_pids = set()
+        if expected_process_id:
+            _dismiss_pids.add(str(expected_process_id))
+        try:
+            _dropdown_pid = get_wrapper_process_id(dropdown_wrapper) if dropdown_wrapper is not None else None
+        except Exception:
+            _dropdown_pid = None
+        if _dropdown_pid:
+            _dismiss_pids.add(str(_dropdown_pid))
+        _dismiss_expanded_dropdown(step_id=step_id, control_id=control_id, expected_process_ids=_dismiss_pids)
+    except Exception:
+        pass
     return False, {"targetTexts": target_texts}
+
+
+def _dismiss_expanded_dropdown(step_id="", control_id="", expected_process_ids=None):
+    """下拉选择失败后收起残留弹层：实时复查确认弹层仍在才发 ESC，防误伤。
+
+    枚举阶段快照不可作为发送依据——从枚举到失败返回可能已隔数十秒，候选点击/
+    键盘 ENTER 早已把弹层关掉；此时全局 ESC（pywinauto.keyboard 发往当前前台焦点
+    窗口）会落到主窗口或用户其他应用。安全链路与 wt_flow_locator 同款：
+      1. 纯 win32 枚举并按目标关键词收窄到目标进程；注意目标窗口的 win32 注册类是
+         HwndWrapper[<进程>;;<GUID>]，不含 "popup"，弹层识别必须走下一步 UIA 类名；
+      2. 逐句柄限定范围 UIA 读取类名/控件类型（不做全桌面枚举），识别依据
+         UIA 类名/控件类型含 "popup"（WPF PopupAutomationPeer 上报 className="Popup"）；
+      3. 前台核对（尽力而为）：能确定前台窗口且确定不属于目标进程时跳过；
+         确定不了不阻断（以实时弹层为准）。
+    通用化场景下 _TARGET_WINDOW_KEYWORDS 为空时枚举不限定进程——此时必须拿到
+    期望进程 id 才允许继续，否则无法锚定弹层归属，宁可留着弹层也不误伤。
+    """
+    expected = {str(p).strip() for p in (expected_process_ids or []) if str(p or "").strip()}
+    if not expected and not _TARGET_WINDOW_KEYWORDS:
+        _LOG_STEP(
+            "[下拉止血] 无期望进程 id 且未配置目标窗口关键词，无法锚定弹层归属，跳过 ESC: step={}, control={}".format(
+                step_id, control_id
+            )
+        )
+        return
+    try:
+        live_infos = _enum_target_win32_windows()
+    except Exception:
+        live_infos = []
+    live_popup = None
+    for info in live_infos:
+        pid = str(info.get("processId") or "")
+        if expected and pid and pid not in expected:
+            continue
+        try:
+            win = _try_get_window_by_handle(info.get("hwnd"))
+        except Exception:
+            win = None
+        if win is None:
+            continue
+        try:
+            ui_class = str(get_wrapper_class_name(win) or "").lower()
+            ui_type = str(get_wrapper_control_type(win) or "").lower()
+        except Exception:
+            continue
+        if "popup" in ui_class or "popup" in ui_type:
+            live_popup = info
+            break
+    if live_popup is None:
+        _LOG_STEP(
+            "[下拉止血] 实时复查未见目标进程 Popup 残留，跳过 ESC: step={}, control={}".format(
+                step_id, control_id
+            )
+        )
+        return
+    try:
+        _fg_handle = get_foreground_window_handle()
+        _fg_pid = str(_get_process_id_from_handle(_fg_handle) or "") if _fg_handle else ""
+    except Exception:
+        _fg_pid = ""
+    if _fg_pid and expected and _fg_pid not in expected:
+        _LOG_STEP(
+            "[下拉止血] 前台窗口不属于目标进程(pid={})，跳过 ESC 防误伤: step={}, control={}".format(
+                _fg_pid, step_id, control_id
+            )
+        )
+        return
+    try:
+        send_keys("{ESC}")
+        time.sleep(0.2)
+        _LOG_STEP(
+            "[下拉止血] 选择失败后已发 ESC 收起残留弹层: step={}, control={}, popupClass={}, popupPid={}".format(
+                step_id, control_id, live_popup.get("className") or "", live_popup.get("processId") or ""
+            )
+        )
+    except Exception as exc:
+        _LOG_STEP(
+            "[下拉止血] 收起残留弹层失败(忽略): step={}, control={}, error={}".format(
+                step_id, control_id, repr(exc)[:120]
+            )
+        )
 
 
 def menu_select_flow(step_id, menu_path, timeout_seconds=3, window_title_hint="", control_map_path=None):
@@ -3567,13 +3678,70 @@ def resolve_effective_relative_region_window(window, parent_window):
     return window
 
 
+def _get_cursor_pos():
+    """读取当前鼠标屏幕坐标，失败返回 None。"""
+    try:
+        pt = wintypes.POINT()
+        if ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+            return int(pt.x), int(pt.y)
+    except Exception:
+        pass
+    return None
+
+
+def _move_cursor_to_screen_center():
+    """win32 直接移动鼠标到主屏中心并返回坐标（绕过 pyautogui 失效保护）。"""
+    try:
+        user32 = ctypes.windll.user32
+        screen_w = int(user32.GetSystemMetrics(0) or 1920)
+        screen_h = int(user32.GetSystemMetrics(1) or 1080)
+        x = screen_w // 2
+        y = screen_h // 2
+        if user32.SetCursorPos(x, y):
+            return x, y
+    except Exception:
+        pass
+    return None
+
+
+def _recover_pyautogui_failsafe(exc):
+    """pyautogui 失效保护自恢复：鼠标停在屏幕角落时，pyautogui 任何调用都会在
+    动作发出前立即抛 FailSafeException（点击根本没有执行）。症状是相对区域步骤
+    秒级失败报"未命中父窗口相对区域"且日志里没有点击记录。把鼠标移回屏幕中心
+    即可恢复；非 FailSafeException 返回 False 不做处理。"""
+    if "FailSafeException" not in type(exc).__name__:
+        return False
+    parked_at = _get_cursor_pos()
+    recovered = _move_cursor_to_screen_center()
+    _LOG_STEP(
+        "pyautogui 失效保护触发：鼠标被外部停在角落 parked=({px},{py})，已移回屏幕中心{result}，将重试点击: error={err}".format(
+            px=parked_at[0] if parked_at else "?",
+            py=parked_at[1] if parked_at else "?",
+            result="成功({x},{y})".format(x=recovered[0], y=recovered[1]) if recovered else "失败",
+            err=exc,
+        )
+    )
+    return recovered is not None
+
+
 def _perform_relative_region_click(center, click_kind):
-    if click_kind == "double":
-        pyautogui.doubleClick(center[0], center[1])
-    elif click_kind == "right":
-        pyautogui.click(center[0], center[1], button="right")
-    else:
-        pyautogui.click(center[0], center[1])
+    def _dispatch():
+        if click_kind == "double":
+            pyautogui.doubleClick(center[0], center[1])
+        elif click_kind == "right":
+            pyautogui.click(center[0], center[1], button="right")
+        else:
+            pyautogui.click(center[0], center[1])
+
+    try:
+        _dispatch()
+        return
+    except Exception as exc:
+        # 失效保护（鼠标在屏幕角落）先自恢复再重试一次；其他异常原样抛出，
+        # 由调用方记录日志。
+        if not _recover_pyautogui_failsafe(exc):
+            raise
+    _dispatch()
 
 
 def is_text_like_wrapper(wrapper):
@@ -5244,6 +5412,13 @@ def find_flow_window_for_relative_region(step_definition=None, parent_window=Non
     debug_default_height = step_id in {"step_16", "step_16_2"}
     debug_start_validation_regression = step_id in {"step_26", "step_26_2"}
     last_ranked_candidates = []
+    # 当窗口规格带明确标题时，空标题 fallback（如前台 MUP 主窗口）不得作为最终结果：
+    # 目标窗口可能尚未出现，应继续轮询等待标题匹配窗口，避免误用空标题主窗口
+    # 导致相对区域点击到屏幕左上角等错误位置。
+    expected_window_title = normalize_match_text(window_spec.get("title", ""))
+    last_resort_match = None
+    last_resort_score = -1
+    last_wait_log_time = 0.0
     if debug_default_height:
         foreground_before = _try_get_window_by_handle(get_foreground_window_handle())
         # #region debug-point A:default-height-relative-input-before
@@ -5296,18 +5471,20 @@ def find_flow_window_for_relative_region(step_definition=None, parent_window=Non
             # 前台窗口只有在“匹配或可能匹配目标窗口”时才参与候选（score>=0）：
             # 标题不匹配且非空标题的前台窗口（如用户当前操作的其他应用）不得作为
             # 相对区域父窗口，否则会在目标窗口缺失时对错误窗口“假成功”点击。
-            if foreground_score < 0:
-                continue
-            ranked_candidates.append((foreground_score, foreground_wrapper))
-            if should_replace_flow_window_candidate(
-                foreground_wrapper,
-                foreground_score,
-                best_match,
-                best_score,
-                window_spec,
-            ):
-                best_score = foreground_score
-                best_match = foreground_wrapper
+            # 注意：这里只能跳过“加入该候选”，绝不能 continue 整轮循环——否则会
+            # 连带跳过下面的窗口枚举与轮询 sleep，前台一旦被无关窗口占据，
+            # 目标窗口出现后也永远枚举不到，并且空转占满 CPU 直到超时。
+            if foreground_score >= 0:
+                ranked_candidates.append((foreground_score, foreground_wrapper))
+                if should_replace_flow_window_candidate(
+                    foreground_wrapper,
+                    foreground_score,
+                    best_match,
+                    best_score,
+                    window_spec,
+                ):
+                    best_score = foreground_score
+                    best_match = foreground_wrapper
         for window in iter_flow_search_windows(step_definition or {}, window_title_hint=window_spec.get("title", "")):
             window_handle_key = get_wrapper_handle(window) or id(window)
             if window_handle_key in seen_handles:
@@ -5328,6 +5505,34 @@ def find_flow_window_for_relative_region(step_definition=None, parent_window=Non
             ranked_candidates.sort(key=lambda item: item[0], reverse=True)
             last_ranked_candidates = ranked_candidates[:5]
         if best_match is not None:
+            # 目标窗口标题明确时，空标题 fallback / 标题不匹配的候选不得立即返回：
+            # 该候选通常是前台 MUP 主窗口（空标题），目标窗口可能仍在加载中，
+            # 立即返回会导致相对区域在错误窗口上换算并点击到左上角。记录为兜底
+            # 候选并继续轮询，等待标题匹配的目标窗口出现（超时后才回退兜底）。
+            if expected_window_title:
+                best_match_title = ""
+                try:
+                    best_match_title = normalize_match_text(get_wrapper_text(best_match))
+                except Exception:
+                    pass
+                if not value_matches(best_match_title, expected_window_title):
+                    if last_resort_match is None or best_score > last_resort_score:
+                        last_resort_match = best_match
+                        last_resort_score = best_score
+                    # 等待日志节流（~1.5s 一条），避免 20s 轮询刷出上百条日志
+                    now = time.time()
+                    if now - last_wait_log_time >= 1.5:
+                        last_wait_log_time = now
+                        _LOG_STEP(
+                            "父窗口相对区域目标标题尚未匹配，继续等待: step={step}, best_score={score}, title={title!r}, 目标={target!r}".format(
+                                step=step_id,
+                                score=best_score,
+                                title=best_match_title or "(empty)",
+                                target=expected_window_title,
+                            )
+                        )
+                    time.sleep(0.15)
+                    continue
             if debug_default_height:
                 # #region debug-point B:default-height-relative-input-window-found
                 _emit_default_height_debug_event(
@@ -5372,6 +5577,27 @@ def find_flow_window_for_relative_region(step_definition=None, parent_window=Non
                 # #endregion
             return best_match
         time.sleep(0.15)
+    # 超时后：目标标题明确时禁止回退空标题候选——空标题窗口（通常是 MUP 主窗口）
+    # 与明确标题的目标窗口不可能是同一窗口，回退等于把相对区域点击打到错误窗口
+    # （症状：鼠标跳到屏幕左上角、报“未命中父窗口相对区域”）。宁可让步骤干净
+    # 失败（由步骤 onError 策略接管），也不对错误窗口误点击。
+    if expected_window_title:
+        _LOG_STEP(
+            "父窗口相对区域超时且目标标题窗口未出现，放弃点击以避免误点其他窗口: step={step}, 目标题={target}".format(
+                step=step_id,
+                target=expected_window_title,
+            )
+        )
+        return None
+    # 无标题规格时保持旧版兼容行为：回退空标题兜底候选
+    if last_resort_match is not None:
+        _LOG_STEP(
+            "父窗口相对区域超时，回退空标题候选: step={step}, title={title}".format(
+                step=step_id,
+                title=normalize_match_text(get_wrapper_text(last_resort_match)) or "(empty)",
+            )
+        )
+        return last_resort_match
     if last_ranked_candidates:
         candidate_text = " || ".join(
             "#{index} score={score} title={title} class={class_name} framework={framework}".format(
@@ -5969,15 +6195,52 @@ def get_relative_region_reference_window_rect(relative_region):
 
 def resolve_relative_region_absolute_rect(window, relative_region, window_rect=None):
     reference_window_rect = get_relative_region_reference_window_rect(relative_region)
-    window_rect_source = "referenceWindowRect" if reference_window_rect else "runtime"
-    window_rect = reference_window_rect or window_rect or get_wrapper_rectangle(window)
-    if not window_rect or not window_rect.get("width") or not window_rect.get("height"):
+    runtime_rect = None
+    if window_rect is not None:
+        runtime_rect = window_rect
+    elif window is not None:
+        # _resolve_wrapper_rectangle 内部已优先走 GetWindowRect(handle)（返回完整外框），
+        # 并尝试 EnumWindows/DWM/GetAncestor 等帧升级；因此只要拿到非空矩形就应信任，
+        # 它反映窗口当前真实位置/大小（适配分辨率、DPI、窗口移动），不能仅因 selectedSource
+        # 为 base 就误判为"内容区"而退回录制快照——这正是此前 step_16~27 在运行时窗口
+        # 位置与录制快照不一致时点击偏移的根因。
+        candidate_rect, _candidate_trace = _resolve_wrapper_rectangle(window, capture_trace=False)
+        if candidate_rect:
+            runtime_rect = candidate_rect
+    if runtime_rect is not None and runtime_rect.get("width") and runtime_rect.get("height"):
+        rect_to_use = runtime_rect
+        rect_source = "runtime"
+    elif reference_window_rect is not None:
+        # 运行时完全拿不到窗口矩形时才退回收录基准，作为最后兜底。
+        rect_to_use = reference_window_rect
+        rect_source = "referenceWindowRect"
+    else:
+        rect_to_use = runtime_rect
+        rect_source = "runtime"
+    if reference_window_rect is not None:
+        try:
+            _LOG_STEP(
+                "[relativeRegion] 换算基准: source={source}, runtime=({rl},{rt},{rw}x{rh}), reference=({fl},{ft},{fw}x{fh})".format(
+                    source=rect_source,
+                    rl=runtime_rect.get("left", 0) if runtime_rect else 0,
+                    rt=runtime_rect.get("top", 0) if runtime_rect else 0,
+                    rw=runtime_rect.get("width", 0) if runtime_rect else 0,
+                    rh=runtime_rect.get("height", 0) if runtime_rect else 0,
+                    fl=reference_window_rect.get("left", 0),
+                    ft=reference_window_rect.get("top", 0),
+                    fw=reference_window_rect.get("width", 0),
+                    fh=reference_window_rect.get("height", 0),
+                )
+            )
+        except Exception:
+            pass
+    if not rect_to_use or not rect_to_use.get("width") or not rect_to_use.get("height"):
         return None
     region = normalize_relative_region(relative_region)
-    left = int(window_rect["left"] + window_rect["width"] * region["x"])
-    top = int(window_rect["top"] + window_rect["height"] * region["y"])
-    width = max(1, int(window_rect["width"] * region["width"]))
-    height = max(1, int(window_rect["height"] * region["height"]))
+    left = int(rect_to_use["left"] + rect_to_use["width"] * region["x"])
+    top = int(rect_to_use["top"] + rect_to_use["height"] * region["y"])
+    width = max(1, int(rect_to_use["width"] * region["width"]))
+    height = max(1, int(rect_to_use["height"] * region["height"]))
     return {
         "left": left,
         "top": top,
@@ -5986,8 +6249,8 @@ def resolve_relative_region_absolute_rect(window, relative_region, window_rect=N
         "width": width,
         "height": height,
         "anchor": region["anchor"],
-        "windowRect": window_rect,
-        "windowRectSource": window_rect_source,
+        "windowRect": rect_to_use,
+        "windowRectSource": rect_source,
     }
 
 
@@ -6280,7 +6543,20 @@ def click_relative_region(step_definition, parent_window, relative_region, timeo
         # #endregion
     try:
         _perform_relative_region_click(center, click_kind)
-    except Exception:
+    except Exception as exc:
+        # 点击异常必须落日志：该分支此前对非 debug 步骤完全静默，真实异常（如
+        # pyautogui FailSafeException，鼠标停在屏幕角落时任何 pyautogui 调用都会
+        # 立即抛错且点击不执行）被吞掉，步骤只报"未命中父窗口相对区域"，无法定位真因。
+        _LOG_STEP(
+            "相对区域点击执行异常: step={step}, point=({x},{y}), kind={kind}, window={title}, error={err}".format(
+                step=step_id,
+                x=center[0],
+                y=center[1],
+                kind=click_kind,
+                title=get_wrapper_text(effective_window) or "(empty)",
+                err=exc,
+            )
+        )
         if debug_add_data_false_hit:
             # #region debug-point E:add-data-false-hit-click-error
             _emit_add_data_false_hit_debug_event(

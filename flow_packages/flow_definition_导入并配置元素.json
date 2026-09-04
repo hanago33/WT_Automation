@@ -1,7 +1,7 @@
 {
   "version": "1.0",
   "project": "WT_Automation",
-  "description": "WT 自动化流程链路：导入并配置元素。主步骤参考『导入并配置元素流程包.txt』。控件信息来自控件库录音 20260820_170157_window_导入及配置元素3/4/5、20260810_170157_window_导入及配置元素1/2/_control_map，以及『导入并配置元素流程包.txt』内联推荐定位；打开文件对话框参考 20260701_173449_打开_control_map；绘图(添加新元素)视图 MBAElementSingleCreatorView 参考 元素4；配置创建视图 MBAElementConfigurationCreatorView 参考 元素5(已完整捕获 名称/测风点/风机/绘图 类别、>>移动到右侧、从已有方案复制下拉、复制、创建、Goback 等)。step1/2/5/8/9-17/18-32 控件均已基于录音解析；仅 名称框 PART_ContentHost 与 列表项(Nomapping/Mapping(1):125) 需在运行时按 name/文本 消歧(PENDING_LIVE)。",
+  "description": "WT 自动化流程链路：导入并配置元素。主步骤参考『导入并配置元素流程包.txt』。控件信息来自控件库录音 20260820_170157_window_导入及配置元素3/4/5、20260810_170157_window_导入及配置元素1/2/_control_map，以及『导入并配置元素流程包.txt』内联推荐定位；打开文件对话框参考 20260701_173449_打开_control_map；绘图(添加新元素)视图 MBAElementSingleCreatorView 参考 元素4；配置创建视图 MBAElementConfigurationCreatorView 参考 元素5(已完整捕获 名称/测风点/风机/绘图 类别、>>移动到右侧、从已有方案复制下拉、复制、创建、Goback 等)。step1/2/5/8/9-17/18-32 控件均已基于录音解析；仅 名称框 PART_ContentHost 与 列表项(不带绘图/带绘图(1):125) 需在运行时按 name/文本 消歧(PENDING_LIVE)。",
   "lastUpdated": "2026-08-21T16:30:00",
   "runtimeConfig": {
     "gmExe": "",
@@ -18,7 +18,7 @@
     {
       "id": "导入并配置元素",
       "name": "导入并配置元素",
-      "description": "完整链路：进入元素→分别导入测风点/风机文件→添加绘图元素(西北角/东南角/高度/步长)→创建绘图元素→返回→添加新配置 Nomapping(选测风点/风机)→再次添加新配置 Mapping(从 Nomapping 复制+绘图)→返回元素界面。step1/2/5/8/9-17 控件已捕获；step18-32 配置创建视图控件已基于 元素5 录音捕获。",
+      "description": "完整链路：进入元素→分别导入测风点/风机文件→添加绘图元素(西北角/东南角/高度/步长)→创建绘图元素→返回→添加新配置 不带绘图(选测风点/风机)→再次添加新配置 带绘图(从 不带绘图 复制+绘图)→返回元素界面。step1/2/5/8/9-17 控件已捕获；step18-32 配置创建视图控件已基于 元素5 录音捕获。",
       "stepIds": [
         "step_1",
         "step_2",
@@ -920,7 +920,7 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "绘图页面顶部『名称』输入框键入 Mapping（固定名，不随高度变）。",
+      "description": "绘图页面顶部『名称』输入框键入 Mapping（绘图元素名，不随高度变）。",
       "successLog": "键入元素名称 Mapping",
       "windowTitle": "*",
       "inspectHints": {
@@ -1009,7 +1009,7 @@
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "绘图元素名称固定键入 Nomapping(与 step_18 配置名一致)。"
+      "notes": "绘图元素名称固定键入 Mapping（配置『带绘图』内的绘图元素名，不随高度变）。"
     },
     {
       "id": "step_10",
@@ -2065,7 +2065,7 @@
     },
     {
       "id": "step_20",
-      "name": "键入-配置名称Nomapping",
+      "name": "键入-配置名称不带绘图",
       "stage": "custom",
       "strategy": "action",
       "actionType": "action",
@@ -2074,8 +2074,8 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在配置创建视图『名称』输入框键入名称 Nomapping。",
-      "successLog": "键入名称 Nomapping",
+      "description": "在配置创建视图『名称』输入框键入名称 不带绘图。",
+      "successLog": "键入名称 不带绘图",
       "windowTitle": "*",
       "inspectHints": {
         "controlName": "名称",
@@ -2167,7 +2167,7 @@
         "retryCount": 1,
         "retryInterval": 1.0,
         "onError": "continue",
-        "text": "Nomapping"
+        "text": "不带绘图"
       },
       "auxChecks": [],
       "fallbacks": [],
@@ -2825,7 +2825,7 @@
     },
     {
       "id": "step_27",
-      "name": "点击-创建配置(Nomapping)",
+      "name": "点击-创建配置(不带绘图)",
       "stage": "custom",
       "strategy": "action",
       "actionType": "action",
@@ -2834,8 +2834,8 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在配置创建视图点击『创建』按钮(automationId=ElementConfigurationCreatorView_Button_Create)，生成名为 Nomapping 的配置。",
-      "successLog": "创建配置 Nomapping",
+      "description": "在配置创建视图点击『创建』按钮(automationId=ElementConfigurationCreatorView_Button_Create)，生成名为 不带绘图 的配置。",
+      "successLog": "创建配置 不带绘图",
       "windowTitle": "*",
       "inspectHints": {
         "controlName": "创建",
@@ -2932,7 +2932,7 @@
     },
     {
       "id": "step_28",
-      "name": "键入-配置名称Mapping",
+      "name": "键入-配置名称带绘图",
       "stage": "custom",
       "strategy": "action",
       "actionType": "action",
@@ -2941,8 +2941,8 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在配置创建视图『名称』输入框键入名称 Mapping。",
-      "successLog": "键入名称 Mapping",
+      "description": "在配置创建视图『名称』输入框键入名称 带绘图。",
+      "successLog": "键入名称 带绘图",
       "windowTitle": "*",
       "inspectHints": {
         "controlName": "名称",
@@ -3034,7 +3034,7 @@
         "retryCount": 1,
         "retryInterval": 1.0,
         "onError": "continue",
-        "text": "Mapping"
+        "text": "带绘图"
       },
       "auxChecks": [],
       "fallbacks": [],
@@ -3051,7 +3051,7 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在配置视图点击『从已有方案复制』下拉按钮(PART_DropDownButton, name=从已有方案复制)，展开已有方案列表(含 Nomapping)。",
+      "description": "在配置视图点击『从已有方案复制』下拉按钮(PART_DropDownButton, name=从已有方案复制)，展开已有方案列表(含 不带绘图)。",
       "successLog": "展开从已有方案复制下拉框",
       "windowTitle": "*",
       "inspectHints": {
@@ -3150,7 +3150,7 @@
     },
     {
       "id": "step_30",
-      "name": "选择-方案Nomapping",
+      "name": "选择-方案不带绘图",
       "stage": "custom",
       "strategy": "action",
       "actionType": "action",
@@ -3159,31 +3159,31 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在『从已有方案复制』下拉列表中点击 Nomapping 项(txt 原文 Nomappimg，按实际名称选择)，将其载入。",
-      "successLog": "选择 Nomapping 方案",
+      "description": "在『从已有方案复制』下拉列表中点击 不带绘图 项(txt 原文 Nomappimg，按实际名称选择)，将其载入。",
+      "successLog": "选择 不带绘图 方案",
       "windowTitle": "*",
       "inspectHints": {
-        "controlName": "Nomapping",
+        "controlName": "不带绘图",
         "className": "",
-        "automationId": "Nomapping",
+        "automationId": "不带绘图",
         "controlType": "",
         "uiPath": "",
         "templateKey": ""
       },
       "controls": [
         {
-          "id": "MBAElementConfigurationView_Item_Nomapping_PENDING",
-          "name": "Nomapping",
-          "role": "PENDING_LIVE：从已有方案复制 下拉项 automationId 未在本次录音捕获，运行时按列表项名称 Nomapping 定位。",
+          "id": "MBAElementConfigurationView_Item_不带绘图_PENDING",
+          "name": "不带绘图",
+          "role": "PENDING_LIVE：从已有方案复制 下拉项 automationId 未在本次录音捕获，运行时按列表项名称 不带绘图 定位。",
           "enabled": true,
           "windowTitle": "*",
           "targetMethod": "control_type,regex",
-          "targetValue": "ListItem,Nomapping",
+          "targetValue": "ListItem,不带绘图",
           "templateKey": "",
           "uiPath": "",
-          "notes": "PENDING_LIVE：下拉列表项(ListItem) automationId 需运行时补采；可直接选文本 Nomapping。",
-          "labelText": "Nomapping",
-          "relatedLabelName": "Nomapping",
+          "notes": "PENDING_LIVE：下拉列表项(ListItem) automationId 需运行时补采；可直接选文本 不带绘图。",
+          "labelText": "不带绘图",
+          "relatedLabelName": "不带绘图",
           "helpText": "",
           "functionText": "",
           "rawInspectText": "",
@@ -3191,7 +3191,7 @@
           "auxChecks": [],
           "inspectData": {
             "howFound": "name,control_type",
-            "name": "Nomapping",
+            "name": "不带绘图",
             "controlType": "ListItem",
             "localizedControlType": "",
             "boundingRectangle": "",
@@ -3203,10 +3203,10 @@
             "runtimeId": "",
             "frameworkId": "WPF",
             "className": "",
-            "automationId": "Nomapping",
+            "automationId": "不带绘图",
             "nativeWindowHandle": "",
             "providerDescription": "",
-            "legacyName": "Nomapping",
+            "legacyName": "不带绘图",
             "legacyRole": "",
             "legacyState": "",
             "firstChild": "",
@@ -3223,11 +3223,11 @@
             "toggleState": "",
             "isVisible": "",
             "supportedPatterns": [],
-            "textContent": "Nomapping",
+            "textContent": "不带绘图",
             "recommendedTargetMethod": "name,control_type",
-            "recommendedTargetValue": "Nomapping,ListItem",
-            "labelText": "Nomapping",
-            "relatedLabelName": "Nomapping",
+            "recommendedTargetValue": "不带绘图,ListItem",
+            "labelText": "不带绘图",
+            "relatedLabelName": "不带绘图",
             "helpText": ""
           }
         }
@@ -3238,14 +3238,14 @@
         "waitBefore": 0.2,
         "waitAfter": 0.3,
         "action": "click",
-        "controlId": "MBAElementConfigurationView_Item_Nomapping_PENDING",
+        "controlId": "MBAElementConfigurationView_Item_不带绘图_PENDING",
         "retryCount": 0,
         "retryInterval": 1.0,
         "onError": "continue"
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "PENDING_LIVE：下拉列表项(ListItem) automationId 需运行时补采；可直接选文本 Nomapping。"
+      "notes": "PENDING_LIVE：下拉列表项(ListItem) automationId 需运行时补采；可直接选文本 不带绘图。"
     },
     {
       "id": "step_31",
@@ -3258,7 +3258,7 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在配置视图点击『复制』按钮(automationId=ElementConfigurationView_Button_CopyFrom)，将 Nomapping 方案复制到当前 Mapping 配置。",
+      "description": "在配置视图点击『复制』按钮(automationId=ElementConfigurationView_Button_CopyFrom)，将 不带绘图 方案复制到当前 带绘图 配置。",
       "successLog": "复制方案",
       "windowTitle": "*",
       "inspectHints": {
@@ -3684,7 +3684,7 @@
     },
     {
       "id": "step_35",
-      "name": "点击-创建配置(Mapping)",
+      "name": "点击-创建配置(带绘图)",
       "stage": "custom",
       "strategy": "action",
       "actionType": "action",
@@ -3693,8 +3693,8 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在配置创建视图点击『创建』按钮(automationId=ElementConfigurationCreatorView_Button_Create)，生成名为 Mapping 的配置。",
-      "successLog": "创建配置 Mapping",
+      "description": "在配置创建视图点击『创建』按钮(automationId=ElementConfigurationCreatorView_Button_Create)，生成名为 带绘图 的配置。",
+      "successLog": "创建配置 带绘图",
       "windowTitle": "*",
       "inspectHints": {
         "controlName": "创建",
@@ -3787,7 +3787,7 @@
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "创建 Mapping 配置。"
+      "notes": "创建 带绘图 配置。"
     },
     {
       "id": "step_36",

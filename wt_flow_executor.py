@@ -328,6 +328,13 @@ def _is_unreadable_value_control(control_id, step_definition=None):
         "control_type,text",
         "controltype.text",
         "text,",
+        # 下拉选项项（ListBoxItem/ListItem/MenuItem）：supportedPatterns 常为空、
+        # 无 ValuePattern，点击选中后读不到显示值，auto-assert 必然假失败
+        # （症状：select_dropdown_item_runtime 已点击成功却反复定位轮询
+        # condition=nonempty 直到超时，每步拖慢 10s+ 且误报 failed）。
+        "listboxitem",
+        "listitem",
+        "menuitem",
     ]
     for marker in unreadable_markers:
         if marker in normalized:
@@ -1413,14 +1420,50 @@ def run_action_step(step_id, context):
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
         condition = str(action_config.get("condition", "exists")).strip().lower() or "exists"
-        if not _call_with_control_map_path(
-            _WAIT_FOR_FLOW_CONTROL_CONDITION, step_definition,
-            step_id,
-            control_id=control_id,
-            condition=condition,
-            timeout_seconds=timeout_seconds,
-            window_title_hint=window_title_hint,
-        ):
+        # 守护线程 + 看门狗：wait_for_flow_control_condition 每轮 find_flow_control 传
+        # 极短 timeout（0.4s），其内部 deadline 在循环顶部检查，无法中断"应用忙"期间
+        # 单次阻塞的 UIA COM 调用（窗口响应探测拦不住"消息泵响应但 UIA 查询挂"的盲区，
+        # 实测复制综合后挂起 487-742s）。wait 返回 bool、无 wrapper 跨线程泄漏，故把
+        # 整个 wait 放进守护线程是安全的（同 click_relative_anchor 模式）；看门狗超时
+        # 强制失败，由上层 onError=continue 继续流程，避免 wait 无限等待。
+        _wait_box = {"value": False, "error": ""}
+        _wait_done = threading.Event()
+
+        def _do_wait_call():
+            try:
+                _ok = _call_with_control_map_path(
+                    _WAIT_FOR_FLOW_CONTROL_CONDITION, step_definition,
+                    step_id,
+                    control_id=control_id,
+                    condition=condition,
+                    timeout_seconds=timeout_seconds,
+                    window_title_hint=window_title_hint,
+                )
+                _wait_box["value"] = bool(_ok)
+            except Exception as _wexc:
+                _wait_box["error"] = repr(_wexc)
+            finally:
+                _wait_done.set()
+
+        _wait_worker = threading.Thread(target=_do_wait_call, daemon=True)
+        _wait_worker.start()
+        # 看门狗总预算：配置超时 + 60s 缓冲（容忍 wait 内部单次挂起自恢复的额外时间）。
+        _wait_budget = float(timeout_seconds or 0)
+        _watchdog_secs = max(30.0, _wait_budget + 60.0)
+        if not _wait_done.wait(_watchdog_secs):
+            _LOG_STEP(
+                f"wait_for_control 看门狗超时({_watchdog_secs:.0f}s)，强制失败: "
+                f"step={step_id}, control={control_id}, condition={condition}"
+            )
+            raise RuntimeError(
+                f"action wait_for_control 看门狗超时: step={step_id}, control={control_id}, condition={condition}"
+            )
+        if _wait_box.get("error"):
+            raise RuntimeError(
+                f"action wait_for_control 执行异常: step={step_id}, control={control_id}, "
+                f"condition={condition}, error={_wait_box['error']}"
+            )
+        if not _wait_box["value"]:
             raise RuntimeError(f"action wait_for_control 超时: step={step_id}, control={control_id}, condition={condition}")
         _LOG_STEP(f"已执行 action wait_for_control: step={step_id}, control={control_id}, condition={condition}")
         result = f"{control_id}:{condition}"

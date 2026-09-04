@@ -1722,13 +1722,57 @@ def score_dropdown_runtime_candidate(
 
 
 def _collect_dropdown_windows():
-    """收集用于下拉候选枚举的顶层窗口（含 WPF Popup 等未过滤顶层窗口）。"""
+    """收集用于下拉候选枚举的顶层窗口（含 WPF Popup 等未过滤顶层窗口）。
+
+    并集（按句柄去重），MUP 场景跳过慢速全桌面 UIA 枚举：
+      1. find_flow_control 同源窗口候选（优先，快）—— _enum_visible_mup_win32_windows() +
+         _GET_MAIN_WINDOW_CANDIDATES() 按句柄包装，覆盖主窗/"导入时间序列文件"对话框/
+         WPF Popup（均有 HWND）；非 MUP 场景或未注入时为空，回退全桌面 Desktop.windows()；
+      2. Desktop 原始 children —— 补 UIA 可见但无独立 HWND 的顶层元素。
+
+    性能：全桌面 Desktop.windows() 对巨大 MUP 主窗口单次可达数秒（下拉步骤 ~9s 耗时
+    大头）；Win32 EnumWindows + 进程名过滤毫秒级，ElementFromHandle 仅对目标进程
+    窗口（4~8 个）执行。
+    """
     windows = []
+    # 第一路（优先，快）：Win32 枚举目标进程窗口 + 运行时主窗口候选提供者。
     try:
-        windows = Desktop(backend="uia").windows()
+        _collected_handles = set()
+        for info in list(_enum_visible_mup_win32_windows() or []):
+            hwnd = info.get("hwnd")
+            if not hwnd:
+                continue
+            win = _try_get_window_by_handle(hwnd)
+            if win is None:
+                continue
+            handle = get_wrapper_handle(win)
+            if handle and handle in _collected_handles:
+                continue
+            windows.append(win)
+            if handle:
+                _collected_handles.add(handle)
+        for cand in list(_GET_MAIN_WINDOW_CANDIDATES() or []):
+            hwnd = cand.get("hwnd") if isinstance(cand, dict) else cand
+            if not hwnd:
+                continue
+            win = _try_get_window_by_handle(hwnd)
+            if win is None:
+                continue
+            handle = get_wrapper_handle(win)
+            if handle and handle in _collected_handles:
+                continue
+            windows.append(win)
+            if handle:
+                _collected_handles.add(handle)
     except Exception:
-        windows = []
-    # 补上 Desktop.windows() 默认过滤漏掉的 WPF Popup 等未过滤顶层窗口。
+        pass
+    # 回退：非 MUP 场景 / 未注入主窗口候选提供者时，才做全桌面 UIA 枚举（慢）。
+    if not windows:
+        try:
+            windows = Desktop(backend="uia").windows()
+        except Exception:
+            windows = []
+    # 第二路：补 UIA 可见但无独立 HWND 的 WPF Popup 等未过滤顶层元素。
     try:
         desktop = Desktop(backend="uia")
         raw_children = desktop.element_info.children() if hasattr(desktop.element_info, "children") else []
@@ -1747,9 +1791,38 @@ def _collect_dropdown_windows():
     return windows
 
 
+def _filter_dropdown_windows_by_process(windows, expected_process_id):
+    """按目标进程过滤下拉候选窗口；进程 id 为空/0 的窗口保留。
+
+    WPF Popup 等独立顶层元素经 get_wrapper_process_id 常返回空/0（无独立 HWND 或
+    读取受限），若被过滤会漏掉已展开的下拉选项（症状：候选窗口=1、raw探针=0，
+    下拉明明展开却选不中）。
+    """
+    if not expected_process_id:
+        return list(windows)
+    filtered = []
+    for w in windows:
+        try:
+            w_pid = get_wrapper_process_id(w)
+        except Exception:
+            w_pid = None
+        if not w_pid or w_pid == expected_process_id:
+            filtered.append(w)
+    return filtered or list(windows)
+
+
 def iter_dropdown_runtime_candidates(windows=None):
     if windows is None:
         windows = _collect_dropdown_windows()
+    else:
+        windows = list(windows)
+    # 前台窗口优先：展开的下拉 Popup 通常在前台且树小，先扫它可避免一上来就
+    # 遍历巨大的主窗口 descendants（Meteodyn 主窗口整树可达数万元素）。
+    foreground_handle = get_foreground_window_handle()
+    try:
+        windows.sort(key=lambda w: 0 if str(get_wrapper_handle(w)) == str(foreground_handle) else 1)
+    except Exception:
+        pass
     seen = set()
     for window in windows:
         if is_automation_window(window):
@@ -1834,7 +1907,9 @@ def _iter_dropdown_raw_view_candidates(windows=None, max_elements=40000):
         while index < len(queue) and index < max_elements:
             element = queue[index]
             index += 1
-            # 原始属性预过滤：非 ListBoxItem/MenuItem 类元素直接跳过
+            # 原始属性预过滤：非 ListBoxItem/MenuItem 类元素不作为候选（不 yield），
+            # 但仍须深入其子树——选项可能嵌套在 ScrollViewer/ListBox 等容器内，
+            # 若剪枝中间容器，其内部选项永远遍历不到（症状：raw探针=0）。
             if props:
                 is_candidate = False
                 try:
@@ -1852,18 +1927,20 @@ def _iter_dropdown_raw_view_candidates(windows=None, max_elements=40000):
                         )
                     except Exception:
                         is_candidate = True
-                if not is_candidate:
-                    continue
-            try:
-                wrapper = UIAWrapper(UIAElementInfo(element))
-            except Exception:
-                continue
-            handle_key = get_wrapper_handle(wrapper) or id(wrapper)
-            if handle_key in seen:
-                continue
-            seen.add(handle_key)
-            if is_dropdown_like_wrapper(wrapper):
-                yield wrapper
+            else:
+                is_candidate = True
+            if is_candidate:
+                try:
+                    wrapper = UIAWrapper(UIAElementInfo(element))
+                except Exception:
+                    wrapper = None
+                if wrapper is not None:
+                    handle_key = get_wrapper_handle(wrapper) or id(wrapper)
+                    if handle_key not in seen:
+                        seen.add(handle_key)
+                        if is_dropdown_like_wrapper(wrapper):
+                            yield wrapper
+            # 无论是否候选都深入子树：选项可能嵌套在非 ListItem 的容器内
             try:
                 child = walker.GetFirstChildElement(element)
                 while child:
@@ -1871,6 +1948,271 @@ def _iter_dropdown_raw_view_candidates(windows=None, max_elements=40000):
                     child = walker.GetNextSiblingElement(child)
             except Exception:
                 pass
+
+
+def _iter_dropdown_win32_text_candidates(windows=None, target_texts=None, max_elements=20000):
+    """win32/MSAA 兜底：Telerik 虚拟化下拉选项在 UIA 中不可见，但采集
+    （scanMeta.mergedBackends 含 win32，totalControls=424 vs rawTotalControls=4）
+    证明 win32/MSAA 能枚举到选项。用 win32 后端遍历窗口子树，按文本匹配目标
+    选项（生成器），供 select_dropdown_item_runtime 兜底坐标点击。
+
+    不经过 is_dropdown_like_wrapper（win32 元素无 UIA control_type/class 会被
+    误过滤），改用运行时文本候选与目标文本直接匹配。
+    """
+    try:
+        from pywinauto import Desktop
+    except Exception:
+        return
+    if windows is None:
+        windows = _collect_dropdown_windows()
+    else:
+        windows = list(windows)
+    foreground_handle = get_foreground_window_handle()
+    try:
+        windows.sort(key=lambda w: 0 if str(get_wrapper_handle(w)) == str(foreground_handle) else 1)
+    except Exception:
+        pass
+    target_texts = [normalize_match_text(t) for t in (target_texts or []) if normalize_match_text(t)]
+    seen = set()
+    for window in windows:
+        if is_automation_window(window):
+            continue
+        hwnd = get_wrapper_handle(window)
+        if not hwnd:
+            continue
+        try:
+            win32_win = Desktop(backend="win32").window(handle=hwnd)
+        except Exception:
+            continue
+        wrappers = [win32_win]
+        try:
+            wrappers.extend(win32_win.descendants())
+        except Exception:
+            pass
+        count = 0
+        for wrapper in wrappers:
+            if count >= max_elements:
+                break
+            count += 1
+            try:
+                handle_key = get_wrapper_handle(wrapper) or id(wrapper)
+            except Exception:
+                handle_key = id(wrapper)
+            if handle_key in seen:
+                continue
+            seen.add(handle_key)
+            texts = get_wrapper_runtime_text_candidates(wrapper)
+            if not texts:
+                continue
+            if target_texts:
+                if not any(tt in txt or txt in tt for tt in target_texts for txt in texts):
+                    continue
+            yield wrapper
+
+
+def _looks_like_type_name(text):
+    """判断文本是否形如 WPF 绑定对象的类型全名（如 MTD.Xxx.Yyy），此类值非用户可读选项。"""
+    text = str(text or "").strip()
+    if not text:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+", text))
+
+
+def _nearest_dropdown_option_wrapper(wrapper, max_up=5):
+    """从命中点元素向上寻找最近的下拉选项容器（ListItem/RadComboBoxItem）。
+
+    Desktop.from_point 命中的往往是选项内部 TextBlock 或选项本身，需向上回溯到
+    选项容器再提取文本，同时过滤滚动条/边框等非选项命中。
+    """
+    current = wrapper
+    for _ in range(max_up + 1):
+        if current is None:
+            return None
+        if is_dropdown_like_wrapper(current):
+            return current
+        current = _safe_get_value(lambda c=current: c.parent(), None)
+    return None
+
+
+def _extract_dropdown_option_text(wrapper, max_depth=3):
+    """提取下拉选项的可读文本：选项自身 name 若是类型全名（如 MTDLocalizedEnumValue
+    的 ToString），则下钻到子级 TextBlock 取真正显示文本（如"组"/"日期时间"）。"""
+    text = normalize_match_text(
+        _safe_get_value(lambda: wrapper.window_text(), "")
+        or _safe_get_value(lambda: getattr(wrapper.element_info, "name", ""), "")
+    )
+    if text and not _looks_like_type_name(text):
+        return text
+    found = [""]
+
+    def _walk(w, depth):
+        if found[0] or w is None or depth > max_depth:
+            return
+        for child in _safe_get_value(lambda: w.children(), []) or []:
+            candidate = normalize_match_text(
+                _safe_get_value(lambda: child.window_text(), "")
+                or _safe_get_value(lambda: getattr(child.element_info, "name", ""), "")
+            )
+            if candidate and not _looks_like_type_name(candidate):
+                found[0] = candidate
+                return
+            _walk(child, depth + 1)
+
+    _walk(wrapper, 0)
+    return found[0]
+
+
+def _get_dropdown_sweep_anchor(dropdown_wrapper, dropdown_windows):
+    """确定点扫掠锚点 rect：优先收集到的 Popup 窗口/下拉框包装器的 HWND 矩形
+    （GetWindowRect 对 WPF Popup 恒有效），其次 UIA bounding box。
+    返回 dict（left/top/right/bottom/width/height）或 None。"""
+    candidates = []
+    if dropdown_wrapper is not None:
+        candidates.append(dropdown_wrapper)
+    for w in dropdown_windows or []:
+        try:
+            _cls = str(get_wrapper_class_name(w) or "").lower()
+            _type = str(get_wrapper_control_type(w) or "").lower()
+        except Exception:
+            _cls, _type = "", ""
+        if "popup" in _cls or "popup" in _type:
+            candidates.append(w)
+    for w in candidates:
+        if w is None:
+            continue
+        # 优先 HWND + GetWindowRect：WPF Popup 的 UIA boundingBox 常为空/离屏，
+        # 但 GetWindowRect 对真实 HWND 恒能拿到屏幕矩形。
+        try:
+            handle = get_wrapper_handle(w)
+            if handle:
+                _rect = wintypes.RECT()
+                if ctypes.windll.user32.GetWindowRect(int(handle), ctypes.byref(_rect)):
+                    _width = max(0, int(_rect.right) - int(_rect.left))
+                    _height = max(0, int(_rect.bottom) - int(_rect.top))
+                    if _width > 0 and _height > 0:
+                        return {
+                            "left": int(_rect.left),
+                            "top": int(_rect.top),
+                            "right": int(_rect.right),
+                            "bottom": int(_rect.bottom),
+                            "width": _width,
+                            "height": _height,
+                        }
+        except Exception:
+            pass
+        rect = get_wrapper_rectangle(w)
+        if not rect:
+            continue
+        try:
+            width = int(rect.get("width", 0) or 0)
+            height = int(rect.get("height", 0) or 0)
+        except Exception:
+            width = height = 0
+        if width > 0 and height > 0:
+            return rect
+    return None
+
+
+def _sweep_dropdown_option_by_point(anchor_rect, target_texts, step=22, max_span=640,
+                                    max_probes=15, dwell_seconds=0.08, move_cursor=True):
+    """复刻采集器 _realize_options_by_point_sweep：Telerik 虚拟化下拉选项不在
+    UIA/MSAA 树中（普通遍历取不到），需物理移动鼠标到候选点并短暂停留触发 WPF
+    实体化，再用 Desktop.from_point 命中读取选项文本；匹配目标后直接左键点击
+    （鼠标已在选项上）。返回 (option_wrapper, matched_text, stats)。"""
+    stats = {"probes": 0, "hits": 0, "hitTexts": []}
+    if not anchor_rect:
+        return None, "", stats
+    try:
+        from pywinauto import Desktop
+    except Exception:
+        return None, "", stats
+    try:
+        left = int(anchor_rect.get("left", 0) or 0)
+        right = int(anchor_rect.get("right", 0) or 0)
+        top = int(anchor_rect.get("top", 0) or 0)
+        bottom = int(anchor_rect.get("bottom", 0) or 0)
+    except Exception:
+        return None, "", stats
+    if right <= left or bottom <= top:
+        return None, "", stats
+    x = (left + right) // 2
+    target_texts = [normalize_match_text(t).lower() for t in (target_texts or []) if normalize_match_text(t)]
+    if not target_texts:
+        return None, "", stats
+    import ctypes
+    user32 = ctypes.windll.user32
+    original_pos = None
+    if move_cursor:
+        try:
+            pt = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(pt))
+            original_pos = (pt.x, pt.y)
+        except Exception:
+            original_pos = None
+    try:
+        desktop = Desktop(backend="uia")
+    except Exception:
+        return None, "", stats
+    # 锚点是 Popup（选项列表本身）时，选项位于 Popup 内部：从 anchor 顶部向下扫
+    # 覆盖 Popup 内部及可能的向下溢出；若锚点是下拉框按钮，从按钮顶部向下扫同样
+    # 能覆盖下方展开的选项列表。
+    try:
+        y = top + 2
+        misses = 0
+        probes = 0
+        while y <= top + max_span and misses < 6 and probes < max_probes:
+            probes += 1
+            stats["probes"] += 1
+            if move_cursor:
+                try:
+                    user32.SetCursorPos(x, y)
+                except Exception:
+                    pass
+                if dwell_seconds:
+                    time.sleep(dwell_seconds)
+            wrapper = None
+            try:
+                wrapper = desktop.from_point(x, y)
+            except Exception:
+                wrapper = None
+            if wrapper is not None:
+                option = _nearest_dropdown_option_wrapper(wrapper)
+                if option is not None:
+                    text = _extract_dropdown_option_text(option)
+                    if text:
+                        stats["hits"] += 1
+                        if len(stats["hitTexts"]) < 5 and text not in stats["hitTexts"]:
+                            stats["hitTexts"].append(text)
+                        text_norm = normalize_match_text(text).lower()
+                        if any(tt and (tt in text_norm or text_norm in tt) for tt in target_texts):
+                            # 鼠标已在选项上，直接左键点击选中
+                            if move_cursor:
+                                try:
+                                    user32.SetCursorPos(x, y)
+                                except Exception:
+                                    pass
+                                time.sleep(0.05)
+                            try:
+                                user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
+                                user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
+                            except Exception:
+                                pass
+                            return option, text, stats
+                        misses = 0
+                    else:
+                        misses += 1
+                else:
+                    misses += 1
+            else:
+                misses += 1
+            y += step
+    finally:
+        if move_cursor and original_pos is not None:
+            try:
+                user32.SetCursorPos(original_pos[0], original_pos[1])
+            except Exception:
+                pass
+    return None, "", stats
 
 
 def get_wrapper_toggle_state(wrapper):
@@ -2190,15 +2532,11 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
         foreground_title = normalize_match_text(get_wrapper_text(foreground_before))
         if foreground_title and not is_placeholder_text(foreground_title):
             expected_window_titles = [foreground_title]
-    deadline = time.time() + max(0.2, float(timeout_seconds or 0))
-
     # 预收集目标进程窗口：仅枚举一次并复用，避免每轮循环重复枚举所有桌面窗口，
     # 且大幅减少无关窗口的遍历开销（Meteodyn 主窗口 Raw View 树很大）。
     dropdown_windows = _collect_dropdown_windows()
-    if expected_process_id:
-        dropdown_windows = [
-            w for w in dropdown_windows if get_wrapper_process_id(w) == expected_process_id
-        ] or dropdown_windows
+    # 进程过滤：WPF Popup 顶层窗口 pid 常为空/0，需保留（否则展开的下拉选项枚举不到）。
+    dropdown_windows = _filter_dropdown_windows_by_process(dropdown_windows, expected_process_id)
 
     # 提前检测 optionValues：若控件定义已包含可选项列表（如 MTD PART_DropDownButton），
     # 说明选项依赖 WPF 虚拟化渲染，UIA 弹窗枚举几乎不可能命中。此时将弹窗搜索
@@ -2219,6 +2557,10 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
             pre_option_values = injected
         except Exception:
             pass
+    # 枚举预算在预收集完成后再计时：_collect_dropdown_windows / 资产注入可能耗时数秒，
+    # 若在预收集前设置 deadline，枚举时间会被吃掉，导致 while 循环从未执行、
+    # 枚举逻辑完全不运行（症状：elapsed=0.0s、raw探针=0，下拉明明展开却选不中）。
+    deadline = time.time() + max(0.2, float(timeout_seconds or 0))
     if pre_option_values:
         deadline = min(deadline, time.time() + 1.5)
 
@@ -2230,6 +2572,10 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
     # 诊断探针：记录 Raw View 枚举到的下拉类候选数量与文本样例，失败时可定位
     # "没枚举到"还是"枚举到但文本/分数不匹配"。
     raw_probe = {"count": 0, "samples": []}
+    # 诊断探针：win32/MSAA 兜底枚举到的候选数量与文本样例。
+    win32_probe = {"count": 0, "samples": []}
+    # 诊断探针：点扫掠（from_point 实体化）探测次数/命中次数/匹配文本/命中样例。
+    sweep_probe = {"count": 0, "hits": 0, "matched": "", "samples": []}
     _loop_started = time.time()
     _progress_log_at = 0.0
     while time.time() < deadline:
@@ -2240,12 +2586,14 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
             _progress_log_at = _loop_now
             _LOG_STEP(
                 "下拉选项枚举进度: step={step_id}, control={control_id}, "
-                "elapsed={elapsed:.1f}s, 候选窗口={windows}, raw探针={raw}, 已剔除错误项={failed}".format(
+                "elapsed={elapsed:.1f}s, 候选窗口={windows}, raw探针={raw}, win32探针={win32}, sweep探针={sweep}, 已剔除错误项={failed}".format(
                     step_id=step_id,
                     control_id=control_id,
                     elapsed=_loop_now - _loop_started,
                     windows=len(dropdown_windows),
                     raw=raw_probe["count"],
+                    win32=win32_probe["count"],
+                    sweep=sweep_probe["count"],
                     failed=len(failed_option_keys),
                 )
             )
@@ -2271,26 +2619,106 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                             "value": current_value,
                             "targetTexts": target_texts,
                         }
+                # 防御：find_flow_control 定位到的 wrapper 若是 WPF Popup 窗口（下拉
+                # 已展开时的弹出层，class/type 常为 Popup/Window），确保它进入枚举窗口
+                # 列表——枚举阶段直接扫 Popup 子树即可命中选项，避免它只存在于
+                # find_flow_control 的窗口遍历而 _collect_dropdown_windows 漏收。
+                _wrapper_class = get_wrapper_class_name(dropdown_wrapper) or ""
+                _wrapper_type = get_wrapper_control_type(dropdown_wrapper) or ""
+                if "popup" in _wrapper_class.lower() or "popup" in _wrapper_type.lower():
+                    _popup_handle = get_wrapper_handle(dropdown_wrapper)
+                    if not any(get_wrapper_handle(w) == _popup_handle for w in dropdown_windows):
+                        dropdown_windows.append(dropdown_wrapper)
                 toggle_state = get_wrapper_toggle_state(dropdown_wrapper)
                 should_click = toggle_state in {"", "0", "Off", "off", "0.0", "Indeterminate"}
-                # 无论本次是否点击展开，都重新收集下拉窗口列表：step_16 之类的前置
-                # 步骤可能已把下拉展开（toggle=On），此时 Popup 窗口已存在但不在旧的
-                # dropdown_windows 里，不重新收集会导致后续枚举漏掉 RadComboBoxItem。
-                try:
-                    popup_windows = _collect_dropdown_windows()
-                    if expected_process_id:
-                        popup_windows = [
-                            w for w in popup_windows
-                            if get_wrapper_process_id(w) == expected_process_id
-                        ]
-                    for w in popup_windows:
-                        if not any(
-                            get_wrapper_handle(x) == get_wrapper_handle(w)
-                            for x in dropdown_windows
-                        ):
-                            dropdown_windows.append(w)
-                except Exception:
-                    pass
+                # 若步骤目标控件本身是"下拉选项 ListItem"（targetValue 含 ListItem/ListBoxItem/MenuItem），
+                # 说明下拉已由前置步骤展开、dropdown_wrapper 是可见选项而非下拉框本体：再点击它会
+                # 直接选中该项并收起下拉，导致后续枚举 0 命中（症状：raw探针=0、误选中非目标选项，
+                # 如三个下拉都选中"气压"）。跳过"自愈点击展开"，直接进入枚举命中目标选项。
+                # 用配置判断而非运行时类型：find_flow_control fallback 阶段返回的 wrapper 类型不可靠。
+                _dropdown_target_value = str((control_definition or {}).get("targetValue", "") or "")
+                if should_click and any(
+                    _key in _dropdown_target_value
+                    for _key in ("ListBoxItem", "ListItem", "MenuItem")
+                ):
+                    should_click = False
+                # 阶段3 直点快捷：目标控件本身就是下拉选项（targetValue 含
+                # ListItem/ListBoxItem/MenuItem）时，若定位到的选项已有可见矩形，
+                # 说明下拉已由前置步骤（如相对区域点击）展开——直接点击该选项并
+                # 校验即完成选择，不再依赖 Popup 窗口枚举（WPF Popup 是独立顶层
+                # HWND，_collect_dropdown_windows 可能漏收，导致 raw探针=0）。
+                if any(
+                    _key in _dropdown_target_value
+                    for _key in ("ListBoxItem", "ListItem", "MenuItem")
+                ):
+                    if _candidate_has_visible_rect(dropdown_wrapper):
+                        _opt_score = score_dropdown_runtime_candidate(
+                            dropdown_wrapper,
+                            target_texts,
+                            expected_window_titles=expected_window_titles,
+                            expected_process_id=expected_process_id,
+                        )
+                        if _opt_score >= 0:
+                            _opt_clicked, _opt_click_meta = click_dropdown_runtime_candidate(dropdown_wrapper)
+                            if _opt_clicked:
+                                time.sleep(0.15)
+                                _opt_snapshot = get_wrapper_debug_snapshot(dropdown_wrapper)
+                                _opt_text = get_wrapper_text(dropdown_wrapper) or ""
+                                _LOG_STEP(
+                                    "已直接点击下拉选项（目标控件即选项本身）: step={step_id}, control={control_id}, text={text}, click={method}".format(
+                                        step_id=step_id,
+                                        control_id=control_id,
+                                        text=_opt_text,
+                                        method=_opt_click_meta.get("method", ""),
+                                    )
+                                )
+                                return True, {
+                                    "method": "direct_option_click",
+                                    "targetTexts": target_texts,
+                                    "clickMeta": _opt_click_meta,
+                                    "bestCandidate": _opt_snapshot,
+                                    "valueVerified": _opt_text,
+                                }
+                        _LOG_STEP(
+                            "直接点击下拉选项路径未命中（无可见矩形/评分未过/点击失败），转枚举路径: step={step_id}, control={control_id}".format(
+                                step_id=step_id, control_id=control_id
+                            )
+                        )
+                    else:
+                        # 阶段1c 诊断：目标选项无可见矩形 = 下拉很可能未展开（前置展开
+                        # 步骤 click_relative_region 假成功 / 坐标漂移），记录关键证据。
+                        _LOG_STEP(
+                            "疑似下拉未展开: 目标选项无可见矩形 step={step_id}, control={control_id}, "
+                            "wrapper={class_name}/{control_type}, toggle={toggle}".format(
+                                step_id=step_id,
+                                control_id=control_id,
+                                class_name=get_wrapper_class_name(dropdown_wrapper) or "(empty)",
+                                control_type=get_wrapper_control_type(dropdown_wrapper) or "(empty)",
+                                toggle=toggle_state or "(unknown)",
+                            )
+                        )
+                # 无论本次是否点击展开，都尽量让 Popup 窗口进入枚举列表：前置步骤
+                # 可能已把下拉展开（toggle=On），此时 Popup 已存在但不在旧的
+                # dropdown_windows 里，不补会让后续枚举漏掉 RadComboBoxItem。
+                # 性能：三路全量收集含全桌面 UIA 枚举 + 多次 ElementFromHandle，
+                # 单次数秒；预收集已含 Popup（下拉已展开）时无需重收，直接复用。
+                _has_popup_window = any(
+                    "popup" in (get_wrapper_class_name(w) or "").lower()
+                    or "popup" in (get_wrapper_control_type(w) or "").lower()
+                    for w in dropdown_windows
+                )
+                if not _has_popup_window:
+                    try:
+                        popup_windows = _collect_dropdown_windows()
+                        popup_windows = _filter_dropdown_windows_by_process(popup_windows, expected_process_id)
+                        for w in popup_windows:
+                            if not any(
+                                get_wrapper_handle(x) == get_wrapper_handle(w)
+                                for x in dropdown_windows
+                            ):
+                                dropdown_windows.append(w)
+                    except Exception:
+                        pass
                 if should_click:
                     clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
                     if clicked:
@@ -2362,6 +2790,54 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                 if score < 0:
                     continue
                 ranked_candidates.append((score, candidate))
+            # win32/MSAA 兜底：Telerik 虚拟化下拉选项 UIA 不可见（rawTotalControls=4），
+            # 采集靠 win32 才能枚举到（totalControls=424）。按文本匹配目标选项后坐标点击。
+            if not ranked_candidates:
+                for candidate in _iter_dropdown_win32_text_candidates(dropdown_windows, target_texts):
+                    if time.time() > deadline:
+                        break
+                    if failed_option_keys and _wrapper_identity_key(candidate) in failed_option_keys:
+                        continue
+                    win32_probe["count"] += 1
+                    if len(win32_probe["samples"]) < 5:
+                        win32_probe["samples"].append(
+                            "{}|{}|{}".format(
+                                get_wrapper_text(candidate) or "(empty)",
+                                get_wrapper_class_name(candidate) or "",
+                                get_wrapper_control_type(candidate) or "",
+                            )
+                        )
+                    ranked_candidates.append((75, candidate))
+            # 点扫掠兜底：Telerik 虚拟化下拉选项不在任何 UIA/MSAA 树中（枚举均取不到），
+            # 复刻采集器 _realize_options_by_point_sweep：物理移动鼠标触发 WPF 实体化 +
+            # Desktop.from_point 命中读取，匹配目标后直接点击。
+            if not ranked_candidates:
+                _sweep_anchor = _get_dropdown_sweep_anchor(dropdown_wrapper, dropdown_windows)
+                if _sweep_anchor:
+                    _opt_wrapper, _opt_text, _sweep_stats = _sweep_dropdown_option_by_point(
+                        _sweep_anchor, target_texts
+                    )
+                    sweep_probe["count"] += _sweep_stats["probes"]
+                    sweep_probe["hits"] += _sweep_stats["hits"]
+                    if _sweep_stats.get("hitTexts"):
+                        sweep_probe["samples"] = list(_sweep_stats["hitTexts"][:5])
+                    if _opt_wrapper is not None and _opt_text:
+                        sweep_probe["matched"] = _opt_text
+                        _LOG_STEP(
+                            "已通过点扫掠命中并点击下拉选项: step={step_id}, control={control_id}, text={text}, probes={probes}, hits={hits}".format(
+                                step_id=step_id,
+                                control_id=control_id,
+                                text=_opt_text,
+                                probes=_sweep_stats["probes"],
+                                hits=_sweep_stats["hits"],
+                            )
+                        )
+                        return True, {
+                            "method": "point_sweep",
+                            "targetTexts": target_texts,
+                            "bestCandidate": get_wrapper_debug_snapshot(_opt_wrapper),
+                            "valueVerified": _opt_text,
+                        }
             if not ranked_candidates:
                 continue
         ranked_candidates.sort(key=lambda item: item[0], reverse=True)
@@ -2781,17 +3257,140 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
             )
         )
     else:
+        # 阶段0 诊断：未枚举到候选项时，列出实际收集到的窗口（标题|pid|类名）与
+        # 定位到的下拉控件身份，用于区分"下拉未展开"（无 Popup 窗口）vs
+        # "Popup 被漏收/被进程过滤"（有 Popup 但不在枚举窗口列表）。
+        _window_desc = []
+        for _w in dropdown_windows[:10]:
+            try:
+                _w_pid = get_wrapper_process_id(_w)
+            except Exception:
+                _w_pid = "?"
+            _window_desc.append(
+                "{title}|pid={pid}|{class_name}".format(
+                    title=get_wrapper_text(_w) or "(no-title)",
+                    pid=_w_pid,
+                    class_name=get_wrapper_class_name(_w) or "",
+                )
+            )
+        _wrapper_desc = "(none)"
+        if dropdown_wrapper is not None:
+            _wrapper_desc = "{}|{}|{}".format(
+                get_wrapper_class_name(dropdown_wrapper) or "(empty)",
+                get_wrapper_control_type(dropdown_wrapper) or "(empty)",
+                get_wrapper_toggle_state(dropdown_wrapper) or "(empty)",
+            )
         _LOG_STEP(
-            "运行时下拉项未命中且未枚举到候选项: step={step_id}, control={control_id}, targets={targets}, expectedTitles={titles}, foreground={foreground}, rawProbe={probe}".format(
+            "运行时下拉项未命中且未枚举到候选项: step={step_id}, control={control_id}, targets={targets}, "
+            "expectedTitles={titles}, foreground={foreground}, rawProbe={probe}, win32Probe={win32}, sweepProbe={sweep}, "
+            "windows={windows}, wrapper={wrapper}".format(
                 step_id=step_id,
                 control_id=control_id,
                 targets=" / ".join(target_texts) or "(empty)",
                 titles=" / ".join(expected_window_titles) or "(empty)",
                 foreground=get_wrapper_text(foreground_before) or "(empty)",
                 probe=json.dumps(raw_probe, ensure_ascii=False),
+                win32=json.dumps(win32_probe, ensure_ascii=False),
+                sweep=json.dumps(sweep_probe, ensure_ascii=False),
+                windows="; ".join(_window_desc) or "(none)",
+                wrapper=_wrapper_desc,
             )
         )
+    # 失败止血：本函数失败前可能已"自愈点击展开"下拉，失败路径原逻辑不收起残留的
+    # Popup 弹层。残留弹层会拦截后续步骤对该位置控件的物理点击——实测多塔"点"下拉
+    # (step_mt_refpoint) 失败后，下一步"参考气象"锚点点击 (443,186) 正好落入残留弹层
+    # 候选 rect (48,168)-(481,189) 内，导致"点击报成功但弹窗未开"的假成功连锁。
+    # 发 ESC 前由 _dismiss_expanded_dropdown 实时复查弹层仍在（枚举阶段快照不可作
+    # 发送依据）；期望进程 id 优先取已定位下拉框自身（比前台推断更可靠），前台进程兜底。
+    try:
+        _dismiss_pids = set()
+        if expected_process_id:
+            _dismiss_pids.add(str(expected_process_id))
+        try:
+            _dropdown_pid = get_wrapper_process_id(dropdown_wrapper) if dropdown_wrapper is not None else None
+        except Exception:
+            _dropdown_pid = None
+        if _dropdown_pid:
+            _dismiss_pids.add(str(_dropdown_pid))
+        _dismiss_expanded_dropdown(step_id=step_id, control_id=control_id, expected_process_ids=_dismiss_pids)
+    except Exception:
+        pass
     return False, {"targetTexts": target_texts}
+
+
+def _dismiss_expanded_dropdown(step_id="", control_id="", expected_process_ids=None):
+    """下拉选择失败后收起残留弹层：实时复查确认弹层仍在才发 ESC，防误伤。
+
+    枚举阶段快照（dropdown_windows 等）不可作为发送依据——从枚举到失败返回可能已隔
+    数十秒，候选点击/键盘 ENTER 早已把弹层关掉；此时全局 ESC（pywinauto.keyboard 发往
+    当前前台焦点窗口）会落到 MUP 主窗口或用户其他应用。安全链路：
+      1. 纯 win32 枚举可见顶层窗口并按 _MUP_WINDOW_KEYWORDS 收窄到目标进程（毫秒级、
+         零 COM）。注意 MUP 窗口的 win32 注册类是 HwndWrapper[<进程>;;<GUID>]，不含
+         "popup"，不能拿 win32 类名识别弹层（识别必须走下一步的 UIA 类名）；
+      2. 逐句柄限定范围 UIA 读取类名/控件类型（与 _collect_dropdown_windows 首路同款
+         安全模式，不做全桌面枚举）。弹层识别依据 UIA 类名/控件类型含 "popup"——WPF
+         PopupAutomationPeer 上报 className="Popup"（控件库实测捕获 frameworkId=WPF
+         + className=Popup，见 control_maps standard 目录）；
+      3. 前台核对（尽力而为）：能确定前台窗口且确定不属于目标进程时跳过；确定不了
+         不阻断（以实时弹层为准——实测事故中前台读取返回空，硬性要求会让止血失效）。
+    """
+    expected = {str(p).strip() for p in (expected_process_ids or []) if str(p or "").strip()}
+    try:
+        live_infos = _enum_visible_mup_win32_windows()
+    except Exception:
+        live_infos = []
+    live_popup = None
+    for info in live_infos:
+        pid = str(info.get("processId") or "")
+        if expected and pid and pid not in expected:
+            continue
+        try:
+            win = _try_get_window_by_handle(info.get("hwnd"))
+        except Exception:
+            win = None
+        if win is None:
+            continue
+        try:
+            ui_class = str(get_wrapper_class_name(win) or "").lower()
+            ui_type = str(get_wrapper_control_type(win) or "").lower()
+        except Exception:
+            continue
+        if "popup" in ui_class or "popup" in ui_type:
+            live_popup = info
+            break
+    if live_popup is None:
+        _LOG_STEP(
+            "[下拉止血] 实时复查未见 MUP Popup 残留，跳过 ESC: step={}, control={}".format(
+                step_id, control_id
+            )
+        )
+        return
+    try:
+        _fg_handle = get_foreground_window_handle()
+        _fg_pid = str(_get_process_id_from_handle(_fg_handle) or "") if _fg_handle else ""
+    except Exception:
+        _fg_pid = ""
+    if _fg_pid and expected and _fg_pid not in expected:
+        _LOG_STEP(
+            "[下拉止血] 前台窗口不属于目标进程(pid={})，跳过 ESC 防误伤: step={}, control={}".format(
+                _fg_pid, step_id, control_id
+            )
+        )
+        return
+    try:
+        send_keys("{ESC}")
+        time.sleep(0.2)
+        _LOG_STEP(
+            "[下拉止血] 选择失败后已发 ESC 收起残留弹层: step={}, control={}, popupClass={}, popupPid={}".format(
+                step_id, control_id, live_popup.get("className") or "", live_popup.get("processId") or ""
+            )
+        )
+    except Exception as exc:
+        _LOG_STEP(
+            "[下拉止血] 收起残留弹层失败(忽略): step={}, control={}, error={}".format(
+                step_id, control_id, repr(exc)[:120]
+            )
+        )
 
 
 def menu_select_flow(step_id, menu_path, timeout_seconds=3, window_title_hint="", control_map_path=None):
@@ -3537,13 +4136,70 @@ def resolve_effective_relative_region_window(window, parent_window):
     return window
 
 
+def _get_cursor_pos():
+    """读取当前鼠标屏幕坐标，失败返回 None。"""
+    try:
+        pt = wintypes.POINT()
+        if ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+            return int(pt.x), int(pt.y)
+    except Exception:
+        pass
+    return None
+
+
+def _move_cursor_to_screen_center():
+    """win32 直接移动鼠标到主屏中心并返回坐标（绕过 pyautogui 失效保护）。"""
+    try:
+        user32 = ctypes.windll.user32
+        screen_w = int(user32.GetSystemMetrics(0) or 1920)
+        screen_h = int(user32.GetSystemMetrics(1) or 1080)
+        x = screen_w // 2
+        y = screen_h // 2
+        if user32.SetCursorPos(x, y):
+            return x, y
+    except Exception:
+        pass
+    return None
+
+
+def _recover_pyautogui_failsafe(exc):
+    """pyautogui 失效保护自恢复：鼠标停在屏幕角落时，pyautogui 任何调用都会在
+    动作发出前立即抛 FailSafeException（点击根本没有执行）。症状是相对区域步骤
+    秒级失败报"未命中父窗口相对区域"且日志里没有点击记录。把鼠标移回屏幕中心
+    即可恢复；非 FailSafeException 返回 False 不做处理。"""
+    if "FailSafeException" not in type(exc).__name__:
+        return False
+    parked_at = _get_cursor_pos()
+    recovered = _move_cursor_to_screen_center()
+    _LOG_STEP(
+        "pyautogui 失效保护触发：鼠标被外部停在角落 parked=({px},{py})，已移回屏幕中心{result}，将重试点击: error={err}".format(
+            px=parked_at[0] if parked_at else "?",
+            py=parked_at[1] if parked_at else "?",
+            result="成功({x},{y})".format(x=recovered[0], y=recovered[1]) if recovered else "失败",
+            err=exc,
+        )
+    )
+    return recovered is not None
+
+
 def _perform_relative_region_click(center, click_kind):
-    if click_kind == "double":
-        pyautogui.doubleClick(center[0], center[1])
-    elif click_kind == "right":
-        pyautogui.click(center[0], center[1], button="right")
-    else:
-        pyautogui.click(center[0], center[1])
+    def _dispatch():
+        if click_kind == "double":
+            pyautogui.doubleClick(center[0], center[1])
+        elif click_kind == "right":
+            pyautogui.click(center[0], center[1], button="right")
+        else:
+            pyautogui.click(center[0], center[1])
+
+    try:
+        _dispatch()
+        return
+    except Exception as exc:
+        # 失效保护（鼠标在屏幕角落）先自恢复再重试一次；其他异常原样抛出，
+        # 由调用方记录日志。
+        if not _recover_pyautogui_failsafe(exc):
+            raise
+    _dispatch()
 
 
 def is_text_like_wrapper(wrapper):
@@ -5208,6 +5864,13 @@ def find_flow_window_for_relative_region(step_definition=None, parent_window=Non
     debug_default_height = step_id in {"step_16", "step_16_2"}
     debug_start_validation_regression = step_id in {"step_26", "step_26_2"}
     last_ranked_candidates = []
+    # 当窗口规格带明确标题时，空标题 fallback（如前台 MUP 主窗口）不得作为最终结果：
+    # 目标窗口可能尚未出现，应继续轮询等待标题匹配窗口，避免误用空标题主窗口
+    # 导致相对区域点击到屏幕左上角等错误位置。
+    expected_window_title = normalize_match_text(window_spec.get("title", ""))
+    last_resort_match = None
+    last_resort_score = -1
+    last_wait_log_time = 0.0
     if debug_default_height:
         foreground_before = _try_get_window_by_handle(get_foreground_window_handle())
         # #region debug-point A:default-height-relative-input-before
@@ -5260,18 +5923,20 @@ def find_flow_window_for_relative_region(step_definition=None, parent_window=Non
             # 前台窗口只有在“匹配或可能匹配目标窗口”时才参与候选（score>=0）：
             # 标题不匹配且非空标题的前台窗口（如用户当前操作的其他应用）不得作为
             # 相对区域父窗口，否则会在目标窗口缺失时对错误窗口“假成功”点击。
-            if foreground_score < 0:
-                continue
-            ranked_candidates.append((foreground_score, foreground_wrapper))
-            if should_replace_flow_window_candidate(
-                foreground_wrapper,
-                foreground_score,
-                best_match,
-                best_score,
-                window_spec,
-            ):
-                best_score = foreground_score
-                best_match = foreground_wrapper
+            # 注意：这里只能跳过“加入该候选”，绝不能 continue 整轮循环——否则会
+            # 连带跳过下面的窗口枚举与轮询 sleep，前台一旦被无关窗口占据，
+            # 目标窗口出现后也永远枚举不到，并且空转占满 CPU 直到超时。
+            if foreground_score >= 0:
+                ranked_candidates.append((foreground_score, foreground_wrapper))
+                if should_replace_flow_window_candidate(
+                    foreground_wrapper,
+                    foreground_score,
+                    best_match,
+                    best_score,
+                    window_spec,
+                ):
+                    best_score = foreground_score
+                    best_match = foreground_wrapper
         for window in iter_flow_search_windows(step_definition or {}, window_title_hint=window_spec.get("title", "")):
             window_handle_key = get_wrapper_handle(window) or id(window)
             if window_handle_key in seen_handles:
@@ -5292,6 +5957,34 @@ def find_flow_window_for_relative_region(step_definition=None, parent_window=Non
             ranked_candidates.sort(key=lambda item: item[0], reverse=True)
             last_ranked_candidates = ranked_candidates[:5]
         if best_match is not None:
+            # 目标窗口标题明确时，空标题 fallback / 标题不匹配的候选不得立即返回：
+            # 该候选通常是前台 MUP 主窗口（空标题），目标窗口可能仍在加载中，
+            # 立即返回会导致相对区域在错误窗口上换算并点击到左上角。记录为兜底
+            # 候选并继续轮询，等待标题匹配的目标窗口出现（超时后才回退兜底）。
+            if expected_window_title:
+                best_match_title = ""
+                try:
+                    best_match_title = normalize_match_text(get_wrapper_text(best_match))
+                except Exception:
+                    pass
+                if not value_matches(best_match_title, expected_window_title):
+                    if last_resort_match is None or best_score > last_resort_score:
+                        last_resort_match = best_match
+                        last_resort_score = best_score
+                    # 等待日志节流（~1.5s 一条），避免 20s 轮询刷出上百条日志
+                    now = time.time()
+                    if now - last_wait_log_time >= 1.5:
+                        last_wait_log_time = now
+                        _LOG_STEP(
+                            "父窗口相对区域目标标题尚未匹配，继续等待: step={step}, best_score={score}, title={title!r}, 目标={target!r}".format(
+                                step=step_id,
+                                score=best_score,
+                                title=best_match_title or "(empty)",
+                                target=expected_window_title,
+                            )
+                        )
+                    time.sleep(0.15)
+                    continue
             if debug_default_height:
                 # #region debug-point B:default-height-relative-input-window-found
                 _emit_default_height_debug_event(
@@ -5336,6 +6029,27 @@ def find_flow_window_for_relative_region(step_definition=None, parent_window=Non
                 # #endregion
             return best_match
         time.sleep(0.15)
+    # 超时后：目标标题明确时禁止回退空标题候选——空标题窗口（通常是 MUP 主窗口）
+    # 与明确标题的目标窗口不可能是同一窗口，回退等于把相对区域点击打到错误窗口
+    # （症状：鼠标跳到屏幕左上角、报“未命中父窗口相对区域”）。宁可让步骤干净
+    # 失败（由步骤 onError 策略接管），也不对错误窗口误点击。
+    if expected_window_title:
+        _LOG_STEP(
+            "父窗口相对区域超时且目标标题窗口未出现，放弃点击以避免误点其他窗口: step={step}, 目标题={target}".format(
+                step=step_id,
+                target=expected_window_title,
+            )
+        )
+        return None
+    # 无标题规格时保持旧版兼容行为：回退空标题兜底候选
+    if last_resort_match is not None:
+        _LOG_STEP(
+            "父窗口相对区域超时，回退空标题候选: step={step}, title={title}".format(
+                step=step_id,
+                title=normalize_match_text(get_wrapper_text(last_resort_match)) or "(empty)",
+            )
+        )
+        return last_resort_match
     if last_ranked_candidates:
         candidate_text = " || ".join(
             "#{index} score={score} title={title} class={class_name} framework={framework}".format(
@@ -5933,15 +6647,52 @@ def get_relative_region_reference_window_rect(relative_region):
 
 def resolve_relative_region_absolute_rect(window, relative_region, window_rect=None):
     reference_window_rect = get_relative_region_reference_window_rect(relative_region)
-    window_rect_source = "referenceWindowRect" if reference_window_rect else "runtime"
-    window_rect = reference_window_rect or window_rect or get_wrapper_rectangle(window)
-    if not window_rect or not window_rect.get("width") or not window_rect.get("height"):
+    runtime_rect = None
+    if window_rect is not None:
+        runtime_rect = window_rect
+    elif window is not None:
+        # _resolve_wrapper_rectangle 内部已优先走 GetWindowRect(handle)（返回完整外框），
+        # 并尝试 EnumWindows/DWM/GetAncestor 等帧升级；因此只要拿到非空矩形就应信任，
+        # 它反映窗口当前真实位置/大小（适配分辨率、DPI、窗口移动），不能仅因 selectedSource
+        # 为 base 就误判为"内容区"而退回录制快照——这正是此前 step_16~27 在运行时窗口
+        # 位置与录制快照不一致时点击偏移的根因。
+        candidate_rect, _candidate_trace = _resolve_wrapper_rectangle(window, capture_trace=False)
+        if candidate_rect:
+            runtime_rect = candidate_rect
+    if runtime_rect is not None and runtime_rect.get("width") and runtime_rect.get("height"):
+        rect_to_use = runtime_rect
+        rect_source = "runtime"
+    elif reference_window_rect is not None:
+        # 运行时完全拿不到窗口矩形时才退回收录基准，作为最后兜底。
+        rect_to_use = reference_window_rect
+        rect_source = "referenceWindowRect"
+    else:
+        rect_to_use = runtime_rect
+        rect_source = "runtime"
+    if reference_window_rect is not None:
+        try:
+            _LOG_STEP(
+                "[relativeRegion] 换算基准: source={source}, runtime=({rl},{rt},{rw}x{rh}), reference=({fl},{ft},{fw}x{fh})".format(
+                    source=rect_source,
+                    rl=runtime_rect.get("left", 0) if runtime_rect else 0,
+                    rt=runtime_rect.get("top", 0) if runtime_rect else 0,
+                    rw=runtime_rect.get("width", 0) if runtime_rect else 0,
+                    rh=runtime_rect.get("height", 0) if runtime_rect else 0,
+                    fl=reference_window_rect.get("left", 0),
+                    ft=reference_window_rect.get("top", 0),
+                    fw=reference_window_rect.get("width", 0),
+                    fh=reference_window_rect.get("height", 0),
+                )
+            )
+        except Exception:
+            pass
+    if not rect_to_use or not rect_to_use.get("width") or not rect_to_use.get("height"):
         return None
     region = normalize_relative_region(relative_region)
-    left = int(window_rect["left"] + window_rect["width"] * region["x"])
-    top = int(window_rect["top"] + window_rect["height"] * region["y"])
-    width = max(1, int(window_rect["width"] * region["width"]))
-    height = max(1, int(window_rect["height"] * region["height"]))
+    left = int(rect_to_use["left"] + rect_to_use["width"] * region["x"])
+    top = int(rect_to_use["top"] + rect_to_use["height"] * region["y"])
+    width = max(1, int(rect_to_use["width"] * region["width"]))
+    height = max(1, int(rect_to_use["height"] * region["height"]))
     return {
         "left": left,
         "top": top,
@@ -5950,8 +6701,8 @@ def resolve_relative_region_absolute_rect(window, relative_region, window_rect=N
         "width": width,
         "height": height,
         "anchor": region["anchor"],
-        "windowRect": window_rect,
-        "windowRectSource": window_rect_source,
+        "windowRect": rect_to_use,
+        "windowRectSource": rect_source,
     }
 
 
@@ -6244,7 +6995,20 @@ def click_relative_region(step_definition, parent_window, relative_region, timeo
         # #endregion
     try:
         _perform_relative_region_click(center, click_kind)
-    except Exception:
+    except Exception as exc:
+        # 点击异常必须落日志：该分支此前对非 debug 步骤完全静默，真实异常（如
+        # pyautogui FailSafeException，鼠标停在屏幕角落时任何 pyautogui 调用都会
+        # 立即抛错且点击不执行）被吞掉，步骤只报"未命中父窗口相对区域"，无法定位真因。
+        _LOG_STEP(
+            "相对区域点击执行异常: step={step}, point=({x},{y}), kind={kind}, window={title}, error={err}".format(
+                step=step_id,
+                x=center[0],
+                y=center[1],
+                kind=click_kind,
+                title=get_wrapper_text(effective_window) or "(empty)",
+                err=exc,
+            )
+        )
         if debug_add_data_false_hit:
             # #region debug-point E:add-data-false-hit-click-error
             _emit_add_data_false_hit_debug_event(

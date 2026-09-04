@@ -11,6 +11,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 from datetime import datetime
+from functools import lru_cache
 import wt_dpi
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
@@ -3061,6 +3062,30 @@ class ControlLocatorTesterDialog:
             self.var_test_result.set("检验出错")
 
 
+def control_map_timestamp(value):
+    """控件时间字段 -> float 时间戳（0.0 表示无法解析）。
+
+    同一文件内所有控件的 _addedAt 通常都是同一个 scanMeta.scanTime 字符串，
+    lru_cache 让排序/时间过滤大量重复值零开销（7k 控件排序段 300ms -> ~15ms）。
+    """
+    return _control_map_timestamp_cached(str(value or "").strip())
+
+
+@lru_cache(maxsize=2048)
+def _control_map_timestamp_cached(text):
+    if not text:
+        return 0.0
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).timestamp()
+        except Exception:
+            continue
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except Exception:
+        return 0.0
+
+
 class ControlMapImportDialog:
     def __init__(self, parent, default_window_title="", initial_filter="", external_window=None):
         self.default_window_title = str(default_window_title or "").strip()
@@ -3072,8 +3097,9 @@ class ControlMapImportDialog:
         self._tree_seq = 0  # 树形视图 controlsTree 节点自增序号
         self._parent = parent
         # 控件列表构建缓存：_build_controls_from_payload 对每个控件做 normalize+merge，
-        # 大文件（总控件信息 16MB+）下每次调用都全量重建会卡顿。以 current_payload
-        # 对象 id 为键缓存，payload 被替换（新对象）时自动失效。
+        # 大文件（总控件信息 16MB+）下每次调用都全量重建会卡顿。直接缓存 payload
+        # 对象本身（is 身份比较）：对象被替换（新文件）时自动失效；原地修改
+        # payload 的回写路径（编辑/删除）需手动置 None 失效，见两处回写点。
         self._controls_cache_key = None
         self._controls_cache_value = []
         # 过滤关键字输入防抖：每次按键都全量重建树（大文件下）会卡顿，
@@ -3555,8 +3581,9 @@ class ControlMapImportDialog:
     def _build_controls_from_payload(self):
         if not isinstance(self.current_payload, dict):
             return []
-        # 缓存命中：payload 未变（同一对象）时直接复用，避免每次过滤/刷新都全量重建
-        if self._controls_cache_key is id(self.current_payload):
+        # 缓存命中：payload 是同一对象时直接复用，避免每次过滤/刷新都全量重建。
+        # 注意比较对象本身而非 id()：id() 返回新 int 对象，is 恒为 False（曾致缓存 100% 失效）
+        if self._controls_cache_key is self.current_payload:
             return self._controls_cache_value
         controls = self.current_payload.get("controlDefinitions", [])
         flat_controls = self.current_payload.get("flatControls", [])
@@ -3571,7 +3598,7 @@ class ControlMapImportDialog:
                 # 避免列表排序后按显示位置错取控件
                 merged["_sourceIndex"] = index
                 result.append(merged)
-            self._controls_cache_key = id(self.current_payload)
+            self._controls_cache_key = self.current_payload
             self._controls_cache_value = result
             return result
         flat_controls = self.current_payload.get("flatControls", [])
@@ -3605,7 +3632,7 @@ class ControlMapImportDialog:
             )
             merged["_sourceIndex"] = index
             generated.append(merged)
-        self._controls_cache_key = id(self.current_payload)
+        self._controls_cache_key = self.current_payload
         self._controls_cache_value = generated
         return generated
 
@@ -3677,18 +3704,7 @@ class ControlMapImportDialog:
         return filtered
 
     def _control_map_timestamp(self, value):
-        text = str(value or "").strip()
-        if not text:
-            return 0.0
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-            try:
-                return datetime.strptime(text, fmt).timestamp()
-            except Exception:
-                continue
-        try:
-            return datetime.fromisoformat(text).timestamp()
-        except Exception:
-            return 0.0
+        return control_map_timestamp(value)
 
     def _format_control_map_time(self, value):
         timestamp = self._control_map_timestamp(value)
@@ -4662,7 +4678,9 @@ class ControlMapImportDialog:
             if 0 <= source_index < len(control_defs):
                 control_defs[source_index] = dialog.result
                 payload["controlDefinitions"] = control_defs
-            
+            # payload 是原地修改（对象身份不变），必须手动失效控件列表缓存
+            self._controls_cache_key = None
+
             file_selection = self.file_listbox.curselection()
             if file_selection:
                 file_index = file_selection[0]
@@ -5146,6 +5164,8 @@ class ControlMapImportDialog:
         except (ValueError, TypeError):
             pass
         
+        # payload 是原地修改（对象身份不变），必须手动失效控件列表缓存
+        self._controls_cache_key = None
         file_path = None
         file_selection = self.file_listbox.curselection()
         if file_selection:

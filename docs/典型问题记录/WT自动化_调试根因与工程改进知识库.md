@@ -161,6 +161,41 @@
 
 ---
 
+### 模式 N：共享 automationId + 同类型控件 · 高分早退劫持 name 消歧
+- **症状指纹**：点 A 命中的却是同排兄弟 B；被命中者 name 与定义不符；日志 score ≈110-150（回退分）而非完整命中的 170+。
+- **根因**：两控件共用 automationId 且 control_type 相同（如页签头 建模/元素 同为 `TabItem_Header_Label,Text`），完整候选 `(aid,ct,name)` 对 B 失败后回退 `(aid,ct)` 仍 ≥100；fast 阶段"首个 ≥100 候选早退"，视觉序靠前者劫持结果。类型不同（Button vs Text）天然互斥不触发。
+- **修复范式**：`_candidate_strict_full_match`——targetMethod 含消歧字段（name/label_text/ui_path/class_name/found_index）时，早退必须"完整命中全部消歧字段"；纯 identifier 定位行为不变。
+- **代码锚点**：`wt_flow_locator.py : _candidate_strict_full_match`、fast 循环早退条件。
+- **来源**：`会话沉淀_导入及配置元素流程修复_页签早退_坐标框消歧_候选批量选择_20260831.md` §1。
+
+### 模式 O：批量枚举只遍历第一棵子树（兄弟节点丢失）
+- **症状指纹**：批量选择/全选只命中第一个元素；单候选类别正常、多候选类别（≥2）必现。
+- **根因**：RawViewWalker 遍历只把 `GetFirstChildElement(el)` 的首子入栈，未沿 `GetNextSiblingElement` 把其余直接子入栈（易写成 `if ...: pass` 死代码）。
+- **修复范式**：先把容器的**全部直接子**入栈（first + 依次 next），再逐层深入；去重用 handle/runtimeId 键。
+- **代码锚点**：`wt_flow_locator.py : select_list_items_runtime`（候选枚举段）。
+- **来源**：同上 §7。
+
+### 模式 P：IsControlElement=False 宿主被 Control View 查询 → count=0
+- **症状指纹**：定位失败且诊断 `PART_ContentHost count=0`；录制文件 rawInspectText 里 `IsControlElement: False`。
+- **根因**：TextBox 内部滚动宿主（PART_ContentHost/PanelBarItem_ScrollViewer 等）IsControlElement=False，Control View（children/descendants/FindAll）不可见；录制时 controlType 常被写错（如写成名称文本）。
+- **修复范式**：定义如实标 `isControlElement/isContentElement="False"` + 真实 controlType（Pane）+ label 消歧，触发 `control_definition_expects_raw_view` 走 Raw View 链。
+- **代码锚点**：`wt_flow_locator.py : control_definition_expects_raw_view / iter_raw_view_fallback_candidates`。
+- **来源**：同上 §6。
+
+### 模式 Q：占位符空值/未解析保留字面量 → 名单类动作误失败
+- **症状指纹**：日志 `wanted=["${runtime.xxx}"]`；未选项目文件夹运行时必现，带项目时正常。
+- **根因**：`_resolve_dynamic_value` runtime 分支对空串/None **保留字面量**（防 send_keys 吃花括号的设计），名单动作把字面量当数据。
+- **修复范式**：名单类动作在入口检测 `${` 前缀 → 记警告并按"全选/默认语义"处理（未指定=全量）；不要改 resolver 的空值保护（会影响所有文本键入）。
+- **代码锚点**：`wt_flow_locator.py : select_list_items_runtime`（入口兜底）。
+- **来源**：同上 §8。
+
+### 模式 R：控件库逻辑树 ≠ 运行时 UIA 父链（模板包装）
+- **症状指纹**：按控件库 controlsTree 设计的 ui_path/父链消歧，离线 mock 全过、真机全灭。
+- **根因**：采集器输出的是逻辑树；运行时每个 textbox 外层可能包 NumericUpDown 等模板容器，直接父并非视图容器。
+- **修复范式**：涉及父链/容器序号的消歧，先 live 枚举真实 parent 链验证（get_wrapper_found_index 实测），再定方案；优先选与包装无关的锚（紧邻兄弟 label + 容器内序号）。
+- **代码锚点**：`wt_flow_locator.py : get_wrapper_found_index / wrapper_matches_label_text`。
+- **来源**：同上 §4。
+
 ## 三、工程改进决策与契约（定位/执行/转换链路）
 
 ### 1. 分层定位与复合定位器
@@ -227,6 +262,10 @@
 | 缓存 | `wt_flow_locator.py : get_cached_flow_control` |
 | 定位推荐 | `build_control_map_library.py : build_locator_recommendation` |
 | 序号保留 | `flow_recorder_converter.py : _extract_segment_found_index / _build_control_definition` |
+| fast 早退完整命中门 | `wt_flow_locator.py : _candidate_strict_full_match` |
+| 批量候选项选择 | `wt_flow_locator.py : select_list_items_runtime` |
+| label 扫描 Text 过滤 / plain 上限 | `wt_flow_locator.py : _find_label_rects_for_wrapper / PLAIN_FALLBACK_LIMIT` |
+| 候选名单注入 | `wt_project_workdir_parser.py : mastIdsJoined / turbineIdsJoined` |
 | 字段白名单 | `wt_flow_validation.py : normalize_step` |
 | Excel 往返 | `flow_excel_io.py` |
 | 流程级 GC 禁用（防 comtypes 崩溃） | `WT_AUT_recorded.py : run_automation` |

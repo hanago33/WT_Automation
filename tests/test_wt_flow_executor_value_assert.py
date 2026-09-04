@@ -110,6 +110,23 @@ class ResolveContinueWhenTests(unittest.TestCase):
         self.assertIsNotNone(cw)
         self.assertEqual(cw["condition"], "nonempty")
 
+    def test_auto_assert_skipped_for_list_item_option_control(self):
+        # 下拉选项项（targetValue 含 ListBoxItem/ListItem）无 ValuePattern，
+        # select_dropdown_item_runtime 点击成功后不得再 auto-assert nonempty
+        # （否则反复定位轮询直到超时，每步拖慢 10s+ 且误报 failed）。
+        ac = {"action": "select_dropdown_item_runtime", "controlId": "dropdown_item"}
+        sd = {
+            "id": "s1",
+            "controls": [{
+                "id": "dropdown_item",
+                "targetMethod": "class_name,label_text",
+                "targetValue": "ListBoxItem,日期时间",
+                "inspectData": {"controlType": "ListItem", "className": "ListBoxItem"},
+            }],
+        }
+        cw = wt_flow_executor._resolve_continue_when(ac, sd)
+        self.assertIsNone(cw)
+
     def test_explicit_value_equals_without_expected_takes_from_action(self):
         # 显式配置 value_equals 但未填 expectedValue → 从动作值自动取
         ac = {

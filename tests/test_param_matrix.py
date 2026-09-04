@@ -23,6 +23,7 @@ if PROJECT_DIR not in sys.path:
 
 from WT_AUTOMATION_Agent.parameter_scan import ParameterScanner, StepModeFilterUnavailable
 import WT_AUT_recorded
+import wt_project_workdir_parser
 
 
 TEMPLATE_STEPS = [
@@ -376,6 +377,161 @@ class StepModeFilterTests(unittest.TestCase):
         )
         with self.assertRaises(RuntimeError):
             WT_AUT_recorded._apply_param_table_expansion(merged, {"paramTable": csv})
+
+
+class MastOverrideOrderTests(unittest.TestCase):
+    """问题1 防回归：多塔"第二座塔"须按 mastEntries（CFT 行序）取，
+    不能用 sorted(mastIds)[1]——排序会打乱 CFT 行序，曾把第二塔覆盖成第一塔的气象。
+    参见 docs/发送综合计算多塔设置与匹配优化记录_20260827.md。"""
+
+    def _run_expansion(self, runtime):
+        tmp = tempfile.mkdtemp(prefix="param_matrix_")
+        csv_path = os.path.join(tmp, "params.csv")
+        template = [
+            {
+                "id": "tpl_mast",
+                "name": "配塔 ${stepParams.refmast2}",
+                "controls": [],
+                "actionConfig": {"action": "click", "controlId": "x"},
+                "stepParams": {},
+            }
+        ]
+        merged = {"runtimeConfig": {}, "flowPackages": [], "steps": template}
+        try:
+            with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                w.writerow(["refmast", "weathername", "mettowername", "refmast2", "refclimatology2"])
+                w.writerow(["M1", "M1", "M1", "Mast1", "Mast1"])
+            old = os.environ.get("GM_RUNTIME_CONFIG_JSON")
+            os.environ["GM_RUNTIME_CONFIG_JSON"] = json.dumps(runtime, ensure_ascii=False)
+            try:
+                return WT_AUT_recorded._apply_param_table_expansion(merged, {"paramTable": csv_path})
+            finally:
+                if old is None:
+                    os.environ.pop("GM_RUNTIME_CONFIG_JSON", None)
+                else:
+                    os.environ["GM_RUNTIME_CONFIG_JSON"] = old
+        finally:
+            try:
+                os.remove(csv_path)
+                os.rmdir(tmp)
+            except OSError:
+                pass
+
+    def test_two_masts_uses_cft_order_not_sorted_mastids(self):
+        # CFT 第一塔 W2512960、第二塔 C2536；mastIds 为 sorted(set) → ["C2536","W2512960"]。
+        runtime = {
+            "mastIds": ["C2536", "W2512960"],
+            "mastName": "W2512960",
+            "mastEntries": [
+                {"mastName": "W2512960", "hubHeight": "140", "meteoName": "W2512960_140_Auto"},
+                {"mastName": "C2536", "hubHeight": "140", "meteoName": "C2536_140_Auto"},
+            ],
+        }
+        out = self._run_expansion(runtime)
+        steps = [s for s in out["steps"] if s.get("id", "").startswith("tpl_mast")]
+        self.assertTrue(steps)
+        sp = steps[0].get("stepParams", {})
+        self.assertEqual(sp.get("refmast"), "W2512960")             # 第一塔=参考点
+        self.assertEqual(sp.get("weathername"), "W2512960_140_Auto")
+        self.assertEqual(sp.get("refmast2"), "C2536")               # 第二塔=CFT 第二行
+        self.assertEqual(sp.get("refclimatology2"), "C2536_140_Auto")
+
+    def test_single_mast_keeps_second_tower_placeholder(self):
+        runtime = {
+            "mastIds": ["W2512960"],
+            "mastName": "W2512960",
+            "mastEntries": [
+                {"mastName": "W2512960", "hubHeight": "140", "meteoName": "W2512960_140_Auto"},
+            ],
+        }
+        out = self._run_expansion(runtime)
+        steps = [s for s in out["steps"] if s.get("id", "").startswith("tpl_mast")]
+        sp = steps[0].get("stepParams", {})
+        self.assertEqual(sp.get("refmast2"), "Mast1")               # 单塔：不覆盖第二塔占位
+        self.assertEqual(sp.get("refclimatology2"), "Mast1")
+
+
+class MeteoTextOverrideTests(unittest.TestCase):
+    """_meteo_map 数值项（35.0 极风 / 1.220 空气密度）：替换生效与守卫不误发。
+
+    流程模板写死值（step_25=35.0 / step_21=1.220）→ 项目人工确认值。守卫链：
+    旧值须存在于模板 actionConfig.text、新值非空、新旧不同——缺一不替换。
+    """
+
+    def _build_overrides(self, texts, runtime_config):
+        payload = {
+            "steps": [
+                {"id": "s_{}".format(index), "actionConfig": {"action": "type_text", "text": text}}
+                for index, text in enumerate(texts)
+            ]
+        }
+        fd, path = tempfile.mkstemp(suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fobj:
+                json.dump(payload, fobj, ensure_ascii=False)
+            return wt_project_workdir_parser.build_text_overrides(path, runtime_config)
+        finally:
+            os.remove(path)
+
+    def test_wind50_replaces_template_text(self):
+        overrides = self._build_overrides(["35.0"], {"wind50": "41.5"})
+        self.assertEqual(overrides.get("35.0"), "41.5")
+
+    def test_air_density_replaces_template_text(self):
+        overrides = self._build_overrides(["1.220"], {"airDensity": "1.15"})
+        self.assertEqual(overrides.get("1.220"), "1.15")
+
+    def test_missing_runtime_value_keeps_template_text(self):
+        # 未指定项目参数时保持模板值（wind50 缺失不得产生覆盖，更不得残留占位符）
+        overrides = self._build_overrides(["35.0", "1.220"], {})
+        self.assertNotIn("35.0", overrides)
+        self.assertNotIn("1.220", overrides)
+
+    def test_aligned_default_value_no_override(self):
+        # 弹窗预填默认值与模板对齐后，"保存未改动"必须零行为变化（防 35.0→50 污染回归）
+        overrides = self._build_overrides(["35.0"], {"wind50": "35.0"})
+        self.assertNotIn("35.0", overrides)
+
+
+class ProjectParamsSyncTests(unittest.TestCase):
+    """防回归：Launcher 项目参数默认值与 发送综合计算 流程模板写死值必须对齐。
+
+    项目参数弹窗保存会把全部非空预填字段固化进 project_params；默认值与模板不一致时，
+    _meteo_map 会把未人工确认的预填默认值静默替换进流程（事故：35.0→50）。
+    """
+
+    def test_launcher_defaults_align_with_flow_template(self):
+        import WT_Launcher
+
+        self.assertEqual(str(WT_Launcher.DEFAULT_PROJECT_PARAMS.get("wind50", "")), "35.0")
+        self.assertEqual(str(WT_Launcher.DEFAULT_PROJECT_PARAMS.get("airDensity", "")), "1.220")
+
+    def test_flow_template_values_unchanged(self):
+        flow_path = os.path.join(
+            PROJECT_DIR, "flow_packages", "flow_definition_发送综合计算.json"
+        )
+        with open(flow_path, encoding="utf-8") as fobj:
+            payload = json.load(fobj)
+        texts = {
+            (step.get("id") or ""): (step.get("actionConfig") or {}).get("text")
+            for step in (payload.get("steps") or [])
+        }
+        self.assertEqual(texts.get("step_25"), "35.0")
+        self.assertEqual(texts.get("step_21"), "1.220")
+
+    def test_wait_editor_timeout_covers_documented_hang(self):
+        # 编辑器加载期 UIA 挂起实测 487-742s；等待超时须覆盖上限（COM 阻塞期超时不可执行，
+        # 该值只约束"挂起自恢复后剩余轮询预算"，低于 742s 会让等待步骤白白失败）
+        flow_path = os.path.join(
+            PROJECT_DIR, "flow_packages", "flow_definition_发送综合计算.json"
+        )
+        with open(flow_path, encoding="utf-8") as fobj:
+            payload = json.load(fobj)
+        for step in payload.get("steps") or []:
+            if (step.get("id") or "") == "step_copy_wait_editor":
+                timeout = (step.get("actionConfig") or {}).get("timeoutSeconds")
+                self.assertGreaterEqual(int(timeout or 0), 742)
 
 
 if __name__ == "__main__":

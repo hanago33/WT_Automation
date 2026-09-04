@@ -678,7 +678,7 @@
       ],
       "stepParams": {
         "exportSubdir": "m1",
-        "exportExcelName": "DEMO_S2.xlsx"
+        "exportExcelName": "综合1_m1_综合计算结果.xlsx"
       },
       "actionConfig": {
         "timeoutSeconds": 3.0,
@@ -693,7 +693,7 @@
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "综合1 Excel 总表输出路径=${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportExcelName}。${runtime.outputDir} 由 Simple 项目文件夹解析注入(未指定时回退默认输出目录)，${stepParams.exportSubdir}=m1、${stepParams.exportExcelName}=DEMO_S2.xlsx 可在步骤参数修改。"
+      "notes": "综合1 Excel 输出：${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportExcelName}，文件名统一为 综合N_子目录_综合计算结果.xlsx。${runtime.outputDir} 由 Simple 项目文件夹解析注入(未指定时回退默认输出目录)。"
     },
     {
       "id": "step_6",
@@ -1114,7 +1114,7 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在 IEC 总结另存为对话框的“文件名”输入框中键入 IEC 输出文件路径（DEMO_S2_IEC.xlsx）。",
+      "description": "在 IEC 总结另存为对话框的“文件名”输入框中键入 IEC 输出完整路径（${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportIecName}）。",
       "successLog": "已键入IEC输出文件路径",
       "windowTitle": "另存为",
       "inspectHints": {
@@ -1194,7 +1194,7 @@
       ],
       "stepParams": {
         "exportSubdir": "m1",
-        "exportIecName": "DEMO_S2_IEC.xlsx"
+        "exportIecName": "综合1_m1_IEC总结.xlsx"
       },
       "actionConfig": {
         "timeoutSeconds": 3.0,
@@ -1209,7 +1209,7 @@
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "综合1 IEC 总结输出路径=${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportIecName}。${stepParams.exportSubdir}=m1、${stepParams.exportIecName}=DEMO_S2_IEC.xlsx。"
+      "notes": "综合1 IEC 总结输出：${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportIecName}，文件名统一为 综合N_子目录_IEC总结.xlsx。"
     },
     {
       "id": "step_10",
@@ -3513,7 +3513,7 @@
       ],
       "stepParams": {
         "exportSubdir": "m4",
-        "exportExcelName": "WRA_综合计算结果.xlsx"
+        "exportExcelName": "综合2_m4_综合计算结果.xlsx"
       },
       "actionConfig": {
         "timeoutSeconds": 3.0,
@@ -3528,7 +3528,7 @@
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "综合2 Excel 总表输出路径=${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportExcelName}。${stepParams.exportSubdir}=m4、${stepParams.exportExcelName}=WRA_综合计算结果.xlsx；默认文件名仅为占位，可在步骤参数中调整。"
+      "notes": "综合2 Excel 输出：${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportExcelName}，文件名统一为 综合N_子目录_综合计算结果.xlsx。"
     },
     {
       "id": "step_28",
@@ -4028,7 +4028,7 @@
       ],
       "stepParams": {
         "exportSubdir": "m4",
-        "exportIecName": "WRA_IEC总结.xlsx"
+        "exportIecName": "综合2_m4_IEC总结.xlsx"
       },
       "actionConfig": {
         "timeoutSeconds": 3.0,
@@ -4043,7 +4043,7 @@
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "综合2 IEC 总结输出路径=${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportIecName}。${stepParams.exportSubdir}=m4、${stepParams.exportIecName}=WRA_IEC总结.xlsx；默认文件名仅为占位，可在步骤参数中调整。"
+      "notes": "综合2 IEC 输出：${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportIecName}，文件名统一为 综合N_子目录_IEC总结.xlsx。"
     },
     {
       "id": "step_32",
@@ -5033,7 +5033,7 @@
       ],
       "stepParams": {
         "exportSubdir": "m10",
-        "exportExcelName": "WRA_综合计算结果.xlsx"
+        "exportExcelName": "综合3_m10_综合计算结果.xlsx"
       },
       "actionConfig": {
         "timeoutSeconds": 3.0,
@@ -5048,7 +5048,7 @@
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "综合3 Excel 总表输出路径=${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportExcelName}。${stepParams.exportSubdir}=m10、${stepParams.exportExcelName}=WRA_综合计算结果.xlsx；默认文件名仅为占位，可在步骤参数中调整。"
+      "notes": "综合3 Excel 输出：${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportExcelName}，文件名统一为 综合N_子目录_综合计算结果.xlsx。"
     },
     {
       "id": "step_40",
@@ -5548,7 +5548,7 @@
       ],
       "stepParams": {
         "exportSubdir": "m10",
-        "exportIecName": "WRA_IEC总结.xlsx"
+        "exportIecName": "综合3_m10_IEC总结.xlsx"
       },
       "actionConfig": {
         "timeoutSeconds": 3.0,
@@ -5563,7 +5563,7 @@
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "综合3 IEC 总结输出路径=${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportIecName}。${stepParams.exportSubdir}=m10、${stepParams.exportIecName}=WRA_IEC总结.xlsx；默认文件名仅为占位，可在步骤参数中调整。"
+      "notes": "综合3 IEC 输出：${runtime.outputDir}\\${stepParams.exportSubdir}\\${stepParams.exportIecName}，文件名统一为 综合N_子目录_IEC总结.xlsx。"
     },
     {
       "id": "step_44",

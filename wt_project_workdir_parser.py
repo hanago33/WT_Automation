@@ -435,6 +435,14 @@ def _parse_work_dir(work_dir, project_params=None):
     if cft_entries:
         rc["cftInfoPath"] = cft_info_path
         rc["mastEntries"] = cft_entries
+        # 每塔气象对象名（塔名_轮毂高度_Auto，用户指定规则）：供新建气象数据命名与
+        # 综合计算气象参考匹配，与测风塔元素名/其它气象数据变体区分。
+        for _ent in cft_entries:
+            if not isinstance(_ent, dict) or not _ent.get("mastName"):
+                continue
+            _mn = str(_ent.get("mastName", "")).strip()
+            _hub = str(_ent.get("hubHeight", "") or "").strip()
+            _ent["meteoName"] = f"{_mn}_{_hub}_Auto" if _hub else f"{_mn}_Auto"
         # 选中塔：优先 project_params.mastId，否则首行
         selected_mast = str(project_params.get("mastId", "")).strip()
         selected_entry = None
@@ -452,6 +460,8 @@ def _parse_work_dir(work_dir, project_params=None):
                 rc[k] = v
                 # 兼容部分流程写死用 50N/UTM 占位，这里不污染
         rc["selectedMast"] = selected_entry.get("mastName", "")
+        if selected_entry.get("meteoName"):
+            rc["meteoName"] = selected_entry["meteoName"]
         # 测风塔数据 → mast / TI / TISD（按选中塔优先）
         sel_mast_name = selected_entry.get("mastName", "")
         mast_tim = _pick_mast_file(tim_files, sel_mast_name, input_root)
@@ -597,6 +607,11 @@ def _parse_work_dir(work_dir, project_params=None):
         rc["mastId"] = rc["mastName"]
     if str(rc.get("mastId", "")).strip() and not str(rc.get("mastName", "")).strip():
         rc["mastName"] = rc["mastId"]
+    # 气象对象名兜底：选中塔 mastName + 轮毂高度 → 塔名_轮毂高度_Auto
+    if not str(rc.get("meteoName", "")).strip() and str(rc.get("mastName", "")).strip():
+        _mn = str(rc.get("mastName", "")).strip()
+        _hub = str(rc.get("hubHeight", "") or "").strip()
+        rc["meteoName"] = f"{_mn}_{_hub}_Auto" if _hub else f"{_mn}_Auto"
 
     # ── 项目计算参数（人工确认项）透传进 runtime_config ──
     calc_keys = ("radius", "cfdHRes", "cfdBuf", "cfdMax", "cfdMin",
@@ -956,13 +971,20 @@ def build_text_overrides(flow_path, runtime_config, base_overrides=None):
             overrides[old_s] = new_s
 
     # 硬编码 meteo 键（CFT01/99/40.5/120.5/125）→ 新 rc
+    # CFT01（气象对象名）替换为 meteoName（塔名_轮毂高度_Auto），与测风塔元素名区分
     _meteo_map = [
-        ("CFT01", new_runtime.get("mastName")),
+        ("CFT01", new_runtime.get("meteoName") or new_runtime.get("mastName")),
         ("CFT1", new_runtime.get("mastName")),
         ("99", new_runtime.get("elevation")),
         ("40.5", new_runtime.get("latitude")),
         ("120.5", new_runtime.get("longitude")),
         ("125", new_runtime.get("hubHeight")),
+        # 综合计算数值项：流程模板写死值（35.0 极风 / 1.220 空气密度）→ 项目人工确认值。
+        # 同步约束：WT_Launcher.DEFAULT_PROJECT_PARAMS 的 wind50/airDensity 已与模板对齐，
+        # 避免"弹窗预填默认值经保存无条件固化"（_save 会把全部非空字段写入 project_params）
+        # 后，映射上线把未人工确认的默认值静默替换进输入框。
+        ("35.0", new_runtime.get("wind50")),
+        ("1.220", new_runtime.get("airDensity")),
     ]
     for _old, _new in _meteo_map:
         _add_meteo_override(_old, _new)

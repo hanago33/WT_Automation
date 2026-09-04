@@ -840,6 +840,95 @@ def _apply_param_table_expansion(merged_payload, target_payload):
 	if not isinstance(scanned_steps, list) or not scanned_steps:
 		log_step("[paramTable] 参数表无有效数据行，跳过展开。")
 		return merged_payload
+	# ── 项目解析值覆盖参数表默认值（机型 / Cp 版本）──
+	# Simple 界面注入的项目解析/人工填写值（GM_RUNTIME_CONFIG_JSON 优先，其次流程 runtimeConfig）
+	# 优先于参数表模板默认值。仅当 runtime 有非空值时才覆盖，避免污染既有行为。
+	_rt_merged = merged_payload.get("runtimeConfig", {})
+	if not isinstance(_rt_merged, dict):
+		_rt_merged = {}
+	_rt_env = _load_json_env_runtime()
+	if not isinstance(_rt_env, dict):
+		_rt_env = {}
+	_rt_turbine = str(_rt_env.get("turbineType", "") or "").strip() or str(_rt_merged.get("turbineType", "") or "").strip()
+	_rt_cp = str(_rt_env.get("cpVersion", "") or "").strip() or str(_rt_merged.get("cpVersion", "") or "").strip()
+	# 测风塔/气象引用：项目解析的测风塔编号覆盖参数表占位值（如 M1/Mast1/testMESO）。
+	# 参考点/极风速=测风塔名（mastName 优先，其次 mastEntries/mastIds 首座）；气象参考=气象对象名
+	# （塔名_轮毂高度_Auto，与测风塔元素名区分，见 wt_project_workdir_parser.meteoName）。
+	# 多塔第二塔=第二座塔。⚠ 不能取 sorted(mastIds)[1]：mastIds 在解析器里是 sorted(set(...))，
+	# 排序会打乱 CFT 行序（如 CFT=[W2512960, C2536] → mastIds=["C2536","W2512960"]），曾致
+	# 第二塔被覆盖成第一塔的气象。须按 mastEntries（CFT 行序）取"第一个不同于主塔的塔"；
+	# 无 mastEntries 时才回退 mastIds。单塔时第二塔引用保持参数表原样（其步骤被 towerMode 过滤）。
+	_mast_ids_rt = _rt_env.get("mastIds") if _rt_env.get("mastIds") else _rt_merged.get("mastIds")
+	_mast_names = [str(x).strip() for x in _mast_ids_rt if str(x).strip()] if isinstance(_mast_ids_rt, list) else []
+	_mast_entries_rt = _rt_env.get("mastEntries") if _rt_env.get("mastEntries") else _rt_merged.get("mastEntries")
+	_ordered_mast_names = []
+	if isinstance(_mast_entries_rt, list):
+		for _e in _mast_entries_rt:
+			if not isinstance(_e, dict):
+				continue
+			_n = str(_e.get("mastName", "") or "").strip()
+			if _n and _n not in _ordered_mast_names:
+				_ordered_mast_names.append(_n)
+	if not _ordered_mast_names:
+		_ordered_mast_names = list(_mast_names)
+	_rt_ref_primary = str(_rt_env.get("mastName", "") or "").strip() or str(_rt_merged.get("mastName", "") or "").strip() or (_ordered_mast_names[0] if _ordered_mast_names else "")
+	# 第二座塔 = 行序（或回退序）中第一个非主塔者；推导为空/与主塔同名时保持空，
+	# 宁可保留参数表原样，也不把第二塔引用覆盖成与第一塔相同的气象（假成功）。
+	_rt_ref_secondary = next((m for m in _ordered_mast_names if m and m != _rt_ref_primary), "")
+
+	def _meteo_for(_mast_name, _hub_default):
+		"""气象对象名：优先 mastEntries 里的 meteoName，否则按 mastName_hubHeight_Auto 拼接。"""
+		if not _mast_name:
+			return ""
+		for _e in (_rt_env.get("mastEntries") or _rt_merged.get("mastEntries") or []):
+			if isinstance(_e, dict) and str(_e.get("mastName", "")).strip() == _mast_name:
+				_meteo = str(_e.get("meteoName", "") or "").strip()
+				if _meteo:
+					return _meteo
+				_hub = str(_e.get("hubHeight", "") or "").strip()
+				return f"{_mast_name}_{_hub}_Auto" if _hub else f"{_mast_name}_Auto"
+		_hub = str(_hub_default or "").strip()
+		return f"{_mast_name}_{_hub}_Auto" if _hub else f"{_mast_name}_Auto"
+
+	_rt_hub = str(_rt_env.get("hubHeight", "") or "").strip() or str(_rt_merged.get("hubHeight", "") or "").strip()
+	_rt_meteo = str(_rt_env.get("meteoName", "") or "").strip() or str(_rt_merged.get("meteoName", "") or "").strip()
+	if not _rt_meteo:
+		_rt_meteo = _meteo_for(_rt_ref_primary, _rt_hub)
+	_rt_meteo2 = _meteo_for(_rt_ref_secondary, _rt_hub) if _rt_ref_secondary else ""
+	_mast_overrides = {}
+	if _mast_names:
+		_mast_overrides.update({
+			"refmast": _rt_ref_primary,
+			"weathername": _rt_meteo,
+			"mettowername": _rt_ref_primary,
+		})
+	if _rt_ref_secondary:
+		_mast_overrides.update({
+			"refmast2": _rt_ref_secondary,
+			"refclimatology2": _rt_meteo2 or _rt_ref_secondary,
+		})
+	if _rt_turbine or _rt_cp or _mast_overrides:
+		_ovr = []
+		for _s in scanned_steps:
+			if not isinstance(_s, dict):
+				continue
+			_sp = _s.get("stepParams")
+			if not isinstance(_sp, dict):
+				continue
+			if _rt_turbine:
+				for _k in ("defaultturbine", "drawturbinetype"):
+					if _k in _sp and str(_sp[_k]).strip() != _rt_turbine:
+						_ovr.append(f"{_k}:{_sp[_k]}->{_rt_turbine}")
+						_sp[_k] = _rt_turbine
+			if _rt_cp and "cpversion" in _sp and str(_sp["cpversion"]).strip() != _rt_cp:
+				_ovr.append(f"cpversion:{_sp['cpversion']}->{_rt_cp}")
+				_sp["cpversion"] = _rt_cp
+			for _k, _v in _mast_overrides.items():
+				if _k in _sp and _v and str(_sp[_k]).strip() != _v:
+					_ovr.append(f"{_k}:{_sp[_k]}->{_v}")
+					_sp[_k] = _v
+		if _ovr:
+			log_step(f"[paramTable] 项目解析值覆盖参数表默认（{len(_ovr)} 处）：{'；'.join(dict.fromkeys(_ovr))}")
 	# 包 stepIds 同步映射：参数表展开会把模板步骤 id 改为 `{原id}_scan{行}_{序号}`，
 	# 若不改写，flowPackages 中登记整流程的包（stepIds 引用原模板 id）在校验时会报
 	# "引用了不存在的步骤"。把每个原 id 替换为展开后对应的一批 id，保持包与 steps 一致。

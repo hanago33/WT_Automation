@@ -328,10 +328,14 @@ DEFAULT_PROJECT_PARAMS = {
     "cfdMin": "4",
     "cpVersion": "Cp0.429",
     "mastId": "M1",
-    "wind50": "50",
-    # 综合计算设置：海拔/空气密度依项目而定，人工确认（海拔预留 0，空气密度默认海平面标准值）
+    # 默认值与 发送综合计算 流程模板写死值对齐（step_25=35.0 / step_21=1.220）：
+    # 项目参数弹窗预填这些值、保存即固化进 project_params；解析器 build_text_overrides 会
+    # 把模板写死值替换为 project_params 值。若默认值与模板不一致，用户只改海拔没动极风时
+    # 保存会把"预填默认值"静默替换进流程（如 35.0 变 50），造成非预期覆盖。
+    "wind50": "35.0",
+    # 综合计算设置：海拔/空气密度依项目而定，人工确认（海拔预留 0，空气密度按需人工填）
     "elevation": "0",
-    "airDensity": "1.225",
+    "airDensity": "1.220",
     # 风机类型（板块4 新建风机类型）：人工定义
     "turbineType": "",
 }
@@ -349,6 +353,15 @@ class RelativeRegionHelperDialog:
         self.overlay_start = None
         self.capture_after_id = None
         self.preview_refresh_after_id = None
+        # 批量画框采集状态：一个界面内连续框选多个控件，最后导出校准数据
+        self.multi_regions = []
+        self.multi_overlay_window = None
+        self.multi_overlay_canvas = None
+        self.multi_overlay_rect_id = None
+        self.multi_overlay_start = None
+        self.multi_overlay_region_items = []
+        self.multi_toolbar_window = None
+        self.var_multi_region_count = tk.StringVar(value="批量采集：0 个区域")
         self.var_capture_delay_seconds = tk.StringVar(value="3")
         self.status_var = tk.StringVar(value="建议先延时抓父窗口，再手动画框；鼠标中心建议用延时记录，避免点按钮后位置偏移。")
         self.preview_metrics_var = tk.StringVar(value="预览摘要：尚未抓取父窗口")
@@ -506,6 +519,32 @@ class RelativeRegionHelperDialog:
         tk.Button(button_row, text="复制完整步骤样例", command=self.copy_step_template).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
         row += 1
 
+        multi_row = tk.Frame(left, bg=self.theme.get("card", "#ffffff"))
+        multi_row.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
+        tk.Button(
+            multi_row,
+            text="批量画框采集",
+            command=self.start_multi_region_capture,
+            bg=self.theme.get("secondary", "#e2ecf9"),
+            relief=tk.FLAT,
+            cursor="hand2",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(
+            multi_row,
+            text="导出校准数据",
+            command=self.export_multi_region_calibration,
+            bg=self.theme.get("secondary", "#e2ecf9"),
+            relief=tk.FLAT,
+            cursor="hand2",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        tk.Label(
+            multi_row,
+            textvariable=self.var_multi_region_count,
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("muted", "#5f6f82"),
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        row += 1
+
         tk.Label(
             left,
             textvariable=self.status_var,
@@ -594,6 +633,7 @@ class RelativeRegionHelperDialog:
 
     def _on_close(self):
         self._cancel_overlay_capture()
+        self._cancel_multi_region_capture()
         if self.capture_after_id:
             try:
                 self.window.after_cancel(self.capture_after_id)
@@ -1112,6 +1152,387 @@ class RelativeRegionHelperDialog:
     def copy_step_template(self):
         self._refresh_preview()
         self._copy_payload(self.build_step_template(), "完整步骤样例")
+
+    # ---------- 批量画框采集：一个界面内连续框选多个控件，导出校准数据 ----------
+
+    def start_multi_region_capture(self):
+        if not self.window_rect or not self.window_rect.get("width") or not self.window_rect.get("height"):
+            self.status_var.set("批量画框前必须先抓到父窗口，因为需要父窗口矩形换算相对比例。")
+            messagebox.showinfo(
+                "请先抓父窗口",
+                "批量画框采集前，需要先拿到父窗口矩形。\n\n建议顺序：\n1. 点“延时抓取父窗口”\n2. 切到目标弹窗\n3. 抓到后再点“批量画框采集”",
+                parent=self.window,
+            )
+            return
+        if self.overlay_window is not None:
+            self.status_var.set("单框画框窗口已打开，请先完成或取消它。")
+            return
+        if self.multi_overlay_window is not None:
+            self.status_var.set("批量画框窗口已打开，请继续框选。")
+            return
+        self.multi_regions = []
+        self._update_multi_region_count()
+        self.multi_overlay_start = None
+        self.multi_overlay_rect_id = None
+        self.multi_overlay_region_items = []
+        try:
+            self.window.withdraw()
+        except Exception:
+            pass
+        overlay = tk.Toplevel(self.parent)
+        self.multi_overlay_window = overlay
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        try:
+            overlay.attributes("-alpha", 0.22)
+        except Exception:
+            pass
+        screen_width = overlay.winfo_screenwidth()
+        screen_height = overlay.winfo_screenheight()
+        wt_dpi.raw_geometry(overlay, f"{screen_width}x{screen_height}+0+0")
+        overlay.configure(bg="#0f172a")
+        canvas = tk.Canvas(overlay, bg="#0f172a", highlightthickness=0, cursor="crosshair")
+        canvas.pack(fill=tk.BOTH, expand=True)
+        self.multi_overlay_canvas = canvas
+        parent_rect = self.window_rect or {}
+        canvas.create_rectangle(
+            parent_rect.get("left", 0),
+            parent_rect.get("top", 0),
+            parent_rect.get("right", 0),
+            parent_rect.get("bottom", 0),
+            outline="#60a5fa",
+            width=3,
+        )
+        canvas.create_text(
+            max(240, parent_rect.get("left", 0) + 200),
+            max(40, parent_rect.get("top", 0) - 20),
+            text="批量画框：拖动框选控件，松开后输入名称继续；Del 撤销上一个；F2 完成；Esc 取消",
+            fill="#ffffff",
+            font=("TkDefaultFont", 11, "bold"),
+        )
+        canvas.bind("<ButtonPress-1>", self._on_multi_overlay_mouse_down)
+        canvas.bind("<B1-Motion>", self._on_multi_overlay_mouse_drag)
+        canvas.bind("<ButtonRelease-1>", self._on_multi_overlay_mouse_up)
+        overlay.bind("<F2>", lambda _event=None: self._finish_multi_region_capture())
+        overlay.bind("<Delete>", lambda _event=None: self._undo_last_multi_region())
+        overlay.bind("<BackSpace>", lambda _event=None: self._undo_last_multi_region())
+        overlay.bind("<Escape>", lambda _event=None: self._cancel_multi_region_capture(restore_status=True, clear_regions=True))
+        overlay.focus_force()
+        self._build_multi_toolbar()
+        self.status_var.set("批量画框采集：连续框选各控件，松开鼠标后输入名称继续；Del 撤销；F2 完成。")
+
+    def _on_multi_overlay_mouse_down(self, event):
+        canvas = self.multi_overlay_canvas
+        if canvas is None:
+            return
+        start_x, start_y = self._clamp_overlay_point(event.x_root, event.y_root)
+        self.multi_overlay_start = (start_x, start_y)
+        if self.multi_overlay_rect_id is not None:
+            canvas.delete(self.multi_overlay_rect_id)
+        self.multi_overlay_rect_id = canvas.create_rectangle(
+            start_x, start_y, start_x, start_y, outline="#facc15", width=3, dash=(6, 4),
+        )
+
+    def _on_multi_overlay_mouse_drag(self, event):
+        canvas = self.multi_overlay_canvas
+        if canvas is None or self.multi_overlay_rect_id is None or self.multi_overlay_start is None:
+            return
+        current_x, current_y = self._clamp_overlay_point(event.x_root, event.y_root)
+        canvas.coords(
+            self.multi_overlay_rect_id,
+            self.multi_overlay_start[0],
+            self.multi_overlay_start[1],
+            current_x,
+            current_y,
+        )
+
+    def _on_multi_overlay_mouse_up(self, event):
+        if self.multi_overlay_start is None:
+            return
+        end_x, end_y = self._clamp_overlay_point(event.x_root, event.y_root)
+        start_x, start_y = self.multi_overlay_start
+        left = min(start_x, end_x)
+        top = min(start_y, end_y)
+        right = max(start_x, end_x)
+        bottom = max(start_y, end_y)
+        self.multi_overlay_start = None
+        if self.multi_overlay_rect_id is not None:
+            try:
+                self.multi_overlay_canvas.delete(self.multi_overlay_rect_id)
+            except Exception:
+                pass
+            self.multi_overlay_rect_id = None
+        if right - left < 4 or bottom - top < 4:
+            self.status_var.set("画框区域过小，请重新框选。")
+            return
+        self._prompt_multi_region_tag(left, top, right, bottom)
+
+    def _prompt_multi_region_tag(self, left, top, right, bottom):
+        overlay = self.multi_overlay_window
+        try:
+            overlay.withdraw()
+        except Exception:
+            pass
+        self._destroy_multi_toolbar()
+        try:
+            self.window.deiconify()
+            self.window.lift()
+        except Exception:
+            pass
+        tag = simpledialog.askstring(
+            "控件名称",
+            "这个框选的是哪个控件/区域？\n（如：Date/Time、默认高度、风速通道、风向通道、应用、开始校验、添加到数据…）",
+            parent=self.window,
+        )
+        try:
+            self.window.withdraw()
+        except Exception:
+            pass
+        try:
+            overlay.deiconify()
+            overlay.lift()
+            overlay.focus_force()
+        except Exception:
+            pass
+        tag = (tag or "").strip()
+        if not tag:
+            self.status_var.set("已跳过该框选区域（未命名）。")
+            self._build_multi_toolbar()
+            return
+        region = self._make_multi_region_record(tag, left, top, right, bottom)
+        self.multi_regions.append(region)
+        self._update_multi_region_count()
+        if self.multi_overlay_canvas is not None:
+            rect_id = self.multi_overlay_canvas.create_rectangle(
+                left, top, right, bottom, outline="#ef4444", width=2,
+            )
+            text_id = self.multi_overlay_canvas.create_text(
+                left + 6, top - 6, text=tag, anchor="w",
+                fill="#ffffff", font=("TkDefaultFont", 9, "bold"),
+            )
+            self.multi_overlay_region_items.append((rect_id, text_id, tag, left, top, right, bottom))
+        self.status_var.set(f"已记录 {tag}，继续框选下一个；Del 撤销上一个；F2 完成。")
+        self._build_multi_toolbar()
+
+    def _make_multi_region_record(self, tag, left, top, right, bottom):
+        parent = self.window_rect or {}
+        parent_width = max(float(parent.get("width", 0) or 0), 1.0)
+        parent_height = max(float(parent.get("height", 0) or 0), 1.0)
+        parent_left = float(parent.get("left", 0) or 0)
+        parent_top = float(parent.get("top", 0) or 0)
+        return {
+            "tag": tag,
+            "left": int(left),
+            "top": int(top),
+            "right": int(right),
+            "bottom": int(bottom),
+            "width": int(right - left),
+            "height": int(bottom - top),
+            "center_x": int(round((left + right) / 2.0)),
+            "center_y": int(round((top + bottom) / 2.0)),
+            "rel_x": round(max(0.0, min(1.0, (float(left) - parent_left) / parent_width)), 4),
+            "rel_y": round(max(0.0, min(1.0, (float(top) - parent_top) / parent_height)), 4),
+            "rel_width": round(max(0.0, min(1.0, (float(right) - float(left)) / parent_width)), 4),
+            "rel_height": round(max(0.0, min(1.0, (float(bottom) - float(top)) / parent_height)), 4),
+        }
+
+    def _finish_multi_region_capture(self):
+        self._cancel_multi_region_capture(restore_status=False)
+        count = len(self.multi_regions)
+        if not count:
+            self.status_var.set("批量画框采集已退出（未记录任何区域），可重新开始。")
+            return
+        if messagebox.askyesno(
+            "批量采集完成",
+            f"已采集 {count} 个区域。\n\n是否立即将校准数据复制到剪贴板？\n（可直接粘贴发给 AI 做坐标校正，同时保存到 workspace/relative_region_calibration.json）",
+            parent=self.window,
+        ):
+            self._copy_multi_region_calibration()
+            self.status_var.set(f"批量画框采集完成，共 {count} 个区域，校准数据已复制到剪贴板。")
+        else:
+            self.status_var.set(f"批量画框采集完成，共 {count} 个区域，可点“导出校准数据”复制。")
+
+    def _cancel_multi_region_capture(self, restore_status=False, clear_regions=False):
+        overlay = self.multi_overlay_window
+        self.multi_overlay_window = None
+        self.multi_overlay_canvas = None
+        self.multi_overlay_rect_id = None
+        self.multi_overlay_start = None
+        self.multi_overlay_region_items = []
+        if overlay is not None:
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+        self._destroy_multi_toolbar()
+        if clear_regions:
+            self.multi_regions = []
+            self._update_multi_region_count()
+        try:
+            if self.window.winfo_exists():
+                self.window.deiconify()
+                self.window.lift()
+        except Exception:
+            pass
+        if restore_status:
+            if clear_regions:
+                self.status_var.set("已取消批量画框采集并清空已采区域。")
+            else:
+                self.status_var.set("已取消批量画框采集。")
+
+    # ---------- 批量画框采集：底部工具栏 / 撤销 / 一键复制校准数据 ----------
+
+    def _build_multi_toolbar(self):
+        """在屏幕底部中央创建不透明工具栏：完成采集 / 撤销上一个 / 取消。"""
+        toolbar = tk.Toplevel(self.parent)
+        self.multi_toolbar_window = toolbar
+        toolbar.overrideredirect(True)
+        toolbar.attributes("-topmost", True)
+        toolbar.configure(bg="#1e293b")
+        toolbar_width = wt_dpi.scale(640)
+        toolbar_height = wt_dpi.scale(54)
+        try:
+            screen_width = toolbar.winfo_screenwidth()
+            screen_height = toolbar.winfo_screenheight()
+            x = max(0, (screen_width - toolbar_width) // 2)
+            y = max(0, screen_height - wt_dpi.scale(88))
+            wt_dpi.raw_geometry(toolbar, f"{toolbar_width}x{toolbar_height}+{x}+{y}")
+        except Exception:
+            pass
+        tk.Label(
+            toolbar,
+            textvariable=self.var_multi_region_count,
+            bg="#1e293b",
+            fg="#e2e8f0",
+            font=("TkDefaultFont", 10, "bold"),
+        ).pack(side=tk.LEFT, padx=(14, 8), pady=8)
+        tk.Button(
+            toolbar,
+            text="完成采集 (F2)",
+            command=self._finish_multi_region_capture,
+            bg="#22c55e",
+            fg="#ffffff",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=14,
+            pady=6,
+        ).pack(side=tk.LEFT, padx=4)
+        tk.Button(
+            toolbar,
+            text="撤销上一个 (Del)",
+            command=self._undo_last_multi_region,
+            bg="#f59e0b",
+            fg="#ffffff",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=14,
+            pady=6,
+        ).pack(side=tk.LEFT, padx=4)
+        tk.Button(
+            toolbar,
+            text="取消 (Esc)",
+            command=lambda: self._cancel_multi_region_capture(restore_status=True, clear_regions=True),
+            bg="#ef4444",
+            fg="#ffffff",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=14,
+            pady=6,
+        ).pack(side=tk.LEFT, padx=4)
+        # 无论焦点在 overlay 还是工具栏，F2 / Del / Esc 都生效
+        toolbar.bind("<F2>", lambda _event=None: self._finish_multi_region_capture())
+        toolbar.bind("<Delete>", lambda _event=None: self._undo_last_multi_region())
+        toolbar.bind("<BackSpace>", lambda _event=None: self._undo_last_multi_region())
+        toolbar.bind("<Escape>", lambda _event=None: self._cancel_multi_region_capture(restore_status=True, clear_regions=True))
+        try:
+            toolbar.lift()
+        except Exception:
+            pass
+
+    def _destroy_multi_toolbar(self):
+        toolbar = self.multi_toolbar_window
+        self.multi_toolbar_window = None
+        if toolbar is not None:
+            try:
+                toolbar.destroy()
+            except Exception:
+                pass
+
+    def _undo_last_multi_region(self):
+        """撤销最近一个框选区域：删除 overlay 上的图形并移出记录。"""
+        if not self.multi_regions:
+            self.status_var.set("没有可撤销的区域。")
+            return
+        self.multi_regions.pop()
+        if self.multi_overlay_region_items and self.multi_overlay_canvas is not None:
+            rect_id, text_id, _tag, _l, _t, _r, _b = self.multi_overlay_region_items.pop()
+            try:
+                self.multi_overlay_canvas.delete(rect_id)
+            except Exception:
+                pass
+            try:
+                self.multi_overlay_canvas.delete(text_id)
+            except Exception:
+                pass
+        self._update_multi_region_count()
+        remaining = len(self.multi_regions)
+        self.status_var.set(f"已撤销上一个区域，剩余 {remaining} 个；继续框选或按 F2 完成。")
+        if self.multi_toolbar_window is not None:
+            self._destroy_multi_toolbar()
+            self._build_multi_toolbar()
+
+    def _update_multi_region_count(self):
+        try:
+            self.var_multi_region_count.set(f"批量采集：{len(self.multi_regions)} 个区域")
+        except Exception:
+            pass
+
+    def _build_multi_region_calibration_payload(self):
+        return {
+            "windowRect": self.window_rect,
+            "regionCount": len(self.multi_regions),
+            "regions": self.multi_regions,
+        }
+
+    def _copy_multi_region_calibration(self):
+        """构建校准数据，保存到 workspace 并复制到剪贴板。返回是否成功。"""
+        data = self._build_multi_region_calibration_payload()
+        try:
+            payload = json.dumps(data, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            self.status_var.set(f"导出序列化失败：{exc}")
+            return False
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception:
+            out_dir = os.path.dirname(os.path.abspath(__file__))
+        out_path = os.path.join(out_dir, "relative_region_calibration.json")
+        try:
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+        except Exception as exc:
+            self.status_var.set(f"导出保存失败：{exc}")
+            return False
+        try:
+            self.parent.clipboard_clear()
+            self.parent.clipboard_append(payload)
+            self.parent.update_idletasks()
+        except Exception:
+            pass
+        return True
+
+    def export_multi_region_calibration(self):
+        if not self.window_rect or not self.multi_regions:
+            self.status_var.set("请先抓父窗口并批量画框采集，再导出校准数据。")
+            messagebox.showinfo("无数据", "请先抓取父窗口并批量画框采集，再导出校准数据。", parent=self.window)
+            return
+        if self._copy_multi_region_calibration():
+            self.status_var.set(
+                f"已导出 {len(self.multi_regions)} 个区域到 workspace/relative_region_calibration.json，并已复制到剪贴板。"
+            )
+        else:
+            self.status_var.set("导出校准数据失败，请查看状态提示。")
 
 
 class ServerMonitorWindow:
@@ -1742,6 +2163,19 @@ class LauncherApp:
             activebackground=theme["secondary_active"],
         )
         self.btn_task_monitor.pack(side=tk.LEFT, padx=(8, 0))
+        self.btn_simple_test_conn = tk.Button(
+            toolbar,
+            text="测试连接",
+            command=self._simple_test_connection,
+            bg=theme["secondary"],
+            fg=theme["text"],
+            relief=tk.FLAT,
+            padx=12,
+            pady=6,
+            cursor="hand2",
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_test_conn.pack(side=tk.LEFT, padx=(8, 0))
         self.btn_simple_submit_remote = tk.Button(
             toolbar,
             text="提交所选板块到远程队列",
@@ -2662,7 +3096,76 @@ class LauncherApp:
         if getattr(self, "_mast_queue_active", False):
             messagebox.showinfo("提示", "多塔串行队列正在运行中，请先停止或等待完成。")
             return False
+        # 提交前实际连通检测：失败明确提示，避免"点了没反应"或失败信息被隐藏
+        ok, message = self._test_queue_connection()
+        if not ok:
+            messagebox.showwarning(
+                "无法连接任务队列服务",
+                "{}\n\n请确认：\n1) 服务器已运行 start_queue_service.bat；\n"
+                "2) 地址正确（本地为 http://127.0.0.1:8768）；\n"
+                "3) 令牌与服务端 --auth-token 一致；\n"
+                "4) 服务器防火墙放行 8768 入站。".format(message),
+            )
+            return False
         return True
+
+    def _test_queue_connection(self):
+        """实测与任务队列服务的连通性 + 鉴权（同步，最多约 6s）。
+
+        用需要鉴权的 /api/queue/stats 探测：能同时验证"服务可达"与"令牌正确"
+        （/api/health 不走鉴权，错误令牌也会返回 200，无法暴露令牌错误）。
+        返回 (ok, message)：ok=False 时 message 说明失败原因。
+        """
+        import urllib.error  # 局部导入，确保 HTTPError 引用可靠
+
+        url = (getattr(self, "task_queue_url", "") or "").strip().rstrip("/")
+        token = (getattr(self, "task_queue_token", "") or "").strip()
+        if not url:
+            return False, "未配置服务器地址：请先打开「任务与服务器监控」填写地址/用户名/令牌。"
+        if not token:
+            return False, "未配置服务令牌：令牌须与服务端启动时的 --auth-token 一致。"
+        probe_url = url + "/api/queue/stats"
+        request = urllib.request.Request(
+            probe_url, headers={"Authorization": "Bearer " + token}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                return False, "认证失败（401）：令牌与服务端 --auth-token 不一致。"
+            return False, "服务返回错误 {}：{}".format(exc.code, exc.reason)
+        except Exception as exc:
+            return False, "无法连接 {}：{}".format(probe_url, exc)
+        if not isinstance(payload, dict) or "total" not in payload:
+            return False, "服务响应异常：{}".format(str(payload)[:80])
+        total = payload.get("total", "?")
+        text = "连接成功：队列服务正常（总任务 {} 个）".format(total)
+        statuses = payload.get("byStatus")
+        if isinstance(statuses, dict):
+            parts = []
+            for key in ("pending", "running", "paused", "success", "failed",
+                        "canceled", "terminated"):
+                count = statuses.get(key, 0)
+                if count:
+                    parts.append("{} {}".format(count, key))
+            text += "\n状态分布：" + (" / ".join(parts) if parts else "全部 0")
+        return True, text
+
+    def _simple_test_connection(self):
+        """Simple 界面"测试连接"按钮：立即测连通并弹窗反馈。"""
+        if not getattr(self, "task_queue_url", "") or not getattr(self, "task_queue_token", ""):
+            messagebox.showinfo(
+                "测试连接",
+                "请先打开「任务与服务器监控」填写服务器地址、用户名和服务令牌，再点测试连接。",
+            )
+            self.open_task_queue()
+            return
+        ok, message = self._test_queue_connection()
+        messagebox.showinfo(
+            "测试连接 - {}".format("成功" if ok else "失败"),
+            message,
+        )
 
     def _validate_sections_for_remote(self, sections):
         """提交前校验流程定义，返回问题列表 [(板块标题, 原因), ...]。"""
@@ -2704,9 +3207,21 @@ class LauncherApp:
         重复排队任务；每成功入队一个任务经 on_task_submitted 增量登记，使"停止排队"
         在提交进行中也能终止已提交的任务（避免孤儿任务）。
         """
+        # 项目解析注入（对齐本地 Simple 运行）：应用覆盖、按塔展开、附带 runtimeConfig
+        sections = self._prepare_remote_sections(sections)
         self.open_task_queue()
         window = getattr(self, "_task_queue_window", None)
         if window is None:
+            # 窗口创建失败（如构建中途异常）时复位标志与按钮，否则永久卡"正在提交"
+            with self._simple_remote_lock:
+                self._simple_remote_submitting = False
+            try:
+                self.btn_simple_run.config(state=tk.NORMAL)
+                self.btn_simple_submit_remote.config(state=tk.NORMAL)
+                self.btn_simple_stop.config(state=tk.DISABLED)
+            except Exception:
+                pass
+            self._simple_set_status("远程提交失败：任务队列窗口创建异常，请查看控制台日志", "error")
             return False
         with self._simple_remote_lock:
             self._simple_remote_submitting = True
@@ -2782,7 +3297,9 @@ class LauncherApp:
         if not selected:
             messagebox.showinfo("提示", "没有可提交的板块（校验通过的板块为空）。")
             return
-        self._submit_sections_to_remote(selected, use_dialog=True)
+        # 直接提交（不弹板块勾选对话框）：Simple 界面已勾选即视为确认，
+        # 一次点击即提交；提交完成后会弹窗反馈并刷新队列窗口。
+        self._submit_sections_to_remote(selected, use_dialog=False)
 
     def _submit_chain_to_remote_queue(self):
         if not self.task_queue_url or not self.task_queue_user or not self.task_queue_token:
@@ -2859,13 +3376,32 @@ class LauncherApp:
             self._append_log(
                 "远程提交：成功 {} 个，失败 {} 个".format(submitted, failed), tag="warning"
             )
+        else:
+            self._append_log(
+                "远程提交成功：{} 个任务已被服务器接受".format(len(task_ids)), tag="success"
+            )
         self._simple_set_status(
             "已提交 {} 个任务，等待执行".format(len(task_ids)),
             "running",
         )
+        # 提交成功明确反馈：弹窗 + 强制刷新队列窗口，让任务立即可见
+        window = getattr(self, "_task_queue_window", None)
+        if window is not None:
+            try:
+                window.refresh()
+            except Exception:
+                pass
+            try:
+                messagebox.showinfo(
+                    "远程提交",
+                    "已提交 {} 个任务到服务器队列，服务器已接受并排队执行。\n"
+                    "可在「任务与服务器监控」窗口查看进度。".format(len(task_ids))
+                    + ("\n\n{} 个提交失败，详见日志区。".format(failed) if failed else ""),
+                )
+            except Exception:
+                pass
         # 提交后快照确认：用一次批量查询核实任务已被服务端接收。
         # 若服务端刚重启导致任务丢失，立即发现并止损，避免轮询空转卡死。
-        window = getattr(self, "_task_queue_window", None)
         missing = self._confirm_remote_tasks(task_ids, window) if window is not None else []
         if missing:
             detail = "、".join(missing[:5]) + ("…" if len(missing) > 5 else "")
@@ -5053,8 +5589,33 @@ class LauncherApp:
     def start_automation(self):
         self._launch_automation([], banner="========== 启动新的自动化流程 ==========")
 
-    def _write_project_tmp_flow(self, flow_path, text_overrides, path_prefix_overrides):
-        """将项目解析覆盖应用到流程 payload，写临时流程文件供子进程读取；原文件不动。"""
+    def _absolutize_param_table(self, flow_path, payload):
+        """将 payload 中 paramTable 相对路径基于原流程文件目录转为绝对路径。
+
+        子进程按 FLOW_DEFINITION_FILE 所在目录解析相对 paramTable；Simple 模式会把
+        流程写到 workspace/ 临时文件，导致相对 paramTable 在临时文件目录下找不到
+        （如 param_table_发送综合计算.xlsx 实际在 flow_packages/）。写临时文件前调用。
+        """
+        if not isinstance(payload, dict):
+            return payload
+        param = str(payload.get("paramTable", "") or "").strip()
+        if param and not os.path.isabs(param):
+            abs_param = os.path.normpath(
+                os.path.join(os.path.dirname(os.path.abspath(flow_path or "")), param)
+            )
+            if os.path.isfile(abs_param):
+                payload["paramTable"] = abs_param
+        return payload
+
+    def _write_project_tmp_flow(self, flow_path, text_overrides, path_prefix_overrides,
+                                absolutize_param_table=True,
+                                tmp_name="flow_definition_project_tmp.json"):
+        """将项目解析覆盖应用到流程 payload，写临时流程文件供子进程读取；原文件不动。
+
+        absolutize_param_table：本地运行传 True（paramTable 转绝对路径，避免临时文件
+        所在目录解析不到相对参数表）；远程提交传 False（保留相对路径——上传到服务器
+        后，worker 按服务器端流程文件所在目录解析，与服务器 flow_packages 资产对齐）。
+        """
         try:
             payload, _err = load_json_file(flow_path)
             if not isinstance(payload, dict):
@@ -5062,16 +5623,19 @@ class LauncherApp:
             new_payload = wt_project_workdir_parser.apply_overrides_to_payload(
                 payload, text_overrides, path_prefix_overrides
             )
+            if absolutize_param_table:
+                self._absolutize_param_table(flow_path, new_payload)
             tmp_dir = os.path.join(BASE_DIR, "workspace")
             os.makedirs(tmp_dir, exist_ok=True)
-            tmp_path = os.path.join(tmp_dir, "flow_definition_project_tmp.json")
+            tmp_path = os.path.join(tmp_dir, tmp_name)
             save_json_file(tmp_path, new_payload)
             return tmp_path
         except Exception as exc:
             self._append_log("写入临时流程文件失败，按原流程运行：{}".format(exc), tag="warning")
             return None
 
-    def _write_project_tmp_flow_for_mast(self, flow_path, text_overrides, path_prefix_overrides, mast_name):
+    def _write_project_tmp_flow_for_mast(self, flow_path, text_overrides, path_prefix_overrides, mast_name,
+                                         absolutize_param_table=True):
         """多塔：按 mastName 写独立临时文件，避免覆盖。"""
         try:
             payload, _err = load_json_file(flow_path)
@@ -5080,6 +5644,8 @@ class LauncherApp:
             new_payload = wt_project_workdir_parser.apply_overrides_to_payload(
                 payload, text_overrides, path_prefix_overrides
             )
+            if absolutize_param_table:
+                self._absolutize_param_table(flow_path, new_payload)
             tmp_dir = os.path.join(BASE_DIR, "workspace")
             os.makedirs(tmp_dir, exist_ok=True)
             safe = "".join(c if c.isalnum() else "_" for c in str(mast_name or "mast"))
@@ -5089,6 +5655,167 @@ class LauncherApp:
         except Exception as exc:
             self._append_log(f"写入多塔临时流程失败 mast={mast_name}: {exc}", tag="warning")
             return None
+
+    def _prepare_remote_sections(self, sections):
+        """远程提交前的板块准备：对齐本地 Simple 运行的项目解析注入。
+
+        - 指定项目工作文件夹时，逐板块解析项目并应用覆盖（文本/路径前缀），写远程
+          临时流程文件（paramTable 保持相对路径——上传后由服务器 worker 按
+          flow_packages 目录解析）；未指定项目文件夹时原样返回（行为与旧版一致）。
+        - 逐塔录入类流程（如新建气象数据）按 CFT 全量塔展开为多个板块任务
+          （towerMode=single），与本地多塔串行队列语义一致；缺数据塔跳过。
+        - 每个板块附带 runtimeConfig（业务参数/塔信息），随任务提交、由服务端
+          worker 启动时注入，使远程执行拿到与本地相同的项目参数。
+        """
+        project_work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+        if not project_work_dir or not os.path.isdir(project_work_dir):
+            return sections
+        project_params = dict(getattr(self, "project_params", {}) or {})
+        prepared = []
+        for sec in sections or []:
+            flow_path = str(sec.get("path") or "").strip()
+            if not flow_path or not os.path.isfile(flow_path):
+                prepared.append(sec)
+                continue
+            try:
+                prepared.extend(
+                    self._prepare_remote_section(sec, flow_path, project_work_dir, project_params)
+                )
+            except Exception as exc:
+                self._append_log(
+                    "板块 {} 项目解析失败，按原流程提交：{}".format(sec.get("title"), exc),
+                    tag="warning",
+                )
+                prepared.append(sec)
+        return prepared
+
+    def _prepare_remote_section(self, sec, flow_path, project_work_dir, project_params):
+        """单个板块的远程准备；返回板块列表（多塔展开时多于一个）。"""
+        payload, _err = load_json_file(flow_path)
+        payload_text = json.dumps(payload, ensure_ascii=False) if isinstance(payload, dict) else ""
+        payload_rc = (payload or {}).get("runtimeConfig") if isinstance(payload, dict) else {}
+        is_meteo_flow = (
+            "气象" in flow_path
+            or "气象" in payload_text
+            or (isinstance(payload_rc, dict) and bool(payload_rc.get("multiMast")))
+        )
+        is_meteo_entry_flow = (
+            "新建气象数据" in flow_path
+            or "气象数据录入" in flow_path
+            or "气象数据录入" in payload_text
+        )
+        try:
+            mast_entries = wt_project_workdir_parser.list_mast_entries(project_work_dir)
+        except Exception:
+            mast_entries = []
+        want_mast = str((project_params or {}).get("mastId", "") or "").strip()
+        mast_names = {str(e.get("mastName", "") or "").strip() for e in mast_entries}
+        want_single = (not is_meteo_entry_flow) and want_mast in mast_names
+        if is_meteo_flow and len(mast_entries) > 1 and not want_single:
+            if is_meteo_entry_flow and want_mast in mast_names:
+                self._append_log(
+                    "气象数据录入流程：忽略 mastId={} 的单塔选择，按 CFT 全量 {} 座测风塔逐塔提交".format(
+                        want_mast, len(mast_entries)
+                    ),
+                    tag="system",
+                )
+            mast_parsed_list = wt_project_workdir_parser.parse_all_masts(
+                project_work_dir, project_params=project_params, flow_path=flow_path
+            ) or []
+            if len(mast_parsed_list) > 1:
+                return self._expand_remote_mast_sections(sec, flow_path, mast_parsed_list)
+        # 单塔/默认塔：与本地 _launch_automation 单塔分支同构
+        parsed = wt_project_workdir_parser.parse_project_work_dir(
+            project_work_dir, project_params=project_params, flow_path=flow_path
+        )
+        runtime_config = load_flow_runtime_config(flow_path)
+        text_ovr, path_ovr = {}, {}
+        if parsed:
+            parsed_rc = parsed.get("runtime_config") or {}
+            if isinstance(parsed_rc, dict):
+                runtime_config.update(parsed_rc)
+            text_ovr = parsed.get("text_overrides") or {}
+            path_ovr = parsed.get("path_prefix_overrides") or {}
+        self._apply_tower_mode(runtime_config, project_work_dir)
+        out = dict(sec)
+        out["name"] = os.path.basename(flow_path)
+        if text_ovr or path_ovr:
+            safe_key = "".join(
+                c if c.isalnum() else "_"
+                for c in str(sec.get("key") or sec.get("title") or "sec")
+            )
+            tmp_path = self._write_project_tmp_flow(
+                flow_path, text_ovr, path_ovr,
+                absolutize_param_table=False,
+                tmp_name="flow_definition_remote_tmp_{}.json".format(safe_key),
+            )
+            if tmp_path:
+                out["path"] = tmp_path
+        if runtime_config:
+            out["runtimeConfig"] = runtime_config
+        return [out]
+
+    def _expand_remote_mast_sections(self, sec, flow_path, mast_parsed_list):
+        """逐塔录入流程的多塔展开：每塔一个板块任务（towerMode=single）。"""
+        out = []
+        title = str(sec.get("title") or sec.get("key") or "板块")
+        for idx, parsed in enumerate(mast_parsed_list, 1):
+            if not parsed:
+                continue
+            rc_parsed = parsed.get("runtime_config") or {}
+            mast = str(
+                rc_parsed.get("mastName") or rc_parsed.get("selectedMast") or "mast{}".format(idx)
+            )
+            missing = rc_parsed.get("missingMastFiles") or []
+            if missing:
+                self._append_log(
+                    "板块 {} 塔 {} 缺少气象数据文件({})，跳过该塔".format(
+                        title, mast, ", ".join(missing)
+                    ),
+                    tag="warning",
+                )
+                continue
+            cur_runtime = dict(load_flow_runtime_config(flow_path))
+            cur_runtime.update(rc_parsed)
+            cur_runtime["towerMode"] = "single"
+            text_ovr = parsed.get("text_overrides") or {}
+            path_ovr = parsed.get("path_prefix_overrides") or {}
+            tmp_path = self._write_project_tmp_flow_for_mast(
+                flow_path, text_ovr, path_ovr, mast,
+                absolutize_param_table=False,
+            )
+            item = dict(sec)
+            item["title"] = "{}·{}".format(title, mast)
+            # 上传名按塔区分：多塔临时流程内容互不相同，若共用原始文件名会
+            # 在服务器端互相覆盖/产生混淆的版本归档
+            stem, ext = os.path.splitext(os.path.basename(flow_path))
+            item["name"] = "{}{}{}".format(stem, mast, ext)
+            if tmp_path:
+                item["path"] = tmp_path
+            item["runtimeConfig"] = cur_runtime
+            out.append(item)
+        if not out:
+            self._append_log(
+                "板块 {} 所有塔均缺数据，按原流程提交单任务兜底".format(title), tag="warning"
+            )
+            return [sec]
+        return out
+
+    def _apply_tower_mode(self, runtime_config, project_work_dir):
+        """按项目解析出的测风塔数量补 towerMode/synthesisDesc（与本地单塔运行一致）。"""
+        try:
+            mast_entries = wt_project_workdir_parser.list_mast_entries(project_work_dir)
+        except Exception:
+            mast_entries = []
+        mast_ids = runtime_config.get("mastIds")
+        mast_count = len(mast_ids) if isinstance(mast_ids, list) and mast_ids else len(mast_entries)
+        if mast_count > 0:
+            runtime_config["towerMode"] = "multi" if mast_count >= 2 else "single"
+            turbine = str(runtime_config.get("turbineType", "") or "").strip()
+            tower_cn = "多塔" if runtime_config["towerMode"] == "multi" else "单塔"
+            runtime_config["synthesisDesc"] = (
+                "{} {}".format(turbine, tower_cn).strip() if turbine else tower_cn
+            )
 
     def _launch_meteo_mast_queue(self, flow_definition_path, mast_parsed_list, base_runtime_config, banner, extra_args):
         """Simple 多塔串行：每塔一临时流程，串行等待子进程退出。
@@ -5311,9 +6038,27 @@ class LauncherApp:
                         "项目含多座测风塔，但当前流程未标记为多塔气象流程，仅运行默认塔",
                         tag="warning",
                     )
-                # 用户在 project_params 指定了具体塔（mastId）时尊重单塔选择，不展开队列
+                # 逐塔录入类流程（如"新建气象数据"）：每座塔都要完整录入一遍，
+                # project_params.mastId（测风对象编号）主要供发送综合计算等下游消费，
+                # 不应压制本类流程的多塔展开——恒按 CFT 全量塔逐塔录入。
+                _payload_text = json.dumps(_payload, ensure_ascii=False) if isinstance(_payload, dict) else ""
+                _is_meteo_entry_flow = (
+                    "新建气象数据" in flow_definition_path
+                    or "气象数据录入" in flow_definition_path
+                    or "气象数据录入" in _payload_text
+                )
+                # 用户在 project_params 指定了具体塔（mastId）时尊重单塔选择，不展开队列；
+                # 但对逐塔录入类流程不生效（录入必须覆盖全部测风塔）。
                 _want_mast = str((getattr(self, "project_params", {}) or {}).get("mastId", "") or "").strip()
-                _want_single = _want_mast in {str(e.get("mastName", "")).strip() for e in _mast_entries}
+                _mast_names = {str(e.get("mastName", "")).strip() for e in _mast_entries}
+                _want_single = (not _is_meteo_entry_flow) and (_want_mast in _mast_names)
+                if _is_meteo_entry_flow and _want_mast in _mast_names and len(_mast_entries) > 1:
+                    self._append_log(
+                        "气象数据录入流程：忽略 mastId={} 的单塔选择，按 CFT 全量 {} 座测风塔逐塔录入".format(
+                            _want_mast, len(_mast_entries)
+                        ),
+                        tag="system",
+                    )
                 if _is_meteo_flow and not _want_single and len(_mast_entries) > 1:
                     try:
                         _all_parsed = wt_project_workdir_parser.parse_all_masts(

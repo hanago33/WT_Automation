@@ -149,6 +149,17 @@ def log_server_event(message, log_path=DEFAULT_SERVER_LOG):
         pass
 
 
+_CONTROL_ERROR_ZH = {
+    # wt_task_queue 状态机拒绝信息的中文对照（客户端弹窗直读）
+    "task not found": "任务不存在：该任务不在当前服务器的队列库中（可能提交到了另一台机器，或已被删除）",
+    "cancel is only valid for pending tasks": "只有排队中（pending）的任务才能取消；运行中的任务请用「终止」",
+    "terminate is only valid for running tasks": "只有运行中的任务才能终止",
+    "pause is only valid for pending or running tasks": "只有排队中或运行中的任务才能暂停",
+    "resume is only valid for paused, failed or terminated tasks": "只有已暂停、失败或已终止的任务才能继续/重试",
+    "delete is not allowed while task is running; terminate it first": "运行中的任务不能删除，请先「终止」再删除",
+}
+
+
 def default_worker_launcher(
     task,
     task_log_dir=DEFAULT_TASK_LOG_DIR,
@@ -187,9 +198,29 @@ def default_worker_launcher(
         )
     )
     log_file.flush()
+    # 决定性修复：任务记录里的 flowPath 此前只进日志、不进执行——worker 永远跑
+    # workspace/flow_definition.json 旧链路（远程执行与本地提交内容脱节的总根因）。
+    # 这里与本地 launcher 的注入机制对齐：用 WT_FLOW_DEFINITION_FILE 指定本次任务的
+    # 服务器端流程文件（/api/flows/upload 落盘路径）；worker 端 paramTable 相对路径
+    # 按该文件所在目录解析，与本地行为一致。文件缺失时故意不回退——让 worker 以
+    # "流程文件不存在"显式失败，而不是静默跑旧流程。
+    worker_env = None
+    flow_path = str(task.get("flowPath") or "").strip()
+    if flow_path:
+        worker_env = dict(os.environ)
+        worker_env["WT_FLOW_DEFINITION_FILE"] = flow_path
+    # 任务携带的运行时参数（项目解析结果/业务参数）注入 worker，
+    # 优先级与本地一致：GM_RUNTIME_CONFIG_JSON > 流程文件内 runtimeConfig。
+    runtime_config = task.get("runtimeConfig")
+    if isinstance(runtime_config, dict) and runtime_config:
+        worker_env = worker_env if worker_env is not None else dict(os.environ)
+        worker_env["GM_RUNTIME_CONFIG_JSON"] = json.dumps(
+            runtime_config, ensure_ascii=False
+        )
     proc = subprocess.Popen(
         cmd,
         cwd=BASE_DIR,
+        env=worker_env,
         stdout=log_file,
         stderr=subprocess.STDOUT,
         text=True,
@@ -481,6 +512,187 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             status=201,
         )
 
+    def _handle_flow_rollback(self):
+        """把指定历史版本恢复为当前版：当前文件自动按下一版本号归档（历史不丢）。
+
+        与 _handle_flow_upload 同一把 _FLOW_VERSION_LOCK、同一套台账/归档命名，
+        回滚在台账里表现为一次新的"上传"（user=回滚操作者），版本只增不减。
+        """
+        payload, error = self._read_json_body()
+        if error:
+            if isinstance(error, tuple):
+                self._send_error(error[0], error[1])
+            else:
+                self._send_error(400, error)
+            return
+        name = _safe_flow_name(payload.get("name"))
+        try:
+            version = int(payload.get("version") or 0)
+        except (TypeError, ValueError):
+            version = 0
+        if not name or version < 1:
+            self._send_error(400, "name and version are required")
+            return
+        rollback_user = str(payload.get("user") or "").strip() or "unknown"
+        flow_dir = os.path.abspath(
+            getattr(self.server, "flow_dir", os.path.join(BASE_DIR, "flow_packages"))
+        )
+        current_path = os.path.abspath(os.path.join(flow_dir, name))
+        try:
+            inside = os.path.commonpath([flow_dir, current_path]) == flow_dir
+        except ValueError:
+            inside = False
+        if not inside:
+            self._send_error(400, "invalid flow file name")
+            return
+        with _FLOW_VERSION_LOCK:
+            ledger = _load_flow_version_ledger(flow_dir)
+            entry = ledger.get(name)
+            if not isinstance(entry, dict):
+                self._send_error(404, "flow not found in version ledger")
+                return
+            versions = entry.get("versions") or []
+            record = None
+            for item in versions:
+                if int(item.get("version") or 0) == version:
+                    record = item
+                    break
+            if record is None:
+                self._send_error(404, "flow version not found")
+                return
+            archive_path = os.path.abspath(os.path.join(flow_dir, str(record.get("file") or "")))
+            try:
+                archive_inside = os.path.commonpath([flow_dir, archive_path]) == flow_dir
+            except ValueError:
+                archive_inside = False
+            if not archive_inside or not os.path.isfile(archive_path):
+                self._send_error(404, "flow version file not found")
+                return
+            try:
+                with open(archive_path, "r", encoding="utf-8") as file_obj:
+                    serialized = file_obj.read()
+                content = json.loads(serialized)
+                if not isinstance(content, dict):
+                    raise ValueError("content is not a JSON object")
+            except FileNotFoundError:
+                self._send_error(404, "flow version file not found")
+                return
+            except (OSError, ValueError) as exc:
+                self._send_error(500, "flow version file is not readable: {}".format(exc))
+                return
+            # 回滚目标 == 当前文件内容（sha256 相同）→ 幂等成功，不做任何写操作
+            if os.path.isfile(current_path):
+                try:
+                    with open(current_path, "r", encoding="utf-8") as file_obj:
+                        current_text = file_obj.read()
+                except OSError:
+                    current_text = None
+                if current_text is not None and _sha256_text(current_text) == record.get("sha256"):
+                    self._send_json(
+                        {
+                            "flowPath": current_path,
+                            "name": name,
+                            "version": version,
+                            "rolledBack": False,
+                            "message": "目标版本与当前内容一致，无需回滚",
+                        }
+                    )
+                    return
+            # 当前文件先归档（复用 upload 的归档语义：按下一版本号另存，台账补记录）
+            uploaded_at = datetime.now().isoformat(timespec="seconds")
+            new_version = max(
+                (int(item.get("version") or 0) for item in versions), default=0
+            ) + 1
+            try:
+                if os.path.isfile(current_path):
+                    with open(current_path, "r", encoding="utf-8") as file_obj:
+                        old_serialized = file_obj.read()
+                    archive_number = new_version - 1
+                    archive_name = _version_file_name(name, archive_number)
+                    while os.path.exists(os.path.join(flow_dir, archive_name)):
+                        archive_number += 1
+                        archive_name = _version_file_name(name, archive_number)
+                    with open(os.path.join(flow_dir, archive_name), "w", encoding="utf-8") as file_obj:
+                        file_obj.write(old_serialized)
+                    replaced = False
+                    canonical_file = os.path.basename(current_path)
+                    for item in reversed(versions):
+                        if (
+                            int(item.get("version") or 0) == archive_number
+                            and item.get("file") == canonical_file
+                        ):
+                            item["file"] = archive_name
+                            item["sha256"] = _sha256_text(old_serialized)
+                            replaced = True
+                            break
+                    if not replaced:
+                        for item in reversed(versions):
+                            if item.get("file") == canonical_file:
+                                item["file"] = archive_name
+                                item["sha256"] = _sha256_text(old_serialized)
+                                replaced = True
+                                break
+                    if not replaced:
+                        versions.append(
+                            {
+                                "version": archive_number,
+                                "file": archive_name,
+                                "user": entry.get("lastUser", ""),
+                                "uploadedAt": entry.get("lastUploadedAt", ""),
+                                "sha256": _sha256_text(old_serialized),
+                            }
+                        )
+                # 归档内容原子覆盖为当前文件
+                tmp_flow = current_path + ".tmp"
+                try:
+                    with open(tmp_flow, "w", encoding="utf-8") as file_obj:
+                        file_obj.write(serialized)
+                    os.replace(tmp_flow, current_path)
+                finally:
+                    if os.path.exists(tmp_flow):
+                        try:
+                            os.remove(tmp_flow)
+                        except OSError:
+                            pass
+                versions.append(
+                    {
+                        "version": new_version,
+                        "file": os.path.basename(current_path),
+                        "user": rollback_user,
+                        "uploadedAt": uploaded_at,
+                        "sha256": record.get("sha256") or _sha256_text(serialized),
+                    }
+                )
+                entry["versions"] = versions
+                entry["lastUser"] = rollback_user
+                entry["lastUploadedAt"] = uploaded_at
+                entry["currentVersion"] = new_version
+                _save_flow_version_ledger(flow_dir, ledger)
+            except OSError as exc:
+                self._send_error(500, "failed to rollback flow: {}".format(exc))
+                return
+        wt_task_queue.add_audit_event(
+            user=rollback_user,
+            source_ip=self.client_address[0] if self.client_address else "",
+            action="flow_rollback",
+            result="ok",
+            detail="name={} version={} -> new version {}".format(name, version, new_version),
+            db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+        )
+        self._send_json(
+            {
+                "flowPath": current_path,
+                "name": name,
+                "version": new_version,
+                "rolledBackFrom": version,
+                "rolledBack": True,
+                "user": rollback_user,
+                "uploadedAt": uploaded_at,
+                "sha256": record.get("sha256") or _sha256_text(serialized),
+            },
+            status=201,
+        )
+
     def _handle_submit(self):
         payload, error = self._read_json_body()
         if error:
@@ -505,8 +717,29 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
         if not inside or not os.path.isfile(abs_flow):
             self._send_error(400, "flowPath must be a JSON flow inside flow_packages")
             return
-        if _read_json_file(abs_flow) is None:
+        flow_payload = _read_json_file(abs_flow)
+        if flow_payload is None:
             self._send_error(400, "flowPath is not a valid JSON object")
+            return
+        # P1 依赖一致性校验：流程引用的相对路径参数表必须在服务器 flow_packages 内
+        # 存在（随发布包部署）。缺失时直接拒绝，避免任务排队到执行期才莫名失败。
+        param_table = str(flow_payload.get("paramTable") or "").strip()
+        if param_table and not os.path.isabs(param_table):
+            param_path = os.path.join(flow_dir, param_table)
+            if not os.path.isfile(param_path):
+                self._send_error(
+                    400,
+                    "paramTable not found on server: {}（参数表未随发布包部署到服务器，"
+                    "请重新打包部署后重试）".format(param_table),
+                )
+                return
+        # 任务级运行时参数（项目解析结果/业务参数），随任务记录存储并在 worker
+        # 启动时注入 GM_RUNTIME_CONFIG_JSON（与本地 Simple 运行同一优先级机制）。
+        runtime_config = payload.get("runtimeConfig")
+        if runtime_config is None:
+            runtime_config = {}
+        if not isinstance(runtime_config, dict):
+            self._send_error(400, "runtimeConfig must be a JSON object")
             return
         if "steps" in payload:
             raw_steps = payload["steps"]
@@ -579,6 +812,7 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             retry_delay_seconds=retry_delay_seconds,
             timeout_seconds=timeout_seconds,
             notify_url=notify_url,
+            runtime_config=runtime_config or None,
             db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
         )
         wt_task_queue.add_audit_event(
@@ -777,11 +1011,16 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
                 task = wt_task_queue.request_terminate(task_id, db_path=queue_db)
             elif action == "cancel":
                 task = wt_task_queue.cancel_task(task_id, db_path=queue_db)
+            elif action == "delete":
+                task = wt_task_queue.delete_task(task_id, db_path=queue_db)
             else:
                 self._send_error(404, "not found")
                 return
         except wt_task_queue.TaskStateError as exc:
-            self._send_error(409, str(exc))
+            # 状态机拒绝：附中文化说明，客户端弹窗直接可读；保留原英文便于检索日志
+            zh = _CONTROL_ERROR_ZH.get(str(exc), "")
+            message = "{}（{}）".format(zh, exc) if zh else str(exc)
+            self._send_error(409, message)
             return
         wt_task_queue.add_audit_event(
             user=(task or {}).get("user", ""),
@@ -809,6 +1048,9 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/flows/upload":
             self._handle_flow_upload()
+            return
+        if path == "/api/flows/rollback":
+            self._handle_flow_rollback()
             return
         if path == "/api/tasks/submit":
             self._handle_submit()
@@ -1048,10 +1290,25 @@ class TaskServer(ThreadingHTTPServer):
                 self._run_log_cleanup()
                 self._scheduler_tick()
             except Exception as exc:
-                log_server_event(
-                    "scheduler error: {}".format(exc),
-                    log_path=self.server_log_path,
-                )
+                # db 文件被运维清理/替换后，进程级 init_db 缓存会跳过建表，
+                # 调度器将永久刷 "no such table"。这里自愈：疑似表结构缺失时
+                # 强制重建一次；仍失败才落到日志（避免每秒重复刷屏）。
+                if "no such table" in str(exc).lower():
+                    try:
+                        wt_task_queue.init_db(self.queue_db, force=True)
+                        log_server_event(
+                            "scheduler detected missing tables; re-initialized db {}".format(
+                                self.queue_db
+                            ),
+                            log_path=self.server_log_path,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    log_server_event(
+                        "scheduler error: {}".format(exc),
+                        log_path=self.server_log_path,
+                    )
             self._scheduler_stop.wait(1.0)
 
     def _scheduler_tick(self):

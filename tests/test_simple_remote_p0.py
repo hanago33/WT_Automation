@@ -174,7 +174,8 @@ class P0SubmittedCancelTests(unittest.TestCase):
 class P0SubmittedNormalTests(unittest.TestCase):
     """P0-3：正常提交保留增量登记、固定 total 并启动轮询。"""
 
-    def test_normal_path_keeps_incremental_ids(self):
+    @patch("WT_Launcher.messagebox.showinfo")
+    def test_normal_path_keeps_incremental_ids(self, mock_info):
         self_obj = _BaseRemoteSelf(stop=False)
         self_obj._simple_remote_task_ids = {"t1": True}  # 模拟增量登记已存在
         LauncherApp._simple_remote_submitted(

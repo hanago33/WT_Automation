@@ -52,6 +52,7 @@ _COLUMN_TO_KEY = {
     "next_retry_at": "nextRetryAt",
     "timeout_seconds": "timeoutSeconds",
     "notify_url": "notifyUrl",
+    "runtime_config": "runtimeConfig",
     "status": "status",
     "progress_current": "progressCurrent",
     "progress_total": "progressTotal",
@@ -87,6 +88,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     next_retry_at TEXT DEFAULT '',
     timeout_seconds INTEGER DEFAULT 0,
     notify_url TEXT DEFAULT '',
+    runtime_config TEXT DEFAULT '',
     status TEXT NOT NULL,
     progress_current INTEGER DEFAULT 0,
     progress_total INTEGER DEFAULT 0,
@@ -116,6 +118,7 @@ _MIGRATION_COLUMNS = (
     ("next_retry_at", "TEXT DEFAULT ''"),
     ("timeout_seconds", "INTEGER DEFAULT 0"),
     ("notify_url", "TEXT DEFAULT ''"),
+    ("runtime_config", "TEXT DEFAULT ''"),
 )
 
 
@@ -214,6 +217,11 @@ def _row_to_task(row):
         task["stepsRequested"] = json.loads(task.get("stepsRequested") or "[]")
     except (TypeError, ValueError):
         task["stepsRequested"] = []
+    try:
+        runtime_config = json.loads(task.get("runtimeConfig") or "{}")
+    except (TypeError, ValueError):
+        runtime_config = {}
+    task["runtimeConfig"] = runtime_config if isinstance(runtime_config, dict) else {}
     for key in ("pauseRequested", "terminateRequested"):
         task[key] = bool(task.get(key))
     return task
@@ -245,6 +253,7 @@ def submit_task(
     retry_delay_seconds=0,
     timeout_seconds=0,
     notify_url="",
+    runtime_config=None,
     db_path=DEFAULT_DB_PATH,
 ):
     init_db(db_path)
@@ -260,6 +269,11 @@ def submit_task(
     retry_delay_seconds = max(0, int(retry_delay_seconds or 0))
     timeout_seconds = max(0, int(timeout_seconds or 0))
     notify_url = str(notify_url or "").strip()
+    runtime_config_json = (
+        json.dumps(runtime_config, ensure_ascii=False)
+        if isinstance(runtime_config, dict) and runtime_config
+        else ""
+    )
     conn = _connect(db_path)
     try:
         conn.execute(
@@ -268,12 +282,12 @@ def submit_task(
                 task_id, user, source_ip, flow_path, steps_requested,
                 from_step, to_step, priority, scheduled_at, max_attempts,
                 retry_delay_seconds, next_retry_at, timeout_seconds,
-                notify_url, status,
+                notify_url, runtime_config, status,
                 progress_current, progress_total, progress_percent,
                 current_step_id, current_step_name, resume_from_step,
                 last_log, error, run_id, pause_requested, terminate_requested,
                 attempts, created_at, started_at, ended_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0,
                        '', '', '', '', '', '', 0, 0, 1, ?, '', '', ?)
             """,
             (
@@ -291,6 +305,7 @@ def submit_task(
                 "",
                 timeout_seconds,
                 notify_url,
+                runtime_config_json,
                 STATUS_PENDING,
                 now,
                 now,
@@ -648,6 +663,30 @@ def cancel_task(task_id, db_path=DEFAULT_DB_PATH):
     finally:
         conn.close()
     return get_task(task_id, db_path=db_path)
+
+
+def delete_task(task_id, db_path=DEFAULT_DB_PATH):
+    """删除任务记录（含关联审计事件）。
+
+    仅允许删除非 running 状态的任务：running 说明 worker 可能仍在执行，
+    直接删除会造成与执行结果失联，须先 terminate。
+    """
+    task = get_task(task_id, db_path=db_path)
+    if task is None:
+        raise TaskStateError("task not found")
+    if task["status"] == STATUS_RUNNING:
+        raise TaskStateError(
+            "delete is not allowed while task is running; terminate it first"
+        )
+    init_db(db_path)
+    conn = _connect(db_path)
+    try:
+        conn.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM audit_events WHERE task_id = ?", (task_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return task
 
 
 def resume_task(task_id, db_path=DEFAULT_DB_PATH):

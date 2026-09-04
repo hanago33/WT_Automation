@@ -1409,14 +1409,46 @@ def run_action_step(step_id, context):
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
         condition = str(action_config.get("condition", "exists")).strip().lower() or "exists"
-        if not _call_with_control_map_path(
-            _WAIT_FOR_FLOW_CONTROL_CONDITION, step_definition,
-            step_id,
-            control_id=control_id,
-            condition=condition,
-            timeout_seconds=timeout_seconds,
-            window_title_hint=window_title_hint,
-        ):
+        # 守护线程 + 看门狗：wait_for_flow_control_condition 内部单次 UIA COM 调用可能在
+        # "应用忙"时阻塞不返回（窗口响应探测有盲区），看门狗超时强制失败让流程继续。
+        # 与 wt_flow_executor 同款修复。
+        _wait_box = {"value": False, "error": ""}
+        _wait_done = threading.Event()
+
+        def _do_wait_call():
+            try:
+                _ok = _call_with_control_map_path(
+                    _WAIT_FOR_FLOW_CONTROL_CONDITION, step_definition,
+                    step_id,
+                    control_id=control_id,
+                    condition=condition,
+                    timeout_seconds=timeout_seconds,
+                    window_title_hint=window_title_hint,
+                )
+                _wait_box["value"] = bool(_ok)
+            except Exception as _wexc:
+                _wait_box["error"] = repr(_wexc)
+            finally:
+                _wait_done.set()
+
+        _wait_worker = threading.Thread(target=_do_wait_call, daemon=True)
+        _wait_worker.start()
+        _wait_budget = float(timeout_seconds or 0)
+        _watchdog_secs = max(30.0, _wait_budget + 60.0)
+        if not _wait_done.wait(_watchdog_secs):
+            _LOG_STEP(
+                f"wait_for_control 看门狗超时({_watchdog_secs:.0f}s)，强制失败: "
+                f"step={step_id}, control={control_id}, condition={condition}"
+            )
+            raise RuntimeError(
+                f"action wait_for_control 看门狗超时: step={step_id}, control={control_id}, condition={condition}"
+            )
+        if _wait_box.get("error"):
+            raise RuntimeError(
+                f"action wait_for_control 执行异常: step={step_id}, control={control_id}, "
+                f"condition={condition}, error={_wait_box['error']}"
+            )
+        if not _wait_box["value"]:
             raise RuntimeError(f"action wait_for_control 超时: step={step_id}, control={control_id}, condition={condition}")
         _LOG_STEP(f"已执行 action wait_for_control: step={step_id}, control={control_id}, condition={condition}")
         result = f"{control_id}:{condition}"

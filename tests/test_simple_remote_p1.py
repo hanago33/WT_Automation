@@ -6,9 +6,13 @@
 - P1-5  轮询间隔对齐标称 2s：_poll_delay_ms(0) == POLL_MS
 - P1-6(3) 轮询线程顶层兜底：_simple_remote_poll 异常时收尾而非静默死亡
 - P1-7  运行中日志自动刷新：_maybe_refresh_selected_logs 的守卫与触发
+- 提交前连通检测：_test_queue_connection 识别未配置/可达/令牌错/服务未启动
 """
 import os
 import sys
+import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -17,6 +21,7 @@ PROJECT_DIR = os.path.dirname(TESTS_DIR)
 if PROJECT_DIR not in sys.path:
     sys.path.insert(0, PROJECT_DIR)
 
+import wt_task_server as ts
 from wt_task_queue_window import TaskQueueWindow, POLL_MS
 from WT_Launcher import LauncherApp
 
@@ -157,6 +162,102 @@ class P1AutoLogRefreshTests(unittest.TestCase):
         with patch("wt_task_queue_window.threading.Thread", FakeThread):
             obj._maybe_refresh_selected_logs([{"taskId": "t2", "status": "running"}])
         self.assertEqual(obj._started, [])
+
+
+class P1HttpErrorBodyTests(unittest.TestCase):
+    """修复：_queue_request 抛出的 HTTPError 必须带响应体，exc.read() 可用。
+
+    之前 fp=None 导致调用方 exc.read() 抛 KeyError（如 409/404 时后台线程崩溃）。
+    """
+
+    def test_http_error_read_returns_body(self):
+        import urllib.error
+
+        with tempfile.TemporaryDirectory() as tmp:
+            srv = ts.TaskServer(
+                ("127.0.0.1", 0), auth_token="good",
+                queue_db=os.path.join(tmp, "q.db"),
+                task_log_dir=os.path.join(tmp, "tasks"),
+                server_log_path=os.path.join(tmp, "server.log"),
+            )
+            port = srv.server_address[1]
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                time.sleep(0.3)
+                holder = type("H", (), {})()
+                holder.base_url = "http://127.0.0.1:{}".format(port)
+                holder.token_var = type(
+                    "V", (), {"get": lambda self: "good", "set": lambda self, v: None}
+                )()
+                holder._http_lock = threading.Lock()
+                holder._http_conn = None
+                holder._make_conn = TaskQueueWindow._make_conn.__get__(holder)
+                holder._queue_request = TaskQueueWindow._queue_request.__get__(holder)
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    holder._queue_request("GET", "/api/tasks/no_such/report")
+                body = ctx.exception.read().decode("utf-8", errors="replace")
+                self.assertIn("error", body)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+
+class P1QueueConnectionTests(unittest.TestCase):
+    """提交前连通检测：识别未配置 / 服务可达 / 令牌错误 / 服务未启动。"""
+
+    @staticmethod
+    def _make_app(url, token):
+        app = LauncherApp.__new__(LauncherApp)
+        app.task_queue_url = url
+        app.task_queue_user = "alice"
+        app.task_queue_token = token
+        return app
+
+    def test_unconfigured_url(self):
+        ok, msg = LauncherApp._test_queue_connection(self._make_app("", "t"))
+        self.assertFalse(ok)
+        self.assertIn("服务器地址", msg)
+
+    def test_unconfigured_token(self):
+        ok, msg = LauncherApp._test_queue_connection(
+            self._make_app("http://127.0.0.1:8768", "")
+        )
+        self.assertFalse(ok)
+        self.assertIn("令牌", msg)
+
+    def test_connection_ok_and_wrong_token_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "q.db")
+            srv = ts.TaskServer(
+                ("127.0.0.1", 0), auth_token="good", queue_db=db,
+                task_log_dir=os.path.join(tmp, "tasks"),
+                server_log_path=os.path.join(tmp, "server.log"),
+            )
+            port = srv.server_address[1]
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                time.sleep(0.3)
+                base = "http://127.0.0.1:{}".format(port)
+                ok, msg = LauncherApp._test_queue_connection(
+                    self._make_app(base, "good")
+                )
+                self.assertTrue(ok)
+                self.assertIn("连接成功", msg)
+                ok, msg = LauncherApp._test_queue_connection(
+                    self._make_app(base, "bad")
+                )
+                self.assertFalse(ok)
+                self.assertIn("401", msg)
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
+    def test_server_down(self):
+        ok, msg = LauncherApp._test_queue_connection(
+            self._make_app("http://127.0.0.1:1", "t")
+        )
+        self.assertFalse(ok)
+        self.assertIn("无法连接", msg)
 
 
 if __name__ == "__main__":

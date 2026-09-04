@@ -15,6 +15,6 @@ ${UI_TARS_STDOUT}       ${CURDIR}${/}..${/}ui_tars_stdout.log
 ${UI_TARS_STDERR}       ${CURDIR}${/}..${/}ui_tars_stderr.log
 ${APP_START_WAIT}       5
 ${GM_READY_TIMEOUT}     180
-${GM_EXE}               C:\\Users\\14830\\Desktop\\Meteodyn Universe.lnk
+${GM_EXE}               C:\\Program Files\\Meteodyn\\MeteodynUniverse\\MUPSmartClient.exe
 ${SOURCE_FILE_PATH}     
 ${OUTPUT_DIR}           

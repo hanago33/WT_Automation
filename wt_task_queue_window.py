@@ -4,6 +4,7 @@
 
 import hashlib
 import http.client
+import io
 import json
 import os
 import threading
@@ -35,6 +36,19 @@ MONITOR_STATUS_LABELS = {
     "failed": "失败",
     "unknown": "未知",
 }
+
+
+def _local_ipv4s():
+    """本机全部 IPv4（含 127.0.0.1），用于判定任务服务地址指向哪台机器。"""
+    import socket
+
+    ips = {"127.0.0.1", "localhost"}
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(info[4][0])
+    except OSError:
+        pass
+    return ips
 
 
 def filter_tasks(tasks, status="", keyword=""):
@@ -96,6 +110,11 @@ class TaskQueueWindow:
         self._queue_fail_streak = 0
         self._monitor_fail_streak = 0
         self._cached_tasks = []
+        # 运行角色横幅：按任务服务地址判定本窗口在"操作哪台机器的服务"，
+        # 客户端（连远程服务器）与服务器本机（连 127.0.0.1）视觉区分，防误操作。
+        self._role_banner_var = tk.StringVar()
+        self._role_banner_label = None
+        self._local_ips = _local_ipv4s()
 
         self.window = tk.Toplevel(master)
         self.window.title("任务与服务器监控")
@@ -103,6 +122,17 @@ class TaskQueueWindow:
         self.window.geometry("1080x700")
         self.window.minsize(860, 560)
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # 角色横幅：地址栏上方整行，颜色 + 文案区分运行角色
+        self._role_banner_label = tk.Label(
+            self.window,
+            textvariable=self._role_banner_var,
+            anchor="w",
+            padx=12,
+            pady=6,
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        self._role_banner_label.pack(fill=tk.X, before=None)
 
         top = tk.Frame(self.window, bg="#eaf1fb", padx=10, pady=8)
         top.pack(fill=tk.X)
@@ -155,17 +185,83 @@ class TaskQueueWindow:
 
         self.queue_tab = tk.Frame(self.notebook, bg="#f4f7fb")
         self.monitor_tab = tk.Frame(self.notebook, bg="#f4f7fb")
+        self.flows_tab = tk.Frame(self.notebook, bg="#f4f7fb")
         self.notebook.add(self.queue_tab, text="任务队列")
         self.notebook.add(self.monitor_tab, text="服务器监控")
+        self.notebook.add(self.flows_tab, text="流程仓库")
         self._build_queue_tab(self.queue_tab)
         self._build_monitor_tab(self.monitor_tab)
+        self._build_flows_tab(self.flows_tab)
 
         self._after_id = self.window.after(POLL_MS, self._poll_loop)
         self._monitor_after_id = self.window.after(POLL_MS, self._monitor_poll_loop)
+        # 流程仓库页签初始加载一次（后续由 _poll_loop 按开关续刷）
+        self.window.after(200, self.refresh_flows)
+        self._refresh_role_banner()
+
+    def _resolve_role(self):
+        """按任务服务地址判定本窗口的运行角色。
+
+        返回 (role, text)：
+        - "server"：地址指向本机（127.0.0.1/localhost/本机任一 IP）→ 服务器本机控制台
+        - "client"：地址指向其他机器 → 远程客户端
+        - "unknown"：地址解析失败
+        """
+        url = (self.base_url or "").strip()
+        try:
+            host = urllib.parse.urlparse(url).hostname or ""
+        except ValueError:
+            host = ""
+        if not host:
+            return "unknown", ""
+        if host in self._local_ips:
+            return (
+                "server",
+                "服务器本机控制台 —— 任务队列服务运行在本机，操作直接影响本机 MUP",
+            )
+        return (
+            "client",
+            "远程客户端 —— 任务将发送到服务器 {} 执行（本机 IP：{}）".format(
+                host, " / ".join(sorted(ip for ip in self._local_ips if ip not in ("127.0.0.1", "localhost"))[:3]) or "未知"
+            ),
+        )
+
+    def _refresh_role_banner(self):
+        """按当前任务服务地址刷新角色横幅与窗口标题（地址一变立刻重判）。"""
+        role, text = self._resolve_role()
+        if self._role_banner_label is not None:
+            if role == "server":
+                self._role_banner_label.config(
+                    textvariable=self._role_banner_var,
+                    bg="#dcfce7",
+                    fg="#14532d",
+                )
+            elif role == "client":
+                self._role_banner_label.config(
+                    textvariable=self._role_banner_var,
+                    bg="#dbeafe",
+                    fg="#1e40af",
+                )
+            else:
+                self._role_banner_label.config(
+                    textvariable=self._role_banner_var,
+                    bg="#f1f5f9",
+                    fg="#475569",
+                )
+        if not text:
+            text = "未配置任务服务地址——请填写服务器地址后刷新"
+        self._role_banner_var.set("  {}".format(text))
+        title_suffix = "【服务器本机】" if role == "server" else (
+            "【远程客户端】" if role == "client" else ""
+        )
+        self.window.title("任务与服务器监控 {}".format(title_suffix).strip())
 
     def _build_queue_tab(self, parent):
         action_frame = tk.Frame(parent, bg="#ffffff", padx=10, pady=6)
         action_frame.pack(fill=tk.X)
+        # 控制按钮按所选任务状态启用/禁用（与服务端 API 状态机一致），
+        # 避免对 running 任务点「取消」必 409、对已收尾任务误操作等。
+        self._control_buttons = {}
         for text, command in (
             ("提交任务", self.submit_task),
             ("提交本地 JSON 链路", self.submit_local_flow_file),
@@ -173,9 +269,17 @@ class TaskQueueWindow:
             ("继续", lambda: self.control_action("resume")),
             ("终止", lambda: self.control_action("terminate")),
             ("取消", lambda: self.control_action("cancel")),
+            ("删除", lambda: self.control_action("delete")),
             ("查看报告", self.view_report),
         ):
-            tk.Button(
+            control = {
+                "暂停": "pause",
+                "继续": "resume",
+                "终止": "terminate",
+                "取消": "cancel",
+                "删除": "delete",
+            }.get(text)
+            btn = tk.Button(
                 action_frame,
                 text=text,
                 command=command,
@@ -185,7 +289,10 @@ class TaskQueueWindow:
                 padx=12,
                 pady=4,
                 cursor="hand2",
-            ).pack(side=tk.LEFT, padx=(0, 6))
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            if control:
+                self._control_buttons[control] = btn
         tk.Button(
             action_frame,
             text="启动任务队列服务",
@@ -197,6 +304,8 @@ class TaskQueueWindow:
             pady=4,
             cursor="hand2",
         ).pack(side=tk.LEFT, padx=(14, 4))
+        # 窗口刚打开、尚未选中任务时，控制按钮先全部禁用
+        # （tab 全部建完后调用；_selected_task_id 对树未创建场景已做防御）
         tk.Button(
             action_frame,
             text="停止任务队列服务",
@@ -235,7 +344,7 @@ class TaskQueueWindow:
             selectcolor="#ffffff",
         ).pack(side=tk.RIGHT, padx=(0, 10))
 
-        filter_frame = tk.Frame(parent, bg="#ffffff", padx=10, pady=(0, 4))
+        filter_frame = tk.Frame(parent, bg="#ffffff", padx=10, pady=4)
         filter_frame.pack(fill=tk.X)
         tk.Label(filter_frame, text="状态筛选", bg="#ffffff", fg="#334155").pack(
             side=tk.LEFT
@@ -387,6 +496,9 @@ class TaskQueueWindow:
         ):
             self.log_text.tag_configure(tag, foreground=color)
 
+        # tab 全部构建完成后的收尾：未选中任务时控制按钮全部禁用
+        self._update_control_buttons()
+
     def _build_monitor_tab(self, parent):
         top = tk.Frame(parent, bg="#eaf1fb", padx=10, pady=8)
         top.pack(fill=tk.X)
@@ -434,6 +546,15 @@ class TaskQueueWindow:
             cursor="hand2",
         ).pack(side=tk.LEFT, padx=(10, 0))
 
+        tk.Label(
+            parent,
+            text="提示：本页显示服务器进程状态（8767 监控服务）；任务运行日志与报告请在「任务」标签页选中任务后查看。",
+            bg="#f4f7fb",
+            fg="#64748b",
+            anchor="w",
+            padx=12,
+            pady=2,
+        ).pack(fill=tk.X)
         status_frame = tk.LabelFrame(
             parent,
             text="运行状态（只读，来自 8767 监控服务）",
@@ -503,8 +624,412 @@ class TaskQueueWindow:
         ):
             self.monitor_log_text.tag_configure(tag, foreground=color)
 
+    def _build_flows_tab(self, parent):
+        """流程仓库页签：服务器 flow_packages 的版本台账 + 提交人/时间 + 关联任务与项目参数。
+
+        数据来自 GET /api/flows（版本台账）与 GET /api/tasks（按 flowPath 匹配
+        最近使用该流程的任务，含 runtimeConfig 项目参数）。
+        """
+        top = tk.Frame(parent, bg="#eaf1fb", padx=10, pady=8)
+        top.pack(fill=tk.X)
+        self.flows_auto_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            top,
+            text="随队列自动刷新",
+            variable=self.flows_auto_var,
+            bg="#eaf1fb",
+            fg="#1f2937",
+            activebackground="#eaf1fb",
+            selectcolor="#ffffff",
+        ).pack(side=tk.LEFT)
+        tk.Button(
+            top,
+            text="刷新仓库",
+            command=self.refresh_flows,
+            bg="#dbeafe",
+            fg="#1f2937",
+            relief=tk.FLAT,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        self.flows_conn_var = tk.StringVar(value="未加载")
+        tk.Label(top, textvariable=self.flows_conn_var, bg="#eaf1fb", fg="#64748b").pack(
+            side=tk.RIGHT
+        )
+
+        main_paned = tk.PanedWindow(parent, orient=tk.HORIZONTAL, bg="#f4f7fb", sashwidth=4)
+        main_paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        # 左：流程列表（名称 / 版本数 / 最新上传人 / 最新时间）
+        left_frame = tk.LabelFrame(
+            main_paned,
+            text="流程文件（服务器 flow_packages）",
+            padx=4,
+            pady=4,
+            bg="#ffffff",
+            fg="#1f2937",
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        columns = ("name", "versions", "lastUser", "lastUploaded")
+        self.flows_tree = ttk.Treeview(left_frame, columns=columns, show="headings")
+        for col, text, width in (
+            ("name", "流程文件", 260),
+            ("versions", "版本数", 60),
+            ("lastUser", "最新上传人", 90),
+            ("lastUploaded", "最新上传时间", 150),
+        ):
+            self.flows_tree.heading(col, text=text)
+            self.flows_tree.column(col, width=width, anchor=tk.W)
+        flows_scroll = tk.Scrollbar(left_frame, command=self.flows_tree.yview)
+        self.flows_tree.config(yscrollcommand=flows_scroll.set)
+        self.flows_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        flows_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.flows_tree.bind("<<TreeviewSelect>>", self._on_flow_selected)
+        main_paned.add(left_frame, minsize=360, width=480)
+
+        # 右：版本明细 + 关联任务（含项目参数）
+        right_frame = tk.Frame(main_paned, bg="#f4f7fb")
+        versions_frame = tk.LabelFrame(
+            right_frame,
+            text="版本历史（点击查看任务明细）",
+            padx=4,
+            pady=4,
+            bg="#ffffff",
+            fg="#1f2937",
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        versions_frame.pack(fill=tk.BOTH, expand=True)
+        v_columns = ("version", "user", "uploadedAt", "sha256", "isCurrent")
+        self.flow_versions_tree = ttk.Treeview(
+            versions_frame, columns=v_columns, show="headings"
+        )
+        for col, text, width in (
+            ("version", "版本", 50),
+            ("user", "上传人", 90),
+            ("uploadedAt", "上传时间", 150),
+            ("sha256", "内容指纹(sha256 前 12 位)", 130),
+            ("isCurrent", "状态", 70),
+        ):
+            self.flow_versions_tree.heading(col, text=text)
+            self.flow_versions_tree.column(col, width=width, anchor=tk.W)
+        v_scroll = tk.Scrollbar(versions_frame, command=self.flow_versions_tree.yview)
+        self.flow_versions_tree.config(yscrollcommand=v_scroll.set)
+        self.flow_versions_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.flow_versions_tree.bind("<<TreeviewSelect>>", self._on_flow_version_selected)
+        # 回滚操作行：选中历史版本后，一键把该版内容恢复为当前版（当前内容自动归档）
+        rollback_bar = tk.Frame(versions_frame, bg="#ffffff")
+        rollback_bar.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 0))
+        tk.Button(
+            rollback_bar,
+            text="回滚到此版",
+            command=self._rollback_selected_flow_version,
+            bg="#fef3c7",
+            fg="#78350f",
+            relief=tk.FLAT,
+            padx=12,
+            pady=3,
+            cursor="hand2",
+        ).pack(side=tk.RIGHT)
+        self.rollback_hint_var = tk.StringVar(
+            value="提示：选中上方任一历史版本后点「回滚到此版」；当前版回滚无操作（幂等提示）。"
+        )
+        tk.Label(
+            rollback_bar,
+            textvariable=self.rollback_hint_var,
+            bg="#ffffff",
+            fg="#64748b",
+            anchor="w",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        main_paned.add(right_frame, minsize=420, width=560)
+
+        # 底部：选中任务的项目参数详情
+        detail_frame = tk.LabelFrame(
+            right_frame,
+            text="关联任务与项目参数（选中上方任一行后自动展示）",
+            padx=6,
+            pady=6,
+            bg="#ffffff",
+            fg="#1f2937",
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        detail_frame.pack(fill=tk.X, pady=(6, 0))
+        self.flow_detail_text = tk.Text(
+            detail_frame,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            height=10,
+            bg="#111418",
+            fg="#e6edf3",
+            insertbackground="#e6edf3",
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+            padx=8,
+            pady=8,
+        )
+        detail_scroll = tk.Scrollbar(detail_frame, command=self.flow_detail_text.yview)
+        self.flow_detail_text.config(yscrollcommand=detail_scroll.set)
+        self.flow_detail_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        detail_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def refresh_flows(self):
+        """后台拉取服务器流程台账 + 任务列表，供仓库页签展示。"""
+        if getattr(self, "_flows_fetching", False):
+            return
+        self._flows_fetching = True
+        threading.Thread(target=self._flows_fetch_worker, daemon=True).start()
+
+    def _flows_fetch_worker(self):
+        flows_payload = None
+        tasks_payload = None
+        error = None
+        try:
+            flows_payload = self._get_json("/api/flows")
+        except Exception as exc:
+            error = str(exc)
+        try:
+            tasks_payload = self._get_json("/api/tasks?limit=200")
+        except Exception:
+            tasks_payload = None
+        self._flows_fetching = False
+        if flows_payload is None:
+            self._post_ui(
+                lambda e=error: self.flows_conn_var.set("加载失败：{}".format(e)[:60])
+            )
+            return
+        self._post_ui(lambda: self._apply_flows_payload(flows_payload, tasks_payload))
+
+    def _apply_flows_payload(self, flows_payload, tasks_payload=None):
+        self.flows_conn_var.set("已加载 {} 个流程".format(len(flows_payload.get("flows", []))))
+        self._cached_flows = list(flows_payload.get("flows", []))
+        self._cached_flow_tasks = list((tasks_payload or {}).get("tasks", []))
+        selected = self.flows_tree.selection()
+        selected_name = selected[0] if selected else ""
+        self.flows_tree.delete(*self.flows_tree.get_children())
+        for flow in self._cached_flows:
+            versions = flow.get("versions") or []
+            latest = versions[-1] if versions else {}
+            self.flows_tree.insert(
+                "",
+                tk.END,
+                iid=flow.get("name", ""),
+                values=(
+                    flow.get("name", ""),
+                    len(versions),
+                    latest.get("user", ""),
+                    latest.get("uploadedAt", ""),
+                ),
+            )
+        if selected_name and self.flows_tree.exists(selected_name):
+            self.flows_tree.selection_set(selected_name)
+        elif self.flows_tree.get_children():
+            # 无既有选择时默认选中第一个流程，右侧即刻显示版本明细
+            first = self.flows_tree.get_children()[0]
+            self.flows_tree.selection_set(first)
+            self._render_flow_versions(first)
+
+    def _on_flow_selected(self, _event=None):
+        selection = self.flows_tree.selection()
+        if not selection:
+            return
+        flow_name = selection[0]
+        self._render_flow_versions(flow_name)
+
+    def _render_flow_versions(self, flow_name):
+        self.flow_versions_tree.delete(*self.flow_versions_tree.get_children())
+        self._set_flow_detail_text(
+            "流程：{}\n（选中下方任一版本行查看使用该流程的任务与项目参数）".format(flow_name)
+        )
+        flow = None
+        for item in getattr(self, "_cached_flows", []) or []:
+            if item.get("name") == flow_name:
+                flow = item
+                break
+        if flow is None:
+            return
+        current_path = str(flow.get("path") or "")
+        versions = flow.get("versions") or []
+        if not versions:
+            self._set_flow_detail_text(
+                "流程：{}\n（未上传过版本：随发布包部署，无上传人/时间记录；"
+                "选中下行查看使用该流程的任务）".format(flow_name)
+            )
+        for idx, version in enumerate(reversed(versions), 1):
+            file_path = str(version.get("file") or "")
+            is_current = "当前版" if file_path == current_path else ""
+            self.flow_versions_tree.insert(
+                "",
+                tk.END,
+                iid="v{}".format(version.get("version", idx)),
+                values=(
+                    version.get("version", ""),
+                    version.get("user", ""),
+                    version.get("uploadedAt", ""),
+                    str(version.get("sha256", ""))[:12],
+                    is_current,
+                ),
+            )
+        if not versions:
+            self.flow_versions_tree.insert(
+                "", tk.END, values=("(未上传过版本：随发布包部署)", "", "", "", "当前版")
+            )
+
+    def _rollback_selected_flow_version(self):
+        """把选中的历史版本恢复为当前版（服务端自动归档当前内容，历史不丢）。"""
+        flow_selection = self.flows_tree.selection()
+        if not flow_selection:
+            messagebox.showinfo("流程仓库", "请先在左侧选择流程文件。", parent=self.window)
+            return
+        flow_name = flow_selection[0]
+        version_selection = self.flow_versions_tree.selection()
+        if not version_selection:
+            messagebox.showinfo(
+                "流程仓库", "请先在版本历史中选中要回滚到的版本。", parent=self.window
+            )
+            return
+        version_id = str(version_selection[0]).lstrip("v")
+        if not version_id.isdigit():
+            messagebox.showinfo(
+                "流程仓库", "该行不是可回滚的版本记录。", parent=self.window
+            )
+            return
+        user = self.user_var.get().strip()
+        if not user:
+            messagebox.showwarning(
+                "流程仓库", "回滚需要先在顶部填写用户名（记入版本台账）。", parent=self.window
+            )
+            return
+        # 当前版回滚无意义，但仍允许（服务端会幂等提示"与当前内容一致"）
+        confirm = messagebox.askyesno(
+            "回滚流程版本",
+            "确定把流程\n  {}\n的版本 {} 恢复为当前版吗？\n\n"
+            "当前内容会自动归档为新版本，历史不丢失；\n"
+            "随后提交的远程任务将使用回滚后的内容。".format(flow_name, version_id),
+            parent=self.window,
+        )
+        if not confirm:
+            return
+        self.rollback_hint_var.set("正在回滚 {} 到版本 {} ...".format(flow_name, version_id))
+
+        def _worker():
+            try:
+                resp = self._post_json(
+                    "/api/flows/rollback",
+                    {"name": flow_name, "version": int(version_id), "user": user},
+                )
+                if resp.get("rolledBack"):
+                    message = "已回滚：{} 的版本 {} 已恢复为当前版（新版本号 {}）。\n后续提交的远程任务将使用回滚后的内容。".format(
+                        flow_name, version_id, resp.get("version", "?")
+                    )
+                else:
+                    message = "无需回滚：{} 的版本 {} 与当前内容一致。".format(
+                        flow_name, version_id
+                    )
+                self._post_ui(
+                    lambda m=message: (
+                        self.rollback_hint_var.set(m.split("\n")[0]),
+                        messagebox.showinfo("回滚完成", m, parent=self.window),
+                        self.refresh_flows(),
+                    )
+                )
+            except urllib.error.HTTPError as exc:
+                detail = ""
+                try:
+                    detail = exc.read().decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+                text = "回滚失败：{} {}".format(exc.code, detail or exc.reason)
+                self._post_ui(
+                    lambda t=text: (
+                        self.rollback_hint_var.set(t),
+                        messagebox.showerror("回滚失败", t, parent=self.window),
+                    )
+                )
+            except Exception as exc:
+                text = "回滚失败：{}".format(exc)
+                self._post_ui(
+                    lambda t=text: (
+                        self.rollback_hint_var.set(t),
+                        messagebox.showerror("回滚失败", t, parent=self.window),
+                    )
+                )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_flow_version_selected(self, _event=None):
+        """选中版本行 → 展示使用该流程的最近任务与项目参数。"""
+        flow_selection = self.flows_tree.selection()
+        if not flow_selection:
+            return
+        flow_name = flow_selection[0]
+        flow = None
+        for item in getattr(self, "_cached_flows", []) or []:
+            if item.get("name") == flow_name:
+                flow = item
+                break
+        if flow is None:
+            return
+        # 版本树未建行 iid（无版本流程），用流程名兜底
+        flow_path = str(flow.get("path") or "")
+        related = []
+        for task in getattr(self, "_cached_flow_tasks", []) or []:
+            if str(task.get("flowPath") or "") == flow_path:
+                related.append(task)
+        related = list(reversed(related[-20:]))  # 最近 20 条，新在前
+        lines = ["流程：{}".format(flow_name), "服务器路径：{}".format(flow_path), ""]
+        if not related:
+            lines.append("（近期没有使用该流程的任务记录）")
+        else:
+            lines.append("最近使用该流程的任务（含提交时携带的项目参数）：")
+            lines.append("-" * 60)
+            for task in related:
+                runtime = task.get("runtimeConfig") or {}
+                lines.append(
+                    "· {}  [{}]  提交人={}".format(
+                        task.get("taskId", ""),
+                        STATUS_LABELS.get(task.get("status", ""), task.get("status", "")),
+                        task.get("user", ""),
+                    )
+                )
+                lines.append(
+                    "  提交时间={}  步骤进度={}/{}".format(
+                        task.get("createdAt", ""),
+                        task.get("progressCurrent", 0),
+                        task.get("progressTotal", 0),
+                    )
+                )
+                if runtime:
+                    lines.append("  项目参数（runtimeConfig）：")
+                    for key in sorted(runtime):
+                        lines.append("    {} = {}".format(key, runtime[key]))
+                else:
+                    lines.append("  项目参数：无（流程文件自包含或旧版提交）")
+                lines.append("")
+        self._set_flow_detail_text("\n".join(lines))
+
+    def _set_flow_detail_text(self, text):
+        self.flow_detail_text.config(state=tk.NORMAL)
+        self.flow_detail_text.delete("1.0", tk.END)
+        self.flow_detail_text.insert(tk.END, str(text))
+        self.flow_detail_text.config(state=tk.DISABLED)
+
     def _on_settings_text_changed(self, *_args):
         self._save_settings()
+        # 地址栏实时更新角色横幅（不重连，仅视觉反馈；连接在点"刷新"时生效）
+        new_url = self.url_var.get().strip().rstrip("/")
+        if new_url and new_url != self.base_url:
+            try:
+                self._role_preview_url = new_url
+                old_base = self.base_url
+                self.base_url = new_url
+                self._refresh_role_banner()
+                self.base_url = old_base
+            except Exception:
+                pass
 
     def _on_user_changed(self, *_args):
         if not self.user_var.get().strip() and self.mine_only_var.get():
@@ -531,8 +1056,10 @@ class TaskQueueWindow:
         if monitor_url:
             self.monitor_base_url = monitor_url
         self._save_settings()
+        self._refresh_role_banner()
         self.refresh()
         self.refresh_monitor()
+        self.refresh_flows()
 
     def _save_settings(self):
         if self.on_settings_change:
@@ -606,7 +1133,7 @@ class TaskQueueWindow:
             status_payload = self._get_json_monitor("/api/status")
             logs_payload = self._get_json_monitor("/api/logs?tail=300")
         except Exception as exc:
-            self._post_ui(lambda: self._mark_monitor_offline(str(exc)))
+            self._post_ui(lambda e=exc: self._mark_monitor_offline(str(e)))
             self._monitor_fetching = False
             return
         self._post_ui(
@@ -695,6 +1222,8 @@ class TaskQueueWindow:
         if selected and self.task_tree.exists(selected):
             self.task_tree.selection_set(selected)
             self.task_tree.see(selected)
+        # 列表刷新后所选任务状态可能已变化（如 pending→running），同步按钮可用性
+        self._update_control_buttons()
 
     def _apply_monitor_payload(self, status_payload, logs_payload):
         self.monitor_conn_var.set("已连接")
@@ -739,11 +1268,60 @@ class TaskQueueWindow:
         )
 
     def _selected_task_id(self):
-        selection = self.task_tree.selection()
+        # 窗口构建早期（task_tree 尚未创建）或已销毁时返回空串，
+        # 避免 _build_queue_tab 内的初始置灰调用触发 AttributeError 中断构建
+        task_tree = getattr(self, "task_tree", None)
+        if task_tree is None:
+            return ""
+        try:
+            selection = task_tree.selection()
+        except tk.TclError:
+            return ""
         return selection[0] if selection else ""
+
+    def _selected_task(self):
+        """返回当前选中任务的完整 dict（从最近一轮任务列表缓存中取）。"""
+        task_id = self._selected_task_id()
+        if not task_id:
+            return None
+        for task in getattr(self, "_cached_tasks", []) or []:
+            if task.get("taskId") == task_id:
+                return task
+        return None
+
+    def _update_control_buttons(self):
+        """按所选任务状态启用/禁用控制按钮，规则与服务端 API 状态机一致：
+
+        - 暂停：pending / running
+        - 继续：paused / failed / terminated
+        - 终止：running
+        - 取消：pending
+        - 删除：除 running 外（running 须先终止）
+        未选中任务时全部禁用。UI 只是提前拦截，服务端仍做权威校验。
+        """
+        buttons = getattr(self, "_control_buttons", None)
+        if not buttons:
+            return
+        task = self._selected_task()
+        status = (task or {}).get("status", "")
+        allowed = {
+            "pause": status in ("pending", "running"),
+            "resume": status in ("paused", "failed", "terminated"),
+            "terminate": status == "running",
+            "cancel": status == "pending",
+            "delete": bool(status) and status != "running",
+        }
+        for action, enabled in allowed.items():
+            btn = buttons.get(action)
+            if btn is not None:
+                try:
+                    btn.config(state=tk.NORMAL if enabled else tk.DISABLED)
+                except tk.TclError:
+                    pass
 
     def _on_task_select(self, _event=None):
         task_id = self._selected_task_id()
+        self._update_control_buttons()
         if task_id:
             self._log_fetching = True
             threading.Thread(
@@ -882,8 +1460,9 @@ class TaskQueueWindow:
                     status = response.status
                     response.close()
                     if status >= 400:
+                        # 携带响应体（BytesIO），使调用方 exc.read() 可用
                         raise urllib.error.HTTPError(
-                            full, status, response.reason or "", {}, None
+                            full, status, response.reason or "", {}, io.BytesIO(raw)
                         )
                     if not raw:
                         return None
@@ -1373,9 +1952,15 @@ class TaskQueueWindow:
         for index, sec in enumerate(sections, start=1):
             title = sec.get("title") or sec.get("key") or ""
             path = sec.get("path", "")
+            # 板块可携带 name（覆盖后的临时流程仍按原始文件名上传/比对）与
+            # runtimeConfig（项目参数，随任务提交、worker 启动时注入）
+            flow_name = str(sec.get("name") or "").strip() or os.path.basename(path)
+            runtime_config = sec.get("runtimeConfig")
+            has_runtime = isinstance(runtime_config, dict) and bool(runtime_config)
+            param_tag = "（含项目参数）" if has_runtime else ""
             self._post_ui(
-                lambda t=title, i=index, n=len(sections): self._append_log_text(
-                    "[queue] 提交 {}/{}：{}".format(i, n, t)
+                lambda t=title, tag=param_tag, i=index, n=len(sections): self._append_log_text(
+                    "[queue] 提交 {}/{}：{}{}".format(i, n, t, tag)
                 )
             )
             if not os.path.isfile(path):
@@ -1388,7 +1973,7 @@ class TaskQueueWindow:
                     results.append((title, "流程文件不是 JSON 对象"))
                     continue
                 digest = self._flow_sha256(content)
-                known = known_flows.get(os.path.basename(path).lower())
+                known = known_flows.get(flow_name.lower())
                 if known and known.get("path") and known.get("sha256") == digest:
                     flow_path = known["path"]
                     skipped_upload = True
@@ -1396,7 +1981,7 @@ class TaskQueueWindow:
                     upload = self._post_json(
                         "/api/flows/upload",
                         {
-                            "name": os.path.basename(path),
+                            "name": flow_name,
                             "content": content,
                             "user": user,
                         },
@@ -1415,6 +2000,7 @@ class TaskQueueWindow:
                         "maxAttempts": 1,
                         "retryDelaySeconds": 0,
                         "timeoutSeconds": 0,
+                        "runtimeConfig": runtime_config if has_runtime else {},
                     },
                 )
                 task = submit_resp.get("task") or {}
@@ -1427,9 +2013,10 @@ class TaskQueueWindow:
                             on_task_submitted(task_id)
                         except Exception:
                             pass
-                results.append(
-                    (title, "已提交（内容未变化，跳过上传）" if skipped_upload else "已提交")
-                )
+                parts = []
+                if skipped_upload:
+                    parts.append("内容未变化，跳过上传")
+                results.append((title, "已提交" + (param_tag or "") + ("（{}）".format("，".join(parts)) if parts else "")))
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
                 results.append((title, "失败：{} {}".format(exc.code, detail)))
@@ -1445,16 +2032,19 @@ class TaskQueueWindow:
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def _show_simple_submit_result(self, results, task_ids=None, completed_callback=None):
-        success_reasons = ("已提交", "已提交（内容未变化，跳过上传）")
-        success = [item for item in results if item[1] in success_reasons]
-        failed = [item for item in results if item[1] not in success_reasons]
-        skipped = sum(1 for item in results if item[1] == "已提交（内容未变化，跳过上传）")
+        # 成功消息以"已提交"开头（含"含项目参数/跳过上传"等修饰），其余按失败处理
+        success = [item for item in results if str(item[1]).startswith("已提交")]
+        failed = [item for item in results if not str(item[1]).startswith("已提交")]
+        skipped = sum(1 for item in results if "跳过上传" in str(item[1]))
+        params_cnt = sum(1 for item in results if "含项目参数" in str(item[1]))
         skip_text = "，跳过上传 {} 个".format(skipped) if skipped else ""
+        param_text = "，含项目参数 {} 个".format(params_cnt) if params_cnt else ""
         self._append_log_text(
-            "[queue] 提交完成：成功 {} 个，失败 {} 个{}".format(
+            "[queue] 提交完成：成功 {} 个，失败 {} 个{}{}".format(
                 len(success),
                 len(failed),
                 skip_text,
+                param_text,
             )
         )
         if failed:
@@ -1561,6 +2151,14 @@ class TaskQueueWindow:
         if not task_id:
             messagebox.showinfo("任务队列", "请先在列表中选择一个任务。")
             return
+        if action == "delete":
+            if not messagebox.askyesno(
+                "删除任务",
+                "确定删除该任务记录吗？此操作不可恢复，且不会终止正在运行的 worker。\n"
+                "如需停止运行中的任务，请先用「终止」。",
+                parent=self.window,
+            ):
+                return
         threading.Thread(
             target=self._send_control_worker,
             args=(task_id, action),
@@ -1574,16 +2172,20 @@ class TaskQueueWindow:
                 {},
             )
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                detail = str(exc)
+            # 用默认参数捕获 exc/detail，避免 except-as 变量在闭包延迟执行时被删除
             self._post_ui(
-                lambda: messagebox.showerror(
-                    "操作失败", "{} {}".format(exc.code, detail)
+                lambda c=exc.code, d=detail: messagebox.showerror(
+                    "操作失败", "{} {}".format(c, d)
                 )
             )
             return
         except Exception as exc:
             self._post_ui(
-                lambda: messagebox.showerror("操作失败", self._friendly_error(exc))
+                lambda e=exc: messagebox.showerror("操作失败", self._friendly_error(e))
             )
             return
         self._post_ui(self.refresh)
@@ -1605,17 +2207,20 @@ class TaskQueueWindow:
                 "/api/tasks/{}/report".format(urllib.parse.quote(task_id))
             )
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                detail = str(exc)
             self._post_ui(
-                lambda: messagebox.showerror(
-                    "查看报告失败", "{} {}".format(exc.code, detail)
+                lambda c=exc.code, d=detail: messagebox.showerror(
+                    "查看报告失败", "{} {}".format(c, d)
                 )
             )
             return
         except Exception as exc:
             self._post_ui(
-                lambda: messagebox.showerror(
-                    "查看报告失败", self._friendly_error(exc)
+                lambda e=exc: messagebox.showerror(
+                    "查看报告失败", self._friendly_error(e)
                 )
             )
             return
@@ -1695,6 +2300,9 @@ class TaskQueueWindow:
             return
         if self.auto_var.get():
             self.refresh()
+        # 流程仓库页签：跟随队列自动刷新（独立开关，默认随队列刷新）
+        if getattr(self, "flows_auto_var", None) is not None and self.flows_auto_var.get():
+            self.refresh_flows()
         self._after_id = self.window.after(
             self._poll_delay_ms(self._queue_fail_streak), self._poll_loop
         )
