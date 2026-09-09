@@ -13,6 +13,7 @@ import tkinter.font as tkfont
 from datetime import datetime
 from functools import lru_cache
 import wt_dpi
+import wt_theme
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from flow_recorder_converter import convert_recorder_script_to_flow
@@ -144,19 +145,7 @@ def _make_button_row(parent, buttons, padx=8, pady=8):
     return frame
 
 
-EDITOR_THEME = {
-    "bg": "#f4f7fb",
-    "panel": "#ffffff",
-    "panel_soft": "#fbfdff",
-    "toolbar": "#eaf1fb",
-    "border": "#d8e2f0",
-    "primary": "#2563eb",
-    "primary_soft": "#dbeafe",
-    "success_soft": "#dcfce7",
-    "danger_soft": "#fee2e2",
-    "text": "#1f2937",
-    "muted": "#64748b",
-}
+EDITOR_THEME = wt_theme.get_palette()
 
 DEFAULT_STEP_CONTROLS_BY_ID = {
     "configure_projection": [
@@ -5543,6 +5532,7 @@ class FlowPackageDialog:
 class FlowEditorApp:
     def __init__(self, root):
         self.root = root
+        wt_theme.get_theme_manager().init_theme(self.root, "flatly")
         self.root.title("WT 自动化流程链路编辑器")
         wt_dpi.geometry(self.root, 1500, 900)
         self.root.minsize(wt_dpi.scale(1260), wt_dpi.scale(760))
@@ -5729,11 +5719,11 @@ class FlowEditorApp:
 
     def _create_action_button(self, parent, text, command, tone="default", **kwargs):
         colors = {
-            "default": {"bg": "#ffffff", "active": "#f8fafc"},
-            "primary": {"bg": EDITOR_THEME["primary_soft"], "active": "#bfdbfe"},
-            "success": {"bg": EDITOR_THEME["success_soft"], "active": "#bbf7d0"},
-            "danger": {"bg": EDITOR_THEME["danger_soft"], "active": "#fecaca"},
-            "accent": {"bg": "#e0e7ff", "active": "#c7d2fe"},
+            "default": {"bg": "#ffffff", "active": "#e2e8f0", "hover": "#f1f5f9"},
+            "primary": {"bg": EDITOR_THEME["primary_soft"], "active": "#93c5fd", "hover": "#bfdbfe"},
+            "success": {"bg": EDITOR_THEME["success_soft"], "active": "#86efac", "hover": "#bbf7d0"},
+            "danger": {"bg": EDITOR_THEME["danger_soft"], "active": "#fca5a5", "hover": "#fecaca"},
+            "accent": {"bg": "#e0e7ff", "active": "#a5b4fc", "hover": "#c7d2fe"},
         }
         palette = colors.get(tone, colors["default"])
         button = tk.Button(
@@ -5745,14 +5735,23 @@ class FlowEditorApp:
             fg=EDITOR_THEME["text"],
             activeforeground=EDITOR_THEME["text"],
             relief=tk.FLAT,
-            bd=1,
+            bd=0,
             padx=10,
             pady=5,
             cursor="hand2",
             font=self.font_ui_button,
+            highlightthickness=1,
             highlightbackground=EDITOR_THEME["border"],
             **kwargs,
         )
+        def on_enter(_e):
+            if button["state"] != tk.DISABLED:
+                button.configure(bg=palette["hover"])
+        def on_leave(_e):
+            if button["state"] != tk.DISABLED:
+                button.configure(bg=palette["bg"])
+        button.bind("<Enter>", on_enter)
+        button.bind("<Leave>", on_leave)
         return button
 
     def _style_text_surface(self, widget, *, dark=False):
@@ -5836,19 +5835,28 @@ class FlowEditorApp:
         toolbar = tk.Frame(self.root, padx=12, pady=10, bg=EDITOR_THEME["toolbar"], highlightbackground=EDITOR_THEME["border"], highlightthickness=1)
         toolbar.pack(fill=tk.X)
 
-        self._create_action_button(toolbar, "新建默认链路", self.cmd_new_default).pack(side=tk.LEFT, padx=4)
-        self._create_action_button(toolbar, "打开链路文件", self.cmd_open).pack(side=tk.LEFT, padx=4)
-        self._create_action_button(toolbar, "转换 Recorder 脚本", self.cmd_convert_recorder_script, tone="primary").pack(side=tk.LEFT, padx=4)
-        self._create_action_button(toolbar, "AI 助手", self.cmd_open_ai_tab, tone="accent").pack(side=tk.LEFT, padx=4)
-        self._create_action_button(toolbar, "保存", self.cmd_save, tone="success").pack(side=tk.LEFT, padx=4)
-        self._create_action_button(toolbar, "另存为", self.cmd_save_as).pack(side=tk.LEFT, padx=4)
-        self._create_action_button(toolbar, "记事本打开JSON", self.cmd_open_json_file).pack(side=tk.LEFT, padx=4)
-        self._create_action_button(toolbar, "打开参考项目", self.cmd_open_reference_project).pack(side=tk.LEFT, padx=4)
-        self._create_action_button(toolbar, "刷新总览", self._refresh_overview).pack(side=tk.LEFT, padx=4)
-        
+        # 文件操作组
+        self._create_action_button(toolbar, "新建默认链路", self.cmd_new_default).pack(side=tk.LEFT, padx=3)
+        self._create_action_button(toolbar, "打开链路文件", self.cmd_open).pack(side=tk.LEFT, padx=3)
+        self._create_action_button(toolbar, "保存", self.cmd_save, tone="success").pack(side=tk.LEFT, padx=3)
+        self._create_action_button(toolbar, "另存为", self.cmd_save_as).pack(side=tk.LEFT, padx=3)
+
+        tk.Frame(toolbar, width=1, bg=EDITOR_THEME["border"]).pack(side=tk.LEFT, fill=tk.Y, padx=8)
+
+        # 脚本转换与智能组
+        self._create_action_button(toolbar, "转换 Recorder 脚本", self.cmd_convert_recorder_script, tone="primary").pack(side=tk.LEFT, padx=3)
+        self._create_action_button(toolbar, "AI 助手", self.cmd_open_ai_tab, tone="accent").pack(side=tk.LEFT, padx=3)
+
+        tk.Frame(toolbar, width=1, bg=EDITOR_THEME["border"]).pack(side=tk.LEFT, fill=tk.Y, padx=8)
+
+        # 工具与参考组
+        self._create_action_button(toolbar, "记事本打开JSON", self.cmd_open_json_file).pack(side=tk.LEFT, padx=3)
+        self._create_action_button(toolbar, "打开参考项目", self.cmd_open_reference_project).pack(side=tk.LEFT, padx=3)
+        self._create_action_button(toolbar, "刷新总览", self._refresh_overview).pack(side=tk.LEFT, padx=3)
+
         # 伴随拾取模式分隔线
         tk.Frame(toolbar, width=1, bg=EDITOR_THEME["border"]).pack(side=tk.LEFT, fill=tk.Y, padx=8)
-        
+
         # 伴随拾取模式开关
         tk.Checkbutton(
             toolbar,
@@ -5916,11 +5924,12 @@ class FlowEditorApp:
         split = tk.PanedWindow(
             body,
             orient=tk.HORIZONTAL,
-            sashrelief=tk.RAISED,
-            sashwidth=6,
+            sashrelief=tk.FLAT,
+            sashwidth=4,
             sashcursor="sb_h_double_arrow",
-            bg=EDITOR_THEME["bg"],
-            showhandle=True,
+            bg=EDITOR_THEME["border"],
+            showhandle=False,
+            bd=0,
         )
         split.pack(fill=tk.BOTH, expand=True)
 
@@ -5946,8 +5955,20 @@ class FlowEditorApp:
         content = tk.Frame(canvas)
         window_id = canvas.create_window((0, 0), window=content, anchor="nw")
 
+        _sr_scheduled = [False]
+
         def on_content_configure(_event=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
+            # 合帧到 after_idle：resize 风暴下 bbox("all") 每帧只算一次
+            if _sr_scheduled[0]:
+                return
+            _sr_scheduled[0] = True
+            def _apply():
+                _sr_scheduled[0] = False
+                try:
+                    canvas.configure(scrollregion=canvas.bbox("all"))
+                except Exception:
+                    pass
+            canvas.after_idle(_apply)
 
         def on_canvas_configure(_event=None):
             canvas.itemconfigure(window_id, width=canvas.winfo_width())

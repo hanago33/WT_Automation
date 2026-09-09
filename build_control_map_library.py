@@ -5841,8 +5841,12 @@ class ControlMapBuilderApp:
                                font=(CONTROL_MAP_THEME["font"][0], 11, "bold"))
         toolbar.pack(fill=tk.X, padx=10, pady=10)
 
-        tk.Radiobutton(toolbar, text="当前前台窗口", variable=self.var_scan_mode, value="foreground").grid(row=0, column=0, sticky="w")
-        tk.Radiobutton(toolbar, text="按标题关键字", variable=self.var_scan_mode, value="keyword").grid(row=0, column=1, sticky="w")
+        tk.Radiobutton(toolbar, text="当前前台窗口", variable=self.var_scan_mode, value="foreground",
+                       bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"],
+                       activebackground=CONTROL_MAP_THEME["toolbar"], selectcolor=CONTROL_MAP_THEME["panel"]).grid(row=0, column=0, sticky="w")
+        tk.Radiobutton(toolbar, text="按标题关键字", variable=self.var_scan_mode, value="keyword",
+                       bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"],
+                       activebackground=CONTROL_MAP_THEME["toolbar"], selectcolor=CONTROL_MAP_THEME["panel"]).grid(row=0, column=1, sticky="w")
         tk.Label(toolbar, text="窗口关键字", bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"]).grid(row=0, column=2, sticky="e", padx=(10, 4))
         tk.Entry(toolbar, textvariable=self.var_window_keyword, width=28).grid(row=0, column=3, sticky="ew")
         tk.Label(toolbar, text="backend", bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"]).grid(row=0, column=4, sticky="e", padx=(10, 4))
@@ -5855,10 +5859,12 @@ class ControlMapBuilderApp:
 
         filter_row = tk.Frame(toolbar, bg=CONTROL_MAP_THEME["toolbar"])
         filter_row.grid(row=3, column=0, columnspan=10, sticky="w", pady=(6, 0))
-        tk.Checkbutton(filter_row, text="过滤离屏控件", variable=self.var_exclude_offscreen).pack(side=tk.LEFT, padx=(0, 12))
-        tk.Checkbutton(filter_row, text="过滤无标识容器", variable=self.var_exclude_unidentified).pack(side=tk.LEFT, padx=(0, 12))
-        tk.Checkbutton(filter_row, text="自动展开下拉框采选项", variable=self.var_expand_dropdowns).pack(side=tk.LEFT, padx=(0, 12))
-        tk.Checkbutton(filter_row, text="移动鼠标实体化选项", variable=self.var_move_cursor).pack(side=tk.LEFT, padx=(0, 12))
+        _toggle_kw = dict(bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"],
+                          activebackground=CONTROL_MAP_THEME["toolbar"], selectcolor=CONTROL_MAP_THEME["panel"])
+        tk.Checkbutton(filter_row, text="过滤离屏控件", variable=self.var_exclude_offscreen, **_toggle_kw).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Checkbutton(filter_row, text="过滤无标识容器", variable=self.var_exclude_unidentified, **_toggle_kw).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Checkbutton(filter_row, text="自动展开下拉框采选项", variable=self.var_expand_dropdowns, **_toggle_kw).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Checkbutton(filter_row, text="移动鼠标实体化选项", variable=self.var_move_cursor, **_toggle_kw).pack(side=tk.LEFT, padx=(0, 12))
         tk.Label(filter_row, text="(勾选后采集时自动展开区域内下拉框读取可选项再收回，会真实操作界面，需目标软件处于可交互状态；MUP 扫描时卡死请取消\"移动鼠标实体化选项\")", fg=CONTROL_MAP_THEME["muted"]).pack(side=tk.LEFT)
 
         hint_row = tk.Frame(toolbar, bg=CONTROL_MAP_THEME["toolbar"])
@@ -5885,6 +5891,8 @@ class ControlMapBuilderApp:
             text="👁 只看不采",
             variable=self.var_look_only,
             command=self._on_look_only_toggle,
+            bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"],
+            activebackground=CONTROL_MAP_THEME["toolbar"], selectcolor=CONTROL_MAP_THEME["panel"],
         ).pack(side=tk.LEFT, padx=(0, 3))
         tk.Button(supplement_row, text="🎯 定点补采子树", command=self.cmd_point_supplement, bg=CONTROL_MAP_THEME["warning_soft"]).pack(side=tk.LEFT, padx=3)
         tk.Button(supplement_row, text="🌱 补采选中控件", command=self.cmd_selected_supplement, bg=CONTROL_MAP_THEME["warning_soft"]).pack(side=tk.LEFT, padx=3)
@@ -5922,7 +5930,9 @@ class ControlMapBuilderApp:
         self._scan_button_frame2 = button_row2
         tk.Button(button_row2, text="📂 加载控件库文件", command=self.cmd_load_control_map_file, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row2, text="保存当前结果", command=self.cmd_save_current_payload).pack(side=tk.LEFT, padx=3)
-        tk.Checkbutton(button_row2, text="保存后自动合并入库", variable=self.var_auto_merge, bg=CONTROL_MAP_THEME["toolbar"]).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Checkbutton(button_row2, text="保存后自动合并入库", variable=self.var_auto_merge, bg=CONTROL_MAP_THEME["toolbar"],
+                       fg=CONTROL_MAP_THEME["text"], activebackground=CONTROL_MAP_THEME["toolbar"],
+                       selectcolor=CONTROL_MAP_THEME["panel"]).pack(side=tk.LEFT, padx=(0, 4))
         tk.Button(button_row2, text="打开控件库目录", command=self.cmd_open_control_map_dir).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row2, text="🔍 搜索控件", command=self.cmd_search_controls, bg=CONTROL_MAP_THEME["warning_soft"]).pack(side=tk.LEFT, padx=3)
         tk.Button(button_row2, text="📥 合并入库", command=self.cmd_merge_into_library, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
@@ -5930,7 +5940,9 @@ class ControlMapBuilderApp:
         self._btn_test_locator = tk.Button(button_row2, text="检验定位", command=self._toggle_probe_button, bg=CONTROL_MAP_THEME["primary_soft"])
         self._btn_test_locator.pack(side=tk.LEFT, padx=3)
         self.var_tree_view_mode = tk.StringVar(value="flat")
-        tk.Checkbutton(button_row2, text="层级树视图", variable=self.var_tree_view_mode, onvalue="hierarchy", offvalue="flat", command=self._refresh_tree).pack(side=tk.LEFT, padx=8)
+        tk.Checkbutton(button_row2, text="层级树视图", variable=self.var_tree_view_mode, onvalue="hierarchy", offvalue="flat",
+                      command=self._refresh_tree, bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"],
+                      activebackground=CONTROL_MAP_THEME["toolbar"], selectcolor=CONTROL_MAP_THEME["panel"]).pack(side=tk.LEFT, padx=8)
         tk.Button(button_row2, text="展开全部", command=self._cmd_expand_all_tree,
                   font=("Microsoft YaHei UI", 9), padx=6, pady=0).pack(side=tk.LEFT, padx=2)
         tk.Button(button_row2, text="折叠全部", command=self._cmd_collapse_all_tree,
@@ -5996,15 +6008,18 @@ class ControlMapBuilderApp:
         self.control_tree.column("locator", width=300, anchor="w", stretch=True, minwidth=200)
         self.control_tree.column("score", width=60, anchor="center", stretch=True, minwidth=40)
         self.control_tree.column("path", width=460, anchor="w", stretch=True, minwidth=260)
-        self.control_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
-        self.control_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
-        self.control_tree.bind("<Button-1>", self._on_tree_click, add="+")
-
+        # 先 pack 滚动条再 pack 树：树先 pack 且 7 列 minwidth 总和超过左栏
+        # 分配宽度时，pack 会把剩余腔体全部让给 expand=True 的树，后 pack 的
+        # 滚动条被挤成 1x1 不可见（窗口拖窄/低缩放时必现）。滚动条先占位，
+        # 树吃剩余空间并通过列 stretch 自适应，任何窗口宽度下滚动条都可见。
         scrollbar = ttk.Scrollbar(left, orient="vertical", command=self.control_tree.yview, style="ControlMap.Vertical.TScrollbar")
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         h_scrollbar = ttk.Scrollbar(left, orient="horizontal", command=self.control_tree.xview, style="ControlMap.Horizontal.TScrollbar")
         h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 0))
+        self.control_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
         self.control_tree.configure(yscrollcommand=scrollbar.set, xscrollcommand=h_scrollbar.set)
+        self.control_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        self.control_tree.bind("<Button-1>", self._on_tree_click, add="+")
 
         rename_frame = tk.LabelFrame(right, text="保存前命名", padx=10, pady=10,
                                      bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
@@ -8921,7 +8936,9 @@ class ControlMapBuilderApp:
         for text, val in [("全部字段", "all"), ("控件名(name)", "name"),
                           ("ID(automationId)", "aid"), ("类型(controlType)", "ctype"),
                           ("类名(className)", "cname")]:
-            tk.Radiobutton(scope_frame, text=text, variable=scope_var, value=val).pack(side=tk.LEFT, padx=(0, 8))
+            tk.Radiobutton(scope_frame, text=text, variable=scope_var, value=val,
+                           bg=CONTROL_MAP_THEME["bg"], fg=CONTROL_MAP_THEME["text"],
+                           activebackground=CONTROL_MAP_THEME["bg"], selectcolor=CONTROL_MAP_THEME["panel"]).pack(side=tk.LEFT, padx=(0, 8))
 
         # -- 结果列表 --
         list_frame = tk.Frame(dlg, bg=CONTROL_MAP_THEME["bg"])
@@ -9028,9 +9045,9 @@ class ControlMapBuilderApp:
                                 selectforeground=CONTROL_MAP_THEME["primary"],
                                 relief="flat", bd=1, highlightthickness=1,
                                 highlightbackground=CONTROL_MAP_THEME["border"])
-        src_listbox.pack(fill=tk.X, pady=(4, 0))
         src_scroll = tk.Scrollbar(src_frame, orient="vertical", command=src_listbox.yview)
-        src_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        src_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=(4, 0))
+        src_listbox.pack(fill=tk.X, pady=(4, 0))
         src_listbox.config(yscrollcommand=src_scroll.set)
 
         src_entries = []  # [(display_name, full_path)]
@@ -9068,7 +9085,8 @@ class ControlMapBuilderApp:
 
         overwrite_var = tk.BooleanVar(value=False)
         tk.Checkbutton(opt_frame, text="高权威覆盖（源非空字段填充目标空字段）",
-                       variable=overwrite_var).pack(side=tk.LEFT)
+                       variable=overwrite_var, bg=CONTROL_MAP_THEME["bg"], fg=CONTROL_MAP_THEME["text"],
+                       activebackground=CONTROL_MAP_THEME["bg"], selectcolor=CONTROL_MAP_THEME["panel"]).pack(side=tk.LEFT)
 
         # ── 预览区 ──
         preview_box = scrolledtext.ScrolledText(dlg, wrap=tk.WORD, font=("Consolas", 10), height=10,

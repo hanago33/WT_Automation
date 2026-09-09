@@ -14,6 +14,8 @@ import urllib.parse
 import urllib.request
 from tkinter import filedialog, messagebox, ttk
 
+import wt_theme
+
 
 DEFAULT_URL = "http://127.0.0.1:8768"
 DEFAULT_MONITOR_URL = "http://127.0.0.1:8767"
@@ -116,11 +118,12 @@ class TaskQueueWindow:
         self._role_banner_label = None
         self._local_ips = _local_ipv4s()
 
+        pal = wt_theme.get_palette()
         self.window = tk.Toplevel(master)
         self.window.title("任务与服务器监控")
-        self.window.configure(bg="#f4f7fb")
-        self.window.geometry("1080x700")
-        self.window.minsize(860, 560)
+        self.window.configure(bg=pal["bg"])
+        self.window.geometry("1160x740")
+        self.window.minsize(880, 580)
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # 角色横幅：地址栏上方整行，颜色 + 文案区分运行角色
@@ -128,42 +131,123 @@ class TaskQueueWindow:
             self.window,
             textvariable=self._role_banner_var,
             anchor="w",
-            padx=12,
+            padx=14,
             pady=6,
-            font=("Microsoft YaHei UI", 10, "bold"),
+            font=("Microsoft YaHei UI", 9, "bold"),
         )
         self._role_banner_label.pack(fill=tk.X, before=None)
 
-        top = tk.Frame(self.window, bg="#eaf1fb", padx=10, pady=8)
-        top.pack(fill=tk.X)
-        tk.Label(top, text="任务服务地址", bg="#eaf1fb", fg="#1f2937").pack(side=tk.LEFT)
-        self.url_var = tk.StringVar(value=self.base_url)
-        tk.Entry(top, textvariable=self.url_var, width=22).pack(side=tk.LEFT, padx=6)
-        tk.Label(top, text="用户名", bg="#eaf1fb", fg="#1f2937").pack(side=tk.LEFT)
-        self.user_var = tk.StringVar(value=initial_user or "")
-        tk.Entry(top, textvariable=self.user_var, width=12).pack(side=tk.LEFT, padx=6)
-        tk.Label(top, text="服务令牌(--auth-token)", bg="#eaf1fb", fg="#1f2937").pack(side=tk.LEFT)
-        self.token_var = tk.StringVar(value=initial_token or "")
-        tk.Entry(top, textvariable=self.token_var, width=16, show="*").pack(
-            side=tk.LEFT, padx=6
+        top = tk.Frame(
+            self.window,
+            bg=pal["surface"],
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            padx=10,
+            pady=6,
         )
-        tk.Label(top, text="监控地址", bg="#eaf1fb", fg="#1f2937").pack(
-            side=tk.LEFT, padx=(8, 0)
-        )
-        self.monitor_url_var = tk.StringVar(value=self.monitor_base_url)
-        tk.Entry(top, textvariable=self.monitor_url_var, width=22).pack(
-            side=tk.LEFT, padx=6
-        )
-        tk.Button(
+        top.pack(fill=tk.X, padx=8, pady=(4, 2))
+        tk.Label(
             top,
-            text="刷新",
-            command=self._apply_settings_and_refresh,
-            bg="#dbeafe",
-            fg="#1f2937",
+            text="任务服务",
+            bg=pal["surface"],
+            fg=pal["text_secondary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        self.url_var = tk.StringVar(value=self.base_url)
+        tk.Entry(
+            top,
+            textvariable=self.url_var,
+            width=20,
+            bg=pal["card_hover"],
             relief=tk.FLAT,
-            padx=12,
-            pady=4,
-            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(4, 8))
+
+        tk.Label(
+            top,
+            text="用户名",
+            bg=pal["surface"],
+            fg=pal["text_secondary"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT)
+        self.user_var = tk.StringVar(value=initial_user or "")
+        tk.Entry(
+            top,
+            textvariable=self.user_var,
+            width=10,
+            bg=pal["card_hover"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(4, 8))
+
+        tk.Label(
+            top,
+            text="服务令牌",
+            bg=pal["surface"],
+            fg=pal["text_secondary"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT)
+        self.token_var = tk.StringVar(value=initial_token or "")
+        tk.Entry(
+            top,
+            textvariable=self.token_var,
+            width=14,
+            show="*",
+            bg=pal["card_hover"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(4, 8))
+
+        tk.Label(
+            top,
+            text="监控地址",
+            bg=pal["surface"],
+            fg=pal["text_secondary"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT)
+        self.monitor_url_var = tk.StringVar(value=self.monitor_base_url)
+        tk.Entry(
+            top,
+            textvariable=self.monitor_url_var,
+            width=20,
+            bg=pal["card_hover"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(4, 8))
+
+        wt_theme.create_flat_button(
+            top,
+            text="刷新连接",
+            command=self._apply_settings_and_refresh,
+            tone="primary",
+            padx=10,
+            pady=3,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        wt_theme.create_flat_button(
+            top,
+            text="启动服务",
+            command=lambda: self._service_action("start", "task"),
+            tone="success",
+            padx=8,
+            pady=3,
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        wt_theme.create_flat_button(
+            top,
+            text="停止服务",
+            command=lambda: self._service_action("stop", "task"),
+            tone="danger",
+            padx=8,
+            pady=3,
         ).pack(side=tk.LEFT)
 
         self.url_var.trace_add("write", self._on_settings_text_changed)
@@ -173,19 +257,20 @@ class TaskQueueWindow:
 
         hint = tk.Label(
             top,
-            text="先填用户名/服务令牌，再启动服务或刷新；连接失败时请先在本窗口或总控台启动服务。",
-            bg="#eaf1fb",
-            fg="#64748b",
+            text="先填用户名/令牌再刷新",
+            bg=pal["surface"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
             anchor="e",
         )
-        hint.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(10, 0))
+        hint.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(8, 0))
 
         self.notebook = ttk.Notebook(self.window)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 8))
 
-        self.queue_tab = tk.Frame(self.notebook, bg="#f4f7fb")
-        self.monitor_tab = tk.Frame(self.notebook, bg="#f4f7fb")
-        self.flows_tab = tk.Frame(self.notebook, bg="#f4f7fb")
+        self.queue_tab = tk.Frame(self.notebook, bg=pal["bg"])
+        self.monitor_tab = tk.Frame(self.notebook, bg=pal["bg"])
+        self.flows_tab = tk.Frame(self.notebook, bg=pal["bg"])
         self.notebook.add(self.queue_tab, text="任务队列")
         self.notebook.add(self.monitor_tab, text="服务器监控")
         self.notebook.add(self.flows_tab, text="流程仓库")
@@ -198,6 +283,7 @@ class TaskQueueWindow:
         # 流程仓库页签初始加载一次（后续由 _poll_loop 按开关续刷）
         self.window.after(200, self.refresh_flows)
         self._refresh_role_banner()
+
 
     def _resolve_role(self):
         """按任务服务地址判定本窗口的运行角色。
@@ -257,138 +343,138 @@ class TaskQueueWindow:
         self.window.title("任务与服务器监控 {}".format(title_suffix).strip())
 
     def _build_queue_tab(self, parent):
-        action_frame = tk.Frame(parent, bg="#ffffff", padx=10, pady=6)
-        action_frame.pack(fill=tk.X)
-        # 控制按钮按所选任务状态启用/禁用（与服务端 API 状态机一致），
-        # 避免对 running 任务点「取消」必 409、对已收尾任务误操作等。
-        self._control_buttons = {}
-        for text, command in (
-            ("提交任务", self.submit_task),
-            ("提交本地 JSON 链路", self.submit_local_flow_file),
-            ("暂停", lambda: self.control_action("pause")),
-            ("继续", lambda: self.control_action("resume")),
-            ("终止", lambda: self.control_action("terminate")),
-            ("取消", lambda: self.control_action("cancel")),
-            ("删除", lambda: self.control_action("delete")),
-            ("查看报告", self.view_report),
-        ):
-            control = {
-                "暂停": "pause",
-                "继续": "resume",
-                "终止": "terminate",
-                "取消": "cancel",
-                "删除": "delete",
-            }.get(text)
-            btn = tk.Button(
-                action_frame,
-                text=text,
-                command=command,
-                bg="#dbeafe",
-                fg="#1f2937",
-                relief=tk.FLAT,
-                padx=12,
-                pady=4,
-                cursor="hand2",
-            )
-            btn.pack(side=tk.LEFT, padx=(0, 6))
-            if control:
-                self._control_buttons[control] = btn
-        tk.Button(
-            action_frame,
-            text="启动任务队列服务",
-            command=lambda: self._service_action("start", "task"),
-            bg="#dcfce7",
-            fg="#14532d",
-            relief=tk.FLAT,
+        pal = wt_theme.get_palette()
+
+        # ── 顶部快捷筛选与控制栏 ──
+        filter_frame = tk.Frame(
+            parent,
+            bg=pal["surface"],
+            highlightthickness=1,
+            highlightbackground=pal["border"],
             padx=10,
-            pady=4,
-            cursor="hand2",
-        ).pack(side=tk.LEFT, padx=(14, 4))
-        # 窗口刚打开、尚未选中任务时，控制按钮先全部禁用
-        # （tab 全部建完后调用；_selected_task_id 对树未创建场景已做防御）
-        tk.Button(
-            action_frame,
-            text="停止任务队列服务",
-            command=lambda: self._service_action("stop", "task"),
-            bg="#fee2e2",
-            fg="#7f1d1d",
-            relief=tk.FLAT,
-            padx=10,
-            pady=4,
-            cursor="hand2",
-        ).pack(side=tk.LEFT)
-        self.conn_var = tk.StringVar(value="未连接")
-        tk.Label(action_frame, textvariable=self.conn_var, bg="#ffffff", fg="#64748b").pack(
-            side=tk.RIGHT
+            pady=6,
         )
+        filter_frame.pack(fill=tk.X, padx=8, pady=(6, 4))
+
+        tk.Label(
+            filter_frame,
+            text="状态筛选:",
+            bg=pal["surface"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        self.status_filter_var = tk.StringVar(value="全部")
+        status_options = [
+            ("全部", "全部"),
+            ("排队中", "排队中"),
+            ("运行中", "运行中"),
+            ("已暂停", "已暂停"),
+            ("成功", "成功"),
+            ("失败", "失败"),
+        ]
+        pill_selector = wt_theme.create_pill_selector(
+            filter_frame,
+            options=status_options,
+            variable=self.status_filter_var,
+            on_change=lambda _v: self._on_filter_changed(),
+        )
+        pill_selector.pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(filter_frame, text="🔍", bg=pal["surface"], fg=pal["muted"]).pack(side=tk.LEFT)
+        self.keyword_var = tk.StringVar()
+        keyword_entry = tk.Entry(
+            filter_frame,
+            textvariable=self.keyword_var,
+            width=22,
+            bg=pal["card_hover"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            font=("Microsoft YaHei UI", 9),
+        )
+        keyword_entry.pack(side=tk.LEFT, padx=(4, 6))
+        keyword_entry.bind("<KeyRelease>", lambda _e: self._on_filter_changed())
+        keyword_entry.bind("<Return>", self._on_filter_changed)
+
+        self.conn_var = tk.StringVar(value="未连接")
+        tk.Label(
+            filter_frame,
+            textvariable=self.conn_var,
+            bg=pal["surface"],
+            fg=pal["primary_text"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side=tk.RIGHT, padx=(8, 0))
 
         self.auto_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
-            action_frame,
+            filter_frame,
             text="自动刷新 (2s)",
             variable=self.auto_var,
-            bg="#ffffff",
-            fg="#1f2937",
-            activebackground="#ffffff",
-            selectcolor="#ffffff",
-        ).pack(side=tk.RIGHT, padx=(0, 10))
+            bg=pal["surface"],
+            fg=pal["text"],
+            activebackground=pal["surface"],
+            selectcolor=pal["surface"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
         self.mine_only_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
-            action_frame,
+            filter_frame,
             text="只看我的任务",
             variable=self.mine_only_var,
             command=self._on_mine_only_toggle,
-            bg="#ffffff",
-            fg="#1f2937",
-            activebackground="#ffffff",
-            selectcolor="#ffffff",
-        ).pack(side=tk.RIGHT, padx=(0, 10))
+            bg=pal["surface"],
+            fg=pal["text"],
+            activebackground=pal["surface"],
+            selectcolor=pal["surface"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.RIGHT, padx=(0, 8))
 
-        filter_frame = tk.Frame(parent, bg="#ffffff", padx=10, pady=4)
-        filter_frame.pack(fill=tk.X)
-        tk.Label(filter_frame, text="状态筛选", bg="#ffffff", fg="#334155").pack(
-            side=tk.LEFT
+        # ── 核心工作区：Master-Detail 左右分栏 ──
+        main_paned = tk.PanedWindow(parent, orient=tk.HORIZONTAL, bg=pal["bg"], sashwidth=4, bd=0)
+        main_paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 4))
+
+        # 左栏：任务列表与排队管理
+        left_frame = tk.Frame(
+            main_paned,
+            bg=pal["surface"],
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            padx=4,
+            pady=4,
         )
-        self.status_filter_var = tk.StringVar(value="全部")
-        status_box = ttk.Combobox(
-            filter_frame,
-            textvariable=self.status_filter_var,
-            values=("全部", "排队中", "运行中", "已暂停", "成功", "失败", "已取消", "已终止"),
-            width=10,
-            state="readonly",
-        )
-        status_box.pack(side=tk.LEFT, padx=(6, 12))
-        status_box.bind("<<ComboboxSelected>>", self._on_filter_changed)
-        tk.Label(filter_frame, text="关键字（任务ID/用户/流程/步骤）", bg="#ffffff", fg="#334155").pack(
-            side=tk.LEFT
-        )
-        self.keyword_var = tk.StringVar()
-        keyword_entry = tk.Entry(filter_frame, textvariable=self.keyword_var, width=34)
-        keyword_entry.pack(side=tk.LEFT, padx=(6, 8))
-        keyword_entry.bind("<Return>", self._on_filter_changed)
-        tk.Button(
-            filter_frame,
-            text="应用筛选",
-            command=self._on_filter_changed,
-            bg="#dbeafe",
-            fg="#1f2937",
-            relief=tk.FLAT,
-            padx=10,
-            pady=2,
-            cursor="hand2",
+        left_top = tk.Frame(left_frame, bg=pal["surface"], pady=2)
+        left_top.pack(fill=tk.X, padx=4, pady=(2, 4))
+        tk.Label(
+            left_top,
+            text="任务列表",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            bg=pal["surface"],
+            fg=pal["text"],
         ).pack(side=tk.LEFT)
 
-        tree_frame = tk.LabelFrame(
-            parent,
-            text="当前队列与任务",
-            padx=6,
-            pady=6,
-            bg="#ffffff",
-            fg="#1f2937",
-            bd=1,
-            relief=tk.GROOVE,
-        )
-        tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+        wt_theme.create_flat_button(
+            left_top,
+            text="+ 提交任务",
+            command=self.submit_task,
+            tone="primary",
+            padx=8,
+            pady=2,
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        wt_theme.create_flat_button(
+            left_top,
+            text="+ 本地JSON",
+            command=self.submit_local_flow_file,
+            tone="secondary",
+            padx=8,
+            pady=2,
+        ).pack(side=tk.RIGHT)
+
+        tree_container = tk.Frame(left_frame, bg=pal["surface"])
+        tree_container.pack(fill=tk.BOTH, expand=True)
+
         columns = (
             "taskId",
             "user",
@@ -401,7 +487,7 @@ class TaskQueueWindow:
             "created",
             "updated",
         )
-        self.task_tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
+        self.task_tree = ttk.Treeview(tree_container, columns=columns, show="headings", selectmode="browse")
         headings = {
             "taskId": "任务ID",
             "user": "用户",
@@ -415,157 +501,291 @@ class TaskQueueWindow:
             "updated": "更新时间",
         }
         widths = {
-            "taskId": 190,
-            "user": 70,
-            "status": 70,
-            "priority": 60,
-            "scheduled": 150,
-            "attempts": 60,
-            "progress": 110,
-            "currentStep": 180,
-            "created": 150,
-            "updated": 150,
+            "taskId": 180,
+            "user": 65,
+            "status": 65,
+            "priority": 55,
+            "scheduled": 120,
+            "attempts": 55,
+            "progress": 95,
+            "currentStep": 150,
+            "created": 130,
+            "updated": 130,
         }
         for column in columns:
             self.task_tree.heading(column, text=headings[column])
-            self.task_tree.column(column, width=widths[column], minwidth=50, anchor="w")
-        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.task_tree.yview)
-        self.task_tree.configure(yscrollcommand=scrollbar.set)
-        self.task_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        h_scroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.task_tree.xview)
+            self.task_tree.column(column, width=widths[column], minwidth=45, anchor="w")
+
+        v_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.task_tree.yview)
+        self.task_tree.configure(yscrollcommand=v_scroll.set)
+        v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        h_scroll = ttk.Scrollbar(tree_container, orient="horizontal", command=self.task_tree.xview)
         self.task_tree.configure(xscrollcommand=h_scroll.set)
         h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+
+        self.task_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.task_tree.bind("<<TreeviewSelect>>", self._on_task_select)
 
-        stats_frame = tk.LabelFrame(
-            parent,
-            text="队列统计",
-            padx=8,
-            pady=4,
-            bg="#ffffff",
-            fg="#1f2937",
-            bd=1,
-            relief=tk.GROOVE,
-        )
-        stats_frame.pack(fill=tk.X, padx=10, pady=(0, 8))
-        self.stats_var = tk.StringVar(value="尚未获取统计")
-        tk.Label(
-            stats_frame,
-            textvariable=self.stats_var,
-            bg="#ffffff",
-            fg="#334155",
-            anchor="w",
-        ).pack(fill=tk.X)
+        main_paned.add(left_frame, minsize=380, width=520)
 
-        log_frame = tk.LabelFrame(
-            parent,
-            text="任务日志",
-            padx=6,
-            pady=6,
-            bg="#ffffff",
-            fg="#1f2937",
-            bd=1,
-            relief=tk.GROOVE,
+        # 右栏：任务看板与实时终端控制台
+        right_frame = tk.Frame(main_paned, bg=pal["bg"])
+
+        # 上半部分：任务详情卡片与操作栏
+        inspect_card = wt_theme.create_card_frame(right_frame, padx=12, pady=8)
+        inspect_card.pack(fill=tk.X, pady=(0, 6))
+
+        row1 = tk.Frame(inspect_card, bg=pal["card"])
+        row1.pack(fill=tk.X)
+        self.detail_task_id_var = tk.StringVar(value="未选中任务")
+        tk.Label(
+            row1,
+            textvariable=self.detail_task_id_var,
+            font=("Microsoft YaHei UI", 11, "bold"),
+            bg=pal["card"],
+            fg=pal["text"],
+        ).pack(side=tk.LEFT)
+        self.detail_status_badge = wt_theme.create_badge(row1, text="未选择", tone="muted")
+        self.detail_status_badge.pack(side=tk.RIGHT)
+
+        self.detail_meta_var = tk.StringVar(value="请在左侧列表中点击选择任务查看详情与操作")
+        tk.Label(
+            inspect_card,
+            textvariable=self.detail_meta_var,
+            font=("Microsoft YaHei UI", 9),
+            bg=pal["card"],
+            fg=pal["muted"],
+            anchor="w",
+        ).pack(fill=tk.X, pady=(4, 4))
+
+        row_prog = tk.Frame(inspect_card, bg=pal["card"])
+        row_prog.pack(fill=tk.X, pady=(2, 2))
+        self.detail_step_var = tk.StringVar(value="当前步骤：-")
+        tk.Label(
+            row_prog,
+            textvariable=self.detail_step_var,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=pal["card"],
+            fg=pal["primary_text"],
+        ).pack(side=tk.LEFT)
+        self.detail_progress_var = tk.StringVar(value="步骤进度：-")
+        tk.Label(
+            row_prog,
+            textvariable=self.detail_progress_var,
+            font=("Microsoft YaHei UI", 9),
+            bg=pal["card"],
+            fg=pal["text_secondary"],
+        ).pack(side=tk.RIGHT)
+
+        self.detail_progressbar = ttk.Progressbar(
+            inspect_card,
+            orient="horizontal",
+            mode="determinate",
+            style="Horizontal.TProgressbar",
         )
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        text_frame = tk.Frame(log_frame, bg="#111418")
-        text_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.detail_progressbar.pack(fill=tk.X, pady=(4, 8))
+
+        # 控制按钮组
+        control_bar = tk.Frame(inspect_card, bg=pal["card"])
+        control_bar.pack(fill=tk.X)
+
+        self._control_buttons = {}
+        btn_pause = wt_theme.create_flat_button(
+            control_bar, "暂停", lambda: self.control_action("pause"), tone="warning", padx=10, pady=3
+        )
+        btn_pause.pack(side=tk.LEFT, padx=(0, 6))
+        self._control_buttons["pause"] = btn_pause
+
+        btn_resume = wt_theme.create_flat_button(
+            control_bar, "继续", lambda: self.control_action("resume"), tone="primary", padx=10, pady=3
+        )
+        btn_resume.pack(side=tk.LEFT, padx=(0, 6))
+        self._control_buttons["resume"] = btn_resume
+
+        btn_term = wt_theme.create_flat_button(
+            control_bar, "终止", lambda: self.control_action("terminate"), tone="danger", padx=10, pady=3
+        )
+        btn_term.pack(side=tk.LEFT, padx=(0, 6))
+        self._control_buttons["terminate"] = btn_term
+
+        btn_cancel = wt_theme.create_flat_button(
+            control_bar, "取消", lambda: self.control_action("cancel"), tone="secondary", padx=10, pady=3
+        )
+        btn_cancel.pack(side=tk.LEFT, padx=(0, 6))
+        self._control_buttons["cancel"] = btn_cancel
+
+        btn_del = wt_theme.create_flat_button(
+            control_bar, "删除", lambda: self.control_action("delete"), tone="secondary", padx=10, pady=3
+        )
+        btn_del.pack(side=tk.LEFT, padx=(0, 6))
+        self._control_buttons["delete"] = btn_del
+
+        self.btn_view_report = wt_theme.create_flat_button(
+            control_bar, "查看报告", self.view_report, tone="secondary", padx=10, pady=3
+        )
+        self.btn_view_report.pack(side=tk.RIGHT)
+
+        # 下半部分：实时终端控制台
+        console_card = wt_theme.create_card_frame(right_frame, padx=8, pady=6)
+        console_card.pack(fill=tk.BOTH, expand=True)
+
+        console_header = tk.Frame(console_card, bg=pal["card"])
+        console_header.pack(fill=tk.X, padx=2, pady=(0, 4))
+        tk.Label(
+            console_header,
+            text="任务运行日志 (实时终端)",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=pal["card"],
+            fg=pal["text"],
+        ).pack(side=tk.LEFT)
+
+        wt_theme.create_flat_button(
+            console_header,
+            text="复制日志",
+            command=self._copy_log_text,
+            tone="subtle",
+            padx=8,
+            pady=1,
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        wt_theme.create_flat_button(
+            console_header,
+            text="清屏",
+            command=self._clear_log_text,
+            tone="subtle",
+            padx=8,
+            pady=1,
+        ).pack(side=tk.RIGHT)
+
+        text_container = tk.Frame(console_card, bg=pal["terminal_bg"])
+        text_container.pack(fill=tk.BOTH, expand=True)
+
         self.log_text = tk.Text(
-            text_frame,
+            text_container,
             wrap=tk.WORD,
             state=tk.DISABLED,
-            bg="#111418",
-            fg="#e6edf3",
-            insertbackground="#e6edf3",
+            bg=pal["terminal_bg"],
+            fg=pal["terminal_fg"],
+            insertbackground=pal["terminal_fg"],
             font=("Consolas", 9),
             relief=tk.FLAT,
             padx=8,
             pady=8,
         )
-        log_scrollbar = tk.Scrollbar(text_frame, command=self.log_text.yview, relief=tk.FLAT)
+        log_scrollbar = tk.Scrollbar(text_container, command=self.log_text.yview, relief=tk.FLAT)
         self.log_text.config(yscrollcommand=log_scrollbar.set)
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         for tag, color in (
-            ("info", "#e6edf3"),
-            ("error", "#ff7b72"),
-            ("warning", "#e3b341"),
-            ("success", "#7ee787"),
-            ("system", "#79c0ff"),
+            ("info", "#e2e8f0"),
+            ("error", "#f87171"),
+            ("warning", "#fbbf24"),
+            ("success", "#34d399"),
+            ("system", "#60a5fa"),
         ):
             self.log_text.tag_configure(tag, foreground=color)
 
-        # tab 全部构建完成后的收尾：未选中任务时控制按钮全部禁用
+        main_paned.add(right_frame, minsize=420, width=580)
+
+        # ── 底部：统计状态条 ──
+        stats_frame = tk.Frame(
+            parent,
+            bg=pal["surface"],
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            padx=10,
+            pady=4,
+        )
+        stats_frame.pack(fill=tk.X, padx=8, pady=(0, 6))
+        self.stats_var = tk.StringVar(value="尚未获取统计")
+        tk.Label(
+            stats_frame,
+            textvariable=self.stats_var,
+            bg=pal["surface"],
+            fg=pal["text_secondary"],
+            font=("Microsoft YaHei UI", 9),
+            anchor="w",
+        ).pack(fill=tk.X)
+
         self._update_control_buttons()
 
+
     def _build_monitor_tab(self, parent):
-        top = tk.Frame(parent, bg="#eaf1fb", padx=10, pady=8)
-        top.pack(fill=tk.X)
+        pal = wt_theme.get_palette()
+        top = tk.Frame(
+            parent,
+            bg=pal["surface"],
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            padx=10,
+            pady=6,
+        )
+        top.pack(fill=tk.X, padx=8, pady=(6, 4))
         self.monitor_auto_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
             top,
             text="自动刷新 (2s)",
             variable=self.monitor_auto_var,
-            bg="#eaf1fb",
-            fg="#1f2937",
-            activebackground="#eaf1fb",
-            selectcolor="#ffffff",
+            bg=pal["surface"],
+            fg=pal["text"],
+            activebackground=pal["surface"],
+            selectcolor=pal["surface"],
+            font=("Microsoft YaHei UI", 9),
         ).pack(side=tk.LEFT)
-        tk.Button(
+
+        wt_theme.create_flat_button(
             top,
             text="刷新监控",
             command=self.refresh_monitor,
-            bg="#dbeafe",
-            fg="#1f2937",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
-            cursor="hand2",
+            tone="secondary",
+            padx=10,
+            pady=3,
         ).pack(side=tk.LEFT, padx=(10, 0))
-        tk.Button(
+
+        wt_theme.create_flat_button(
             top,
             text="启动监控服务",
             command=lambda: self._service_action("start", "monitor"),
-            bg="#dcfce7",
-            fg="#14532d",
-            relief=tk.FLAT,
+            tone="success",
             padx=10,
-            pady=4,
-            cursor="hand2",
-        ).pack(side=tk.LEFT, padx=(10, 0))
-        tk.Button(
+            pady=3,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        wt_theme.create_flat_button(
             top,
             text="停止监控服务",
             command=lambda: self._service_action("stop", "monitor"),
-            bg="#fee2e2",
-            fg="#7f1d1d",
-            relief=tk.FLAT,
+            tone="danger",
             padx=10,
-            pady=4,
-            cursor="hand2",
-        ).pack(side=tk.LEFT, padx=(10, 0))
+            pady=3,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        hint = tk.Label(
+            top,
+            text="提示：本页显示服务器进程状态（8767 监控服务）",
+            bg=pal["surface"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+            anchor="e",
+        )
+        hint.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(8, 0))
+
+        status_card = wt_theme.create_card_frame(parent, padx=12, pady=10)
+        status_card.pack(fill=tk.X, padx=8, pady=(2, 6))
 
         tk.Label(
-            parent,
-            text="提示：本页显示服务器进程状态（8767 监控服务）；任务运行日志与报告请在「任务」标签页选中任务后查看。",
-            bg="#f4f7fb",
-            fg="#64748b",
-            anchor="w",
-            padx=12,
-            pady=2,
-        ).pack(fill=tk.X)
-        status_frame = tk.LabelFrame(
-            parent,
+            status_card,
             text="运行状态（只读，来自 8767 监控服务）",
-            padx=10,
-            pady=8,
-            bg="#ffffff",
-            fg="#1f2937",
-            bd=1,
-            relief=tk.GROOVE,
-        )
-        status_frame.pack(fill=tk.X, padx=10, pady=8)
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=pal["card"],
+            fg=pal["text"],
+        ).pack(anchor="w", pady=(0, 6))
+
+        grid_frame = tk.Frame(status_card, bg=pal["card"])
+        grid_frame.pack(fill=tk.X)
+
         self.monitor_conn_var = tk.StringVar(value="未连接")
         self.run_status_var = tk.StringVar(value="未知")
         self.activity_var = tk.StringVar(value="-")
@@ -579,33 +799,44 @@ class TaskQueueWindow:
             ("更新时间", self.updated_var),
         ]
         for row_index, (label, var) in enumerate(rows):
-            tk.Label(status_frame, text=label, bg="#ffffff", fg="#64748b").grid(
-                row=row_index, column=0, sticky="w", padx=(0, 10), pady=2
-            )
-            tk.Label(status_frame, textvariable=var, bg="#ffffff", fg="#1f2937").grid(
-                row=row_index, column=1, sticky="w"
-            )
+            tk.Label(
+                grid_frame,
+                text=label,
+                bg=pal["card"],
+                fg=pal["muted"],
+                font=("Microsoft YaHei UI", 9),
+            ).grid(row=row_index, column=0, sticky="w", padx=(0, 14), pady=2)
+            tk.Label(
+                grid_frame,
+                textvariable=var,
+                bg=pal["card"],
+                fg=pal["text"],
+                font=("Microsoft YaHei UI", 9, "bold" if row_index <= 1 else "normal"),
+            ).grid(row=row_index, column=1, sticky="w")
 
-        log_frame = tk.LabelFrame(
-            parent,
+        log_card = wt_theme.create_card_frame(parent, padx=8, pady=6)
+        log_card.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
+        log_header = tk.Frame(log_card, bg=pal["card"])
+        log_header.pack(fill=tk.X, padx=2, pady=(0, 4))
+        tk.Label(
+            log_header,
             text="运行日志（只读，最后 300 行）",
-            padx=6,
-            pady=6,
-            bg="#ffffff",
-            fg="#1f2937",
-            bd=1,
-            relief=tk.GROOVE,
-        )
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        text_frame = tk.Frame(log_frame, bg="#111418")
-        text_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=pal["card"],
+            fg=pal["text"],
+        ).pack(side=tk.LEFT)
+
+        text_frame = tk.Frame(log_card, bg=pal["terminal_bg"])
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
         self.monitor_log_text = tk.Text(
             text_frame,
             wrap=tk.WORD,
             state=tk.DISABLED,
-            bg="#111418",
-            fg="#e6edf3",
-            insertbackground="#e6edf3",
+            bg=pal["terminal_bg"],
+            fg=pal["terminal_fg"],
+            insertbackground=pal["terminal_fg"],
             font=("Consolas", 9),
             relief=tk.FLAT,
             padx=8,
@@ -613,14 +844,15 @@ class TaskQueueWindow:
         )
         log_scrollbar = tk.Scrollbar(text_frame, command=self.monitor_log_text.yview, relief=tk.FLAT)
         self.monitor_log_text.config(yscrollcommand=log_scrollbar.set)
-        self.monitor_log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.monitor_log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         for tag, color in (
-            ("info", "#e6edf3"),
-            ("error", "#ff7b72"),
-            ("warning", "#e3b341"),
-            ("success", "#7ee787"),
-            ("system", "#79c0ff"),
+            ("info", "#e2e8f0"),
+            ("error", "#f87171"),
+            ("warning", "#fbbf24"),
+            ("success", "#34d399"),
+            ("system", "#60a5fa"),
         ):
             self.monitor_log_text.tag_configure(tag, foreground=color)
 
@@ -630,48 +862,68 @@ class TaskQueueWindow:
         数据来自 GET /api/flows（版本台账）与 GET /api/tasks（按 flowPath 匹配
         最近使用该流程的任务，含 runtimeConfig 项目参数）。
         """
-        top = tk.Frame(parent, bg="#eaf1fb", padx=10, pady=8)
-        top.pack(fill=tk.X)
+        pal = wt_theme.get_palette()
+        top = tk.Frame(
+            parent,
+            bg=pal["surface"],
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            padx=10,
+            pady=6,
+        )
+        top.pack(fill=tk.X, padx=8, pady=(6, 4))
         self.flows_auto_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
             top,
             text="随队列自动刷新",
             variable=self.flows_auto_var,
-            bg="#eaf1fb",
-            fg="#1f2937",
-            activebackground="#eaf1fb",
-            selectcolor="#ffffff",
+            bg=pal["surface"],
+            fg=pal["text"],
+            activebackground=pal["surface"],
+            selectcolor=pal["surface"],
+            font=("Microsoft YaHei UI", 9),
         ).pack(side=tk.LEFT)
-        tk.Button(
+
+        wt_theme.create_flat_button(
             top,
             text="刷新仓库",
             command=self.refresh_flows,
-            bg="#dbeafe",
-            fg="#1f2937",
-            relief=tk.FLAT,
-            padx=12,
-            pady=4,
-            cursor="hand2",
+            tone="secondary",
+            padx=10,
+            pady=3,
         ).pack(side=tk.LEFT, padx=(10, 0))
-        self.flows_conn_var = tk.StringVar(value="未加载")
-        tk.Label(top, textvariable=self.flows_conn_var, bg="#eaf1fb", fg="#64748b").pack(
-            side=tk.RIGHT
-        )
 
-        main_paned = tk.PanedWindow(parent, orient=tk.HORIZONTAL, bg="#f4f7fb", sashwidth=4)
-        main_paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.flows_conn_var = tk.StringVar(value="未加载")
+        tk.Label(
+            top,
+            textvariable=self.flows_conn_var,
+            bg=pal["surface"],
+            fg=pal["text_secondary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side=tk.RIGHT)
+
+        main_paned = tk.PanedWindow(parent, orient=tk.HORIZONTAL, bg=pal["bg"], sashwidth=4, bd=0)
+        main_paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
 
         # 左：流程列表（名称 / 版本数 / 最新上传人 / 最新时间）
-        left_frame = tk.LabelFrame(
+        left_frame = tk.Frame(
             main_paned,
-            text="流程文件（服务器 flow_packages）",
+            bg=pal["surface"],
+            highlightthickness=1,
+            highlightbackground=pal["border"],
             padx=4,
             pady=4,
-            bg="#ffffff",
-            fg="#1f2937",
-            bd=1,
-            relief=tk.GROOVE,
         )
+        left_top = tk.Frame(left_frame, bg=pal["surface"], pady=2)
+        left_top.pack(fill=tk.X, padx=4, pady=(2, 4))
+        tk.Label(
+            left_top,
+            text="流程文件 (flow_packages)",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            bg=pal["surface"],
+            fg=pal["text"],
+        ).pack(side=tk.LEFT)
+
         columns = ("name", "versions", "lastUser", "lastUploaded")
         self.flows_tree = ttk.Treeview(left_frame, columns=columns, show="headings")
         for col, text, width in (
@@ -682,26 +934,35 @@ class TaskQueueWindow:
         ):
             self.flows_tree.heading(col, text=text)
             self.flows_tree.column(col, width=width, anchor=tk.W)
-        flows_scroll = tk.Scrollbar(left_frame, command=self.flows_tree.yview)
+        flows_scroll = ttk.Scrollbar(left_frame, command=self.flows_tree.yview)
         self.flows_tree.config(yscrollcommand=flows_scroll.set)
-        self.flows_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         flows_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.flows_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.flows_tree.bind("<<TreeviewSelect>>", self._on_flow_selected)
         main_paned.add(left_frame, minsize=360, width=480)
 
         # 右：版本明细 + 关联任务（含项目参数）
-        right_frame = tk.Frame(main_paned, bg="#f4f7fb")
-        versions_frame = tk.LabelFrame(
+        right_frame = tk.Frame(main_paned, bg=pal["bg"])
+        versions_frame = tk.Frame(
             right_frame,
-            text="版本历史（点击查看任务明细）",
-            padx=4,
-            pady=4,
-            bg="#ffffff",
-            fg="#1f2937",
-            bd=1,
-            relief=tk.GROOVE,
+            bg=pal["surface"],
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            padx=6,
+            pady=6,
         )
         versions_frame.pack(fill=tk.BOTH, expand=True)
+
+        v_top = tk.Frame(versions_frame, bg=pal["surface"], pady=2)
+        v_top.pack(fill=tk.X, padx=2, pady=(2, 4))
+        tk.Label(
+            v_top,
+            text="版本历史（点击查看任务明细）",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            bg=pal["surface"],
+            fg=pal["text"],
+        ).pack(side=tk.LEFT)
+
         v_columns = ("version", "user", "uploadedAt", "sha256", "isCurrent")
         self.flow_versions_tree = ttk.Treeview(
             versions_frame, columns=v_columns, show="headings"
@@ -715,66 +976,69 @@ class TaskQueueWindow:
         ):
             self.flow_versions_tree.heading(col, text=text)
             self.flow_versions_tree.column(col, width=width, anchor=tk.W)
-        v_scroll = tk.Scrollbar(versions_frame, command=self.flow_versions_tree.yview)
+        v_scroll = ttk.Scrollbar(versions_frame, command=self.flow_versions_tree.yview)
         self.flow_versions_tree.config(yscrollcommand=v_scroll.set)
-        self.flow_versions_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.flow_versions_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.flow_versions_tree.bind("<<TreeviewSelect>>", self._on_flow_version_selected)
+
         # 回滚操作行：选中历史版本后，一键把该版内容恢复为当前版（当前内容自动归档）
-        rollback_bar = tk.Frame(versions_frame, bg="#ffffff")
-        rollback_bar.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 0))
-        tk.Button(
-            rollback_bar,
-            text="回滚到此版",
-            command=self._rollback_selected_flow_version,
-            bg="#fef3c7",
-            fg="#78350f",
-            relief=tk.FLAT,
-            padx=12,
-            pady=3,
-            cursor="hand2",
-        ).pack(side=tk.RIGHT)
+        rollback_bar = tk.Frame(versions_frame, bg=pal["surface"])
+        rollback_bar.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 2))
         self.rollback_hint_var = tk.StringVar(
             value="提示：选中上方任一历史版本后点「回滚到此版」；当前版回滚无操作（幂等提示）。"
         )
         tk.Label(
             rollback_bar,
             textvariable=self.rollback_hint_var,
-            bg="#ffffff",
-            fg="#64748b",
+            bg=pal["surface"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 9),
             anchor="w",
         ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        wt_theme.create_flat_button(
+            rollback_bar,
+            text="回滚到此版",
+            command=self._rollback_selected_flow_version,
+            tone="warning",
+            padx=12,
+            pady=3,
+        ).pack(side=tk.RIGHT)
         main_paned.add(right_frame, minsize=420, width=560)
 
         # 底部：选中任务的项目参数详情
-        detail_frame = tk.LabelFrame(
-            right_frame,
-            text="关联任务与项目参数（选中上方任一行后自动展示）",
-            padx=6,
-            pady=6,
-            bg="#ffffff",
-            fg="#1f2937",
-            bd=1,
-            relief=tk.GROOVE,
-        )
+        detail_frame = wt_theme.create_card_frame(right_frame, padx=8, pady=6)
         detail_frame.pack(fill=tk.X, pady=(6, 0))
-        self.flow_detail_text = tk.Text(
+
+        tk.Label(
             detail_frame,
+            text="关联任务与项目参数（选中上方任一行后自动展示）",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=pal["card"],
+            fg=pal["text"],
+        ).pack(anchor="w", pady=(0, 4))
+
+        text_container = tk.Frame(detail_frame, bg=pal["terminal_bg"])
+        text_container.pack(fill=tk.X)
+
+        self.flow_detail_text = tk.Text(
+            text_container,
             wrap=tk.WORD,
             state=tk.DISABLED,
-            height=10,
-            bg="#111418",
-            fg="#e6edf3",
-            insertbackground="#e6edf3",
+            height=8,
+            bg=pal["terminal_bg"],
+            fg=pal["terminal_fg"],
+            insertbackground=pal["terminal_fg"],
             font=("Consolas", 9),
             relief=tk.FLAT,
             padx=8,
             pady=8,
         )
-        detail_scroll = tk.Scrollbar(detail_frame, command=self.flow_detail_text.yview)
+        detail_scroll = tk.Scrollbar(text_container, command=self.flow_detail_text.yview, relief=tk.FLAT)
         self.flow_detail_text.config(yscrollcommand=detail_scroll.set)
-        self.flow_detail_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         detail_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.flow_detail_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     def refresh_flows(self):
         """后台拉取服务器流程台账 + 任务列表，供仓库页签展示。"""
@@ -1184,44 +1448,78 @@ class TaskQueueWindow:
             )
         )
 
-    def _render_task_list(self, tasks):
-        selected = self._selected_task_id()
-        self.task_tree.delete(*self.task_tree.get_children())
-        for task in tasks:
-            progress_total = int(task.get("progressTotal") or 0)
-            progress_current = int(task.get("progressCurrent") or 0)
-            progress_percent = float(task.get("progressPercent") or 0.0)
-            if progress_total > 0:
-                progress_text = "{}/{} ({:.0f}%)".format(
-                    progress_current,
-                    progress_total,
-                    progress_percent,
-                )
-            else:
-                progress_text = "-"
-            self.task_tree.insert(
-                "",
-                tk.END,
-                iid=task.get("taskId", ""),
-                values=(
-                    task.get("taskId", ""),
-                    task.get("user", ""),
-                    STATUS_LABELS.get(task.get("status", ""), task.get("status", "")),
-                    task.get("priority", 0),
-                    task.get("scheduledAt") or "-",
-                    "{}/{}".format(
-                        task.get("attempts", 1),
-                        task.get("maxAttempts", 1),
-                    ),
-                    progress_text,
-                    task.get("currentStepName") or task.get("currentStepId") or "-",
-                    task.get("createdAt", ""),
-                    task.get("updatedAt", ""),
-                ),
+    @staticmethod
+    def _task_row_values(task):
+        """任务 → 树行显示值（纯函数，供增量 diff 复用）。"""
+        progress_total = int(task.get("progressTotal") or 0)
+        progress_current = int(task.get("progressCurrent") or 0)
+        progress_percent = float(task.get("progressPercent") or 0.0)
+        if progress_total > 0:
+            progress_text = "{}/{} ({:.0f}%)".format(
+                progress_current,
+                progress_total,
+                progress_percent,
             )
+        else:
+            progress_text = "-"
+        return (
+            task.get("taskId", ""),
+            task.get("user", ""),
+            STATUS_LABELS.get(task.get("status", ""), task.get("status", "")),
+            task.get("priority", 0),
+            task.get("scheduledAt") or "-",
+            "{}/{}".format(
+                task.get("attempts", 1),
+                task.get("maxAttempts", 1),
+            ),
+            progress_text,
+            task.get("currentStepName") or task.get("currentStepId") or "-",
+            task.get("createdAt", ""),
+            task.get("updatedAt", ""),
+        )
+
+    def _render_task_list(self, tasks):
+        # 增量更新：每轮轮询只对"值变化"的行 itemconfigure、新增行 insert、
+        # 消失行 delete，避免 2s 一次全量 delete+insert 造成滚动跳动和整帧重绘
+        # （全量重绘正是拖动滚动条/下拉框时出现尾影的主要放大器）。
+        selected = self._selected_task_id()
+        existing = self.task_tree.get_children()
+        existing_set = set(existing)
+        incoming_ids = []
+        incoming_map = {}
+        for task in tasks:
+            task_id = str(task.get("taskId", ""))
+            if task_id:
+                incoming_ids.append(task_id)
+                incoming_map[task_id] = self._task_row_values(task)
+        # 1) 删掉不再出现的行
+        for iid in existing:
+            if iid not in incoming_map:
+                self.task_tree.delete(iid)
+        # 2) 更新值有变化的行 / 插入新行（保持服务器返回顺序）
+        for iid in incoming_ids:
+            values = incoming_map[iid]
+            if iid in existing_set:
+                try:
+                    # Tk 返回字符串列表，与 _task_row_values 生成的值统一成
+                    # 字符串比较（priority 等数字经 Tk 往返后变成字符串）
+                    shown = [str(v) for v in (self.task_tree.set(iid) or {}).values()]
+                    if shown != [str(v) for v in values]:
+                        self.task_tree.item(iid, values=values)
+                except tk.TclError:
+                    # 行在对比与写入之间被并发删除（理论少见）：补插到末尾
+                    self.task_tree.insert("", tk.END, iid=iid, values=values)
+            else:
+                try:
+                    self.task_tree.insert("", tk.END, iid=iid, values=values)
+                except tk.TclError:
+                    # iid 已存在（过滤条件切换的中间态）：原地更新
+                    self.task_tree.item(iid, values=values)
         if selected and self.task_tree.exists(selected):
-            self.task_tree.selection_set(selected)
-            self.task_tree.see(selected)
+            # 只有当选择真的丢失时才恢复，避免每轮 selection_set 打断用户操作
+            if selected not in self.task_tree.selection():
+                self.task_tree.selection_set(selected)
+                self.task_tree.see(selected)
         # 列表刷新后所选任务状态可能已变化（如 pending→running），同步按钮可用性
         self._update_control_buttons()
 
@@ -1289,6 +1587,126 @@ class TaskQueueWindow:
                 return task
         return None
 
+    def _update_task_detail_card(self, task=None):
+        """更新右侧看板任务卡片信息与进度条（防无头测试属性缺失）。"""
+        if not hasattr(self, "detail_task_id_var"):
+            return
+        if not task:
+            self.detail_task_id_var.set("未选中任务")
+            if hasattr(self, "detail_status_badge") and hasattr(self.detail_status_badge, "set_badge"):
+                self.detail_status_badge.set_badge("未选择", "muted")
+            if hasattr(self, "detail_meta_var"):
+                self.detail_meta_var.set("请在左侧列表中点击选择任务查看详情与操作")
+            if hasattr(self, "detail_step_var"):
+                self.detail_step_var.set("当前步骤：-")
+            if hasattr(self, "detail_progress_var"):
+                self.detail_progress_var.set("步骤进度：-")
+            if hasattr(self, "detail_progressbar"):
+                try:
+                    self.detail_progressbar["value"] = 0
+                    self.detail_progressbar["maximum"] = 100
+                except Exception:
+                    pass
+            return
+
+        task_id = str(task.get("taskId") or "-")
+        self.detail_task_id_var.set("任务: {}".format(task_id))
+        raw_status = str(task.get("status") or "unknown")
+        status_label = STATUS_LABELS.get(raw_status, raw_status)
+        tone_map = {
+            "pending": "warning",
+            "running": "primary",
+            "paused": "warning",
+            "success": "success",
+            "failed": "danger",
+            "canceled": "muted",
+            "terminated": "danger",
+        }
+        status_tone = tone_map.get(raw_status, "muted")
+        if hasattr(self, "detail_status_badge") and hasattr(self.detail_status_badge, "set_badge"):
+            self.detail_status_badge.set_badge(status_label, status_tone)
+
+        user = str(task.get("user") or "-")
+        prio = str(task.get("priority", 0))
+        sched = str(task.get("scheduledAt") or "-")
+        created = str(task.get("createdAt") or "-")
+        if hasattr(self, "detail_meta_var"):
+            self.detail_meta_var.set(
+                "提交人: {}  |  优先级: {}  |  预约执行: {}  |  创建: {}".format(
+                    user, prio, sched, created
+                )
+            )
+
+        step_name = str(task.get("currentStepName") or "-")
+        step_idx = task.get("currentStepIndex")
+        total_steps = task.get("totalSteps")
+
+        if step_idx is not None and total_steps:
+            try:
+                curr_i = int(step_idx)
+                tot_s = int(total_steps)
+                pct = (curr_i / tot_s) * 100.0 if tot_s > 0 else 0
+                if hasattr(self, "detail_step_var"):
+                    self.detail_step_var.set("当前步骤 ({}/{}): {}".format(curr_i, tot_s, step_name))
+                if hasattr(self, "detail_progress_var"):
+                    self.detail_progress_var.set("{}/{} ({:.0f}%)".format(curr_i, tot_s, pct))
+                if hasattr(self, "detail_progressbar"):
+                    self.detail_progressbar["maximum"] = tot_s
+                    self.detail_progressbar["value"] = curr_i
+            except (ValueError, TypeError):
+                if hasattr(self, "detail_step_var"):
+                    self.detail_step_var.set("当前步骤: {}".format(step_name))
+        elif raw_status == "success":
+            if hasattr(self, "detail_step_var"):
+                self.detail_step_var.set("执行完成")
+            if hasattr(self, "detail_progress_var"):
+                self.detail_progress_var.set("100%")
+            if hasattr(self, "detail_progressbar"):
+                try:
+                    self.detail_progressbar["maximum"] = 100
+                    self.detail_progressbar["value"] = 100
+                except Exception:
+                    pass
+        else:
+            if hasattr(self, "detail_step_var"):
+                self.detail_step_var.set("当前步骤: {}".format(step_name))
+            if hasattr(self, "detail_progress_var"):
+                self.detail_progress_var.set("步骤进度: -")
+            if hasattr(self, "detail_progressbar"):
+                try:
+                    self.detail_progressbar["maximum"] = 100
+                    self.detail_progressbar["value"] = 0
+                except Exception:
+                    pass
+
+    def _copy_log_text(self):
+        """复制当前终端控制台日志到系统剪贴板。"""
+        log_text = getattr(self, "log_text", None)
+        if not log_text:
+            return
+        try:
+            content = log_text.get("1.0", tk.END).strip()
+            if not content:
+                return
+            self.window.clipboard_clear()
+            self.window.clipboard_append(content)
+        except Exception:
+            pass
+
+    def _clear_log_text(self):
+        """清空终端控制台已显示日志，并重置增量行数计数器。"""
+        log_text = getattr(self, "log_text", None)
+        if not log_text:
+            return
+        try:
+            prev_state = log_text.cget("state")
+            log_text.config(state=tk.NORMAL)
+            log_text.delete("1.0", tk.END)
+            log_text.config(state=prev_state)
+            self._log_rendered_lines = 0
+        except Exception:
+            pass
+
     def _update_control_buttons(self):
         """按所选任务状态启用/禁用控制按钮，规则与服务端 API 状态机一致：
 
@@ -1299,6 +1717,8 @@ class TaskQueueWindow:
         - 删除：除 running 外（running 须先终止）
         未选中任务时全部禁用。UI 只是提前拦截，服务端仍做权威校验。
         """
+        task = self._selected_task()
+        self._update_task_detail_card(task)
         buttons = getattr(self, "_control_buttons", None)
         if not buttons:
             return
@@ -1344,25 +1764,62 @@ class TaskQueueWindow:
             # 无论成功/失败都释放防并发守卫，供下一轮自动刷新复用
             self._log_fetching = False
 
+    # 日志面板增量渲染参数：行数上限（超过从头 trim），与服务器 /api/logs?tail 的
+    # 300 行对齐再留余量；_render_*_logs 在轮询间只 append 新行，不再每 2s 全量
+    # delete+insert（全量重绘会让日志区在用户拖动/选择时闪一整帧）。
+    _LOG_MAX_LINES = 400
+
     def _render_logs(self, lines):
-        self.log_text.config(state=tk.NORMAL)
-        self.log_text.delete("1.0", tk.END)
-        for line in lines:
-            self.log_text.insert(
-                tk.END, str(line) + "\n", self._classify_line(str(line))
-            )
-        self.log_text.config(state=tk.DISABLED)
-        self.log_text.see(tk.END)
+        self._append_lines_incremental(
+            self.log_text, lines, "_log_rendered_lines"
+        )
 
     def _render_monitor_logs(self, lines):
-        self.monitor_log_text.config(state=tk.NORMAL)
-        self.monitor_log_text.delete("1.0", tk.END)
-        for line in lines:
-            self.monitor_log_text.insert(
-                tk.END, str(line) + "\n", self._classify_line(str(line))
-            )
-        self.monitor_log_text.config(state=tk.DISABLED)
-        self.monitor_log_text.see(tk.END)
+        self._append_lines_incremental(
+            self.monitor_log_text, lines, "_monitor_log_rendered_lines"
+        )
+
+    def _append_lines_incremental(self, widget, lines, state_attr):
+        """把服务器 tail 返回的日志行增量应用到 Text 控件。
+
+        服务器每轮返回"最后 N 行"快照。与上轮已渲染的行数对比：
+          - 行数不变且前段一致（常见稳态）：完全跳过，本轮零绘制；
+          - 行数增加（追加型）：只 insert 末尾新增行；
+          - 行数变少或前段变化（轮转/换任务）：全量重绘兜底。
+        行数超过 _LOG_MAX_LINES 时从头 trim，保证 Text 不无限增长。
+        """
+        text_lines = [str(l) for l in lines]
+
+        def rendered_count():
+            # Tk 语义：内容 "a\nb\n" 的 end-1c 在第 3 行行首，真实行数需减 1；
+            # 空控件（无内容）时 end-1c 为 "1.0"，减 1 会得 0，用 max 保护
+            row = int(widget.index("end-1c").split(".")[0] or 0)
+            return max(0, row - 1)
+
+        need_full = getattr(self, state_attr, None) is None
+        if not need_full and rendered_count() > len(text_lines):
+            # 快照比已渲染行数还短：服务器日志轮转/换任务，全量重绘兜底
+            need_full = True
+        widget.config(state=tk.NORMAL)
+        if need_full:
+            widget.delete("1.0", tk.END)
+            for line in text_lines:
+                widget.insert(tk.END, line + "\n", self._classify_line(line))
+        else:
+            current = rendered_count()
+            if len(text_lines) > current:
+                for line in text_lines[current:]:
+                    widget.insert(tk.END, line + "\n", self._classify_line(line))
+        # 头部 trim：超过上限时删除最早的 (total-上限) 行；
+        # Tk 行号从 1 计，delete("1.0", "N.0") 删的是第 1..N-1 行，
+        # 所以要删到第 (多余行数+1).0 才能恰好剩 _LOG_MAX_LINES 行
+        total = rendered_count()
+        excess = total - self._LOG_MAX_LINES
+        if excess > 0:
+            widget.delete("1.0", "%d.0" % (excess + 1))
+        widget.config(state=tk.DISABLED)
+        widget.see(tk.END)
+        setattr(self, state_attr, len(text_lines))
 
     @staticmethod
     def _classify_line(line):
@@ -2125,6 +2582,12 @@ class TaskQueueWindow:
         self.log_text.insert(
             tk.END, str(line) + "\n", self._classify_line(str(line))
         )
+        # 与增量渲染共用行数上限，防止本地提交提示把 Text 撑到无限大。
+        # Tk 的 end-1c 行号比真实行数大 1（见 _append_lines_incremental 注释）
+        total = max(0, int(self.log_text.index("end-1c").split(".")[0] or 0) - 1)
+        excess = total - self._LOG_MAX_LINES
+        if excess > 0:
+            self.log_text.delete("1.0", "%d.0" % (excess + 1))
         self.log_text.config(state=tk.DISABLED)
         self.log_text.see(tk.END)
 
@@ -2261,8 +2724,9 @@ class TaskQueueWindow:
         )
         scrollbar = tk.Scrollbar(frame, command=text.yview, relief=tk.FLAT)
         text.config(yscrollcommand=scrollbar.set)
-        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # 滚动条先 pack（防止 JSON 长行挤压滚动条）
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         text.config(state=tk.NORMAL)
         text.insert(tk.END, json.dumps(payload, ensure_ascii=False, indent=2))
         text.config(state=tk.DISABLED)

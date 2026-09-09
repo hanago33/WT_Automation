@@ -21,8 +21,11 @@ openpyxl>=3.1.0
 # ── 可选：模板文字识别（build_image_template_library 用到） ──
 # pytesseract>=0.3.10
 
+# ── UI 界面美化（可选推荐，缺失时自动降级到纯标准库现代扁平主题） ──
+ttkbootstrap>=1.10.1
+
 # 说明：
 # 1) pywinauto_recorder.player 不在 PyPI，需从本地 Pywinauto Recorder 安装目录获取
 #    （见 _launch_pywinauto_recorder.cmd）。未安装时不影响 GUI / 半自动采集 / 控件库构建。
 # 2) 原生 Win32 输入钩子（win32_input_hook.py）仅使用标准库 ctypes，无需额外安装。
-# 3) GUI（WT_Flow_Editor / gui.py）与 Agent 后端均为零额外依赖（仅用 Python 标准库）。
+# 3) GUI 与 Agent 后端具备双轨自适应能力：未安装 ttkbootstrap 时自动降级为标准库现代样式，零外部依赖也能稳定运行。

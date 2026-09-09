@@ -429,6 +429,30 @@ def _parse_work_dir(work_dir, project_params=None):
     if turbine_coords:
         rc["turbinePosFilePath"] = turbine_coords[0]
 
+    # ── 空间计算域与边界自动推导（用于 导入并配置元素 与 创建一个新建模）──
+    try:
+        from wt_spatial_domain_calc import parse_coordinate_file as _sp_parse_file, calculate_spatial_domain as _sp_calc_domain
+        _all_spatial_pts = []
+        for _mf in (mast_coords or []):
+            _all_spatial_pts.extend(_sp_parse_file(_mf, category="CFT"))
+        for _tf in (turbine_coords or []):
+            _all_spatial_pts.extend(_sp_parse_file(_tf, category="JWD"))
+        if _all_spatial_pts:
+            _sp_res = _sp_calc_domain(_all_spatial_pts, buffer_m=2500.0)
+            rc["spatialDomain"] = _sp_res
+            _sq = _sp_res["square_domain"]
+            _cir = _sp_res["circles"]
+            rc["domainCenterX"] = f"{_sq['center_x']:.3f}"
+            rc["domainCenterY"] = f"{_sq['center_y']:.3f}"
+            rc["domainRadiusR"] = str(int(round(_cir["inner_radius_R"])))
+            rc["domainOuterRadius"] = f"{_cir['outer_radius_Router']:.1f}"
+            rc["domainNwX"] = f"{_sq['nw_corner']['x']:.1f}"
+            rc["domainNwY"] = f"{_sq['nw_corner']['y']:.1f}"
+            rc["domainSeX"] = f"{_sq['se_corner']['x']:.1f}"
+            rc["domainSeY"] = f"{_sq['se_corner']['y']:.1f}"
+    except Exception:
+        pass
+
     # ── CFT信息.txt 单源（01-测风塔及机位点坐标/CFT信息.txt）──
     cft_info_path = _find_cft_info_file(input_root)
     cft_entries = _parse_cft_info_file(cft_info_path)
@@ -617,7 +641,9 @@ def _parse_work_dir(work_dir, project_params=None):
     calc_keys = ("radius", "cfdHRes", "cfdBuf", "cfdMax", "cfdMin",
                  "cpVersion", "mastId", "wind50", "elevation", "airDensity",
                  "turbineType", "mastName", "latitude", "longitude", "hubHeight",
-                 "utmX", "utmY", "mastImportFilePath", "tiFilePath", "tisFilePath")
+                 "utmX", "utmY", "mastImportFilePath", "tiFilePath", "tisFilePath",
+                 "domainCenterX", "domainCenterY", "domainNwX", "domainNwY",
+                 "domainSeX", "domainSeY", "domainOuterRadius")
     for key in calc_keys:
         value = str(project_params.get(key, "")).strip()
         if value:
@@ -732,6 +758,16 @@ def summarize_project_work_dir(work_dir, project_params=None):
         "mast_ids": list(rc.get("mastIds") or []),
         "masts": list(rc.get("mastEntries") or []),
         "cft_info_file": rc.get("cftInfoPath", ""),
+        # 空间计算域与双圆
+        "spatial_domain": rc.get("spatialDomain"),
+        "domain_center_x": rc.get("domainCenterX", ""),
+        "domain_center_y": rc.get("domainCenterY", ""),
+        "domain_radius_r": rc.get("domainRadiusR", ""),
+        "domain_outer_radius": rc.get("domainOuterRadius", ""),
+        "domain_nw_x": rc.get("domainNwX", ""),
+        "domain_nw_y": rc.get("domainNwY", ""),
+        "domain_se_x": rc.get("domainSeX", ""),
+        "domain_se_y": rc.get("domainSeY", ""),
     }
     # 机位点编号：从机位点坐标文件首列读取（编号规则已由 _collect_name_tokens 过滤）
     turbines = []
@@ -987,6 +1023,21 @@ def build_text_overrides(flow_path, runtime_config, base_overrides=None):
         ("1.220", new_runtime.get("airDensity")),
     ]
     for _old, _new in _meteo_map:
+        _add_meteo_override(_old, _new)
+
+    # ── 空间计算域精确覆盖（创建一个新建模 & 导入并配置元素）──
+    _spatial_map = [
+        # 创建一个新建模 写死值
+        ("43557986.525", new_runtime.get("domainCenterX")),
+        ("5136125.583", new_runtime.get("domainCenterY")),
+        ("5000", new_runtime.get("domainRadiusR")),
+        # 导入并配置元素 绘图元素写死值
+        ("43546603.1", new_runtime.get("domainNwX")),
+        ("5151337.3", new_runtime.get("domainNwY")),
+        ("43559303.1", new_runtime.get("domainSeX")),
+        ("5138637.3", new_runtime.get("domainSeY")),
+    ]
+    for _old, _new in _spatial_map:
         _add_meteo_override(_old, _new)
     #  hub 高度多处复用：若新 hub 与旧 125 相同则无需覆盖，但仍处理 elevation 误用 99 的情况
     #  文件路径精确替换（tim/TI/TISD）

@@ -47,15 +47,20 @@ _LEGEND = [
     ("assert", "#dc2626"),
 ]
 
-_DEFAULT_THEME = {
-    "bg": "#f4f7fb",
-    "card": "#ffffff",
-    "border": "#dce4f0",
-    "text": "#1f2937",
-    "muted": "#64748b",
-    "toolbar": "#eaf1fb",
-    "shadow": "#e4ebf5",
-}
+try:
+    import wt_theme
+    _DEFAULT_THEME = dict(wt_theme.get_palette())
+    _DEFAULT_THEME["shadow"] = "#e2e8f0"
+except Exception:
+    _DEFAULT_THEME = {
+        "bg": "#f8fafc",
+        "card": "#ffffff",
+        "border": "#e2e8f0",
+        "text": "#0f172a",
+        "muted": "#64748b",
+        "toolbar": "#f1f5f9",
+        "shadow": "#e2e8f0",
+    }
 
 
 def round_rectangle(c, x1, y1, x2, y2, r=12, **kw):

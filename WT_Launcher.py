@@ -19,6 +19,7 @@ from datetime import datetime
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import wt_dpi
+import wt_theme
 from flow_excel_io import (
     DEFAULT_FLOW_XLSX,
     audit_flow_excel_roundtrip,
@@ -391,6 +392,14 @@ DEFAULT_PROJECT_PARAMS = {
     "airDensity": "1.220",
     # 风机类型（板块4 新建风机类型）：人工定义
     "turbineType": "",
+    # 空间计算域与绘图范围（若选择项目文件夹，将根据测风塔与机位坐标自动计算并填入，亦支持人工直接编辑）
+    "domainCenterX": "",
+    "domainCenterY": "",
+    "domainNwX": "",
+    "domainNwY": "",
+    "domainSeX": "",
+    "domainSeY": "",
+    "domainOuterRadius": "",
 }
 
 
@@ -1689,8 +1698,9 @@ class ServerMonitorWindow:
         )
         scrollbar = tk.Scrollbar(text_frame, command=self.log_text.yview, relief=tk.FLAT)
         self.log_text.config(yscrollcommand=scrollbar.set)
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # 滚动条先 pack（防止内容长行挤压滚动条，与队列窗口日志区修复保持一致）
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         for tag, color in (
             ("info", "#e6edf3"),
             ("error", "#ff7b72"),
@@ -1797,27 +1807,69 @@ class ServerMonitorWindow:
         self.window.destroy()
 
 
+# ---------------------------------------------------------------------------
+# 统一鼠标滚轮路由（模块级单例）
+# ---------------------------------------------------------------------------
+# 历史问题：Simple 模式滚动区、左侧面板、步骤区各自 bind_all("<MouseWheel>")，
+# 其中两处还用 Enter/Leave 动态 bind/unbind —— unbind_all 会把其他区域的
+# 常驻绑定一并拆掉，导致滚轮时滚错区域或无响应。
+# 统一方案：root 上只绑定一次，按指针所在位置（winfo_containing 向上找最近
+# 注册的 canvas）路由滚动事件；canvas 注册进表即参与路由，不再动态 bind。
+class _WheelRouter:
+    def __init__(self):
+        self._canvases = []      # [tk.Canvas, ...]
+        self._bound = False
+
+    def register(self, canvas):
+        if canvas not in self._canvases:
+            self._canvases.append(canvas)
+
+    def _handle(self, event):
+        delta = 0
+        if getattr(event, "delta", 0):
+            # Windows：delta 为 ±120 的倍数；除法取方向和步数
+            delta = -1 * int(event.delta / 120)
+        elif getattr(event, "num", None) == 4:
+            delta = -1
+        elif getattr(event, "num", None) == 5:
+            delta = 1
+        if not delta:
+            return None
+        try:
+            under = event.widget.winfo_containing(event.x_root, event.y_root)
+        except Exception:
+            under = None
+        node = under
+        while node is not None:
+            for canvas in self._canvases:
+                if node is canvas:
+                    canvas.yview_scroll(delta, "units")
+                    return "break"
+            try:
+                node = node.master
+            except Exception:
+                return None
+        return None
+
+    def bind_root(self, root):
+        if self._bound:
+            return
+        root.bind_all("<MouseWheel>", self._handle, add="+")
+        root.bind_all("<Button-4>", self._handle, add="+")
+        root.bind_all("<Button-5>", self._handle, add="+")
+        self._bound = True
+
+
+_WHEEL_ROUTER = _WheelRouter()
+
+
 class LauncherApp:
     def __init__(self, root):
         self.root = root
         self.root.title("WT 自动化项目总控台")
         wt_dpi.geometry(self.root, 1320, 860)
         self.root.minsize(wt_dpi.scale(1140), wt_dpi.scale(760))
-        self.theme = {
-            "bg": "#f4f7fb",
-            "card": "#ffffff",
-            "toolbar": "#eaf1fb",
-            "border": "#d8e2f0",
-            "text": "#1f2937",
-            "muted": "#64748b",
-            "primary": "#2563eb",
-            "primary_soft": "#dbeafe",
-            "primary_active": "#1d4ed8",
-            "danger": "#dc2626",
-            "danger_active": "#b91c1c",
-            "secondary": "#f8fbff",
-            "secondary_active": "#edf4ff",
-        }
+        self.theme = wt_theme.get_palette()
         self.root.configure(bg=self.theme["bg"])
 
         self.process = None
@@ -1995,23 +2047,40 @@ class LauncherApp:
             bg=self.theme["primary"],
         ).pack(anchor="w", pady=(2, 0))
 
-        # 模式切换按钮（顶部右侧）
-        mode_frame = tk.Frame(header, bg=self.theme["primary"])
+        # 模式切换胶囊（顶部右侧）
+        mode_frame = tk.Frame(
+            header,
+            bg="#1d4ed8",
+            padx=3,
+            pady=3,
+            highlightthickness=1,
+            highlightbackground="#3b82f6",
+        )
         mode_frame.grid(row=0, column=1, sticky="e", padx=(20, 0))
         self.ui_mode_var = tk.StringVar(value=self._initial_ui_mode)
 
         self.btn_simple_mode = tk.Button(
-            mode_frame, text="▸ Simple", font=("Microsoft YaHei UI", 10, "bold"),
+            mode_frame,
+            text="▸ Simple",
+            font=("Microsoft YaHei UI", 10, "bold"),
             command=lambda: self._switch_ui_mode("simple"),
-            relief=tk.FLAT, bd=0, padx=16, pady=6,
+            relief=tk.FLAT,
+            bd=0,
+            padx=14,
+            pady=4,
             cursor="hand2",
         )
-        self.btn_simple_mode.pack(side=tk.LEFT, padx=(0, 4))
+        self.btn_simple_mode.pack(side=tk.LEFT, padx=(0, 2))
 
         self.btn_advanced_mode = tk.Button(
-            mode_frame, text="Advanced ◂", font=("Microsoft YaHei UI", 10, "bold"),
+            mode_frame,
+            text="Advanced ◂",
+            font=("Microsoft YaHei UI", 10, "bold"),
             command=lambda: self._switch_ui_mode("advanced"),
-            relief=tk.FLAT, bd=0, padx=16, pady=6,
+            relief=tk.FLAT,
+            bd=0,
+            padx=14,
+            pady=4,
             cursor="hand2",
         )
         self.btn_advanced_mode.pack(side=tk.LEFT)
@@ -2027,13 +2096,11 @@ class LauncherApp:
         self.main_paned = tk.PanedWindow(
             self.advanced_frame,
             orient=tk.HORIZONTAL,
-            sashwidth=12,
-            sashrelief=tk.RAISED,
-            showhandle=True,
-            handlesize=10,
-            handlepad=6,
+            sashwidth=4,
+            sashrelief=tk.FLAT,
+            showhandle=False,
             bd=0,
-            bg=self.theme["bg"],
+            bg=self.theme["border"],
             sashcursor="sb_h_double_arrow",
             opaqueresize=True,
         )
@@ -2077,10 +2144,10 @@ class LauncherApp:
     # ── 模式切换 ──────────────────────────────────────────────────────────────
 
     def _update_mode_button_styles(self):
-        active_bg = "#3b82f6"
-        inactive_bg = "#1e40af"
-        active_fg = "white"
-        inactive_fg = "#93c5fd"
+        active_bg = "#ffffff"
+        inactive_bg = "#1d4ed8"
+        active_fg = self.theme["primary"]
+        inactive_fg = "#bfdbfe"
         mode = self.ui_mode_var.get()
         self.btn_simple_mode.config(
             bg=active_bg if mode == "simple" else inactive_bg,
@@ -2281,8 +2348,24 @@ class LauncherApp:
         def _on_canvas_configure(event):
             canvas.itemconfigure("inner", width=event.width)
 
+        _scrollregion_scheduled = [False]
+
+        def _schedule_scrollregion_update():
+            # resize 期间 <Configure> 每帧多次触发，bbox("all") 是全量子树遍历；
+            # 合帧到 after_idle：同一帧内多次触发只重算一次
+            if _scrollregion_scheduled[0]:
+                return
+            _scrollregion_scheduled[0] = True
+            def _apply():
+                _scrollregion_scheduled[0] = False
+                try:
+                    canvas.configure(scrollregion=canvas.bbox("all"))
+                except Exception:
+                    pass
+            canvas.after_idle(_apply)
+
         def _on_scrollable_configure(event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
+            _schedule_scrollregion_update()
             self._simple_relayout_cards(scrollable, event_width=event.width)
 
         canvas.bind("<Configure>", _on_canvas_configure)
@@ -2293,22 +2376,10 @@ class LauncherApp:
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         h_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        def _on_mousewheel(event):
-            try:
-                under = canvas.winfo_containing(event.x_root, event.y_root)
-            except Exception:
-                under = None
-            node = under
-            while node is not None:
-                if node is scrollable or node is canvas:
-                    canvas.yview_scroll(-1 * (event.delta // 120), "units")
-                    return
-                try:
-                    node = node.master
-                except Exception:
-                    return
-
-        canvas.bind_all("<MouseWheel>", _on_mousewheel, add="+")
+        # 注册进统一滚轮路由器（root 上一次绑定，按指针位置分发，
+        # 不再各自 bind_all 互相覆盖；详见模块级 _WheelRouter 注释）
+        _WHEEL_ROUTER.register(canvas)
+        _WHEEL_ROUTER.bind_root(self.root)
 
         # ── 板块卡片 ──
         self.simple_section_vars = {}
@@ -2345,9 +2416,8 @@ class LauncherApp:
                      font=("Microsoft YaHei UI", 12, "bold"), bg=theme["card"],
                      fg=theme["text"]).pack(side=tk.LEFT, padx=(4, 0))
 
-            badge_label = tk.Label(
-                title_row, text="", font=("Microsoft YaHei UI", 9, "bold"),
-                bg=theme["card"], fg=theme["muted"], padx=8, pady=1,
+            badge_label = wt_theme.create_badge(
+                title_row, text="未配置", tone="muted"
             )
             badge_label.pack(side=tk.RIGHT)
 
@@ -2394,37 +2464,31 @@ class LauncherApp:
             def _make_run_one(k=key):
                 return lambda: self._simple_run_one(k)
 
-            tk.Button(btn_row, text="导入流程", command=_make_import_flow(),
-                      bg=theme["primary_soft"], fg=theme["primary"],
-                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
-                      activebackground=theme["secondary_active"],
-                      font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(0, 4))
-            tk.Button(btn_row, text="导入Excel", command=_make_import_excel(),
-                      bg=theme["primary_soft"], fg=theme["primary"],
-                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
-                      activebackground=theme["secondary_active"],
-                      font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=4)
-            tk.Button(btn_row, text="编辑流程", command=_make_edit(),
-                      bg=theme["secondary"], fg=theme["text"],
-                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
-                      activebackground=theme["secondary_active"],
-                      font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=4)
+            wt_theme.create_flat_button(
+                btn_row, text="导入流程", command=_make_import_flow(),
+                tone="subtle", font=("Microsoft YaHei UI", 9), padx=8, pady=2
+            ).pack(side=tk.LEFT, padx=(0, 4))
+            wt_theme.create_flat_button(
+                btn_row, text="导入Excel", command=_make_import_excel(),
+                tone="subtle", font=("Microsoft YaHei UI", 9), padx=8, pady=2
+            ).pack(side=tk.LEFT, padx=4)
+            wt_theme.create_flat_button(
+                btn_row, text="编辑流程", command=_make_edit(),
+                tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=2
+            ).pack(side=tk.LEFT, padx=4)
 
-            tk.Button(btn_row2, text="▶ 运行此板块", command=_make_run_one(),
-                      bg="#059669", fg="white",
-                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
-                      activebackground="#047857",
-                      font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(0, 4))
-            tk.Button(btn_row2, text="导出", command=_make_export(),
-                      bg=theme["secondary"], fg=theme["muted"],
-                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
-                      activebackground=theme["secondary_active"],
-                      font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=4)
-            tk.Button(btn_row2, text="清空", command=_make_clear(),
-                      bg=theme["secondary"], fg=theme["danger"],
-                      relief=tk.FLAT, padx=10, pady=3, cursor="hand2",
-                      activebackground=theme["secondary_active"],
-                      font=("Microsoft YaHei UI", 9)).pack(side=tk.RIGHT)
+            wt_theme.create_flat_button(
+                btn_row2, text="▶ 运行此板块", command=_make_run_one(),
+                tone="success", font=("Microsoft YaHei UI", 9, "bold"), padx=10, pady=3
+            ).pack(side=tk.LEFT, padx=(0, 4))
+            wt_theme.create_flat_button(
+                btn_row2, text="导出", command=_make_export(),
+                tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=2
+            ).pack(side=tk.LEFT, padx=4)
+            wt_theme.create_flat_button(
+                btn_row2, text="清空", command=_make_clear(),
+                tone="subtle", font=("Microsoft YaHei UI", 9), padx=8, pady=2
+            ).pack(side=tk.RIGHT)
 
             section_widgets[key] = {
                 "frame": card,
@@ -2479,12 +2543,24 @@ class LauncherApp:
         if not w:
             return
         path = self.simple_section_vars.get(section_key, {}).get("path", "")
+        badge = w.get("badge_label")
+        if not badge:
+            return
         if path and os.path.isfile(path):
-            w["badge_label"].config(text="已配置", fg="#059669")
+            if hasattr(badge, "set_badge"):
+                badge.set_badge("已配置", "success")
+            else:
+                badge.config(text="已配置", fg="#059669")
         elif path:
-            w["badge_label"].config(text="文件缺失", fg=self.theme["danger"])
+            if hasattr(badge, "set_badge"):
+                badge.set_badge("文件缺失", "danger")
+            else:
+                badge.config(text="文件缺失", fg=self.theme["danger"])
         else:
-            w["badge_label"].config(text="未配置", fg="#9ca3af")
+            if hasattr(badge, "set_badge"):
+                badge.set_badge("未配置", "muted")
+            else:
+                badge.config(text="未配置", fg="#9ca3af")
 
     def _simple_refresh_summary(self):
         if not hasattr(self, "simple_summary_var"):
@@ -2768,9 +2844,16 @@ class LauncherApp:
             return
         # 按板块分组，便于辨识：(标题, 字段列表, 说明文字)
         sections = [
-            ("新建工程项目", [
-                ("radius", "计算半径"),
-            ], None),
+            ("空间计算域与建模范围（自动推导 / 支持人工修改）", [
+                ("domainCenterX", "建模中心 X"),
+                ("domainCenterY", "建模中心 Y"),
+                ("radius", "计算域半径 R (m)"),
+                ("domainNwX", "绘图西北角 X"),
+                ("domainNwY", "绘图西北角 Y"),
+                ("domainSeX", "绘图东南角 X"),
+                ("domainSeY", "绘图东南角 Y"),
+                ("domainOuterRadius", "规范外圆半径 (m)"),
+            ], "基于机位点与测风塔坐标自动推导（2500m 缓冲正方形与外接圆），修改后可直接覆盖"),
             ("新建风机类型", [
                 ("turbineType", "风机类型/型号"),
             ], "同时用于发送综合计算的「全文检索」检索并选中风机型号"),
@@ -2789,36 +2872,71 @@ class LauncherApp:
             ], None),
         ]
         dialog = tk.Toplevel(self.root)
-        dialog.title("项目计算参数（人工确认）")
+        dialog.title("项目计算参数（人工确认与空间推导）")
         dialog.transient(self.root)
         dialog.grab_set()
-        wt_dpi.geometry(dialog, 760, 800)
-        dialog.minsize(wt_dpi.scale(640), wt_dpi.scale(620))
+        wt_dpi.geometry(dialog, 780, 840)
+        dialog.minsize(wt_dpi.scale(660), wt_dpi.scale(640))
         dialog.configure(bg=self.theme["bg"])
 
         notebook = ttk.Notebook(dialog)
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 2))
 
-        # ── 标签页 1：人工确认参数（原表单）──
+        # ── 标签页 1：人工确认参数（表单支持滚动）──
         confirm_tab = tk.Frame(notebook, bg=self.theme["bg"])
-        notebook.add(confirm_tab, text="① 人工确认参数")
+        notebook.add(confirm_tab, text="① 人工确认与空间参数")
+
+        tab1_canvas = tk.Canvas(confirm_tab, bg=self.theme["bg"], highlightthickness=0)
+        tab1_scroll = tk.Scrollbar(confirm_tab, orient=tk.VERTICAL, command=tab1_canvas.yview, relief=tk.FLAT)
+        form_wrapper = tk.Frame(tab1_canvas, bg=self.theme["bg"])
+        tab1_win = tab1_canvas.create_window((0, 0), window=form_wrapper, anchor="nw")
+
+        def _on_tab1_form_configure(_e=None):
+            tab1_canvas.configure(scrollregion=tab1_canvas.bbox("all"))
+
+        def _on_tab1_canvas_configure(_e=None):
+            tab1_canvas.itemconfig(tab1_win, width=tab1_canvas.winfo_width())
+
+        form_wrapper.bind("<Configure>", _on_tab1_form_configure)
+        tab1_canvas.bind("<Configure>", _on_tab1_canvas_configure)
+        tab1_canvas.configure(yscrollcommand=tab1_scroll.set)
+        tab1_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        tab1_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
         entries = {}
         tk.Label(
-            confirm_tab, text="项目计算参数", font=("Microsoft YaHei UI", 12, "bold"),
+            form_wrapper, text="项目计算参数", font=("Microsoft YaHei UI", 12, "bold"),
             bg=self.theme["bg"], fg=self.theme["text"],
         ).pack(pady=(10, 2))
         tk.Label(
-            confirm_tab, text="按板块分组；无法从 03-WT输入 自动推断，已预填默认值，可按项目修改后保存",
+            form_wrapper, text="按板块分组；空间计算域自动推导并预填，支持人工直接微调后保存",
             font=("Microsoft YaHei UI", 9), bg=self.theme["bg"], fg=self.theme["muted"],
         ).pack(pady=(0, 6))
-        form = tk.Frame(confirm_tab, bg=self.theme["bg"])
+        form = tk.Frame(form_wrapper, bg=self.theme["bg"])
         form.pack(fill=tk.BOTH, expand=True, padx=18)
 
         # ── 标签页 2：解析参数（加载项目文件夹时自动解析，只读）──
         parsed_tab = tk.Frame(notebook, bg=self.theme["bg"])
         notebook.add(parsed_tab, text="② 解析参数（只读）")
         self._build_parsed_params_view(parsed_tab)
+
         current = dict(getattr(self, "project_params", {}) or {})
+        parsed_info = getattr(self, "parsed_project_info", None) or {}
+        # 自动预填空间计算域字段（若人工未显式覆盖，使用解析值）
+        spatial_defaults = [
+            ("domainCenterX", "domain_center_x"),
+            ("domainCenterY", "domain_center_y"),
+            ("radius", "domain_radius_r"),
+            ("domainNwX", "domain_nw_x"),
+            ("domainNwY", "domain_nw_y"),
+            ("domainSeX", "domain_se_x"),
+            ("domainSeY", "domain_se_y"),
+            ("domainOuterRadius", "domain_outer_radius"),
+        ]
+        for p_key, info_key in spatial_defaults:
+            if not str(current.get(p_key, "")).strip() and parsed_info.get(info_key):
+                current[p_key] = str(parsed_info.get(info_key)).strip()
+
         combo_widgets = {}
         for section_title, field_list, section_note in sections:
             tk.Label(
@@ -2833,7 +2951,7 @@ class LauncherApp:
             for key, label_text in field_list:
                 row = tk.Frame(form, bg=self.theme["bg"])
                 row.pack(fill=tk.X, pady=3)
-                tk.Label(row, text=label_text, width=16, anchor="w",
+                tk.Label(row, text=label_text, width=18, anchor="w",
                          bg=self.theme["bg"], fg=self.theme["text"]).pack(side=tk.LEFT)
                 var = tk.StringVar(value=str(current.get(key, DEFAULT_PROJECT_PARAMS.get(key, ""))))
                 if key == "cpVersion":
@@ -2899,13 +3017,145 @@ class LauncherApp:
             dialog.destroy()
             self._simple_set_status("项目计算参数已保存（{} 项）".format(len(new_params)), "idle")
 
+        def _recalculate_spatial():
+            work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+            if not work_dir or not os.path.isdir(work_dir):
+                messagebox.showinfo("提示", "未找到有效的项目工作目录。")
+                return
+            try:
+                import wt_spatial_domain_calc
+                pts = wt_spatial_domain_calc.parse_points_from_input_dir(os.path.join(work_dir, "03-WT输入"))
+                if not pts:
+                    messagebox.showwarning("提示", "未在项目 03-WT输入 目录下找到机位点或测风塔坐标文件！")
+                    return
+                calc = wt_spatial_domain_calc.calculate_spatial_domain(pts, buffer_m=2500.0)
+                sq = calc["square_domain"]
+                cir = calc["circles"]
+                if "domainCenterX" in entries: entries["domainCenterX"].set(f"{sq['center_x']:.3f}")
+                if "domainCenterY" in entries: entries["domainCenterY"].set(f"{sq['center_y']:.3f}")
+                if "radius" in entries: entries["radius"].set(str(int(round(cir["inner_radius_R"]))))
+                if "domainNwX" in entries: entries["domainNwX"].set(f"{sq['nw_corner']['x']:.1f}")
+                if "domainNwY" in entries: entries["domainNwY"].set(f"{sq['nw_corner']['y']:.1f}")
+                if "domainSeX" in entries: entries["domainSeX"].set(f"{sq['se_corner']['x']:.1f}")
+                if "domainSeY" in entries: entries["domainSeY"].set(f"{sq['se_corner']['y']:.1f}")
+                if "domainOuterRadius" in entries: entries["domainOuterRadius"].set(f"{cir['outer_radius_Router']:.1f}")
+                messagebox.showinfo(
+                    "计算完成",
+                    f"已成功基于 {len(pts)} 个坐标点重新推导空间计算域并更新表单！\n"
+                    f"正方形边长: {sq['side_length']:.1f} m\n"
+                    f"内圆半径 R: {int(round(cir['inner_radius_R']))} m\n"
+                    f"外圆半径 Router: {cir['outer_radius_Router']:.1f} m"
+                )
+            except Exception as e:
+                messagebox.showerror("计算异常", f"重新推导空间域失败：{e}")
+
+        def _inject_to_json():
+            try:
+                import wt_spatial_domain_calc
+                sq_res = {
+                    "square_domain": {
+                        "center_x": float(entries["domainCenterX"].get().strip() or 0.0),
+                        "center_y": float(entries["domainCenterY"].get().strip() or 0.0),
+                        "side_length": 0.0,
+                        "nw_corner": {
+                            "x": float(entries["domainNwX"].get().strip() or 0.0),
+                            "y": float(entries["domainNwY"].get().strip() or 0.0),
+                        },
+                        "se_corner": {
+                            "x": float(entries["domainSeX"].get().strip() or 0.0),
+                            "y": float(entries["domainSeY"].get().strip() or 0.0),
+                        },
+                    },
+                    "circles": {
+                        "inner_radius_R": float(entries["radius"].get().strip() or 0.0),
+                        "outer_radius_Router": float(entries["domainOuterRadius"].get().strip() or 0.0),
+                    }
+                }
+                flow_imp = os.path.join(BASE_DIR, "flow_packages", "flow_definition_导入并配置元素.json")
+                flow_mod = os.path.join(BASE_DIR, "flow_packages", "flow_definition_创建一个新建模.json")
+                res = wt_spatial_domain_calc.inject_into_flow_definitions(
+                    sq_res, flow_imp, flow_mod, in_place=True
+                )
+                messagebox.showinfo(
+                    "写入成功",
+                    "已将当前空间坐标直接写入流程定义 JSON 文件：\n\n" +
+                    f"1. 导入并配置元素.json:\n   西北角: ({entries['domainNwX'].get()}, {entries['domainNwY'].get()})\n   东南角: ({entries['domainSeX'].get()}, {entries['domainSeY'].get()})\n\n" +
+                    f"2. 创建一个新建模.json:\n   中心: ({entries['domainCenterX'].get()}, {entries['domainCenterY'].get()})\n   半径R: {entries['radius'].get()} m"
+                )
+            except Exception as e:
+                messagebox.showerror("写入失败", f"参数写入流程文件失败：{e}")
+
         btn_row = tk.Frame(dialog, bg=self.theme["bg"])
         btn_row.pack(fill=tk.X, pady=12)
-        tk.Button(btn_row, text="保存", command=_save,
-                  bg="#059669", fg="white", relief=tk.FLAT, padx=16, pady=6).pack(side=tk.LEFT, padx=(18, 6))
+        tk.Button(btn_row, text="保存参数", command=_save,
+                  bg="#059669", fg="white", relief=tk.FLAT, padx=16, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=(18, 6))
+        tk.Button(btn_row, text="重新按坐标计算", command=_recalculate_spatial,
+                  bg=self.theme["primary"], fg="white", relief=tk.FLAT, padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_row, text="写入流程文件", command=_inject_to_json,
+                  bg="#2563eb", fg="white", relief=tk.FLAT, padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=6)
         tk.Button(btn_row, text="取消", command=dialog.destroy,
                   bg=self.theme["secondary"], fg=self.theme["text"],
-                  relief=tk.FLAT, padx=16, pady=6).pack(side=tk.LEFT)
+                  relief=tk.FLAT, padx=16, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=6)
+        tk.Button(
+            btn_row, text="生成测风塔配置文件（自动生成 XML）",
+            command=self._generate_mast_config_xml_for_project,
+            bg=self.theme["primary"], fg="white", relief=tk.FLAT, padx=12, pady=6,
+        ).pack(side=tk.RIGHT, padx=(6, 18))
+
+    def _generate_mast_config_xml_for_project(self):
+        """人工触发：为项目内全部测风塔生成/覆盖导入配置文件（<塔>配置信息.xml）。
+
+        供 Simple「参数配置」对话框使用：逐塔调用 wt_mast_config_xml 以固定模板
+        注入轮毂高度 + tim 实际列名生成配置，写回测风塔数据目录。
+        """
+        work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+        if not work_dir or not os.path.isdir(work_dir):
+            messagebox.showinfo("提示", "请先选择项目工作文件夹。")
+            return
+        project_params = dict(getattr(self, "project_params", {}) or {})
+        parsed_list = wt_project_workdir_parser.parse_all_masts(work_dir, project_params)
+        if not parsed_list:
+            messagebox.showwarning(
+                "未生成",
+                "未能解析到测风塔数据。\n请确认项目文件夹包含 CFT信息.txt 与各塔测风数据目录。",
+            )
+            return
+        ok = []
+        skipped = []
+        failed = []
+        for parsed in parsed_list:
+            rc = (parsed or {}).get("runtime_config") or {}
+            mast = str(rc.get("mastName", "") or "").strip() or "(无名塔)"
+            hub = str(rc.get("hubHeight", "") or "").strip()
+            tim = str(rc.get("mastImportFilePath", "") or "").strip()
+            if not hub:
+                skipped.append("{}（缺轮毂高度）".format(mast))
+                continue
+            if not tim or not os.path.isfile(tim):
+                skipped.append("{}（未找到 tim 文件）".format(mast))
+                continue
+            try:
+                xml_path = wt_mast_config_xml.save_mast_config_xml(
+                    tim, mast, hub, output_dir=os.path.dirname(tim)
+                )
+            except Exception as exc:
+                failed.append("{}（异常：{}）".format(mast, exc))
+                continue
+            if xml_path:
+                ok.append(mast)
+                self._append_log("人工生成导入配置 XML: {}".format(xml_path), tag="system")
+            else:
+                failed.append("{}（tim 第 13 行非标准列头，未生成）".format(mast))
+        summary = "成功 {} 塔；跳过 {} 塔；失败 {} 塔".format(len(ok), len(skipped), len(failed))
+        self._append_log("生成测风塔配置文件：{}".format(summary), tag="system")
+        detail = []
+        if ok:
+            detail.append("成功：" + "、".join(ok))
+        if skipped:
+            detail.append("跳过：" + "；".join(skipped))
+        if failed:
+            detail.append("失败：" + "；".join(failed))
+        messagebox.showinfo("生成测风塔配置文件", summary + ("\n\n" + "\n".join(detail) if detail else ""))
 
     def _build_parsed_params_view(self, parent):
         """构建「解析参数」标签页：展示加载项目文件夹时解析出的测风塔/机位点/文件信息（只读）。"""
@@ -2938,8 +3188,20 @@ class LauncherApp:
         content = tk.Frame(canvas, bg=theme["bg"])
         canvas_window = canvas.create_window((0, 0), window=content, anchor="nw")
 
+        _sr_scheduled = [False]
+
         def _on_content_configure(_event=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
+            # 合帧到 after_idle：resize 风暴下 bbox("all") 每帧只算一次
+            if _sr_scheduled[0]:
+                return
+            _sr_scheduled[0] = True
+            def _apply():
+                _sr_scheduled[0] = False
+                try:
+                    canvas.configure(scrollregion=canvas.bbox("all"))
+                except Exception:
+                    pass
+            canvas.after_idle(_apply)
 
         def _on_canvas_configure(_event=None):
             canvas.itemconfig(canvas_window, width=canvas.winfo_width())
@@ -3044,6 +3306,40 @@ class LauncherApp:
         _info_row(files, "地形图", info.get("terrain_file", ""))
         _info_row(files, "输出目录", info.get("output_dir", ""))
         _info_row(files, "输出分目录", "、".join(str(m) for m in (info.get("output_masts") or [])))
+
+        # ── 空间计算域与双圆包络 ──
+        sp = info.get("spatial_domain") or {}
+        sp_frame = _section("空间计算域与双圆包络（Buffer 2500m）")
+        if sp:
+            ext = sp.get("extremes") or {}
+            raw_b = sp.get("raw_bounding_box") or {}
+            sq_d = sp.get("square_domain") or {}
+            cir_d = sp.get("circles") or {}
+            w_pt = ext.get("west_min_x") or {}
+            e_pt = ext.get("east_max_x") or {}
+            s_pt = ext.get("south_min_y") or {}
+            n_pt = ext.get("north_max_y") or {}
+            _info_row(sp_frame, "极西元素 (Min X)", f"{w_pt.get('name', '')} (X={w_pt.get('x', '')}, Y={w_pt.get('y', '')})")
+            _info_row(sp_frame, "极东元素 (Max X)", f"{e_pt.get('name', '')} (X={e_pt.get('x', '')}, Y={e_pt.get('y', '')})")
+            _info_row(sp_frame, "极南元素 (Min Y)", f"{s_pt.get('name', '')} (X={s_pt.get('x', '')}, Y={s_pt.get('y', '')})")
+            _info_row(sp_frame, "极北元素 (Max Y)", f"{n_pt.get('name', '')} (X={n_pt.get('x', '')}, Y={n_pt.get('y', '')})")
+            _info_row(sp_frame, "原始要素跨度", f"东西向 ΔX={raw_b.get('span_x', 0):.2f} m, 南北向 ΔY={raw_b.get('span_y', 0):.2f} m")
+            nw_pt = sq_d.get("nw_corner") or {}
+            se_pt = sq_d.get("se_corner") or {}
+            _info_row(sp_frame, "正方形边长 (L)", f"{sq_d.get('side_length', 0):.2f} m ({sq_d.get('side_length', 0)/1000.0:.3f} km)")
+            _info_row(sp_frame, "中心坐标 (Xc, Yc)", f"({sq_d.get('center_x', '')}, {sq_d.get('center_y', '')})")
+            _info_row(sp_frame, "绘图西北角 (NW)", f"X={nw_pt.get('x', '')}, Y={nw_pt.get('y', '')}")
+            _info_row(sp_frame, "绘图东南角 (SE)", f"X={se_pt.get('x', '')}, Y={se_pt.get('y', '')}")
+            _info_row(sp_frame, "WT 内圆半径 (R)", f"{cir_d.get('inner_radius_R', '')} m (正方形外接圆)")
+            _info_row(sp_frame, "WT 规范外圆半径", f"{cir_d.get('outer_radius_Router', '')} m (风程标准 Router=1.2*√2*R+2000m)")
+        elif info.get("domain_center_x"):
+            _info_row(sp_frame, "中心坐标 (Xc, Yc)", f"({info.get('domain_center_x', '')}, {info.get('domain_center_y', '')})")
+            _info_row(sp_frame, "绘图西北角 (NW)", f"X={info.get('domain_nw_x', '')}, Y={info.get('domain_nw_y', '')}")
+            _info_row(sp_frame, "绘图东南角 (SE)", f"X={info.get('domain_se_x', '')}, Y={info.get('domain_se_y', '')}")
+            _info_row(sp_frame, "WT 内圆半径 (R)", f"{info.get('domain_radius_r', '')} m")
+            _info_row(sp_frame, "WT 规范外圆半径", f"{info.get('domain_outer_radius', '')} m")
+        else:
+            _info_row(sp_frame, "状态", "未解析到机位点或测风塔坐标")
 
     def _simple_add_cp_version(self, target_var=None):
         """添加新的 Cp 版本到下拉选项列表（持久化到 launcher_state）。"""
@@ -4049,45 +4345,35 @@ class LauncherApp:
 
 
     def _configure_styles(self):
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure("Modern.TCombobox", padding=6)
-        style.configure("RunReport.Treeview", rowheight=30)
-        style.configure("RunReport.Treeview.Heading", padding=(6, 8))
+        wt_theme.get_theme_manager().init_theme(self.root, "flatly")
 
     def _create_secondary_button(self, parent, text, command):
-        return tk.Button(
+        return wt_theme.create_flat_button(
             parent,
             text=text,
             command=command,
-            bg=self.theme["secondary"],
-            activebackground=self.theme["secondary_active"],
-            fg=self.theme["text"],
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
+            tone="secondary",
             padx=10,
-            pady=6,
-            font=("Microsoft YaHei UI", 10),
+            pady=5,
+            font=("Microsoft YaHei UI", 9),
         )
 
     def _build_tool_section(self, parent, title, buttons):
         frame = tk.LabelFrame(
             parent,
-            text=title,
+            text="  {}  ".format(title),
             padx=10,
-            pady=10,
+            pady=8,
             bg=self.theme["card"],
-            fg=self.theme["text"],
+            fg=self.theme["primary"],
             bd=1,
-            relief=tk.GROOVE,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=0,
         )
         frame.pack(fill=tk.X, pady=(8, 0))
         for text, handler in buttons:
-            self._create_secondary_button(frame, text, handler).pack(fill=tk.X, pady=4)
+            self._create_secondary_button(frame, text, handler).pack(fill=tk.X, pady=3)
         return frame
 
     def _build_left_panel(self, parent):
@@ -4097,17 +4383,10 @@ class LauncherApp:
         canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0, bg=self.theme["card"])
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        scrollbar = tk.Scrollbar(
+        scrollbar = wt_theme.create_modern_scrollbar(
             outer,
             orient=tk.VERTICAL,
             command=canvas.yview,
-            relief=tk.FLAT,
-            width=14,
-            bg=self.theme["secondary"],
-            activebackground=self.theme["secondary_active"],
-            troughcolor=self.theme.get("toolbar", self.theme["bg"]),
-            highlightthickness=0,
-            bd=0,
         )
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.configure(yscrollcommand=scrollbar.set)
@@ -4115,8 +4394,20 @@ class LauncherApp:
         content = tk.Frame(canvas, bg=self.theme["card"])
         canvas_window = canvas.create_window((0, 0), window=content, anchor="nw")
 
+        _sr_scheduled = [False]
+
+        def _apply_scrollregion():
+            _sr_scheduled[0] = False
+            try:
+                canvas.configure(scrollregion=canvas.bbox("all"))
+            except Exception:
+                pass
+
         def on_content_configure(_event=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
+            # 合帧到 after_idle：resize 风暴下 bbox("all") 每帧只算一次
+            if not _sr_scheduled[0]:
+                _sr_scheduled[0] = True
+                canvas.after_idle(_apply_scrollregion)
             canvas.itemconfig(canvas_window, width=canvas.winfo_width())
 
         def on_canvas_configure(_event=None):
@@ -4125,31 +4416,10 @@ class LauncherApp:
         content.bind("<Configure>", on_content_configure)
         canvas.bind("<Configure>", on_canvas_configure)
 
-        def on_left_mousewheel(event):
-            delta = 0
-            if getattr(event, "delta", 0):
-                delta = -1 * int(event.delta / 120)
-            elif getattr(event, "num", None) == 4:
-                delta = -1
-            elif getattr(event, "num", None) == 5:
-                delta = 1
-            if delta:
-                canvas.yview_scroll(delta, "units")
-            return "break"
-
-        def bind_left_mousewheel(_event=None):
-            canvas.bind_all("<MouseWheel>", on_left_mousewheel)
-            canvas.bind_all("<Button-4>", on_left_mousewheel)
-            canvas.bind_all("<Button-5>", on_left_mousewheel)
-
-        def unbind_left_mousewheel(_event=None):
-            canvas.unbind_all("<MouseWheel>")
-            canvas.unbind_all("<Button-4>")
-            canvas.unbind_all("<Button-5>")
-
-        for widget in (outer, canvas, content):
-            widget.bind("<Enter>", bind_left_mousewheel)
-            widget.bind("<Leave>", unbind_left_mousewheel)
+        # 注册进统一滚轮路由器：不再用 Enter/Leave 动态 bind_all/unbind_all
+        # （unbind_all 会连带拆掉其他区域的滚轮绑定，详见 _WheelRouter 注释）
+        _WHEEL_ROUTER.register(canvas)
+        _WHEEL_ROUTER.bind_root(self.root)
 
         tk.Label(
             content,
@@ -4400,38 +4670,31 @@ class LauncherApp:
         self.steps_inner = tk.Frame(self.steps_canvas, bg="#fbfdff")
         self.steps_canvas_window = self.steps_canvas.create_window((0, 0), window=self.steps_inner, anchor="nw")
 
+        _steps_sr_scheduled = [False]
+
         def on_steps_inner_configure(_event=None):
-            self.steps_canvas.configure(scrollregion=self.steps_canvas.bbox("all"))
+            # 合帧到 after_idle：resize 风暴下 bbox("all") 每帧只算一次
+            if _steps_sr_scheduled[0]:
+                return
+            _steps_sr_scheduled[0] = True
+            def _apply():
+                _steps_sr_scheduled[0] = False
+                try:
+                    self.steps_canvas.configure(scrollregion=self.steps_canvas.bbox("all"))
+                except Exception:
+                    pass
+            self.steps_canvas.after_idle(_apply)
 
         def on_steps_canvas_configure(_event=None):
             self.steps_canvas.itemconfig(self.steps_canvas_window, width=self.steps_canvas.winfo_width())
 
-        def on_steps_mousewheel(event):
-            delta = 0
-            if getattr(event, "delta", 0):
-                delta = -1 * int(event.delta / 120)
-            elif getattr(event, "num", None) == 4:
-                delta = -1
-            elif getattr(event, "num", None) == 5:
-                delta = 1
-            if delta:
-                self.steps_canvas.yview_scroll(delta, "units")
-            return "break"
-
-        def bind_steps_mousewheel(_event=None):
-            self.steps_canvas.bind_all("<MouseWheel>", on_steps_mousewheel)
-            self.steps_canvas.bind_all("<Button-4>", on_steps_mousewheel)
-            self.steps_canvas.bind_all("<Button-5>", on_steps_mousewheel)
-
-        def unbind_steps_mousewheel(_event=None):
-            self.steps_canvas.unbind_all("<MouseWheel>")
-            self.steps_canvas.unbind_all("<Button-4>")
-            self.steps_canvas.unbind_all("<Button-5>")
+        # 注册进统一滚轮路由器：不再用 Enter/Leave 动态 bind_all/unbind_all
+        # （unbind_all 会连带拆掉其他区域的滚轮绑定，详见 _WheelRouter 注释）
+        _WHEEL_ROUTER.register(self.steps_canvas)
+        _WHEEL_ROUTER.bind_root(self.root)
 
         self.steps_inner.bind("<Configure>", on_steps_inner_configure)
         self.steps_canvas.bind("<Configure>", on_steps_canvas_configure)
-        self.steps_canvas.bind("<Enter>", bind_steps_mousewheel)
-        self.steps_canvas.bind("<Leave>", unbind_steps_mousewheel)
         tk.Label(
             test_frame,
             textvariable=self.step_scroll_hint_var,
@@ -4819,34 +5082,36 @@ class LauncherApp:
             wrap=tk.WORD,
             state=tk.DISABLED,
             font=("Consolas", 10),
-            bg="#111111",
-            fg="#f5f5f5",
-            insertbackground="#f5f5f5",
+            bg=self.theme["terminal_bg"],
+            fg=self.theme["terminal_fg"],
+            insertbackground=self.theme["terminal_fg"],
             relief=tk.FLAT,
-            padx=10,
-            pady=10,
+            padx=12,
+            pady=12,
         )
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        scrollbar = tk.Scrollbar(text_frame, command=self.log_text.yview, relief=tk.FLAT)
+        scrollbar = wt_theme.create_modern_scrollbar(text_frame, command=self.log_text.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=scrollbar.set)
 
-        self.log_text.tag_configure("info", foreground="#f5f5f5")
-        self.log_text.tag_configure("error", foreground="#ff7b72")
-        self.log_text.tag_configure("success", foreground="#7ee787")
-        self.log_text.tag_configure("system", foreground="#79c0ff")
-        self.log_text.tag_configure("warning", foreground="#e3b341")
+        self.log_text.tag_configure("info", foreground="#f8fafc")
+        self.log_text.tag_configure("error", foreground="#f87171")
+        self.log_text.tag_configure("success", foreground="#4ade80")
+        self.log_text.tag_configure("system", foreground="#60a5fa")
+        self.log_text.tag_configure("warning", foreground="#fbbf24")
 
         summary_frame = tk.LabelFrame(
             report_tab,
-            text="最近一次运行摘要",
-            padx=10,
+            text="  最近一次运行摘要  ",
+            padx=12,
             pady=10,
             bg=self.theme["card"],
-            fg=self.theme["text"],
+            fg=self.theme["primary"],
             bd=1,
-            relief=tk.GROOVE,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=0,
         )
         summary_frame.pack(fill=tk.X, pady=(0, 10))
         tk.Label(
@@ -4869,28 +5134,32 @@ class LauncherApp:
             fg=self.theme["muted"],
         ).pack(fill=tk.X, anchor="w", pady=(6, 0))
 
-        report_split = tk.PanedWindow(report_tab, orient=tk.VERTICAL, sashrelief=tk.FLAT, bg=self.theme["card"], bd=0)
+        report_split = tk.PanedWindow(report_tab, orient=tk.VERTICAL, sashrelief=tk.FLAT, sashwidth=4, bg=self.theme["border"], bd=0)
         report_split.pack(fill=tk.BOTH, expand=True)
 
         report_list_frame = tk.LabelFrame(
             report_split,
-            text="步骤结果",
+            text="  步骤结果  ",
             padx=8,
             pady=8,
             bg=self.theme["card"],
-            fg=self.theme["text"],
+            fg=self.theme["primary"],
             bd=1,
-            relief=tk.GROOVE,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=0,
         )
         report_detail_frame = tk.LabelFrame(
             report_split,
-            text="步骤详情",
+            text="  步骤详情  ",
             padx=8,
             pady=8,
             bg=self.theme["card"],
-            fg=self.theme["text"],
+            fg=self.theme["primary"],
             bd=1,
-            relief=tk.GROOVE,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=0,
         )
         report_split.add(report_list_frame, stretch="always")
         report_split.add(report_detail_frame, stretch="always")
@@ -4916,13 +5185,13 @@ class LauncherApp:
         self.run_report_tree.column("strategy", width=260, minwidth=160, stretch=False, anchor="w")
         self.run_report_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.run_report_tree.bind("<<TreeviewSelect>>", self._on_run_report_step_select)
-        self.run_report_tree.tag_configure("success", foreground="#15803d")
+        self.run_report_tree.tag_configure("success", foreground="#059669")
         self.run_report_tree.tag_configure("failed", foreground="#dc2626")
-        self.run_report_tree.tag_configure("skipped", foreground="#b45309")
+        self.run_report_tree.tag_configure("skipped", foreground="#d97706")
 
-        report_tree_scrollbar = tk.Scrollbar(report_tree_wrap, command=self.run_report_tree.yview, relief=tk.FLAT)
+        report_tree_scrollbar = wt_theme.create_modern_scrollbar(report_tree_wrap, orient=tk.VERTICAL, command=self.run_report_tree.yview)
         report_tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        report_tree_h_scrollbar = tk.Scrollbar(report_list_frame, orient=tk.HORIZONTAL, command=self.run_report_tree.xview, relief=tk.FLAT)
+        report_tree_h_scrollbar = wt_theme.create_modern_scrollbar(report_list_frame, orient=tk.HORIZONTAL, command=self.run_report_tree.xview)
         report_tree_h_scrollbar.pack(fill=tk.X, pady=(6, 0))
         self.run_report_tree.config(yscrollcommand=report_tree_scrollbar.set, xscrollcommand=report_tree_h_scrollbar.set)
 
@@ -4931,7 +5200,7 @@ class LauncherApp:
             wrap=tk.WORD,
             state=tk.DISABLED,
             font=("Consolas", 10),
-            bg="#fbfdff",
+            bg=self.theme["panel_soft"],
             fg=self.theme["text"],
             relief=tk.FLAT,
             padx=10,
