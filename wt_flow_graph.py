@@ -133,11 +133,13 @@ class FlowGraphWindow(tk.Toplevel):
         self.theme.update(theme or {})
         self.reverse_map = {v: k for k, v in SECTION_FLOW_MAP.items()}
         self.title("流程链路可视化（只读）")
-        self.geometry("700x780")
+        self.geometry("760x840")
+        self.minsize(580, 500)
         self.configure(bg=self.theme["bg"])
 
         # ── 顶部：板块选择 ──
-        top = tk.Frame(self, bg=self.theme["toolbar"], padx=14, pady=8)
+        top = tk.Frame(self, bg=self.theme["toolbar"], padx=14, pady=10,
+                       highlightthickness=1, highlightbackground=self.theme["border"])
         top.pack(fill=tk.X)
         tk.Label(top, text="板块链路：", bg=self.theme["toolbar"], fg=self.theme["text"],
                  font=("Microsoft YaHei UI", 9, "bold")).pack(side=tk.LEFT, padx=(4, 6))
@@ -156,20 +158,29 @@ class FlowGraphWindow(tk.Toplevel):
                                     fg=self.theme.get("primary", "#2563eb"),
                                     font=("Microsoft YaHei UI", 10, "bold"))
         self.title_label.pack(side=tk.LEFT, padx=(12, 0))
+
+        self.count_badge = tk.Label(
+            top, text="0 步", bg=self.theme.get("primary_soft", "#dbeafe"),
+            fg=self.theme.get("primary_text", "#1e40af"),
+            font=("Microsoft YaHei UI", 9, "bold"), padx=8, pady=2,
+        )
+        self.count_badge.pack(side=tk.LEFT, padx=(8, 0))
+
         tk.Label(top, text="点击节点查看详情 · 滚轮滚动视口", bg=self.theme["toolbar"],
                  fg=self.theme["muted"], font=("Microsoft YaHei UI", 9)
                  ).pack(side=tk.RIGHT, padx=(0, 12))
 
         # ── 动作图例 ──
         legend = tk.Frame(self, bg=self.theme["bg"])
-        legend.pack(fill=tk.X, padx=16, pady=(8, 2))
+        legend.pack(fill=tk.X, padx=16, pady=(8, 4))
         tk.Label(legend, text="动作图例", bg=self.theme["bg"], fg=self.theme["muted"],
-                 font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(0, 6))
+                 font=("Microsoft YaHei UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
         for act, col in _LEGEND:
-            sw = tk.Label(legend, bg=col, width=2, height=1, relief=tk.FLAT)
-            sw.pack(side=tk.LEFT, padx=(0, 2))
+            sw = tk.Canvas(legend, width=12, height=12, bg=self.theme["bg"], highlightthickness=0)
+            sw.create_oval(1, 1, 11, 11, fill=col, outline=col)
+            sw.pack(side=tk.LEFT, padx=(0, 3))
             tk.Label(legend, text=act, bg=self.theme["bg"], fg=self.theme["muted"],
-                 font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(0, 9))
+                 font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(0, 10))
 
         # ── 画布 + 滚动条 ──
         self.canvas = tk.Canvas(self, bg=self.theme["bg"], highlightthickness=0)
@@ -194,9 +205,13 @@ class FlowGraphWindow(tk.Toplevel):
             messagebox.showerror("错误", "无法加载板块流程：%s" % cn_name)
             self.nodes = []
             self.title_label.configure(text="")
+            if hasattr(self, "count_badge"):
+                self.count_badge.configure(text="0 步")
         else:
             self.nodes = info["nodes"]
             self.title_label.configure(text=info["title"])
+            if hasattr(self, "count_badge"):
+                self.count_badge.configure(text=f"共 {len(self.nodes)} 步")
             self.title("流程链路可视化 - %s" % info["title"])
         self._draw()
 
@@ -209,17 +224,17 @@ class FlowGraphWindow(tk.Toplevel):
             self.canvas.itemconfig(box, outline=color, width=3)
             self.canvas.configure(cursor="hand2")
         def leave(e):
-            self.canvas.itemconfig(box, outline=self.theme["border"], width=2)
+            self.canvas.itemconfig(box, outline=self.theme.get("border_dark", "#cbd5e1"), width=1.5)
             self.canvas.configure(cursor="")
         return enter, leave
 
     # ---------- 绘制 ----------
     def _pill(self, c, x, y, text, color):
-        w = max(34, len(text) * 7 + 16)
-        h = 18
+        w = max(40, len(text) * 7 + 16)
+        h = 20
         round_rectangle(c, x, y, x + w, y + h, 9, fill=color, outline=color)
         c.create_text(x + w / 2.0, y + h / 2.0, text=text, fill="#ffffff",
-                      font=("Microsoft YaHei UI", 9, "bold"))
+                      font=("Microsoft YaHei UI", 8, "bold"))
         return w
 
     def _draw(self):
@@ -231,10 +246,13 @@ class FlowGraphWindow(tk.Toplevel):
             self.canvas.configure(scrollregion=(0, 0, 1, 1))
             return
         w = self.canvas.winfo_width()
-        width = w if w > 1 else 680
-        node_w, node_h, gap = 500, 100, 32
-        x = max(24, (width - node_w) // 2)
-        y = 24
+        width = w if w > 1 else 740
+        # 响应式卡片宽度：随视口自适应拉伸，长文本排版更舒适
+        node_w = min(740, max(460, width - 64))
+        node_h = 108
+        gap = 26
+        x = max(20, (width - node_w) // 2)
+        y = 20
         prev_bottom = None
         for n in self.nodes:
             if prev_bottom is not None:
@@ -244,38 +262,78 @@ class FlowGraphWindow(tk.Toplevel):
                     fill="#94a3b8", width=2, arrow=tk.LAST, arrowshape=(8, 10, 5),
                 )
             color = _ACTION_COLORS.get(n["action"], _ACTION_COLORS["default"])
-            # 阴影
-            round_rectangle(self.canvas, x + 2, y + 4, x + node_w + 2, y + node_h + 4, 12,
+            # 阴影层
+            round_rectangle(self.canvas, x + 2, y + 3, x + node_w + 2, y + node_h + 3, 10,
                             fill=self.theme.get("shadow", "#e2e8f0"), outline=self.theme.get("shadow", "#e2e8f0"))
-            # 卡片
-            box = round_rectangle(self.canvas, x, y, x + node_w, y + node_h, 12,
-                                  fill=self.theme.get("card", "#ffffff"), outline=self.theme.get("border", "#e2e8f0"), width=1.5)
-            # 序号 badge（垂直居中）
-            cx, cy = x + 36, y + node_h / 2.0
+            # 卡片主体
+            box = round_rectangle(self.canvas, x, y, x + node_w, y + node_h, 10,
+                                  fill=self.theme.get("card", "#ffffff"), outline=self.theme.get("border_dark", "#cbd5e1"), width=1.5)
+            # 左侧圆形序号 badge（垂直居中）
+            cx, cy = x + 34, y + node_h / 2.0
             self.canvas.create_oval(cx - 16, cy - 16, cx + 16, cy + 16,
                                     fill=color, outline=color)
             self.canvas.create_text(cx, cy, text=str(n["index"]), fill="white",
-                                    font=("Microsoft YaHei UI", 12, "bold"))
-            # 标题
-            disp = n["name"]
-            if len(disp) > 36:
-                disp = disp[:36] + "…"
-            self.canvas.create_text(x + 64, y + 14, anchor="nw", text=disp,
-                                    fill=self.theme.get("text", "#0f172a"),
-                                    font=("Microsoft YaHei UI", 10, "bold"),
-                                    width=node_w - 78)
-            # 动作胶囊（单独一行）
-            self._pill(self.canvas, x + 64, y + 46, n["action"] or "—", color)
-            # 控件名（独占一行，可换行，放宽截断）
+                                    font=("Microsoft YaHei UI", 11, "bold"))
+
+            content_x = x + 62
+            avail_w = node_w - 76
+
+            # Row 1 (y + 13)：动作类型胶囊与步骤名称并排并列，杜绝层叠遮挡
+            act_text = (n["action"] or "—").upper()
+            pill_w = self._pill(self.canvas, content_x, y + 13, act_text, color)
+            disp = n["name"] or ""
+            name_avail = max(100, avail_w - pill_w - 10)
+            if len(disp) > 52:
+                disp = disp[:50] + "…"
+            self.canvas.create_text(
+                content_x + pill_w + 8, y + 14, anchor="nw", text=disp,
+                fill=self.theme.get("text", "#0f172a"),
+                font=("Microsoft YaHei UI", 10, "bold"),
+                width=name_avail,
+            )
+
+            # Row 2 (y + 45)：目标控件独占整行，文字不再出界截断
             ctrl = n["control"] or ""
-            if len(ctrl) > 46:
-                ctrl = ctrl[:46] + "…"
             if ctrl:
+                if len(ctrl) > 65:
+                    ctrl = ctrl[:63] + "…"
                 self.canvas.create_text(
-                    x + 64, y + 72, anchor="nw", text=f"🎯 {ctrl}",
-                    fill=self.theme.get("muted", "#64748b"), font=("Microsoft YaHei UI", 9),
-                    width=node_w - 78,
+                    content_x, y + 45, anchor="nw", text=f"🎯 控件：{ctrl}",
+                    fill=self.theme.get("text_secondary", "#334155"), font=("Microsoft YaHei UI", 9),
+                    width=avail_w,
                 )
+            else:
+                desc = n.get("description") or ""
+                if desc:
+                    if len(desc) > 65:
+                        desc = desc[:63] + "…"
+                    self.canvas.create_text(
+                        content_x, y + 45, anchor="nw", text=f"ℹ️ {desc}",
+                        fill=self.theme.get("muted", "#64748b"), font=("Microsoft YaHei UI", 9),
+                        width=avail_w,
+                    )
+
+            # Row 3 (y + 75)：等待条件或备注
+            sub_info = ""
+            cw = n.get("continueWhen")
+            notes = n.get("notes")
+            if cw:
+                cw_str = json.dumps(cw, ensure_ascii=False) if isinstance(cw, (dict, list)) else str(cw)
+                sub_info = f"⏱ 等待：{cw_str}"
+            elif notes:
+                sub_info = f"📝 备注：{notes}"
+            elif n.get("description") and ctrl:
+                sub_info = f"ℹ️ {n.get('description')}"
+
+            if sub_info:
+                if len(sub_info) > 70:
+                    sub_info = sub_info[:68] + "…"
+                self.canvas.create_text(
+                    content_x, y + 75, anchor="nw", text=sub_info,
+                    fill=self.theme.get("muted", "#64748b"), font=("Microsoft YaHei UI", 8),
+                    width=avail_w,
+                )
+
             # 交互
             tag = "node_%d" % n["index"]
             self.canvas.addtag_withtag(tag, box)
@@ -286,13 +344,13 @@ class FlowGraphWindow(tk.Toplevel):
             self.canvas.tag_bind(tag, "<Leave>", leave)
             prev_bottom = y + node_h
             y += node_h + gap
-        self.canvas.configure(scrollregion=(0, 0, width, max(y, 1)))
+        self.canvas.configure(scrollregion=(0, 0, width, max(y + 20, 1)))
 
     # ---------- 详情 ----------
     def _open_detail(self, node):
         win = tk.Toplevel(self)
         win.title("步骤 #%d 详情" % node["index"])
-        win.geometry("560x620")
+        win.geometry("600x660")
         win.configure(bg=self.theme["bg"])
         color = _ACTION_COLORS.get(node["action"], _ACTION_COLORS["default"])
 
@@ -300,8 +358,8 @@ class FlowGraphWindow(tk.Toplevel):
         header = tk.Frame(win, bg=color)
         header.pack(fill=tk.X)
         tk.Label(header, text="%d. %s" % (node["index"], node["name"]),
-                 bg=color, fg="white", font=("Microsoft YaHei UI", 13, "bold"),
-                 padx=16, pady=12, anchor="w").pack(side=tk.LEFT)
+                 bg=color, fg="white", font=("Microsoft YaHei UI", 12, "bold"),
+                 padx=16, pady=12, anchor="w", wraplength=540, justify="left").pack(side=tk.LEFT)
 
         # 主体（可滚动）
         body = tk.Frame(win, bg=self.theme["bg"])
@@ -320,20 +378,20 @@ class FlowGraphWindow(tk.Toplevel):
 
         def field(label, value, color=None, bold=False, indent=0):
             fr = tk.Frame(inner, bg=self.theme["bg"])
-            fr.pack(fill=tk.X, pady=7, padx=(indent * 10, 0))
+            fr.pack(fill=tk.X, pady=6, padx=(indent * 10, 0))
             tk.Label(fr, text=label, width=14, anchor="ne", bg=self.theme["bg"],
                      fg=self.theme["muted"],
-                     font=("Microsoft YaHei UI", 10)).pack(side=tk.LEFT)
+                     font=("Microsoft YaHei UI", 9, "bold")).pack(side=tk.LEFT)
             if isinstance(value, (dict, list)):
                 value = json.dumps(value, ensure_ascii=False)
             if not isinstance(value, str):
                 value = str(value)
-            if len(value) > 800:
-                value = value[:800] + " …"
+            if len(value) > 1000:
+                value = value[:1000] + " …"
             tk.Label(fr, text=value, anchor="nw", bg=self.theme["bg"],
                      fg=color or self.theme["text"],
-                     font=("Microsoft YaHei UI", 10, "bold" if bold else "normal"),
-                     wraplength=420, justify="left"
+                     font=("Microsoft YaHei UI", 9, "bold" if bold else "normal"),
+                     wraplength=460, justify="left"
                      ).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         field("ID", node["id"])

@@ -2277,12 +2277,29 @@ class LauncherApp:
         )
         self.btn_task_monitor.pack(side=tk.RIGHT, padx=(4, 0))
 
-        self.btn_simple_remote = tk.Checkbutton(
-            toolbar_top, text="远程模式", variable=self.simple_remote_var,
-            bg=theme["toolbar"], fg=theme["text"],
-            activebackground=theme["toolbar"], activeforeground=theme["text"],
-            selectcolor=theme["toolbar"], relief=tk.FLAT, cursor="hand2",
-            highlightthickness=0, font=("Microsoft YaHei UI", 9),
+        def _toggle_simple_remote_mode():
+            new_val = not self.simple_remote_var.get()
+            self.simple_remote_var.set(new_val)
+            try:
+                self._simple_save_state()
+            except Exception:
+                pass
+
+        self.btn_simple_remote = tk.Button(
+            toolbar_top,
+            text="💻 本地模式 (点击切远程)",
+            command=_toggle_simple_remote_mode,
+            bg=theme["secondary"],
+            fg=theme["text"],
+            relief=tk.FLAT,
+            padx=14,
+            pady=4,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            activebackground=theme["secondary_active"],
+            activeforeground=theme["text"],
+            highlightthickness=1,
+            highlightbackground=theme.get("border_dark", "#cbd5e1"),
         )
         self.btn_simple_remote.pack(side=tk.RIGHT, padx=(8, 4))
 
@@ -3447,26 +3464,42 @@ class LauncherApp:
         self._simple_set_status("已添加风机型号：{}".format(value), "idle")
 
     def _on_simple_remote_mode_changed(self, *args):
-        """当「远程模式」勾选状态变化时，动态更新 Simple 主运行按钮文案与主题，并消除冗余按钮。"""
-        if not hasattr(self, "btn_simple_run"):
-            return
+        """当「远程模式」状态变化时，动态更新 Simple 远程切换按钮、主运行按钮文案与主题，并消除冗余按钮。"""
         is_remote = bool(self.simple_remote_var.get())
-        if is_remote:
-            self.btn_simple_run.config(
-                text="☁ 提交远程队列",
-                bg="#2563eb",
-                activebackground="#1d4ed8",
-            )
-            if hasattr(self, "btn_simple_submit_remote"):
-                self.btn_simple_submit_remote.pack_forget()
-        else:
-            self.btn_simple_run.config(
-                text="▶ 运行所选板块",
-                bg="#059669",
-                activebackground="#047857",
-            )
-            if hasattr(self, "btn_simple_submit_remote"):
-                self.btn_simple_submit_remote.pack_forget()
+        if hasattr(self, "btn_simple_remote"):
+            if is_remote:
+                self.btn_simple_remote.config(
+                    text="☁ 远程模式 (已启用)",
+                    bg="#2563eb",
+                    fg="#ffffff",
+                    activebackground="#1d4ed8",
+                    activeforeground="#ffffff",
+                    highlightbackground="#1d4ed8",
+                )
+            else:
+                self.btn_simple_remote.config(
+                    text="💻 本地模式 (点击切远程)",
+                    bg=self.theme["secondary"],
+                    fg=self.theme["text"],
+                    activebackground=self.theme["secondary_active"],
+                    activeforeground=self.theme["text"],
+                    highlightbackground=self.theme.get("border_dark", "#cbd5e1"),
+                )
+        if hasattr(self, "btn_simple_run"):
+            if is_remote:
+                self.btn_simple_run.config(
+                    text="☁ 提交远程队列",
+                    bg="#2563eb",
+                    activebackground="#1d4ed8",
+                )
+            else:
+                self.btn_simple_run.config(
+                    text="▶ 运行所选板块",
+                    bg="#059669",
+                    activebackground="#047857",
+                )
+        if hasattr(self, "btn_simple_submit_remote"):
+            self.btn_simple_submit_remote.pack_forget()
 
     def _run_simple_mode(self):
         """运行 Simple 模式中勾选的板块（顺序执行，线程安全）。"""
