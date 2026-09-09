@@ -509,7 +509,8 @@ class TemplateBuilderApp:
         self.right_canvas_window = self.right_canvas.create_window((0, 0), window=right_frame, anchor=tk.NW)
         right_frame.bind("<Configure>", self.on_right_frame_configure)
         self.right_canvas.bind("<Configure>", self.on_right_canvas_configure)
-        self.right_canvas.bind_all("<MouseWheel>", self.on_mousewheel)
+        # add="+"：不覆盖应用其它位置注册的全局滚轮处理，避免互相拆绑
+        self.right_canvas.bind_all("<MouseWheel>", self.on_mousewheel, add="+")
 
         tk.Label(right_frame, text="候选区域", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10, "bold")).pack(anchor="w")
         self.listbox = tk.Listbox(right_frame, width=45, height=12, selectmode=tk.EXTENDED, exportselection=False, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], selectbackground=TEMPLATE_THEME["primary"], selectforeground="#ffffff", highlightbackground=TEMPLATE_THEME["border"], highlightcolor=TEMPLATE_THEME["primary"], highlightthickness=1, relief="flat", bd=0, font=(TEMPLATE_THEME["font"], 10))
