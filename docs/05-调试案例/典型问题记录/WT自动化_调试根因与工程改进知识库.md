@@ -1,6 +1,6 @@
 # WT 自动化 · 调试根因与工程改进知识库
 
-> 面向人的综合知识库。内容来自两条线：①项目内 10 份 `docs/debug/debug-*.md` 调试记录；②围绕定位/执行/转换链路的工程改进对话。
+> 面向人的综合知识库。内容来自两条线：①项目内 10 份 `docs/05-调试案例/debug/debug-*.md` 调试记录；②围绕定位/执行/转换链路的工程改进对话。
 > 目的：让后续类似问题能快速对号入座、复用修复范式；也作为 Agent skill（`.codebuddy/skills/wt-automation-lessons/`）与内置 skill 的同源出处。
 
 ---
@@ -148,7 +148,7 @@
   - 采集端：`build_control_map_library.py : _extract_panel_title`、`_disambiguate_duplicate_locators`。
   - canonical 合并：`tools/merge_standard_control_library.py : load_all`（`panel_title_by_parent`）/ `normalize_control`（`_discriminator`）。
   - **合并入库对话框去重（本项目真正丢失点）**：`build_control_map_library.py : _merge_dedup_key` + `_interestarea_node_label` + `_build_ia_panel_title_map`；`control_live_detector.py : _build_dedup_key` + `_interestarea_node_label` + `_build_ia_panel_title_map`。
-- **来源**：2026-08-20 全量修复 → `docs/InterestAreas控件按节点消歧修复记录_20260820.md`。
+- **来源**：2026-08-20 全量修复 → `docs/03-专题记录\定位与控件\InterestAreas控件按节点消歧修复记录_20260820.md`。
 
 ### 模式 M：多选下拉 CheckBox · 等级文本在子节点（name 空 → 误勾/定位失败）
 - **症状指纹**：Telerik 多选下拉（如热稳定度 `MTDGroupComboBoxMultiSelection`）展开后有 10 个同 automationId 的 CheckBox，等级文本在**子节点 Text** 上、checkbox 自身 UIA Name 为空。
@@ -157,7 +157,7 @@
 - **根因**：等级文本在 checkbox **子节点**而非自身/兄弟；Raw View 预过滤仅做兄弟匹配。
 - **修复范式**：① `_raw_element_child_text_matches`（Raw View 子节点树深度≤2 文本匹配）并入两处 FindAll 候选的 label 预过滤（兄弟→子节点双路）；② `wrapper_matches_label_text` 增 `_match_child_text_block_label`（子 Text/TextBlock/Static/Label 匹配）；③ `wrapper_matches_locator` name 分支回退 `get_wrapper_runtime_text_candidates`（含子节点文本）；④ 流程侧 `targetMethod="automation_id,control_type,label_text"` + `labelText=等级文本`，precondition `{"condition":"toggle","expected":"off"}` 实现幂等勾选。
 - **代码锚点**：`wt_flow_locator.py : _raw_element_child_text_matches / _iter_uia_findall_by_automation_id / _iter_raw_view_findall_candidates / _match_child_text_block_label / wrapper_matches_locator`；`flow_definition_发送CFD计算.json : step_9`。
-- **来源**：2026-08-21 发送CFD计算 step_8/step_9 修复 → `docs/debug/debug-combobox-multiselect-checkbox.md`。
+- **来源**：2026-08-21 发送CFD计算 step_8/step_9 修复 → `docs/05-调试案例/debug/debug-combobox-multiselect-checkbox.md`。
 
 ---
 
@@ -243,7 +243,7 @@
 3. **pre-fix / post-fix 对比**：修改前后各跑一次，对比同一步的候选/得分/命中，确认因果。
 4. **最小修复**：只改根因点，避免叠加"防御式补丁"污染打分逻辑。
 5. **回归**：跑相关单测（`tests/`），确认无连带回归；必要时补断言更强行为的新测试。
-6. **沉淀**：按"背景/症状 → 假设 → 调试计划 → 运行时证据 → 结论 → 修复 → 验证"结构记进 `docs/debug/`。
+6. **沉淀**：按"背景/症状 → 假设 → 调试计划 → 运行时证据 → 结论 → 修复 → 验证"结构记进 `docs/05-调试案例/debug/`。
 
 ---
 

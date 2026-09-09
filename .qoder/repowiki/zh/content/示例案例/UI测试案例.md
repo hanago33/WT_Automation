@@ -20,7 +20,7 @@
 - [project_config.resource](file://resources/project_config.resource)
 - [deploy-website.yml](file://.github/workflows/deploy-website.yml)
 - [启动WT自动化总控台.bat](file://启动WT自动化总控台.bat)
-- [Inspect_UIA_调研手册.md](file://docs/Inspect_UIA_调研手册.md)
+- [Inspect_UIA_调研手册.md](file://docs/04-调研与对标\Inspect_UIA_调研手册.md)
 - [recorded Mon Jun 15 21_14_03 2026.py](file://samples/recorder_scripts/recorded Mon Jun 15 21_14_03 2026.py)
 - [recorded Thu Jun 18 10_33_40 2026.py](file://samples/recorder_scripts/recorded Thu Jun 18 10_33_40 2026.py)
 - [recorded Wed Jul 22 20_10_01 2026.py](file://samples/recorder_scripts/recorded Wed Jul 22 20_10_01 2026.py)
@@ -129,7 +129,7 @@ DOC --> LOC
 - [test_control_map_label_association.py:1-200](file://tests/test_control_map_label_association.py#L1-L200)
 - [启动WT自动化总控台.bat:1-200](file://启动WT自动化总控台.bat#L1-L200)
 - [deploy-website.yml:1-200](file://.github/workflows/deploy-website.yml#L1-L200)
-- [Inspect_UIA_调研手册.md:1-200](file://docs/Inspect_UIA_调研手册.md#L1-L200)
+- [Inspect_UIA_调研手册.md:1-200](file://docs/04-调研与对标\Inspect_UIA_调研手册.md#L1-L200)
 
 ## 核心组件
 - 流程执行器：负责加载流程定义、解析步骤、调度定位器与窗口助手、执行UI动作并收集结果。
@@ -353,7 +353,7 @@ Inspection UIA调研手册提供了Windows UI Automation技术的深入分析，
 - 性能优化建议
 
 **章节来源**
-- [Inspect_UIA_调研手册.md:1-200](file://docs/Inspect_UIA_调研手册.md#L1-L200)
+- [Inspect_UIA_调研手册.md:1-200](file://docs/04-调研与对标\Inspect_UIA_调研手册.md#L1-L200)
 
 ## 依赖关系分析
 - 低耦合：执行器仅依赖定位器与窗口助手的接口，不关心具体UI实现细节。
@@ -473,4 +473,4 @@ WT框架通过"流程定义 + 关键字资源 + 执行器 + 定位器 + 报告"�
 
 **章节来源**
 - [test_control_map_label_association.py:1-200](file://tests/test_control_map_label_association.py#L1-L200)
-- [Inspect_UIA_调研手册.md:1-200](file://docs/Inspect_UIA_调研手册.md#L1-L200)
+- [Inspect_UIA_调研手册.md:1-200](file://docs/04-调研与对标\Inspect_UIA_调研手册.md#L1-L200)

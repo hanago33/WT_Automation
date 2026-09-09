@@ -382,7 +382,7 @@ class StepModeFilterTests(unittest.TestCase):
 class MastOverrideOrderTests(unittest.TestCase):
     """问题1 防回归：多塔"第二座塔"须按 mastEntries（CFT 行序）取，
     不能用 sorted(mastIds)[1]——排序会打乱 CFT 行序，曾把第二塔覆盖成第一塔的气象。
-    参见 docs/发送综合计算多塔设置与匹配优化记录_20260827.md。"""
+    参见 docs/03-专题记录\发送综合计算\发送综合计算多塔设置与匹配优化记录_20260827.md。"""
 
     def _run_expansion(self, runtime):
         tmp = tempfile.mkdtemp(prefix="param_matrix_")
