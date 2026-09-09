@@ -14,6 +14,7 @@ from datetime import datetime
 from functools import lru_cache
 import wt_dpi
 import wt_theme
+import wt_wheel_router
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from flow_recorder_converter import convert_recorder_script_to_flow
@@ -5958,7 +5959,10 @@ class FlowEditorApp:
         _sr_scheduled = [False]
 
         def on_content_configure(_event=None):
-            # 合帧到 after_idle：resize 风暴下 bbox("all") 每帧只算一次
+            # after_idle 语义（Tk doc/after.n）：回调在事件队列排空、
+            # 无事件可处理时执行一次。Configure 风暴期间不执行，风暴
+            # 结束才跑一次 —— 效果即合帧：风暴 N 次触发只做 1 次
+            # bbox("all") 全量重算（每帧调用会造成 resize 迟滞）
             if _sr_scheduled[0]:
                 return
             _sr_scheduled[0] = True
@@ -5973,32 +5977,15 @@ class FlowEditorApp:
         def on_canvas_configure(_event=None):
             canvas.itemconfigure(window_id, width=canvas.winfo_width())
 
-        def on_mousewheel(event):
-            delta = 0
-            if getattr(event, "delta", 0):
-                delta = -1 * int(event.delta / 120)
-            elif getattr(event, "num", None) == 4:
-                delta = -1
-            elif getattr(event, "num", None) == 5:
-                delta = 1
-            if delta:
-                canvas.yview_scroll(delta, "units")
-            return "break"
-
-        def bind_mousewheel(_event=None):
-            canvas.bind_all("<MouseWheel>", on_mousewheel)
-            canvas.bind_all("<Button-4>", on_mousewheel)
-            canvas.bind_all("<Button-5>", on_mousewheel)
-
-        def unbind_mousewheel(_event=None):
-            canvas.unbind_all("<MouseWheel>")
-            canvas.unbind_all("<Button-4>")
-            canvas.unbind_all("<Button-5>")
+        # 统一滚轮路由（wt_wheel_router）：注册即可，root 上一次绑定全局生效。
+        # 不再用 Enter/Leave 动态 bind_all/unbind_all —— unbind_all 会把
+        # 主控台等其他窗口的常驻滚轮绑定一并拆掉（ttkbootstrap 2.0 源码
+        # 注释独立证实了同一坑），细节见 wt_wheel_router.py 模块文档。
+        wt_wheel_router.register(canvas)
+        wt_wheel_router.bind_root(self.root)
 
         content.bind("<Configure>", on_content_configure)
         canvas.bind("<Configure>", on_canvas_configure)
-        canvas.bind("<Enter>", bind_mousewheel)
-        canvas.bind("<Leave>", unbind_mousewheel)
 
         return content
 

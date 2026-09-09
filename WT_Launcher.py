@@ -20,6 +20,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import wt_dpi
 import wt_theme
+import wt_wheel_router
 from flow_excel_io import (
     DEFAULT_FLOW_XLSX,
     audit_flow_excel_roundtrip,
@@ -1808,59 +1809,15 @@ class ServerMonitorWindow:
 
 
 # ---------------------------------------------------------------------------
-# 统一鼠标滚轮路由（模块级单例）
+# 统一鼠标滚轮路由（wt_wheel_router 共享模块）
 # ---------------------------------------------------------------------------
 # 历史问题：Simple 模式滚动区、左侧面板、步骤区各自 bind_all("<MouseWheel>")，
 # 其中两处还用 Enter/Leave 动态 bind/unbind —— unbind_all 会把其他区域的
-# 常驻绑定一并拆掉，导致滚轮时滚错区域或无响应。
-# 统一方案：root 上只绑定一次，按指针所在位置（winfo_containing 向上找最近
-# 注册的 canvas）路由滚动事件；canvas 注册进表即参与路由，不再动态 bind。
-class _WheelRouter:
-    def __init__(self):
-        self._canvases = []      # [tk.Canvas, ...]
-        self._bound = False
-
-    def register(self, canvas):
-        if canvas not in self._canvases:
-            self._canvases.append(canvas)
-
-    def _handle(self, event):
-        delta = 0
-        if getattr(event, "delta", 0):
-            # Windows：delta 为 ±120 的倍数；除法取方向和步数
-            delta = -1 * int(event.delta / 120)
-        elif getattr(event, "num", None) == 4:
-            delta = -1
-        elif getattr(event, "num", None) == 5:
-            delta = 1
-        if not delta:
-            return None
-        try:
-            under = event.widget.winfo_containing(event.x_root, event.y_root)
-        except Exception:
-            under = None
-        node = under
-        while node is not None:
-            for canvas in self._canvases:
-                if node is canvas:
-                    canvas.yview_scroll(delta, "units")
-                    return "break"
-            try:
-                node = node.master
-            except Exception:
-                return None
-        return None
-
-    def bind_root(self, root):
-        if self._bound:
-            return
-        root.bind_all("<MouseWheel>", self._handle, add="+")
-        root.bind_all("<Button-4>", self._handle, add="+")
-        root.bind_all("<Button-5>", self._handle, add="+")
-        self._bound = True
-
-
-_WHEEL_ROUTER = _WheelRouter()
+# 常驻绑定一并拆掉，导致滚轮时滚错区域或无响应（ttkbootstrap 2.0 源码
+# 注释独立证实了同一坑）。统一方案与路由细节（含高精度触控板精细 delta
+# 的余数累积，修复 |delta|<120 被 int(delta/120) 截断为 0 的零响应问题）
+# 见 wt_wheel_router.py 模块文档。
+_WHEEL_ROUTER = wt_wheel_router.ROUTER
 
 
 class LauncherApp:
@@ -2356,7 +2313,10 @@ class LauncherApp:
 
         def _schedule_scrollregion_update():
             # resize 期间 <Configure> 每帧多次触发，bbox("all") 是全量子树遍历；
-            # 合帧到 after_idle：同一帧内多次触发只重算一次
+            # after_idle 语义（Tk doc/after.n）：回调在事件队列排空、
+            # 无事件可处理时执行一次。Configure 风暴期间不执行，风暴
+            # 结束才跑一次 —— 效果即合帧：风暴 N 次触发只做 1 次
+            # bbox("all") 全量重算（每帧调用会造成 resize 迟滞）
             if _scrollregion_scheduled[0]:
                 return
             _scrollregion_scheduled[0] = True
@@ -3195,7 +3155,10 @@ class LauncherApp:
         _sr_scheduled = [False]
 
         def _on_content_configure(_event=None):
-            # 合帧到 after_idle：resize 风暴下 bbox("all") 每帧只算一次
+            # after_idle 语义（Tk doc/after.n）：回调在事件队列排空、
+            # 无事件可处理时执行一次。Configure 风暴期间不执行，风暴
+            # 结束才跑一次 —— 效果即合帧：风暴 N 次触发只做 1 次
+            # bbox("all") 全量重算（每帧调用会造成 resize 迟滞）
             if _sr_scheduled[0]:
                 return
             _sr_scheduled[0] = True
@@ -4435,7 +4398,10 @@ class LauncherApp:
                 pass
 
         def on_content_configure(_event=None):
-            # 合帧到 after_idle：resize 风暴下 bbox("all") 每帧只算一次
+            # after_idle 语义（Tk doc/after.n）：回调在事件队列排空、
+            # 无事件可处理时执行一次。Configure 风暴期间不执行，风暴
+            # 结束才跑一次 —— 效果即合帧：风暴 N 次触发只做 1 次
+            # bbox("all") 全量重算（每帧调用会造成 resize 迟滞）
             if not _sr_scheduled[0]:
                 _sr_scheduled[0] = True
                 canvas.after_idle(_apply_scrollregion)
@@ -4704,7 +4670,10 @@ class LauncherApp:
         _steps_sr_scheduled = [False]
 
         def on_steps_inner_configure(_event=None):
-            # 合帧到 after_idle：resize 风暴下 bbox("all") 每帧只算一次
+            # after_idle 语义（Tk doc/after.n）：回调在事件队列排空、
+            # 无事件可处理时执行一次。Configure 风暴期间不执行，风暴
+            # 结束才跑一次 —— 效果即合帧：风暴 N 次触发只做 1 次
+            # bbox("all") 全量重算（每帧调用会造成 resize 迟滞）
             if _steps_sr_scheduled[0]:
                 return
             _steps_sr_scheduled[0] = True
