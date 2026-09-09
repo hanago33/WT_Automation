@@ -516,6 +516,13 @@ class TaskQueueWindow:
             self.task_tree.heading(column, text=headings[column])
             self.task_tree.column(column, width=widths[column], minwidth=45, anchor="w")
 
+        # 滚动条先 pack、树最后 pack。pack 官方算法（Tk doc/pack.n「THE
+        # PACKER ALGORITHM」）按 packing list 顺序扫描分配，先 pack 的先占
+        # cavity；若 cavity 收缩到放不下后续控件，"all remaining content
+        # on the packing list will be unmapped from the screen"（直接从屏
+        # 幕消失）。树列宽总和固定（本表约 1190px），若树先 pack，窗口/分栏
+        # 变窄时后 pack 的滚动条会被挤成 1x1 直至 unmap —— 滚动条消失。
+        # 滚动条先占位，树吃剩余空间并靠列 stretch 自适应，任何宽度都可见。
         v_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.task_tree.yview)
         self.task_tree.configure(yscrollcommand=v_scroll.set)
         v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
