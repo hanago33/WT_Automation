@@ -510,6 +510,7 @@ class TemplateBuilderApp:
         self.canvas.bind("<ButtonPress-1>", self.on_canvas_press)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
+        self.canvas.bind("<Configure>", self.on_canvas_configure)
         self.root.bind("<Delete>", self.on_delete_key)
         self.root.bind("<Control-z>", self.on_undo_shortcut)
         self.root.bind("<Control-Z>", self.on_undo_shortcut)
@@ -836,6 +837,7 @@ class TemplateBuilderApp:
         self.file_name_var.set("")
         self.preview_label.config(image="", text="")
         self.status_var.set("截图已加载，点击“自动检测”开始切分")
+        self.root.update_idletasks()
         self.refresh_canvas()
 
     def detect_regions(self):
@@ -951,19 +953,46 @@ class TemplateBuilderApp:
         else:
             self.status_var.set("手动画框模式已关闭：可选框、移动框、调整框")
 
+    def on_canvas_configure(self, event):
+        if self.source_image_rgb is None:
+            return
+        w, h = event.width, event.height
+        last_w, last_h = getattr(self, "_last_canvas_size", (0, 0))
+        if abs(w - last_w) > 8 or abs(h - last_h) > 8:
+            self._last_canvas_size = (w, h)
+            if getattr(self, "_canvas_resize_job", None) is not None:
+                self.root.after_cancel(self._canvas_resize_job)
+            self._canvas_resize_job = self.root.after(80, self._do_canvas_resize)
+
+    def _do_canvas_resize(self):
+        self._canvas_resize_job = None
+        self.refresh_canvas()
+
     def refresh_canvas(self):
         self.canvas.delete("all")
         if self.source_image_rgb is None:
             return
 
         image_height, image_width = self.source_image_rgb.shape[:2]
-        self.scale = min(CANVAS_MAX_WIDTH / image_width, CANVAS_MAX_HEIGHT / image_height, 1.0)
-        display_width = int(image_width * self.scale)
-        display_height = int(image_height * self.scale)
+        if image_height <= 0 or image_width <= 0:
+            return
+
+        # 动态获取工作区画布实际可用尺寸，自适应撑满整个工作区
+        canvas_w = self.canvas.winfo_width()
+        canvas_h = self.canvas.winfo_height()
+        if canvas_w < 100 or canvas_h < 100:
+            canvas_w = max(CANVAS_MAX_WIDTH, self.root.winfo_width() - 420)
+            canvas_h = max(CANVAS_MAX_HEIGHT, self.root.winfo_height() - 100)
+
+        scale_w = canvas_w / float(image_width)
+        scale_h = canvas_h / float(image_height)
+        self.scale = min(scale_w, scale_h)
+        display_width = max(1, int(round(image_width * self.scale)))
+        display_height = max(1, int(round(image_height * self.scale)))
 
         display_image = Image.fromarray(self.source_image_rgb).resize((display_width, display_height), Image.LANCZOS)
         self.display_photo = ImageTk.PhotoImage(display_image)
-        self.canvas.config(width=display_width, height=display_height, scrollregion=(0, 0, display_width, display_height))
+        self.canvas.config(scrollregion=(0, 0, display_width, display_height))
         self.canvas.create_image(0, 0, anchor=tk.NW, image=self.display_photo)
 
         for index, region in enumerate(self.candidates):
