@@ -107,6 +107,9 @@ release_out/
 _diag_*
 _names_out.txt
 
+# PowerShell 重定向产物（$null 被误当文件名）
+$null
+
 # 各类备份
 *.bak_*
 docs/*.backup_*
