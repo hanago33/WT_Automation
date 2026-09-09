@@ -500,18 +500,18 @@ class RelativeRegionHelperDialog:
             left.columnconfigure(column, weight=1)
 
         row = 0
-        tk.Button(left, text="抓取当前前台窗口", command=self.capture_foreground_window).grid(row=row, column=0, sticky="ew", pady=4)
-        tk.Button(left, text="延时抓取父窗口", command=self.capture_foreground_window_with_delay).grid(row=row, column=1, sticky="ew", padx=(8, 12), pady=4)
-        tk.Button(left, text="手动画框选择区域", command=self.start_region_overlay_capture).grid(row=row, column=2, columnspan=2, sticky="ew", padx=(0, 12), pady=4)
-        tk.Button(left, text="最小化总控台", command=self.minimize_launcher).grid(row=row, column=4, sticky="ew", pady=4)
-        tk.Button(left, text="刷新预览", command=self._refresh_preview).grid(row=row, column=5, sticky="ew", padx=(8, 0), pady=4)
+        wt_theme.create_flat_button(left, "抓取当前前台窗口", self.capture_foreground_window, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=0, sticky="ew", pady=4)
+        wt_theme.create_flat_button(left, "延时抓取父窗口", self.capture_foreground_window_with_delay, tone="primary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=1, sticky="ew", padx=(8, 12), pady=4)
+        wt_theme.create_flat_button(left, "手动画框选择区域", self.start_region_overlay_capture, tone="primary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=2, columnspan=2, sticky="ew", padx=(0, 12), pady=4)
+        wt_theme.create_flat_button(left, "最小化总控台", self.minimize_launcher, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=4, sticky="ew", pady=4)
+        wt_theme.create_flat_button(left, "刷新预览", self._refresh_preview, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=5, sticky="ew", padx=(8, 0), pady=4)
         row += 1
         self._grid_label_entry(left, "延时秒数", self.var_capture_delay_seconds, row, 0)
         self._grid_label_entry(left, "鼠标中心 X", self.var_center_x, row, 2)
         self._grid_label_entry(left, "鼠标中心 Y", self.var_center_y, row, 4)
         row += 1
-        tk.Button(left, text="延时记录鼠标为区域中心", command=self.capture_mouse_center_with_delay).grid(row=row, column=0, columnspan=2, sticky="ew", pady=4)
-        tk.Button(left, text="立即读取当前鼠标", command=self.capture_mouse_center).grid(row=row, column=2, columnspan=1, sticky="ew", padx=(8, 12), pady=4)
+        wt_theme.create_flat_button(left, "延时记录鼠标为区域中心", self.capture_mouse_center_with_delay, tone="warning", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=0, columnspan=2, sticky="ew", pady=4)
+        wt_theme.create_flat_button(left, "立即读取当前鼠标", self.capture_mouse_center, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=2, columnspan=1, sticky="ew", padx=(8, 12), pady=4)
         tk.Label(
             left,
             text="建议优先使用“延时抓父窗口 + 手动画框选择区域”；若用鼠标中心，优先点延时记录，避免你点按钮时鼠标位置已经变了。",
@@ -560,44 +560,46 @@ class RelativeRegionHelperDialog:
         self.anchor_combo = ttk.Combobox(
             left,
             textvariable=self.var_anchor,
-            values=ALLOWED_RELATIVE_REGION_ANCHORS,
+            values=("center", "top_left", "top_right", "bottom_left", "bottom_right"),
             state="readonly",
         )
         self.anchor_combo.grid(row=row, column=3, sticky="ew", padx=(8, 12), pady=4)
         self.default_text_label = tk.Label(
             left,
-            text="默认输入文本",
+            text="输入文本",
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("text", "#1f2d3d"),
         )
         self.default_text_label.grid(row=row, column=4, sticky="w", pady=4)
-        self.default_text_entry = tk.Entry(left, textvariable=self.var_text)
-        self.default_text_entry.grid(row=row, column=5, sticky="ew", padx=(8, 12), pady=4)
+        self.default_text_entry = tk.Entry(left, textvariable=self.var_text, font=("Microsoft YaHei UI", 9), relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.theme.get("border", "#d7e0ee"))
+        self.default_text_entry.grid(row=row, column=5, sticky="ew", padx=(8, 12), pady=4, ipady=2)
         row += 1
 
         button_row = tk.Frame(left, bg=self.theme.get("card", "#ffffff"))
         button_row.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
-        tk.Button(button_row, text="复制 actionConfig", command=self.copy_action_config).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(button_row, text="复制完整步骤样例", command=self.copy_step_template).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        wt_theme.create_flat_button(button_row, "复制 actionConfig", self.copy_action_config, tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=5).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        wt_theme.create_flat_button(button_row, "复制完整步骤样例", self.copy_step_template, tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=5).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
         row += 1
 
         multi_row = tk.Frame(left, bg=self.theme.get("card", "#ffffff"))
         multi_row.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
-        tk.Button(
+        wt_theme.create_flat_button(
             multi_row,
-            text="批量画框采集",
-            command=self.start_multi_region_capture,
-            bg=self.theme.get("secondary", "#e2ecf9"),
-            relief=tk.FLAT,
-            cursor="hand2",
+            "批量画框采集",
+            self.start_multi_region_capture,
+            tone="primary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=5,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(
+        wt_theme.create_flat_button(
             multi_row,
-            text="导出校准数据",
-            command=self.export_multi_region_calibration,
-            bg=self.theme.get("secondary", "#e2ecf9"),
-            relief=tk.FLAT,
-            cursor="hand2",
+            "导出校准数据",
+            self.export_multi_region_calibration,
+            tone="success",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=5,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
         tk.Label(
             multi_row,
@@ -658,10 +660,18 @@ class RelativeRegionHelperDialog:
         self.preview_text.config(yscrollcommand=preview_scrollbar.set)
 
     def _grid_label_entry(self, parent, label, variable, row, column):
-        tk.Label(parent, text=label, bg=self.theme.get("card", "#ffffff"), fg=self.theme.get("text", "#1f2d3d")).grid(
+        tk.Label(parent, text=label, font=("Microsoft YaHei UI", 9), bg=self.theme.get("card", "#ffffff"), fg=self.theme.get("text", "#1f2d3d")).grid(
             row=row, column=column, sticky="w", pady=4
         )
-        tk.Entry(parent, textvariable=variable).grid(row=row, column=column + 1, sticky="ew", padx=(8, 12), pady=4)
+        tk.Entry(
+            parent,
+            textvariable=variable,
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self.theme.get("border", "#d7e0ee"),
+        ).grid(row=row, column=column + 1, sticky="ew", padx=(8, 12), pady=4, ipady=2)
 
     def _bind_preview_traces(self):
         for variable in (
@@ -3024,7 +3034,7 @@ class LauncherApp:
                         pass
                     combo_widgets[key] = combo
                 else:
-                    tk.Entry(row, textvariable=var, width=18).pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    tk.Entry(row, textvariable=var, width=18, font=("Microsoft YaHei UI", 9), relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.theme.get("border", "#d7e0ee")).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
                 entries[key] = var
 
         def _save():
