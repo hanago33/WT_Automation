@@ -47,3 +47,7 @@ python WT_Launcher.py
 Do not commit local API keys or runtime state. The repository ignores `launcher_state.json`, `.env*`, logs, caches, backup folders, debug screenshots, and generated artifacts by default.
 
 API keys should be supplied through environment variables such as `VOLC_API_KEY` or `UI_TARS_API_KEY` when needed.
+
+## AI Collaboration Workflow
+
+All AI coding agents must follow the worktree-isolated workflow defined in [AGENTS.md](AGENTS.md): the main checkout (`main` branch) stays clean and publishable, each AI session works in its own git worktree on an `ai/session-N` branch, and only a human merges reviewed commits back to `main`.
