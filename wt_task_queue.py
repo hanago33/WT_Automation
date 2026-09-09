@@ -9,6 +9,7 @@ open the local database directly. Only the Python standard library is used.
 import json
 import os
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -53,6 +54,7 @@ _COLUMN_TO_KEY = {
     "timeout_seconds": "timeoutSeconds",
     "notify_url": "notifyUrl",
     "runtime_config": "runtimeConfig",
+    "idempotency_key": "idempotencyKey",
     "status": "status",
     "progress_current": "progressCurrent",
     "progress_total": "progressTotal",
@@ -89,6 +91,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     timeout_seconds INTEGER DEFAULT 0,
     notify_url TEXT DEFAULT '',
     runtime_config TEXT DEFAULT '',
+    idempotency_key TEXT DEFAULT '',
     status TEXT NOT NULL,
     progress_current INTEGER DEFAULT 0,
     progress_total INTEGER DEFAULT 0,
@@ -119,6 +122,7 @@ _MIGRATION_COLUMNS = (
     ("timeout_seconds", "INTEGER DEFAULT 0"),
     ("notify_url", "TEXT DEFAULT ''"),
     ("runtime_config", "TEXT DEFAULT ''"),
+    ("idempotency_key", "TEXT DEFAULT ''"),
 )
 
 
@@ -187,6 +191,9 @@ def _init_db_once(db_path):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user)")
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(user, idempotency_key)"
+        )
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -205,6 +212,40 @@ def _init_db_once(db_path):
         conn.commit()
     finally:
         conn.close()
+
+
+def check_desktop_interactive():
+    """检测当前操作系统环境是否具备可供自动化交互的桌面。
+
+    返回 (is_interactive, reason)：
+    - True, "活跃交互桌面 (Session N)"
+    - False, "当前处于 Session 0 服务隔离会话，无图形交互桌面"
+    - False, "Windows 桌面处于锁定或非活动状态 (错误码: ...)"
+    非 Windows 平台直接返回 True, "非 Windows 平台"。
+    """
+    if sys.platform != "win32":
+        return True, "非 Windows 平台"
+    try:
+        import ctypes
+        import ctypes.wintypes
+
+        sid = ctypes.wintypes.DWORD()
+        if ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(sid)):
+            if sid.value == 0:
+                return False, "当前处于 Session 0 服务隔离会话，无法进行桌面 UI 交互"
+            session_num = sid.value
+        else:
+            session_num = "未知"
+
+        # DESKTOP_SWITCHDESKTOP = 0x0100
+        hDesk = ctypes.windll.user32.OpenInputDesktop(0, False, 0x0100)
+        if not hDesk:
+            err = ctypes.GetLastError()
+            return False, "Windows 桌面处于锁定或非活动状态 (错误码: {})".format(err)
+        ctypes.windll.user32.CloseDesktop(hDesk)
+        return True, "活跃交互桌面 (Session {})".format(session_num)
+    except Exception as exc:
+        return True, "检测跳过 ({})".format(exc)
 
 
 def _row_to_task(row):
@@ -254,9 +295,26 @@ def submit_task(
     timeout_seconds=0,
     notify_url="",
     runtime_config=None,
+    idempotency_key="",
     db_path=DEFAULT_DB_PATH,
 ):
     init_db(db_path)
+    idempotency_key = str(idempotency_key or "").strip()
+    if idempotency_key:
+        conn = _connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT task_id FROM tasks WHERE user = ? AND idempotency_key = ? ORDER BY created_at DESC LIMIT 1",
+                (user, idempotency_key),
+            ).fetchone()
+            if row:
+                existing = get_task(row["task_id"], db_path=db_path)
+                if existing:
+                    existing["idempotentReplay"] = True
+                    return existing
+        finally:
+            conn.close()
+
     task_id = "task_{}_{}".format(
         datetime.now().strftime("%Y%m%d_%H%M%S"),
         uuid.uuid4().hex[:6],
@@ -282,12 +340,12 @@ def submit_task(
                 task_id, user, source_ip, flow_path, steps_requested,
                 from_step, to_step, priority, scheduled_at, max_attempts,
                 retry_delay_seconds, next_retry_at, timeout_seconds,
-                notify_url, runtime_config, status,
+                notify_url, runtime_config, idempotency_key, status,
                 progress_current, progress_total, progress_percent,
                 current_step_id, current_step_name, resume_from_step,
                 last_log, error, run_id, pause_requested, terminate_requested,
                 attempts, created_at, started_at, ended_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0,
                        '', '', '', '', '', '', 0, 0, 1, ?, '', '', ?)
             """,
             (
@@ -306,6 +364,7 @@ def submit_task(
                 timeout_seconds,
                 notify_url,
                 runtime_config_json,
+                idempotency_key,
                 STATUS_PENDING,
                 now,
                 now,
@@ -315,6 +374,127 @@ def submit_task(
     finally:
         conn.close()
     return get_task(task_id, db_path=db_path)
+
+
+def submit_tasks_batch(tasks_specs, db_path=DEFAULT_DB_PATH):
+    """批量原子提交任务。
+
+    在单一 SQLite 事务中完成所有任务的查重与入库；
+    若发生任何异常则全量回滚（All or Nothing 保证），绝无半提交脏数据。
+    返回已创建或重放的任务 dict 列表。
+    """
+    if not tasks_specs:
+        return []
+    init_db(db_path)
+    now = _now_iso()
+    created_task_ids = []
+    replayed_task_ids = set()
+
+    conn = _connect(db_path)
+    try:
+        with conn:
+            for idx, spec in enumerate(tasks_specs):
+                user = str(spec.get("user") or "").strip()
+                if not user:
+                    raise ValueError("tasks[{}]: user is required".format(idx))
+                flow_path = str(spec.get("flow_path") or spec.get("flowPath") or "").strip()
+                if not flow_path:
+                    raise ValueError("tasks[{}]: flow_path is required".format(idx))
+
+                idempotency_key = str(
+                    spec.get("idempotency_key") or spec.get("idempotencyKey") or ""
+                ).strip()
+                if idempotency_key:
+                    row = conn.execute(
+                        "SELECT task_id FROM tasks WHERE user = ? AND idempotency_key = ? ORDER BY created_at DESC LIMIT 1",
+                        (user, idempotency_key),
+                    ).fetchone()
+                    if row:
+                        tid = row["task_id"]
+                        created_task_ids.append(tid)
+                        replayed_task_ids.add(tid)
+                        continue
+
+                task_id = "task_{}_{}_{}".format(
+                    datetime.now().strftime("%Y%m%d_%H%M%S"),
+                    uuid.uuid4().hex[:4],
+                    idx,
+                )
+                steps_requested = list(
+                    spec.get("steps") or spec.get("stepsRequested") or []
+                )
+                priority = int(spec.get("priority", 0) or 0)
+                scheduled_at = str(spec.get("scheduled_at") or spec.get("scheduledAt") or "")
+                max_attempts = max(1, int(spec.get("max_attempts") or spec.get("maxAttempts", 1) or 1))
+                retry_delay_seconds = max(
+                    0, int(spec.get("retry_delay_seconds") or spec.get("retryDelaySeconds", 0) or 0)
+                )
+                timeout_seconds = max(
+                    0, int(spec.get("timeout_seconds") or spec.get("timeoutSeconds", 0) or 0)
+                )
+                notify_url = str(spec.get("notify_url") or spec.get("notifyUrl") or "").strip()
+                source_ip = str(spec.get("source_ip") or spec.get("sourceIp") or "").strip()
+                from_step = str(spec.get("from_step") or spec.get("fromStep") or "").strip()
+                to_step = str(spec.get("to_step") or spec.get("toStep") or "").strip()
+                runtime_config = (
+                    spec.get("runtime_config")
+                    if "runtime_config" in spec
+                    else spec.get("runtimeConfig")
+                )
+                runtime_config_json = (
+                    json.dumps(runtime_config, ensure_ascii=False)
+                    if isinstance(runtime_config, dict) and runtime_config
+                    else ""
+                )
+
+                conn.execute(
+                    """
+                    INSERT INTO tasks (
+                        task_id, user, source_ip, flow_path, steps_requested,
+                        from_step, to_step, priority, scheduled_at, max_attempts,
+                        retry_delay_seconds, next_retry_at, timeout_seconds,
+                        notify_url, runtime_config, idempotency_key, status,
+                        progress_current, progress_total, progress_percent,
+                        current_step_id, current_step_name, resume_from_step,
+                        last_log, error, run_id, pause_requested, terminate_requested,
+                        attempts, created_at, started_at, ended_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0,
+                               '', '', '', '', '', '', 0, 0, 1, ?, '', '', ?)
+                    """,
+                    (
+                        task_id,
+                        user,
+                        source_ip,
+                        flow_path,
+                        json.dumps(steps_requested, ensure_ascii=False),
+                        from_step,
+                        to_step,
+                        priority,
+                        scheduled_at,
+                        max_attempts,
+                        retry_delay_seconds,
+                        "",
+                        timeout_seconds,
+                        notify_url,
+                        runtime_config_json,
+                        idempotency_key,
+                        STATUS_PENDING,
+                        now,
+                        now,
+                    ),
+                )
+                created_task_ids.append(task_id)
+    finally:
+        conn.close()
+
+    results = []
+    for tid in created_task_ids:
+        t = get_task(tid, db_path=db_path)
+        if t:
+            if tid in replayed_task_ids:
+                t["idempotentReplay"] = True
+            results.append(t)
+    return results
 
 
 def list_tasks(user=None, scope="all", limit=200, db_path=DEFAULT_DB_PATH, task_ids=None):

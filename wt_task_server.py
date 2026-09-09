@@ -197,6 +197,14 @@ def default_worker_launcher(
             task.get("flowPath", ""),
         )
     )
+    is_interactive, session_desc = wt_task_queue.check_desktop_interactive()
+    if not is_interactive:
+        log_file.write(
+            "[queue][WARN] Windows 交互桌面预检警告: {}\n"
+            "[queue][WARN] 如后续执行遇窗口查找超时或白屏，请确认服务器桌面未处于锁定状态。\n".format(
+                session_desc
+            )
+        )
     log_file.flush()
     # 决定性修复：任务记录里的 flowPath 此前只进日志、不进执行——worker 永远跑
     # workspace/flow_definition.json 旧链路（远程执行与本地提交内容脱节的总根因）。
@@ -799,6 +807,12 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             self._send_error(400, error)
             return
         source_ip = self.client_address[0] if self.client_address else ""
+        idempotency_key = str(
+            payload.get("idempotencyKey")
+            or payload.get("clientToken")
+            or (self.headers.get("X-Idempotency-Key") if hasattr(self, "headers") else "")
+            or ""
+        ).strip()
         task = wt_task_queue.submit_task(
             user=user,
             flow_path=abs_flow,
@@ -813,21 +827,172 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             timeout_seconds=timeout_seconds,
             notify_url=notify_url,
             runtime_config=runtime_config or None,
+            idempotency_key=idempotency_key,
             db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
         )
+        is_replay = bool(task.get("idempotentReplay"))
         wt_task_queue.add_audit_event(
             user=user,
             source_ip=source_ip,
-            action="submit",
+            action="submit_replay" if is_replay else "submit",
             task_id=task["taskId"],
             result="ok",
             detail="flowPath={}".format(abs_flow),
             db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
         )
-        self._send_json({"task": task}, status=201)
+        resp = {"task": task}
+        if is_replay:
+            resp["idempotentReplay"] = True
+        self._send_json(resp, status=201)
+
+    def _handle_batch_submit(self):
+        payload, error = self._read_json_body()
+        if error:
+            if isinstance(error, tuple):
+                self._send_error(error[0], error[1])
+            else:
+                self._send_error(400, error)
+            return
+        tasks_raw = payload.get("tasks")
+        if not isinstance(tasks_raw, list) or not tasks_raw:
+            self._send_error(400, "tasks must be a non-empty array")
+            return
+
+        flow_dir = os.path.abspath(
+            getattr(self.server, "flow_dir", os.path.join(BASE_DIR, "flow_packages"))
+        )
+        source_ip = self.client_address[0] if self.client_address else ""
+        validated_specs = []
+
+        for idx, item in enumerate(tasks_raw):
+            if not isinstance(item, dict):
+                self._send_error(400, "tasks[{}]: item must be a JSON object".format(idx))
+                return
+            user = str(item.get("user") or "").strip()
+            flow_path = str(item.get("flowPath") or item.get("flow_path") or "").strip()
+            if not user or not flow_path:
+                self._send_error(400, "tasks[{}]: user and flowPath are required".format(idx))
+                return
+
+            abs_flow = os.path.abspath(flow_path)
+            try:
+                inside = os.path.commonpath([flow_dir, abs_flow]) == flow_dir
+            except ValueError:
+                inside = False
+            if not inside or not os.path.isfile(abs_flow):
+                self._send_error(
+                    400, "tasks[{}]: flowPath must be a JSON flow inside flow_packages".format(idx)
+                )
+                return
+
+            flow_payload = _read_json_file(abs_flow)
+            if flow_payload is None:
+                self._send_error(400, "tasks[{}]: flowPath is not a valid JSON object".format(idx))
+                return
+
+            param_table = str(flow_payload.get("paramTable") or "").strip()
+            if param_table and not os.path.isabs(param_table):
+                param_path = os.path.join(flow_dir, param_table)
+                if not os.path.isfile(param_path):
+                    self._send_error(
+                        400,
+                        "tasks[{}]: paramTable not found on server: {}".format(idx, param_table),
+                    )
+                    return
+
+            runtime_config = (
+                item.get("runtimeConfig") if "runtimeConfig" in item else item.get("runtime_config")
+            )
+            if runtime_config is None:
+                runtime_config = {}
+            if not isinstance(runtime_config, dict):
+                self._send_error(400, "tasks[{}]: runtimeConfig must be a JSON object".format(idx))
+                return
+
+            raw_steps = item.get("steps") or item.get("stepsRequested") or []
+            if isinstance(raw_steps, str):
+                steps = [s.strip() for s in raw_steps.split(",") if s.strip()]
+            elif isinstance(raw_steps, list):
+                steps = []
+                for s in raw_steps:
+                    if not isinstance(s, (str, int)):
+                        self._send_error(400, "tasks[{}]: steps must contain only strings".format(idx))
+                        return
+                    val = str(s).strip()
+                    if val:
+                        steps.append(val)
+            else:
+                self._send_error(400, "tasks[{}]: steps must be a comma string or an array".format(idx))
+                return
+
+            priority, err = _coerce_int_field(item, "priority", 0)
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+            max_attempts, err = _coerce_int_field(item, "maxAttempts", 1, min_value=1)
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+            retry_delay_seconds, err = _coerce_int_field(item, "retryDelaySeconds", 0, min_value=0)
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+            timeout_seconds, err = _coerce_int_field(item, "timeoutSeconds", 0, min_value=0)
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+            scheduled_at, err = _normalize_scheduled_at(
+                item.get("scheduledAt") or item.get("scheduled_at")
+            )
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+            notify_url, err = _validate_notify_url(item.get("notifyUrl") or item.get("notify_url"))
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+
+            idempotency_key = str(
+                item.get("idempotencyKey")
+                or item.get("clientToken")
+                or item.get("idempotency_key")
+                or ""
+            ).strip()
+
+            validated_specs.append({
+                "user": user,
+                "flow_path": abs_flow,
+                "source_ip": source_ip,
+                "steps": steps,
+                "from_step": str(item.get("fromStep") or item.get("from_step") or "").strip(),
+                "to_step": str(item.get("toStep") or item.get("to_step") or "").strip(),
+                "priority": priority,
+                "scheduled_at": scheduled_at,
+                "max_attempts": max_attempts,
+                "retry_delay_seconds": retry_delay_seconds,
+                "timeout_seconds": timeout_seconds,
+                "notify_url": notify_url,
+                "runtime_config": runtime_config,
+                "idempotency_key": idempotency_key,
+            })
+
+        tasks = wt_task_queue.submit_tasks_batch(
+            validated_specs,
+            db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+        )
+        wt_task_queue.add_audit_event(
+            user=validated_specs[0]["user"] if validated_specs else "",
+            source_ip=source_ip,
+            action="batch_submit",
+            result="ok",
+            detail="submitted {} tasks".format(len(tasks)),
+            db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+        )
+        self._send_json({"tasks": tasks, "count": len(tasks)}, status=201)
 
     def _route_get(self, path, query):
         if path == "/api/health":
+            is_interactive, session_desc = wt_task_queue.check_desktop_interactive()
             self._send_json(
                 {
                     "ok": True,
@@ -842,6 +1007,8 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
                     "logRetentionDays": getattr(
                         self.server, "log_retention_days", 30
                     ),
+                    "desktopInteractive": is_interactive,
+                    "desktopSession": session_desc,
                 }
             )
             return
@@ -1054,6 +1221,9 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/tasks/submit":
             self._handle_submit()
+            return
+        if path == "/api/tasks/batch-submit":
+            self._handle_batch_submit()
             return
         parts = path.strip("/").split("/")
         if len(parts) == 4 and parts[0] == "api" and parts[1] == "tasks":

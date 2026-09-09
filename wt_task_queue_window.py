@@ -2445,6 +2445,20 @@ class TaskQueueWindow:
                     )
                     flow_path = upload.get("flowPath", "")
                     skipped_upload = False
+                client_token = str(
+                    sec.get("clientToken") or sec.get("idempotencyKey") or ""
+                ).strip()
+                if not client_token:
+                    import time
+
+                    token_seed = "{}_{}_{}_{}".format(
+                        user,
+                        flow_name,
+                        json.dumps(runtime_config, sort_keys=True) if has_runtime else "",
+                        int(time.time() // 10),
+                    )
+                    client_token = "cli_" + hashlib.md5(token_seed.encode("utf-8")).hexdigest()[:16]
+
                 submit_resp = self._post_json(
                     "/api/tasks/submit",
                     {
@@ -2458,6 +2472,7 @@ class TaskQueueWindow:
                         "retryDelaySeconds": 0,
                         "timeoutSeconds": 0,
                         "runtimeConfig": runtime_config if has_runtime else {},
+                        "idempotencyKey": client_token,
                     },
                 )
                 task = submit_resp.get("task") or {}
@@ -2473,6 +2488,8 @@ class TaskQueueWindow:
                 parts = []
                 if skipped_upload:
                     parts.append("内容未变化，跳过上传")
+                if submit_resp.get("idempotentReplay"):
+                    parts.append("幂等重放，复用已入队任务")
                 results.append((title, "已提交" + (param_tag or "") + ("（{}）".format("，".join(parts)) if parts else "")))
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")
