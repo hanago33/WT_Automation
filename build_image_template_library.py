@@ -22,6 +22,7 @@ from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
 import wt_dpi
+import wt_theme
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageGrab
@@ -48,28 +49,31 @@ CONTACT_SHEET_MARGIN = 16
 # 统一浅色蓝灰主题
 # ============================================================================
 
+_base_theme = wt_theme.get_palette()
 TEMPLATE_THEME = {
-    "bg": "#f4f7fb",
-    "panel": "#ffffff",
-    "panel_soft": "#fbfdff",
-    "toolbar": "#eaf1fb",
-    "border": "#d8e2f0",
-    "primary": "#2563eb",
-    "primary_soft": "#dbeafe",
-    "success": "#059669",
-    "success_soft": "#dcfce7",
-    "danger": "#dc2626",
-    "danger_soft": "#fee2e2",
-    "warning": "#b45309",
-    "warning_soft": "#fef3c7",
-    "text": "#1f2937",
-    "muted": "#64748b",
+    "bg": _base_theme.get("bg", "#f4f7fb"),
+    "panel": _base_theme.get("panel", "#ffffff"),
+    "panel_soft": _base_theme.get("panel_soft", "#fbfdff"),
+    "toolbar": _base_theme.get("toolbar", "#eaf1fb"),
+    "border": _base_theme.get("border", "#d8e2f0"),
+    "primary": _base_theme.get("primary", "#2563eb"),
+    "primary_soft": _base_theme.get("primary_soft", "#dbeafe"),
+    "success": _base_theme.get("success", "#059669"),
+    "success_soft": _base_theme.get("success_soft", "#dcfce7"),
+    "danger": _base_theme.get("danger", "#dc2626"),
+    "danger_soft": _base_theme.get("danger_soft", "#fee2e2"),
+    "warning": _base_theme.get("warning", "#b45309"),
+    "warning_soft": _base_theme.get("warning_soft", "#fef3c7"),
+    "text": _base_theme.get("text", "#1f2937"),
+    "muted": _base_theme.get("muted", "#64748b"),
     "font": "Microsoft YaHei UI",
 }
 
 
-def _paint_button(button, bg, fg, active_bg, active_fg="#ffffff"):
+def _paint_button(button, bg, fg, active_bg, active_fg=None):
     """按统一色板配置普通 tk.Button 样式。"""
+    if active_fg is None:
+        active_fg = fg
     button.configure(
         bg=bg,
         fg=fg,
@@ -77,11 +81,28 @@ def _paint_button(button, bg, fg, active_bg, active_fg="#ffffff"):
         activeforeground=active_fg,
         relief="flat",
         bd=0,
+        highlightthickness=1,
+        highlightbackground=TEMPLATE_THEME["border"],
         cursor="hand2",
-        padx=10,
-        pady=3,
-        font=(TEMPLATE_THEME["font"], 10),
+        padx=12,
+        pady=4,
+        font=(TEMPLATE_THEME["font"], 9, "bold" if "soft" in str(bg) else "normal"),
     )
+    def _on_enter(e):
+        try:
+            if button["state"] != tk.DISABLED:
+                button.configure(bg=active_bg)
+        except Exception:
+            pass
+    def _on_leave(e):
+        try:
+            if button["state"] != tk.DISABLED:
+                button.configure(bg=bg)
+        except Exception:
+            pass
+    button.bind("<Enter>", _on_enter)
+    button.bind("<Leave>", _on_leave)
+    return button
 
 
 def find_tesseract_executable():
@@ -448,8 +469,8 @@ class TemplateBuilderApp:
         top_frame = tk.Frame(self.root, bg=TEMPLATE_THEME["toolbar"])
         top_frame.pack(fill=tk.X, padx=8, pady=8)
 
-        tk.Label(top_frame, text="截图", bg=TEMPLATE_THEME["toolbar"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=0, sticky="w")
-        tk.Entry(top_frame, textvariable=self.screenshot_path_var, width=90, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=1, padx=4, sticky="ew")
+        tk.Label(top_frame, text="截图", bg=TEMPLATE_THEME["toolbar"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 9, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Entry(top_frame, textvariable=self.screenshot_path_var, width=90, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="flat", bd=0, highlightthickness=1, highlightbackground=TEMPLATE_THEME["border"], font=(TEMPLATE_THEME["font"], 9)).grid(row=0, column=1, padx=4, sticky="ew", ipady=2)
         choose_btn = tk.Button(top_frame, text="选择截图", command=self.choose_screenshot)
         _paint_button(choose_btn, TEMPLATE_THEME["panel"], TEMPLATE_THEME["text"], TEMPLATE_THEME["primary_soft"], active_fg=TEMPLATE_THEME["primary"])
         choose_btn.grid(row=0, column=2, padx=4)
@@ -460,8 +481,8 @@ class TemplateBuilderApp:
         _paint_button(detect_btn, TEMPLATE_THEME["primary_soft"], TEMPLATE_THEME["primary"], TEMPLATE_THEME["primary"])
         detect_btn.grid(row=0, column=4, padx=4)
 
-        tk.Label(top_frame, text="输出目录", bg=TEMPLATE_THEME["toolbar"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=0, sticky="w")
-        tk.Entry(top_frame, textvariable=self.output_dir_var, width=90, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=1, padx=4, sticky="ew")
+        tk.Label(top_frame, text="输出目录", bg=TEMPLATE_THEME["toolbar"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 9, "bold")).grid(row=1, column=0, sticky="w")
+        tk.Entry(top_frame, textvariable=self.output_dir_var, width=90, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="flat", bd=0, highlightthickness=1, highlightbackground=TEMPLATE_THEME["border"], font=(TEMPLATE_THEME["font"], 9)).grid(row=1, column=1, padx=4, sticky="ew", ipady=2)
         dir_btn = tk.Button(top_frame, text="选择目录", command=self.choose_output_dir)
         _paint_button(dir_btn, TEMPLATE_THEME["panel"], TEMPLATE_THEME["text"], TEMPLATE_THEME["primary_soft"], active_fg=TEMPLATE_THEME["primary"])
         dir_btn.grid(row=1, column=2, padx=4)

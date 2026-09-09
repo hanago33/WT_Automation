@@ -137,22 +137,26 @@ class FlowGraphWindow(tk.Toplevel):
         self.configure(bg=self.theme["bg"])
 
         # ── 顶部：板块选择 ──
-        top = tk.Frame(self, bg=self.theme["toolbar"])
+        top = tk.Frame(self, bg=self.theme["toolbar"], padx=14, pady=8)
         top.pack(fill=tk.X)
-        tk.Label(top, text="板块：", bg=self.theme["toolbar"], fg=self.theme["muted"],
-                 font=("Microsoft YaHei UI", 10)).pack(side=tk.LEFT, padx=(12, 4))
+        tk.Label(top, text="板块链路：", bg=self.theme["toolbar"], fg=self.theme["text"],
+                 font=("Microsoft YaHei UI", 9, "bold")).pack(side=tk.LEFT, padx=(4, 6))
         self.section_var = tk.StringVar(value=SECTION_FLOW_MAP.get(default_section, ""))
-        self.opt = tk.OptionMenu(
-            top, self.section_var,
-            *[v for _, v in SECTION_FLOW_MAP.items()],
-            command=lambda e: self.reload(),
+        self.opt = ttk.Combobox(
+            top,
+            textvariable=self.section_var,
+            values=[v for _, v in SECTION_FLOW_MAP.items()],
+            state="readonly",
+            width=18,
+            font=("Microsoft YaHei UI", 9),
         )
         self.opt.pack(side=tk.LEFT)
+        self.opt.bind("<<ComboboxSelected>>", lambda e: self.reload())
         self.title_label = tk.Label(top, text="", bg=self.theme["toolbar"],
-                                    fg=self.theme["text"],
+                                    fg=self.theme.get("primary", "#2563eb"),
                                     font=("Microsoft YaHei UI", 10, "bold"))
-        self.title_label.pack(side=tk.LEFT, padx=(10, 0))
-        tk.Label(top, text="点击节点看详情 · 滚轮滚动", bg=self.theme["toolbar"],
+        self.title_label.pack(side=tk.LEFT, padx=(12, 0))
+        tk.Label(top, text="点击节点查看详情 · 滚轮滚动视口", bg=self.theme["toolbar"],
                  fg=self.theme["muted"], font=("Microsoft YaHei UI", 9)
                  ).pack(side=tk.RIGHT, padx=(0, 12))
 
@@ -165,7 +169,7 @@ class FlowGraphWindow(tk.Toplevel):
             sw = tk.Label(legend, bg=col, width=2, height=1, relief=tk.FLAT)
             sw.pack(side=tk.LEFT, padx=(0, 2))
             tk.Label(legend, text=act, bg=self.theme["bg"], fg=self.theme["muted"],
-                     font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(0, 9))
+                 font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(0, 9))
 
         # ── 画布 + 滚动条 ──
         self.canvas = tk.Canvas(self, bg=self.theme["bg"], highlightthickness=0)
@@ -227,8 +231,8 @@ class FlowGraphWindow(tk.Toplevel):
             self.canvas.configure(scrollregion=(0, 0, 1, 1))
             return
         w = self.canvas.winfo_width()
-        width = w if w > 1 else 660
-        node_w, node_h, gap = 460, 94, 32
+        width = w if w > 1 else 680
+        node_w, node_h, gap = 500, 100, 32
         x = max(24, (width - node_w) // 2)
         y = 24
         prev_bottom = None
@@ -237,40 +241,40 @@ class FlowGraphWindow(tk.Toplevel):
                 self.canvas.create_line(
                     x + node_w // 2, prev_bottom,
                     x + node_w // 2, y,
-                    fill="#b9c6dc", width=2, arrow=tk.LAST, arrowshape=(7, 9, 4),
+                    fill="#94a3b8", width=2, arrow=tk.LAST, arrowshape=(8, 10, 5),
                 )
             color = _ACTION_COLORS.get(n["action"], _ACTION_COLORS["default"])
             # 阴影
-            round_rectangle(self.canvas, x + 2, y + 5, x + node_w + 2, y + node_h + 5, 12,
-                            fill=self.theme["shadow"], outline=self.theme["shadow"])
+            round_rectangle(self.canvas, x + 2, y + 4, x + node_w + 2, y + node_h + 4, 12,
+                            fill=self.theme.get("shadow", "#e2e8f0"), outline=self.theme.get("shadow", "#e2e8f0"))
             # 卡片
             box = round_rectangle(self.canvas, x, y, x + node_w, y + node_h, 12,
-                                  fill=self.theme["card"], outline=self.theme["border"], width=2)
+                                  fill=self.theme.get("card", "#ffffff"), outline=self.theme.get("border", "#e2e8f0"), width=1.5)
             # 序号 badge（垂直居中）
             cx, cy = x + 36, y + node_h / 2.0
             self.canvas.create_oval(cx - 16, cy - 16, cx + 16, cy + 16,
                                     fill=color, outline=color)
             self.canvas.create_text(cx, cy, text=str(n["index"]), fill="white",
-                                    font=("Microsoft YaHei UI", 13, "bold"))
+                                    font=("Microsoft YaHei UI", 12, "bold"))
             # 标题
             disp = n["name"]
-            if len(disp) > 30:
-                disp = disp[:30] + "…"
-            self.canvas.create_text(x + 62, y + 14, anchor="nw", text=disp,
-                                    fill=self.theme["text"],
-                                    font=("Microsoft YaHei UI", 11, "bold"),
-                                    width=node_w - 74)
+            if len(disp) > 36:
+                disp = disp[:36] + "…"
+            self.canvas.create_text(x + 64, y + 14, anchor="nw", text=disp,
+                                    fill=self.theme.get("text", "#0f172a"),
+                                    font=("Microsoft YaHei UI", 10, "bold"),
+                                    width=node_w - 78)
             # 动作胶囊（单独一行）
-            self._pill(self.canvas, x + 62, y + 48, n["action"] or "—", color)
+            self._pill(self.canvas, x + 64, y + 46, n["action"] or "—", color)
             # 控件名（独占一行，可换行，放宽截断）
             ctrl = n["control"] or ""
-            if len(ctrl) > 40:
-                ctrl = ctrl[:40] + "…"
+            if len(ctrl) > 46:
+                ctrl = ctrl[:46] + "…"
             if ctrl:
                 self.canvas.create_text(
-                    x + 62, y + 70, anchor="nw", text=ctrl,
-                    fill=self.theme["muted"], font=("Microsoft YaHei UI", 9),
-                    width=node_w - 74,
+                    x + 64, y + 72, anchor="nw", text=f"🎯 {ctrl}",
+                    fill=self.theme.get("muted", "#64748b"), font=("Microsoft YaHei UI", 9),
+                    width=node_w - 78,
                 )
             # 交互
             tag = "node_%d" % n["index"]
