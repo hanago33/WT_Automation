@@ -1,6 +1,8 @@
 # WT Automation
 
-WT Automation is a Windows-focused automation toolkit for recording, editing, validating, and executing WT workflow steps. The project includes a Tkinter flow editor, Robot Framework resources, Python execution helpers, control-map/template assets, and tests for core conversion and execution logic.
+WT Automation is a Windows-focused automation toolkit for recording, editing, validating, and executing WT workflow steps. The project includes a Tkinter flow editor, Robot Framework resources, Python execution helpers, control-map/template assets, and tests for core conversion and logic.
+
+> Document index (Chinese): see [`docs/README.md`](docs/README.md) — layered `docs/` taxonomy, repository-root script map, and known issues.
 
 ## Main Entry Points
 

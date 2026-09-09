@@ -135,3 +135,51 @@ MUP WT 用户手册高级注释（英文原版、中文译本、PDF）及两份�
 - 单次会话产出统一进 `02-会话沉淀`，文件名以 `_YYYYMMDD` 结尾。
 - 移动/重命名 `docs/` 下文件后，需同步更新全仓库引用（代码、测试、`.qoder/repowiki`、`website/README.md`
   均存在 `docs/` 路径引用）。
+
+---
+
+## 附：仓库根目录速查（根级脚本/运维地图）
+
+> 根目录保留 50 余个 `wt_*.py` 核心库与工具、10 个运维 `.bat`。**核心库互相 `import`，勿搬动**；
+> 独立工具大多可独立运行、未被 `.bat` 引用（依赖关系为 2026-09-09 实测）。
+
+### 主入口 / 核心库（勿动）
+
+- **GUI 入口**：`WT_Launcher.py`（总控台）、`WT_Flow_Editor.py`（流程编辑器）、`WT_AUT_recorded.py`（录制执行）
+- **核心运行库**：`wt_flow_executor` / `wt_flow_locator` / `wt_flow_validation` / `wt_action_schema` /
+  `wt_business_steps` / `wt_dpi` / `wt_theme` / `wt_wheel_router`（共享滚轮路由）/ `flow_excel_io` /
+  `flow_recorder_converter` / `image_template_index` / `mup_assets` 等（根级相互 import）
+- **任务/远程服务**：`wt_task_queue.py` / `wt_task_server.py` / `wt_task_queue_window.py` /
+  `wt_run_reporting.py` / `wt_run_status.py` / `wt_server_monitor.py` / `wt_project_workdir_parser.py`
+
+### 启动与运维脚本（根）
+
+| 脚本 | 用途 |
+|---|---|
+| `启动WT自动化总控台.bat` ≡ `_无窗口.bat` | 本机启动总控台（管理员提升 + `pythonw` 无控制台）。两文件**逐字节相同、互为别名**，均保留（可能有快捷方式引用） |
+| `启动WT自动化总控台_内网.bat` ≡ `_内网_无窗口.bat` | 内网机（便携 Python `D:\wt_python`）启动总控台，同上互为别名 |
+| `start_queue_service.bat` / `check_queue_link.bat` | 任务队列服务启动 / 连通性检查 |
+| `服务器一键会话修复.bat` / `验证环境_内网.bat` | 远程机会话修复 / 内网环境验证 |
+| `同步录制文件.bat` / `upload_website.bat` | 录制文件同步 / 站点发布 |
+| `_launch_pywinauto_recorder.cmd` | 启动 pywinauto 录制器 |
+
+### 发布工具组（源码保留；对应 `.exe` 已移出版本控制）
+
+`apply_release.py` / `deploy_release.py` / `make_release.py` — 三者各自有 PyInstaller 产物
+`apply_release.exe` / `deploy_release.exe` / `make_release.exe`，**已于 2026-09-09 移出版本控制**
+（`git rm --cached` + `.gitignore`），需要时用源码或从 Release 获取。
+
+### 诊断 / 独立小工具（可独立运行，未被 `.bat` 引用）
+
+`diagnose_mup_windows.py`、`diagnose_session.py`、`control_locator_probe.py`、`fix_server_gm_exe.py`、
+`wt_queue_selfcheck.py`、`wait_global_mapper_ready.py`、`build_auto_capture_index.py`、
+`build_control_map_library.py`、`build_image_template_library.py`、`image_template_index.py`、
+`make_power_template.py`、`text_tools.py`、`txt_merge_tool.py`、`ui_tars_runner.js`、
+`WT_Automation.robot`、`mup_*.py`（MUP 资产/配置族）。
+
+### 杂项说明
+
+- `requirements.txt`（运行依赖）与 `requirements-template-builder.txt`（模板构建器依赖）。
+- `dist/`、`release_out/` 为打包输出（gitignore）。`release_out` 习惯上**保留最近 14 个发布点**，旧包按需清理。
+- `uia_tree_dumper/`：独立 C# 工具子项目，其 `bin/`、`obj/` 构建产物已移出版本控制（2026-09-09）。
+- `tools/ORC/`：第三方 Tesseract OCR 运行时，入库保留（离线必需）。
