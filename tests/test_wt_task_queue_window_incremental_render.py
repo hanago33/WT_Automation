@@ -224,3 +224,20 @@ def test_log_tags_classified_on_increment():
     window._render_logs(["正常开始", "步骤失败: x"])
     tags = [t for _, t in window.log_text.lines]
     assert tags == ["system", "error"]
+
+
+def test_log_append_stream_lines():
+    window = make_window()
+    # 首次增量
+    window._append_stream_lines(window.log_text, ["stream line 1", "stream line 2"], "_log_rendered_lines")
+    lines = [l for l, _ in window.log_text.lines]
+    assert lines == ["stream line 1", "stream line 2"]
+    assert getattr(window, "_log_rendered_lines", 0) == 2
+
+    # 二次增量（绝不清除前序日志，直接追加并正确分类标签）
+    window._append_stream_lines(window.log_text, ["stream line 3 [ERROR]"], "_log_rendered_lines")
+    lines = [l for l, _ in window.log_text.lines]
+    assert lines == ["stream line 1", "stream line 2", "stream line 3 [ERROR]"]
+    tags = [t for _, t in window.log_text.lines]
+    assert tags == ["info", "info", "error"]
+

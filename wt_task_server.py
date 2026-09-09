@@ -1059,6 +1059,10 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             return
 
         try:
+            try:
+                self.connection.settimeout(10.0)
+            except Exception:
+                pass
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache, no-transform")
@@ -1109,7 +1113,10 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
 
             # 2. 实时流式监听循环
             while True:
-                if getattr(self.server, "_shutdown_requested", False):
+                if (
+                    getattr(self.server, "_shutdown_requested", False)
+                    or getattr(self.server, "_BaseServer__shutdown_request", False)
+                ):
                     break
                 now = time.time()
 
@@ -1140,43 +1147,46 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
                         task_id,
                         db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
                     )
-                    if curr_task:
-                        curr_task["eta"] = wt_task_queue.calculate_task_eta(curr_task)
-                        _send_sse("status", {"task": curr_task, "eta": curr_task["eta"]})
-                        if curr_task.get("status") in (
-                            wt_task_queue.STATUS_SUCCESS,
-                            "completed",
-                            wt_task_queue.STATUS_FAILED,
-                            wt_task_queue.STATUS_CANCELED,
-                            "cancelled",
-                            wt_task_queue.STATUS_TERMINATED,
-                        ):
-                            # 排空最后可能的日志碎片
-                            if os.path.exists(log_file):
-                                try:
-                                    curr_size = os.path.getsize(log_file)
-                                    if curr_size > file_pos:
-                                        with open(log_file, "rb") as f:
-                                            f.seek(file_pos)
-                                            new_bytes = f.read(curr_size - file_pos)
-                                        new_text = new_bytes.decode("utf-8", errors="replace")
-                                        new_lines = [
-                                            l.rstrip("\r")
-                                            for l in new_text.split("\n")
-                                            if l.rstrip("\r")
-                                        ]
-                                        if new_lines:
-                                            _send_sse(
-                                                "log",
-                                                {"lines": new_lines, "isInitial": False},
-                                            )
-                                except OSError:
-                                    pass
-                            _send_sse("end", {"status": curr_task.get("status")})
-                            break
+                    if curr_task is None:
+                        _send_sse("end", {"status": "not_found"})
+                        break
 
-                # 15s 发送一次心跳保活
-                if now - last_ping >= 15.0:
+                    curr_task["eta"] = wt_task_queue.calculate_task_eta(curr_task)
+                    _send_sse("status", {"task": curr_task, "eta": curr_task["eta"]})
+                    if curr_task.get("status") in (
+                        wt_task_queue.STATUS_SUCCESS,
+                        "completed",
+                        wt_task_queue.STATUS_FAILED,
+                        wt_task_queue.STATUS_CANCELED,
+                        "cancelled",
+                        wt_task_queue.STATUS_TERMINATED,
+                    ):
+                        # 排空最后可能的日志碎片
+                        if os.path.exists(log_file):
+                            try:
+                                curr_size = os.path.getsize(log_file)
+                                if curr_size > file_pos:
+                                    with open(log_file, "rb") as f:
+                                        f.seek(file_pos)
+                                        new_bytes = f.read(curr_size - file_pos)
+                                    new_text = new_bytes.decode("utf-8", errors="replace")
+                                    new_lines = [
+                                        l.rstrip("\r")
+                                        for l in new_text.split("\n")
+                                        if l.rstrip("\r")
+                                    ]
+                                    if new_lines:
+                                        _send_sse(
+                                            "log",
+                                            {"lines": new_lines, "isInitial": False},
+                                        )
+                            except OSError:
+                                pass
+                        _send_sse("end", {"status": curr_task.get("status")})
+                        break
+
+                # 10s 发送一次心跳保活
+                if now - last_ping >= 10.0:
                     last_ping = now
                     self.wfile.write(b": ping\n\n")
                     self.wfile.flush()
@@ -1548,9 +1558,9 @@ class TaskServer(ThreadingHTTPServer):
         )
         super().server_close()
 
-    def _run_log_cleanup(self):
+    def _run_log_cleanup(self, force=False):
         today = datetime.now().strftime("%Y-%m-%d")
-        if self._last_cleanup_date == today:
+        if not force and self._last_cleanup_date == today:
             return
         self._last_cleanup_date = today
         removed = wt_task_queue.cleanup_task_logs(
@@ -1563,6 +1573,24 @@ class TaskServer(ThreadingHTTPServer):
                 "cleaned {} task log files (retention {}d)".format(
                     removed, self.log_retention_days
                 ),
+                log_path=self.server_log_path,
+            )
+        try:
+            arch_res = wt_task_queue.archive_completed_tasks(
+                days=self.log_retention_days,
+                limit=2000,
+                db_path=self.queue_db,
+            )
+            if arch_res.get("archivedCount", 0) > 0:
+                log_server_event(
+                    "archived {} completed tasks to tasks_archive (retention {}d)".format(
+                        arch_res["archivedCount"], self.log_retention_days
+                    ),
+                    log_path=self.server_log_path,
+                )
+        except Exception as exc:
+            log_server_event(
+                "daily task archival failed: {}".format(exc),
                 log_path=self.server_log_path,
             )
 

@@ -243,6 +243,9 @@ def _init_db_once(db_path):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_archive_user ON tasks_archive(user)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_archive_ended ON tasks_archive(ended_at)")
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_archive_idempotency ON tasks_archive(user, idempotency_key)"
+        )
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -368,6 +371,11 @@ def submit_task(
                 "SELECT task_id FROM tasks WHERE user = ? AND idempotency_key = ? ORDER BY created_at DESC LIMIT 1",
                 (user, idempotency_key),
             ).fetchone()
+            if not row:
+                row = conn.execute(
+                    "SELECT task_id FROM tasks_archive WHERE user = ? AND idempotency_key = ? ORDER BY created_at DESC LIMIT 1",
+                    (user, idempotency_key),
+                ).fetchone()
             if row:
                 existing = get_task(row["task_id"], db_path=db_path)
                 if existing:
@@ -470,6 +478,11 @@ def submit_tasks_batch(tasks_specs, db_path=DEFAULT_DB_PATH):
                         "SELECT task_id FROM tasks WHERE user = ? AND idempotency_key = ? ORDER BY created_at DESC LIMIT 1",
                         (user, idempotency_key),
                     ).fetchone()
+                    if not row:
+                        row = conn.execute(
+                            "SELECT task_id FROM tasks_archive WHERE user = ? AND idempotency_key = ? ORDER BY created_at DESC LIMIT 1",
+                            (user, idempotency_key),
+                        ).fetchone()
                     if row:
                         tid = row["task_id"]
                         created_task_ids.append(tid)

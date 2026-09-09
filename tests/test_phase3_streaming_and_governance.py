@@ -164,6 +164,43 @@ class TestPhase3TaskArchivalAndETA(unittest.TestCase):
         )
         self.assertEqual(len(all_included), 2)
 
+    def test_idempotency_cross_archive(self):
+        """当原任务已被归档至 tasks_archive 时，相同 idempotency_key 提交能正确查重并返回已归档任务。"""
+        t1 = wt_task_queue.submit_task(
+            user="dave",
+            flow_path="f_idem.json",
+            idempotency_key="archived-key-001",
+            db_path=self.db_path,
+        )
+        conn = wt_task_queue._connect(self.db_path)
+        with conn:
+            conn.execute(
+                "UPDATE tasks SET status = ?, ended_at = ? WHERE task_id = ?",
+                ("success", wt_task_queue._now_iso(), t1["taskId"]),
+            )
+        conn.close()
+
+        # 归档至 tasks_archive
+        res = wt_task_queue.archive_completed_tasks(days=0, db_path=self.db_path)
+        self.assertEqual(res["archivedCount"], 1)
+
+        # 再次以相同的 idempotency_key 提交单任务
+        t2 = wt_task_queue.submit_task(
+            user="dave",
+            flow_path="f_idem.json",
+            idempotency_key="archived-key-001",
+            db_path=self.db_path,
+        )
+        self.assertEqual(t2["taskId"], t1["taskId"])
+        self.assertTrue(t2.get("isArchived"))
+
+        # 批量提交中以相同的 idempotency_key 提交
+        batch_res = wt_task_queue.submit_tasks_batch(
+            [{"user": "dave", "flow_path": "f_idem.json", "idempotency_key": "archived-key-001"}],
+            db_path=self.db_path,
+        )
+        self.assertEqual([t["taskId"] for t in batch_res], [t1["taskId"]])
+
     def test_calculate_task_eta_scenarios(self):
         """验证动态 ETA 计算在各种任务生命周期状态下的健壮性。"""
         # 1. 终态任务
@@ -388,6 +425,75 @@ class TestPhase3HttpStreamingAndMaintenance(unittest.TestCase):
         health_resp = urllib.request.urlopen(health_req, timeout=5)
         self.assertEqual(health_resp.status, 200)
 
+    def test_http_task_events_stream_task_deleted_terminates(self):
+        """若任务在 SSE 监听中途被删除，服务端应发送 not_found 并正常退出循环，绝不死循环。"""
+        task = wt_task_queue.submit_task(
+            user="del_user", flow_path="f_del.json", db_path=self.db_path
+        )
+        task_id = task["taskId"]
+        url = self._url("/api/tasks/{}/events?token={}".format(task_id, self.auth_token))
+        req = urllib.request.Request(url)
+        resp = urllib.request.urlopen(req, timeout=10)
+
+        events_received = []
+
+        def read_stream():
+            current_event = "message"
+            for raw in resp:
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not line or line.startswith(":"):
+                    continue
+                if line.startswith("event:"):
+                    current_event = line[len("event:"):].strip()
+                elif line.startswith("data:"):
+                    payload = json.loads(line[len("data:"):].strip())
+                    events_received.append((current_event, payload))
+                    if current_event == "end":
+                        break
+
+        reader_thread = threading.Thread(target=read_stream, daemon=True)
+        reader_thread.start()
+
+        time.sleep(0.5)
+        # 从数据库彻底删除任务
+        conn = wt_task_queue._connect(self.db_path)
+        with conn:
+            conn.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
+        conn.close()
+
+        # 等待流结束
+        reader_thread.join(timeout=4)
+        resp.close()
+
+        end_events = [payload for event, payload in events_received if event == "end"]
+        self.assertTrue(len(end_events) > 0)
+        self.assertEqual(end_events[0].get("status"), "not_found")
+
+    def test_daily_maintenance_auto_archive(self):
+        """验证每日清理流程自动触发 tasks_archive 归档迁移。"""
+        # 创建超期终态任务
+        old_time = (datetime.now() - timedelta(days=60)).isoformat(timespec="seconds")
+        t = wt_task_queue.submit_task(
+            user="cleanup_user", flow_path="f_old.json", db_path=self.db_path
+        )
+        conn = wt_task_queue._connect(self.db_path)
+        with conn:
+            conn.execute(
+                "UPDATE tasks SET status = ?, ended_at = ?, updated_at = ? WHERE task_id = ?",
+                ("success", old_time, old_time, t["taskId"]),
+            )
+        conn.close()
+
+        # 触发清理
+        self.server._run_log_cleanup(force=True)
+
+        # 检查是否已进入归档表
+        conn = wt_task_queue._connect(self.db_path)
+        arch = conn.execute("SELECT * FROM tasks_archive WHERE task_id = ?", (t["taskId"],)).fetchone()
+        conn.close()
+        self.assertIsNotNone(arch)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1785,6 +1785,9 @@ class TaskQueueWindow:
         task_id = self._selected_task_id()
         self._update_control_buttons()
         if task_id:
+            if task_id != getattr(self, "_last_selected_task_id", None):
+                self._last_selected_task_id = task_id
+                self._clear_log_text()
             self._start_task_sse_stream(task_id)
 
     def _start_task_sse_stream(self, task_id):
@@ -1815,7 +1818,7 @@ class TaskQueueWindow:
 
         resp = None
         try:
-            resp = urllib.request.urlopen(req, timeout=15)
+            resp = urllib.request.urlopen(req, timeout=25)
             content_type = str(resp.headers.get("Content-Type", ""))
             if resp.status != 200 or "text/event-stream" not in content_type:
                 if not stop_event.is_set():
@@ -1840,10 +1843,16 @@ class TaskQueueWindow:
                         continue
                     if event_name == "log":
                         lines = payload.get("lines", [])
+                        is_initial = payload.get("isInitial", False)
                         if lines:
-                            self._post_ui(lambda l=lines: self._append_lines_incremental(
-                                self.log_text, l, "_log_rendered_lines"
-                            ))
+                            if is_initial:
+                                self._post_ui(lambda l=lines: self._append_lines_incremental(
+                                    self.log_text, l, "_log_rendered_lines"
+                                ))
+                            else:
+                                self._post_ui(lambda l=lines: self._append_stream_lines(
+                                    self.log_text, l, "_log_rendered_lines"
+                                ))
                     elif event_name == "status":
                         task = payload.get("task")
                         if task and getattr(self, "_active_stream_task_id", None) == task_id:
@@ -1932,6 +1941,26 @@ class TaskQueueWindow:
         widget.config(state=tk.DISABLED)
         widget.see(tk.END)
         setattr(self, state_attr, len(text_lines))
+
+    def _append_stream_lines(self, widget, delta_lines, state_attr):
+        """将 SSE 流式推送的增量日志行直接追加到 Text 控件末尾并自动滚动。"""
+        if not delta_lines:
+            return
+        widget.config(state=tk.NORMAL)
+        for line in delta_lines:
+            widget.insert(tk.END, str(line) + "\n", self._classify_line(str(line)))
+
+        # 头部 trim：超过上限时删除最早的多余行
+        row = int(widget.index("end-1c").split(".")[0] or 0)
+        total = max(0, row - 1)
+        excess = total - self._LOG_MAX_LINES
+        if excess > 0:
+            widget.delete("1.0", "%d.0" % (excess + 1))
+            total = self._LOG_MAX_LINES
+
+        widget.config(state=tk.DISABLED)
+        widget.see(tk.END)
+        setattr(self, state_attr, total)
 
     @staticmethod
     def _classify_line(line):
