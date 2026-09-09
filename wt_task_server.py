@@ -279,6 +279,13 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             return False
         header = self.headers.get("Authorization", "")
         token = header[len("Bearer ") :] if header.startswith("Bearer ") else ""
+        if not token and hasattr(self, "path") and "?" in self.path:
+            try:
+                parsed = urllib.parse.urlsplit(self.path)
+                qs = urllib.parse.parse_qs(parsed.query)
+                token = (qs.get("token") or qs.get("authToken") or [""])[0]
+            except Exception:
+                pass
         if token and secrets.compare_digest(token.strip(), expected):
             return True
         self._send_unauthorized()
@@ -990,6 +997,195 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
         )
         self._send_json({"tasks": tasks, "count": len(tasks)}, status=201)
 
+    def _handle_maintenance_archive(self):
+        payload, error = self._read_json_body()
+        if error and error != "empty body":
+            if isinstance(error, tuple):
+                self._send_error(error[0], error[1])
+            else:
+                self._send_error(400, error)
+            return
+        payload = payload or {}
+        days = payload.get("days", 30)
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            self._send_error(400, "days must be an integer")
+            return
+        limit = payload.get("limit", 1000)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            self._send_error(400, "limit must be an integer")
+            return
+
+        db_path = getattr(self.server, "queue_db", DEFAULT_DB_PATH)
+        result = wt_task_queue.archive_completed_tasks(days=days, limit=limit, db_path=db_path)
+        source_ip = self.client_address[0] if self.client_address else ""
+        wt_task_queue.add_audit_event(
+            user="admin",
+            source_ip=source_ip,
+            action="archive_tasks",
+            result="ok",
+            detail="archived {} tasks (days={}, cutoff={})".format(
+                result.get("archivedCount", 0), days, result.get("cutoff", "")
+            ),
+            db_path=db_path,
+        )
+        self._send_json(
+            {
+                "ok": True,
+                "archivedCount": result.get("archivedCount", 0),
+                "cutoff": result.get("cutoff", ""),
+                "days": days,
+            }
+        )
+
+    def _handle_task_events_stream(self, task_id):
+        """处理任务实时事件流 (Server-Sent Events / SSE)。
+
+        推送事件：
+          - status: 任务最新状态、进度与动态 ETA
+          - log: 增量日志文本行
+          - ping: 心跳保活
+          - end: 任务终态结束标记
+        """
+        task = wt_task_queue.get_task(
+            task_id,
+            db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+        )
+        if task is None:
+            self._send_error(404, "task not found")
+            return
+
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+
+        def _send_sse(event, data):
+            msg = "event: {}\ndata: {}\n\n".format(
+                event, json.dumps(data, ensure_ascii=False)
+            )
+            self.wfile.write(msg.encode("utf-8"))
+            self.wfile.flush()
+
+        log_dir = getattr(self.server, "task_log_dir", DEFAULT_TASK_LOG_DIR)
+        log_file = os.path.join(log_dir, "{}.log".format(task_id))
+
+        try:
+            # 1. 初始状态与近期日志推送
+            task["eta"] = wt_task_queue.calculate_task_eta(task)
+            _send_sse("status", {"task": task, "eta": task["eta"]})
+
+            lines, _ = wt_task_queue.read_task_log_tail(task_id, tail=100, log_dir=log_dir)
+            if lines:
+                _send_sse("log", {"lines": lines, "isInitial": True})
+
+            file_pos = 0
+            if os.path.exists(log_file):
+                file_pos = os.path.getsize(log_file)
+
+            # 若任务已处于终态，推送 end 后直接结束
+            if task.get("status") in (
+                wt_task_queue.STATUS_SUCCESS,
+                "completed",
+                wt_task_queue.STATUS_FAILED,
+                wt_task_queue.STATUS_CANCELED,
+                "cancelled",
+                wt_task_queue.STATUS_TERMINATED,
+            ):
+                _send_sse("end", {"status": task.get("status")})
+                return
+
+            last_status_check = time.time()
+            last_ping = time.time()
+
+            # 2. 实时流式监听循环
+            while True:
+                if getattr(self.server, "_shutdown_requested", False):
+                    break
+                now = time.time()
+
+                # 增量读取新增日志行
+                if os.path.exists(log_file):
+                    try:
+                        curr_size = os.path.getsize(log_file)
+                        if curr_size > file_pos:
+                            with open(log_file, "rb") as f:
+                                f.seek(file_pos)
+                                new_bytes = f.read(curr_size - file_pos)
+                                file_pos = curr_size
+                            new_text = new_bytes.decode("utf-8", errors="replace")
+                            new_lines = [
+                                l.rstrip("\r")
+                                for l in new_text.split("\n")
+                                if l.rstrip("\r")
+                            ]
+                            if new_lines:
+                                _send_sse("log", {"lines": new_lines, "isInitial": False})
+                    except OSError:
+                        pass
+
+                # 每秒检查一次任务状态
+                if now - last_status_check >= 1.0:
+                    last_status_check = now
+                    curr_task = wt_task_queue.get_task(
+                        task_id,
+                        db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+                    )
+                    if curr_task:
+                        curr_task["eta"] = wt_task_queue.calculate_task_eta(curr_task)
+                        _send_sse("status", {"task": curr_task, "eta": curr_task["eta"]})
+                        if curr_task.get("status") in (
+                            wt_task_queue.STATUS_SUCCESS,
+                            "completed",
+                            wt_task_queue.STATUS_FAILED,
+                            wt_task_queue.STATUS_CANCELED,
+                            "cancelled",
+                            wt_task_queue.STATUS_TERMINATED,
+                        ):
+                            # 排空最后可能的日志碎片
+                            if os.path.exists(log_file):
+                                try:
+                                    curr_size = os.path.getsize(log_file)
+                                    if curr_size > file_pos:
+                                        with open(log_file, "rb") as f:
+                                            f.seek(file_pos)
+                                            new_bytes = f.read(curr_size - file_pos)
+                                        new_text = new_bytes.decode("utf-8", errors="replace")
+                                        new_lines = [
+                                            l.rstrip("\r")
+                                            for l in new_text.split("\n")
+                                            if l.rstrip("\r")
+                                        ]
+                                        if new_lines:
+                                            _send_sse(
+                                                "log",
+                                                {"lines": new_lines, "isInitial": False},
+                                            )
+                                except OSError:
+                                    pass
+                            _send_sse("end", {"status": curr_task.get("status")})
+                            break
+
+                # 15s 发送一次心跳保活
+                if now - last_ping >= 15.0:
+                    last_ping = now
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+
+                time.sleep(0.3)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # 客户端正常断开连接或关闭窗口，静默退出
+            pass
+
     def _route_get(self, path, query):
         if path == "/api/health":
             is_interactive, session_desc = wt_task_queue.check_desktop_interactive()
@@ -1063,12 +1259,14 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             # 合并为 1 次请求。不传该参数时行为与旧版本完全一致。
             raw_ids = str(query.get("ids", [""])[0] or "").strip()
             task_ids = [item.strip() for item in raw_ids.split(",") if item.strip()] or None
+            include_archived = str(query.get("includeArchived", ["false"])[0] or "").lower() in ("true", "1")
             tasks = wt_task_queue.list_tasks(
                 user=user,
                 scope=scope,
                 limit=limit,
                 db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
                 task_ids=task_ids,
+                include_archived=include_archived,
             )
             self._send_json({"tasks": tasks})
             return
@@ -1081,11 +1279,15 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             if task is None:
                 self._send_error(404, "task not found")
                 return
+            task["eta"] = wt_task_queue.calculate_task_eta(task)
             self._send_json({"task": task})
             return
         if len(parts) == 4 and parts[0] == "api" and parts[1] == "tasks":
             task_id = parts[2]
             sub_path = parts[3]
+            if sub_path == "events":
+                self._handle_task_events_stream(task_id)
+                return
             if sub_path == "logs":
                 try:
                     tail = int(query.get("tail", ["300"])[0])
@@ -1224,6 +1426,9 @@ class TaskQueueHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/tasks/batch-submit":
             self._handle_batch_submit()
+            return
+        if path == "/api/maintenance/archive":
+            self._handle_maintenance_archive()
             return
         parts = path.strip("/").split("/")
         if len(parts) == 4 and parts[0] == "api" and parts[1] == "tasks":

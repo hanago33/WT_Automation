@@ -584,7 +584,17 @@ class TaskQueueWindow:
             mode="determinate",
             style="Horizontal.TProgressbar",
         )
-        self.detail_progressbar.pack(fill=tk.X, pady=(4, 8))
+        self.detail_progressbar.pack(fill=tk.X, pady=(4, 4))
+
+        self.detail_eta_var = tk.StringVar(value="")
+        tk.Label(
+            inspect_card,
+            textvariable=self.detail_eta_var,
+            font=("Microsoft YaHei UI", 9),
+            bg=pal["card"],
+            fg=pal.get("primary_text", "#1e40af"),
+            anchor="w",
+        ).pack(fill=tk.X, pady=(0, 6))
 
         # 控制按钮组
         control_bar = tk.Frame(inspect_card, bg=pal["card"])
@@ -1679,6 +1689,38 @@ class TaskQueueWindow:
                 except Exception:
                     pass
 
+        if hasattr(self, "detail_eta_var"):
+            eta = task.get("eta") or {}
+            eta_fmt = eta.get("etaFormatted") or ""
+            elapsed = eta.get("elapsedSeconds")
+            elapsed_fmt = "{}秒".format(elapsed) if elapsed is not None else ""
+            if elapsed is not None and elapsed >= 60:
+                elapsed_fmt = "{:02d}分{:02d}秒".format(elapsed // 60, elapsed % 60)
+
+            if raw_status == "running":
+                if eta_fmt and elapsed_fmt:
+                    self.detail_eta_var.set("⏱ 耗时与预估: 已耗时 {}  |  预计剩余 {}".format(elapsed_fmt, eta_fmt))
+                elif elapsed_fmt:
+                    self.detail_eta_var.set("⏱ 耗时: 已运行 {}".format(elapsed_fmt))
+                else:
+                    self.detail_eta_var.set("⏱ 耗时与预估: 运行中...")
+            elif raw_status in ("success", "completed"):
+                if elapsed_fmt:
+                    self.detail_eta_var.set("⏱ 总耗时: {}".format(elapsed_fmt))
+                else:
+                    self.detail_eta_var.set("⏱ 状态: 执行完成")
+            elif raw_status in ("failed", "terminated", "canceled", "cancelled"):
+                if elapsed_fmt:
+                    self.detail_eta_var.set("⏱ 运行耗时: {} (已终止)".format(elapsed_fmt))
+                else:
+                    self.detail_eta_var.set("⏱ 状态: 已终止")
+            elif raw_status == "pending":
+                self.detail_eta_var.set("⏱ 状态: 排队等待调度中")
+            elif raw_status == "paused":
+                self.detail_eta_var.set("⏱ 状态: 已暂停")
+            else:
+                self.detail_eta_var.set("")
+
     def _copy_log_text(self):
         """复制当前终端控制台日志到系统剪贴板。"""
         log_text = getattr(self, "log_text", None)
@@ -1743,10 +1785,80 @@ class TaskQueueWindow:
         task_id = self._selected_task_id()
         self._update_control_buttons()
         if task_id:
-            self._log_fetching = True
-            threading.Thread(
-                target=self._fetch_logs_worker, args=(task_id,), daemon=True
-            ).start()
+            self._start_task_sse_stream(task_id)
+
+    def _start_task_sse_stream(self, task_id):
+        """启动选中任务的 SSE 实时事件流监听；若不可用则自动无感降级至轮询。"""
+        if getattr(self, "_sse_stop_event", None) is not None:
+            self._sse_stop_event.set()
+        stop_event = threading.Event()
+        self._sse_stop_event = stop_event
+        self._active_stream_task_id = task_id
+        threading.Thread(
+            target=self._sse_stream_worker,
+            args=(task_id, stop_event),
+            daemon=True,
+        ).start()
+
+    def _sse_stream_worker(self, task_id, stop_event):
+        """后台长连接读取 SSE 事件流，网络断开或不支持时自动回退到 _fetch_logs_worker。"""
+        base_url = self._server_url()
+        if not base_url:
+            self._fetch_logs_worker(task_id)
+            return
+
+        url = "{}/api/tasks/{}/events".format(base_url.rstrip("/"), urllib.parse.quote(task_id))
+        token = self._auth_token()
+        req = urllib.request.Request(url)
+        if token:
+            req.add_header("Authorization", "Bearer {}".format(token))
+
+        resp = None
+        try:
+            resp = urllib.request.urlopen(req, timeout=15)
+            content_type = str(resp.headers.get("Content-Type", ""))
+            if resp.status != 200 or "text/event-stream" not in content_type:
+                if not stop_event.is_set():
+                    self._fetch_logs_worker(task_id)
+                return
+
+            event_name = "message"
+            for raw_line in resp:
+                if stop_event.is_set() or self._closing:
+                    break
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not line or line.startswith(":"):
+                    continue
+                if line.startswith("event:"):
+                    event_name = line[len("event:"):].strip()
+                    continue
+                if line.startswith("data:"):
+                    data_str = line[len("data:"):].strip()
+                    try:
+                        payload = json.loads(data_str)
+                    except Exception:
+                        continue
+                    if event_name == "log":
+                        lines = payload.get("lines", [])
+                        if lines:
+                            self._post_ui(lambda l=lines: self._append_lines_incremental(
+                                self.log_text, l, "_log_rendered_lines"
+                            ))
+                    elif event_name == "status":
+                        task = payload.get("task")
+                        if task and getattr(self, "_active_stream_task_id", None) == task_id:
+                            self._post_ui(lambda t=task: self._update_task_detail_card(t))
+                    elif event_name == "end":
+                        break
+        except Exception:
+            if not stop_event.is_set() and not self._closing:
+                self._fetch_logs_worker(task_id)
+        finally:
+            if resp:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
 
     def _fetch_logs_worker(self, task_id):
         try:
@@ -2799,6 +2911,8 @@ class TaskQueueWindow:
 
     def _on_close(self):
         self._closing = True
+        if getattr(self, "_sse_stop_event", None) is not None:
+            self._sse_stop_event.set()
         if self._after_id is not None:
             try:
                 self.window.after_cancel(self._after_id)

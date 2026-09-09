@@ -113,6 +113,45 @@ CREATE TABLE IF NOT EXISTS tasks (
 """
 
 
+_CREATE_ARCHIVE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tasks_archive (
+    task_id TEXT PRIMARY KEY,
+    user TEXT NOT NULL,
+    source_ip TEXT DEFAULT '',
+    flow_path TEXT NOT NULL,
+    steps_requested TEXT DEFAULT '[]',
+    from_step TEXT DEFAULT '',
+    to_step TEXT DEFAULT '',
+    priority INTEGER DEFAULT 0,
+    scheduled_at TEXT DEFAULT '',
+    max_attempts INTEGER DEFAULT 1,
+    retry_delay_seconds INTEGER DEFAULT 0,
+    next_retry_at TEXT DEFAULT '',
+    timeout_seconds INTEGER DEFAULT 0,
+    notify_url TEXT DEFAULT '',
+    runtime_config TEXT DEFAULT '',
+    idempotency_key TEXT DEFAULT '',
+    status TEXT NOT NULL,
+    progress_current INTEGER DEFAULT 0,
+    progress_total INTEGER DEFAULT 0,
+    progress_percent REAL DEFAULT 0,
+    current_step_id TEXT DEFAULT '',
+    current_step_name TEXT DEFAULT '',
+    resume_from_step TEXT DEFAULT '',
+    last_log TEXT DEFAULT '',
+    error TEXT DEFAULT '',
+    run_id TEXT DEFAULT '',
+    pause_requested INTEGER DEFAULT 0,
+    terminate_requested INTEGER DEFAULT 0,
+    attempts INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT '',
+    started_at TEXT DEFAULT '',
+    ended_at TEXT DEFAULT '',
+    updated_at TEXT DEFAULT ''
+)
+"""
+
+
 _MIGRATION_COLUMNS = (
     ("priority", "INTEGER DEFAULT 0"),
     ("scheduled_at", "TEXT DEFAULT ''"),
@@ -127,12 +166,18 @@ _MIGRATION_COLUMNS = (
 
 
 def _ensure_columns(conn):
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
-    for column, definition in _MIGRATION_COLUMNS:
-        if column not in existing:
-            conn.execute(
-                "ALTER TABLE tasks ADD COLUMN {} {}".format(column, definition)
-            )
+    for tbl in ("tasks", "tasks_archive"):
+        try:
+            existing = {row["name"] for row in conn.execute("PRAGMA table_info({})".format(tbl))}
+            if not existing:
+                continue
+            for column, definition in _MIGRATION_COLUMNS:
+                if column not in existing:
+                    conn.execute(
+                        "ALTER TABLE {} ADD COLUMN {} {}".format(tbl, column, definition)
+                    )
+        except sqlite3.Error:
+            pass
 
 
 class TaskStateError(Exception):
@@ -187,12 +232,16 @@ def _init_db_once(db_path):
         if db_path != ":memory:":
             conn.execute("PRAGMA journal_mode = WAL")
         conn.execute(_CREATE_TABLE_SQL)
+        conn.execute(_CREATE_ARCHIVE_TABLE_SQL)
         _ensure_columns(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(user, idempotency_key)"
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_archive_status ON tasks_archive(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_archive_user ON tasks_archive(user)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_archive_ended ON tasks_archive(ended_at)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_events (
@@ -276,7 +325,19 @@ def get_task(task_id, db_path=DEFAULT_DB_PATH):
             "SELECT * FROM tasks WHERE task_id = ?",
             (task_id,),
         ).fetchone()
-        return _row_to_task(row)
+        if row is not None:
+            return _row_to_task(row)
+        # 历史任务归档表兜底查询
+        row_arch = conn.execute(
+            "SELECT * FROM tasks_archive WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if row_arch is not None:
+            task = _row_to_task(row_arch)
+            if task is not None:
+                task["isArchived"] = True
+            return task
+        return None
     finally:
         conn.close()
 
@@ -497,11 +558,12 @@ def submit_tasks_batch(tasks_specs, db_path=DEFAULT_DB_PATH):
     return results
 
 
-def list_tasks(user=None, scope="all", limit=200, db_path=DEFAULT_DB_PATH, task_ids=None):
+def list_tasks(user=None, scope="all", limit=200, db_path=DEFAULT_DB_PATH, task_ids=None, include_archived=False):
     """列出任务。
 
     传 task_ids 时只取回这一批任务，客户端可用 1 次请求替代 N 次 get_task，
     避免轮询场景下的 N+1 查询。不传时行为与旧版本完全一致。
+    传 include_archived=True 时额外从 tasks_archive 表检索归档任务。
     """
     init_db(db_path)
     conn = _connect(db_path)
@@ -523,7 +585,34 @@ def list_tasks(user=None, scope="all", limit=200, db_path=DEFAULT_DB_PATH, task_
         query += " ORDER BY created_at ASC, rowid ASC LIMIT ?"
         params.append(int(limit))
         rows = conn.execute(query, params).fetchall()
-        return [_row_to_task(row) for row in rows]
+        tasks = [_row_to_task(row) for row in rows]
+        if include_archived or (ids and len(tasks) < len(ids)):
+            found_ids = {t["taskId"] for t in tasks}
+            missing_ids = [tid for tid in ids if tid not in found_ids] if ids else []
+            if missing_ids or include_archived:
+                arch_query = "SELECT * FROM tasks_archive"
+                arch_params = []
+                arch_conds = []
+                if missing_ids:
+                    arch_conds.append("task_id IN ({})".format(",".join("?" * len(missing_ids))))
+                    arch_params.extend(missing_ids)
+                elif ids:
+                    pass
+                elif scope == "mine" and user:
+                    arch_conds.append("user = ?")
+                    arch_params.append(user)
+                if arch_conds:
+                    arch_query += " WHERE " + " AND ".join(arch_conds)
+                arch_query += " ORDER BY created_at ASC, rowid ASC LIMIT ?"
+                rem_limit = max(1, int(limit) - len(tasks))
+                arch_params.append(rem_limit)
+                arch_rows = conn.execute(arch_query, arch_params).fetchall()
+                for r in arch_rows:
+                    t = _row_to_task(r)
+                    if t:
+                        t["isArchived"] = True
+                        tasks.append(t)
+        return tasks
     finally:
         conn.close()
 
@@ -1219,3 +1308,161 @@ def cleanup_task_logs(
     except OSError:
         pass
     return removed
+
+
+def archive_completed_tasks(days=30, limit=1000, db_path=DEFAULT_DB_PATH):
+    """将超过指定天数的已结束（终态）任务从 tasks 表归档迁移至 tasks_archive 表。
+
+    参数：
+        days: 任务结束超过多少天触发归档，默认 30 天；若设为 0 则迁移所有符合条件的终态任务。
+        limit: 单次归档迁移的最大任务数，默认 1000。
+        db_path: 数据库路径。
+
+    返回：
+        dict: {"archivedCount": int, "cutoff": str, "days": int}
+    """
+    init_db(db_path)
+    days = max(0, int(days))
+    limit = max(1, min(int(limit or 1000), 10000))
+    cutoff_iso = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    # 支持既有系统中可能出现的全部终态枚举
+    terminal_statuses = (STATUS_SUCCESS, "completed", STATUS_FAILED, STATUS_CANCELED, "cancelled", STATUS_TERMINATED)
+    status_placeholders = ",".join("?" for _ in terminal_statuses)
+
+    conn = _connect(db_path)
+    try:
+        with conn:
+            # 严格限定仅归档终态任务，pending/running/paused 绝不归档
+            query = """
+            SELECT task_id FROM tasks
+            WHERE status IN ({})
+              AND (
+                (ended_at != '' AND ended_at <= ?)
+                OR (ended_at = '' AND updated_at != '' AND updated_at <= ?)
+                OR (ended_at = '' AND updated_at = '' AND created_at <= ?)
+              )
+            ORDER BY created_at ASC
+            LIMIT ?
+            """.format(status_placeholders)
+            params = list(terminal_statuses) + [cutoff_iso, cutoff_iso, cutoff_iso, limit]
+            rows = conn.execute(query, params).fetchall()
+            task_ids = [r["task_id"] for r in rows]
+            if not task_ids:
+                return {"archivedCount": 0, "cutoff": cutoff_iso, "days": days}
+
+            id_placeholders = ",".join("?" for _ in task_ids)
+            conn.execute(
+                "INSERT OR REPLACE INTO tasks_archive SELECT * FROM tasks WHERE task_id IN ({})".format(
+                    id_placeholders
+                ),
+                task_ids,
+            )
+            conn.execute(
+                "DELETE FROM tasks WHERE task_id IN ({})".format(id_placeholders),
+                task_ids,
+            )
+            return {"archivedCount": len(task_ids), "cutoff": cutoff_iso, "days": days}
+    finally:
+        conn.close()
+
+
+def calculate_task_eta(task):
+    """计算任务的动态剩余时间 (ETA) 与已耗时。
+
+    返回字典:
+    {
+        "etaSeconds": int or None,
+        "etaFormatted": str,
+        "elapsedSeconds": int,
+        "isTerminal": bool,
+    }
+    """
+    if not isinstance(task, dict):
+        return {
+            "etaSeconds": None,
+            "etaFormatted": "未知",
+            "elapsedSeconds": 0,
+            "isTerminal": False,
+        }
+    status = task.get("status", "")
+    started_at_str = task.get("startedAt") or ""
+    ended_at_str = task.get("endedAt") or ""
+
+    def _fmt_seconds(sec):
+        if sec is None or sec < 0:
+            return "--"
+        sec = int(round(sec))
+        if sec < 60:
+            return "{}秒".format(sec)
+        mins = sec // 60
+        rem_sec = sec % 60
+        if mins < 60:
+            return "{:02d}分{:02d}秒".format(mins, rem_sec)
+        hours = mins // 60
+        rem_mins = mins % 60
+        return "{}小时{:02d}分".format(hours, rem_mins)
+
+    # 1. 终态任务
+    if status in (STATUS_SUCCESS, "completed", STATUS_FAILED, STATUS_CANCELED, "cancelled", STATUS_TERMINATED):
+        elapsed = 0
+        if started_at_str and ended_at_str:
+            try:
+                t0 = datetime.fromisoformat(started_at_str)
+                t1 = datetime.fromisoformat(ended_at_str)
+                elapsed = max(0, int((t1 - t0).total_seconds()))
+            except Exception:
+                pass
+        return {
+            "etaSeconds": 0,
+            "etaFormatted": "已结束",
+            "elapsedSeconds": elapsed,
+            "isTerminal": True,
+        }
+
+    # 2. 等待中 / 暂停
+    if status in (STATUS_PENDING, STATUS_PAUSED):
+        return {
+            "etaSeconds": None,
+            "etaFormatted": "排队等待中" if status == STATUS_PENDING else "已暂停",
+            "elapsedSeconds": 0,
+            "isTerminal": False,
+        }
+
+    # 3. 运行中任务 (status == 'running')
+    elapsed = 0
+    if started_at_str:
+        try:
+            t0 = datetime.fromisoformat(started_at_str)
+            elapsed = max(0, int((datetime.now() - t0).total_seconds()))
+        except Exception:
+            pass
+
+    progress_percent = float(task.get("progressPercent") or 0.0)
+    eta_sec = None
+
+    if progress_percent >= 3.0:
+        total_est = elapsed / (progress_percent / 100.0)
+        eta_sec = max(0, int(round(total_est - elapsed)))
+    else:
+        steps_requested = task.get("stepsRequested") or []
+        progress_current = int(task.get("progressCurrent") or 0)
+        total_steps = len(steps_requested) if isinstance(steps_requested, list) else int(task.get("progressTotal") or 0)
+        if total_steps > 0 and progress_current > 0:
+            step_ratio = float(progress_current) / float(total_steps)
+            total_est = elapsed / step_ratio
+            eta_sec = max(0, int(round(total_est - elapsed)))
+
+    formatted_eta = "~" + _fmt_seconds(eta_sec) if eta_sec is not None else "计算中..."
+    return {
+        "etaSeconds": eta_sec,
+        "etaFormatted": formatted_eta,
+        "elapsedSeconds": elapsed,
+        "isTerminal": False,
+    }
+
+
+def estimate_task_eta(task_id, db_path=DEFAULT_DB_PATH):
+    """根据任务 ID 获取任务并计算其 ETA。"""
+    task = get_task(task_id, db_path=db_path)
+    return calculate_task_eta(task)
+
