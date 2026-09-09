@@ -2412,9 +2412,16 @@ class LauncherApp:
 
             card = tk.Frame(
                 scrollable, bg=theme["card"],
-                highlightthickness=1, highlightbackground=theme["border"],
-                padx=18, pady=16,
+                highlightthickness=1, highlightbackground=theme.get("border_dark", "#cbd5e1"),
+                padx=18, pady=14,
             )
+
+            # 顶部彩色辨识指示条 (Top Accent Bar)：3px 高度，未配置深灰，已配置科技蓝
+            top_bar = tk.Frame(
+                card, height=3,
+                bg=theme["primary"] if flow_path else theme.get("border_dark", "#cbd5e1"),
+            )
+            top_bar.pack(fill=tk.X, pady=(0, 10))
 
             # 标题行：序号 + 勾选 + 图标 + 名称 + 配置徽标
             title_row = tk.Frame(card, bg=theme["card"])
@@ -2444,6 +2451,29 @@ class LauncherApp:
                 title_row, text="未配置", tone="muted"
             )
             badge_label.pack(side=tk.RIGHT)
+
+            # 标题与内容区之间的细微分割线
+            title_sep = tk.Frame(card, height=1, bg=theme["border"])
+            title_sep.pack(fill=tk.X, pady=(8, 0))
+
+            # 悬停聚焦反馈：鼠标滑入时边界高亮为科技蓝
+            def _bind_card_hover(wgt, c=card):
+                def _on_enter(_e):
+                    try:
+                        c.configure(highlightbackground=theme["primary"])
+                    except Exception:
+                        pass
+                def _on_leave(_e):
+                    try:
+                        c.configure(highlightbackground=theme.get("border_dark", "#cbd5e1"))
+                    except Exception:
+                        pass
+                wgt.bind("<Enter>", _on_enter, add="+")
+                wgt.bind("<Leave>", _on_leave, add="+")
+
+            _bind_card_hover(card)
+            _bind_card_hover(top_bar)
+            _bind_card_hover(title_row)
 
             # 路径行：放入微缩卡片槽中
             path_card = tk.Frame(
@@ -2525,6 +2555,7 @@ class LauncherApp:
 
             section_widgets[key] = {
                 "frame": card,
+                "top_bar": top_bar,
                 "path_label": path_label,
                 "dir_label": dir_label,
                 "badge_label": badge_label,
@@ -2560,6 +2591,11 @@ class LauncherApp:
             fg=self.theme["primary"] if path else "#9ca3af",
         )
         w["dir_label"].config(text=parent_dir or "")
+        top_bar = w.get("top_bar")
+        if top_bar:
+            top_bar.configure(
+                bg=self.theme["primary"] if path else self.theme.get("border_dark", "#cbd5e1")
+            )
         self._simple_update_badge(section_key)
         self._simple_refresh_summary()
 
@@ -4435,8 +4471,28 @@ class LauncherApp:
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
         total_btns = len(buttons)
-        for idx, (text, handler) in enumerate(buttons):
-            btn = self._create_secondary_button(frame, text, handler)
+        for idx, item in enumerate(buttons):
+            text = item[0]
+            handler = item[1]
+            is_hot = item[2] if len(item) > 2 else False
+            if is_hot:
+                btn = wt_theme.create_flat_button(
+                    frame,
+                    text="★ " + text,
+                    command=handler,
+                    tone="secondary",
+                    padx=10,
+                    pady=5,
+                    font=("Microsoft YaHei UI", 9, "bold"),
+                )
+                btn.configure(
+                    bg=self.theme.get("primary_soft", "#dbeafe"),
+                    fg=self.theme.get("primary_text", "#1e40af"),
+                    activebackground=self.theme.get("primary", "#2563eb"),
+                    activeforeground="#ffffff",
+                )
+            else:
+                btn = self._create_secondary_button(frame, text, handler)
             if idx == total_btns - 1 and total_btns % 2 == 1:
                 btn.grid(row=idx // 2, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
             else:
@@ -4872,14 +4928,54 @@ class LauncherApp:
         tab2_page, tab2_content = _make_tab_page()
         notebook.add(tab2_page, text=" 🧰 常用工具箱 ")
 
+        # ── 顶层常用推荐卡片 (Quick Launch Featured) ──
+        featured_frame = tk.LabelFrame(
+            tab2_content,
+            text="  ★ 核心常用推荐  ",
+            padx=10,
+            pady=10,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            bd=1,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=1,
+            highlightbackground=self.theme.get("primary_soft", "#dbeafe"),
+        )
+        featured_frame.pack(fill=tk.X, pady=(2, 4))
+        featured_frame.columnconfigure(0, weight=1)
+        featured_frame.columnconfigure(1, weight=1)
+
+        featured_tools = [
+            ("🚀 打开流程链路编辑", self.open_flow_editor, "primary"),
+            ("🎨 进入模板制作", self.open_template_builder, "primary"),
+            ("🎯 进入控件库采集", self.open_control_map_builder, "primary"),
+            ("⚡ 实时控件检测", self.open_live_detector, "primary"),
+            ("📊 任务与服务器监控", self.open_task_queue, "success"),
+            ("📝 打开运行日志", self.open_log_file, "secondary"),
+        ]
+        for idx, (text, handler, tone) in enumerate(featured_tools):
+            btn = wt_theme.create_flat_button(
+                featured_frame,
+                text=text,
+                command=handler,
+                tone=tone,
+                padx=10,
+                pady=6,
+                font=("Microsoft YaHei UI", 9, "bold"),
+            )
+            r = idx // 2
+            c = idx % 2
+            btn.grid(row=r, column=c, sticky="ew", padx=3, pady=3)
+
         self._build_tool_section(
             tab2_content,
             "流程设计与转换",
             [
-                ("启动 WT AI Agent（自然语言编排）", self.open_wt_agent),
-                ("启动 pywinauto recorder", self.open_pywinauto_recorder),
+                ("启动 WT AI Agent（自然语言编排）", self.open_wt_agent, True),
+                ("启动 pywinauto recorder", self.open_pywinauto_recorder, True),
                 ("同步录制脚本(增量·最新)", self.sync_recorded_scripts),
-                ("打开流程链路编辑", self.open_flow_editor),
+                ("打开流程链路编辑", self.open_flow_editor, True),
                 ("相对区域取点", self.open_relative_region_helper),
                 ("转换 Recorder 脚本", self.convert_recorder_script),
                 ("导出流程 Excel", self.export_flow_excel),
@@ -4890,10 +4986,10 @@ class LauncherApp:
             tab2_content,
             "模板与资源库",
             [
-                ("进入模板制作", self.open_template_builder),
+                ("进入模板制作", self.open_template_builder, True),
                 ("打开控件库", self.open_control_import_standalone),
-                ("进入控件库采集", self.open_control_map_builder),
-                ("实时控件检测", self.open_live_detector),
+                ("进入控件库采集", self.open_control_map_builder, True),
+                ("实时控件检测", self.open_live_detector, True),
                 ("外部控件采集(uia-peek/axe)", self.open_external_capture),
                 ("打开模板库目录", self.open_template_root_dir),
                 ("刷新模板库概览", self.refresh_template_library_summary_action),
@@ -4903,14 +4999,14 @@ class LauncherApp:
             tab2_content,
             "检查与日志",
             [
-                ("运行环境检测", self.run_environment_check),
+                ("运行环境检测", self.run_environment_check, True),
                 ("启动监控服务", self.start_server_monitor_service),
                 ("启动任务队列服务", self.start_task_queue_service),
                 ("停止任务队列服务", self.stop_task_queue_service),
-                ("任务与服务器监控", self.open_task_queue),
+                ("任务与服务器监控", self.open_task_queue, True),
                 ("模型配置检查", self.run_model_check),
                 ("打开 UI-TARS 配置", self.open_ui_tars_config),
-                ("打开运行日志", self.open_log_file),
+                ("打开运行日志", self.open_log_file, True),
                 ("分析运行日志·最近一次", self.analyze_run_logs_last),
                 ("分析运行日志·汇总趋势", self.analyze_run_logs_aggregate),
                 ("一键日志打包", self.package_debug_logs),
