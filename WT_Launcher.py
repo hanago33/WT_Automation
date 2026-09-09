@@ -2066,8 +2066,8 @@ class LauncherApp:
             command=lambda: self._switch_ui_mode("simple"),
             relief=tk.FLAT,
             bd=0,
-            padx=14,
-            pady=4,
+            padx=16,
+            pady=5,
             cursor="hand2",
         )
         self.btn_simple_mode.pack(side=tk.LEFT, padx=(0, 2))
@@ -2079,8 +2079,8 @@ class LauncherApp:
             command=lambda: self._switch_ui_mode("advanced"),
             relief=tk.FLAT,
             bd=0,
-            padx=14,
-            pady=4,
+            padx=16,
+            pady=5,
             cursor="hand2",
         )
         self.btn_advanced_mode.pack(side=tk.LEFT)
@@ -2209,7 +2209,7 @@ class LauncherApp:
         self.btn_simple_workdir = tk.Button(
             toolbar_top, text="选择项目文件夹", command=self._simple_select_work_dir,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=3, cursor="hand2",
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
             activebackground=theme["secondary_active"],
         )
         self.btn_simple_workdir.pack(side=tk.LEFT, padx=(0, 4))
@@ -2221,14 +2221,14 @@ class LauncherApp:
         self.btn_simple_params = tk.Button(
             toolbar_top, text="⚙ 项目参数", command=self._simple_edit_project_params,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=3, cursor="hand2",
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
             activebackground=theme["secondary_active"],
         )
         self.btn_simple_params.pack(side=tk.LEFT, padx=(0, 4))
         self.btn_simple_clear_workdir = tk.Button(
             toolbar_top, text="清除", command=self._simple_clear_work_dir,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=8, pady=3, cursor="hand2", state=tk.DISABLED,
+            padx=9, pady=4, cursor="hand2", state=tk.DISABLED, font=("Microsoft YaHei UI", 9),
             activebackground=theme["secondary_active"],
         )
         self.btn_simple_clear_workdir.pack(side=tk.LEFT, padx=(0, 4))
@@ -2238,7 +2238,7 @@ class LauncherApp:
         self.btn_simple_flow_graph = tk.Button(
             toolbar_top, text="🗺 流程图", command=self._open_flow_graph,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=3, cursor="hand2",
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
             activebackground=theme["secondary_active"],
         )
         self.btn_simple_flow_graph.pack(side=tk.RIGHT, padx=(4, 0))
@@ -2246,7 +2246,7 @@ class LauncherApp:
         self.btn_simple_submit_chain = tk.Button(
             toolbar_top, text="🔗 提交链路", command=self._submit_chain_to_remote_queue,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=3, cursor="hand2",
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
             activebackground=theme["secondary_active"],
         )
         self.btn_simple_submit_chain.pack(side=tk.RIGHT, padx=(4, 0))
@@ -2254,7 +2254,7 @@ class LauncherApp:
         self.btn_simple_test_conn = tk.Button(
             toolbar_top, text="⚡ 测试连接", command=self._simple_test_connection,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=3, cursor="hand2",
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
             activebackground=theme["secondary_active"],
         )
         self.btn_simple_test_conn.pack(side=tk.RIGHT, padx=(4, 0))
@@ -2262,7 +2262,7 @@ class LauncherApp:
         self.btn_task_monitor = tk.Button(
             toolbar_top, text="📊 任务与监控", command=self.open_task_queue,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=3, cursor="hand2",
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9, "bold"),
             activebackground=theme["secondary_active"],
         )
         self.btn_task_monitor.pack(side=tk.RIGHT, padx=(4, 0))
@@ -2292,14 +2292,14 @@ class LauncherApp:
         tk.Button(
             toolbar_bottom, text="全选", command=lambda: self._simple_toggle_all(True),
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=3, cursor="hand2",
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
             activebackground=theme["secondary_active"],
         ).pack(side=tk.LEFT, padx=(0, 4))
 
         tk.Button(
             toolbar_bottom, text="取消全选", command=lambda: self._simple_toggle_all(False),
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=3, cursor="hand2",
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
             activebackground=theme["secondary_active"],
         ).pack(side=tk.LEFT, padx=4)
 
@@ -2308,8 +2308,8 @@ class LauncherApp:
 
         self.btn_simple_run = tk.Button(
             toolbar_bottom, text="▶ 运行所选板块", command=self._run_simple_mode,
-            bg="#059669", fg="white", font=("Microsoft YaHei UI", 10, "bold"),
-            relief=tk.FLAT, padx=22, pady=5, cursor="hand2",
+            bg="#059669", fg="white", font=("Microsoft YaHei UI", 11, "bold"),
+            relief=tk.FLAT, padx=24, pady=6, cursor="hand2",
             activebackground="#047857",
         )
         self.btn_simple_run.pack(side=tk.LEFT)
@@ -2317,7 +2317,7 @@ class LauncherApp:
         self.btn_simple_stop = tk.Button(
             toolbar_bottom, text="■ 停止排队", command=self._simple_stop_queue,
             bg=theme["danger"], fg="white", font=("Microsoft YaHei UI", 10, "bold"),
-            relief=tk.FLAT, padx=16, pady=5, cursor="hand2",
+            relief=tk.FLAT, padx=18, pady=6, cursor="hand2",
             activebackground=theme["danger_active"], state=tk.DISABLED,
         )
         self.btn_simple_stop.pack(side=tk.LEFT, padx=(8, 0))
@@ -2326,7 +2326,7 @@ class LauncherApp:
             toolbar_bottom, text="提交所选板块到远程队列",
             command=self._submit_simple_to_remote_queue,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=12, pady=5, cursor="hand2",
+            padx=16, pady=6, cursor="hand2", font=("Microsoft YaHei UI", 10, "bold"),
             activebackground=theme["secondary_active"],
         )
 
@@ -2403,7 +2403,7 @@ class LauncherApp:
             card = tk.Frame(
                 scrollable, bg=theme["card"],
                 highlightthickness=1, highlightbackground=theme["border"],
-                padx=14, pady=12,
+                padx=18, pady=16,
             )
 
             # 标题行：序号 + 勾选 + 图标 + 名称 + 配置徽标
@@ -2413,11 +2413,11 @@ class LauncherApp:
             seq_badge = tk.Label(
                 title_row,
                 text="{:02d}".format(i + 1),
-                font=("Microsoft YaHei UI", 8, "bold"),
+                font=("Microsoft YaHei UI", 9, "bold"),
                 bg=theme["primary_soft"],
                 fg=theme["primary_text"],
-                padx=5,
-                pady=1,
+                padx=7,
+                pady=2,
             )
             seq_badge.pack(side=tk.LEFT, padx=(0, 6))
 
@@ -2427,7 +2427,7 @@ class LauncherApp:
                 command=lambda k=key: self._simple_on_toggle(k),
             ).pack(side=tk.LEFT)
             tk.Label(title_row, text="{} {}".format(sec["icon"], sec["title"]),
-                     font=("Microsoft YaHei UI", 11, "bold"), bg=theme["card"],
+                     font=("Microsoft YaHei UI", 12, "bold"), bg=theme["card"],
                      fg=theme["text"]).pack(side=tk.LEFT, padx=(4, 0))
 
             badge_label = wt_theme.create_badge(
@@ -2438,32 +2438,32 @@ class LauncherApp:
             # 路径行：放入微缩卡片槽中
             path_card = tk.Frame(
                 card, bg=theme.get("panel_soft", "#f8fafc"),
-                padx=8, pady=5,
+                padx=12, pady=8,
                 highlightthickness=1, highlightbackground=theme["border"],
             )
-            path_card.pack(fill=tk.X, anchor="w", pady=(8, 0))
+            path_card.pack(fill=tk.X, anchor="w", pady=(10, 0))
 
             path_row = tk.Frame(path_card, bg=theme.get("panel_soft", "#f8fafc"))
             path_row.pack(fill=tk.X, anchor="w")
 
-            tk.Label(path_row, text="流程:", font=("Microsoft YaHei UI", 8, "bold"),
+            tk.Label(path_row, text="流程:", font=("Microsoft YaHei UI", 9, "bold"),
                      bg=path_card["bg"], fg=theme["muted"]).pack(side=tk.LEFT)
             path_label = tk.Label(
                 path_row, text="（未设置）",
                 font=("Microsoft YaHei UI", 9, "bold"), bg=path_card["bg"],
                 fg="#9ca3af", anchor="w",
             )
-            path_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+            path_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
 
             dir_label = tk.Label(
                 path_card, text="", font=("Consolas", 8), bg=path_card["bg"],
                 fg=theme["muted"], anchor="w", justify="left",
             )
-            dir_label.pack(fill=tk.X, anchor="w", pady=(1, 0))
+            dir_label.pack(fill=tk.X, anchor="w", pady=(2, 0))
 
             # 操作行 1：核心高频动作
             btn_row = tk.Frame(card, bg=theme["card"])
-            btn_row.pack(fill=tk.X, anchor="w", pady=(8, 0))
+            btn_row.pack(fill=tk.X, anchor="w", pady=(10, 0))
 
             # 操作行 2：辅助配置动作
             btn_row2 = tk.Frame(card, bg=theme["card"])
@@ -2489,28 +2489,28 @@ class LauncherApp:
 
             wt_theme.create_flat_button(
                 btn_row, text="▶ 运行此板块", command=_make_run_one(),
-                tone="success", font=("Microsoft YaHei UI", 9, "bold"), padx=12, pady=3
+                tone="success", font=("Microsoft YaHei UI", 9, "bold"), padx=16, pady=4
             ).pack(side=tk.LEFT, padx=(0, 6))
             wt_theme.create_flat_button(
                 btn_row, text="✎ 编辑流程", command=_make_edit(),
-                tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=3
+                tone="secondary", font=("Microsoft YaHei UI", 9), padx=12, pady=4
             ).pack(side=tk.LEFT, padx=2)
             wt_theme.create_flat_button(
                 btn_row, text="清空", command=_make_clear(),
-                tone="subtle", font=("Microsoft YaHei UI", 8), padx=6, pady=3
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=8, pady=4
             ).pack(side=tk.RIGHT)
 
             wt_theme.create_flat_button(
                 btn_row2, text="导入流程", command=_make_import_flow(),
-                tone="subtle", font=("Microsoft YaHei UI", 8), padx=7, pady=2
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=9, pady=3
             ).pack(side=tk.LEFT, padx=(0, 4))
             wt_theme.create_flat_button(
                 btn_row2, text="导入Excel", command=_make_import_excel(),
-                tone="subtle", font=("Microsoft YaHei UI", 8), padx=7, pady=2
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=9, pady=3
             ).pack(side=tk.LEFT, padx=3)
             wt_theme.create_flat_button(
                 btn_row2, text="导出", command=_make_export(),
-                tone="subtle", font=("Microsoft YaHei UI", 8), padx=7, pady=2
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=9, pady=3
             ).pack(side=tk.LEFT, padx=3)
 
             section_widgets[key] = {
@@ -4372,9 +4372,9 @@ class LauncherApp:
             width = event_width or parent.winfo_width()
         except Exception:
             width = 0
-        if width <= 680:
+        if width <= 720:
             cols = 1
-        elif width <= 1000:
+        elif width <= 1360:
             cols = 2
         else:
             cols = 3
@@ -4384,7 +4384,7 @@ class LauncherApp:
             child.grid_forget()
         for idx, (sec, card) in enumerate(self._simple_cards):
             row, col = divmod(idx, cols)
-            card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+            card.grid(row=row, column=col, sticky="nsew", padx=8, pady=8)
         for col in range(cols):
             parent.columnconfigure(col, weight=1, uniform="simple_cards")
         row_count = (len(self._simple_cards) + cols - 1) // cols
@@ -4403,8 +4403,8 @@ class LauncherApp:
             text=text,
             command=command,
             tone="secondary",
-            padx=10,
-            pady=5,
+            padx=12,
+            pady=6,
             font=("Microsoft YaHei UI", 9),
         )
 
@@ -4456,9 +4456,9 @@ class LauncherApp:
             activeforeground="white",
             relief=tk.FLAT,
             bd=0,
-            font=("Microsoft YaHei UI", 10, "bold"),
+            font=("Microsoft YaHei UI", 11, "bold"),
             cursor="hand2",
-            pady=6,
+            pady=8,
         )
         self.start_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
 
@@ -4475,7 +4475,8 @@ class LauncherApp:
             bd=0,
             font=("Microsoft YaHei UI", 10, "bold"),
             cursor="hand2",
-            pady=6,
+            pady=8,
+            padx=14,
         )
         self.stop_button.pack(side=tk.RIGHT, fill=tk.X, padx=(0, 0))
 
@@ -4591,6 +4592,8 @@ class LauncherApp:
             bd=0,
             cursor="hand2",
             font=("Microsoft YaHei UI", 9),
+            padx=12,
+            pady=4,
         ).pack(side=tk.LEFT)
         tk.Button(
             flow_btn_row,
@@ -4602,6 +4605,8 @@ class LauncherApp:
             bd=0,
             cursor="hand2",
             font=("Microsoft YaHei UI", 9),
+            padx=12,
+            pady=4,
         ).pack(side=tk.RIGHT)
 
         # 2. 步骤列表与编排
@@ -4629,6 +4634,9 @@ class LauncherApp:
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
         ).pack(side=tk.LEFT)
         tk.Button(
             step_toolbar,
@@ -4639,6 +4647,9 @@ class LauncherApp:
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
         ).pack(side=tk.LEFT, padx=(6, 0))
         tk.Button(
             step_toolbar,
@@ -4649,6 +4660,9 @@ class LauncherApp:
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
         ).pack(side=tk.LEFT, padx=(6, 0))
         tk.Button(
             step_toolbar,
@@ -4659,6 +4673,9 @@ class LauncherApp:
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
         ).pack(side=tk.LEFT, padx=(6, 0))
 
         steps_box = tk.Frame(test_frame, bg=self.theme["card"])
@@ -4731,8 +4748,9 @@ class LauncherApp:
             activebackground=self.theme["secondary_active"],
             relief=tk.FLAT,
             bd=0,
-            font=("Microsoft YaHei UI", 9, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
             cursor="hand2",
+            pady=7,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True)
         tk.Button(
             action_row,
@@ -4742,8 +4760,9 @@ class LauncherApp:
             activebackground=self.theme["secondary_active"],
             relief=tk.FLAT,
             bd=0,
-            font=("Microsoft YaHei UI", 9, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
             cursor="hand2",
+            pady=7,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
 
         package_row = tk.Frame(test_frame, bg=self.theme["card"])
@@ -4771,6 +4790,8 @@ class LauncherApp:
             bd=0,
             font=("Microsoft YaHei UI", 9, "bold"),
             cursor="hand2",
+            padx=14,
+            pady=5,
         ).pack(side=tk.RIGHT)
 
         # 3. 执行控制选项
@@ -5000,6 +5021,9 @@ class LauncherApp:
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=14,
+            pady=6,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True)
         tk.Button(
             model_action_frame,
@@ -5010,6 +5034,9 @@ class LauncherApp:
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=14,
+            pady=6,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
 
         # 运行时状态详情
