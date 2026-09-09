@@ -2096,12 +2096,20 @@ class LauncherApp:
         self.btn_advanced_mode.pack(side=tk.LEFT)
         self._update_mode_button_styles()
 
+        # ── 模式内容主容器（使用 grid 空间复用，避免 pack_forget 造成全量重排与黑闪） ──
+        self.content_box = tk.Frame(container, bg=self.theme["bg"])
+        self.content_box.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        self.content_box.grid_rowconfigure(0, weight=1)
+        self.content_box.grid_columnconfigure(0, weight=1)
+
         # ── Simple 模式内容区 ──
-        self.simple_frame = tk.Frame(container, bg=self.theme["bg"])
+        self.simple_frame = tk.Frame(self.content_box, bg=self.theme["bg"])
+        self.simple_frame.grid(row=0, column=0, sticky="nsew")
         self._build_simple_panel(self.simple_frame)
 
         # ── Advanced 模式内容区（原界面） ──
-        self.advanced_frame = tk.Frame(container, bg=self.theme["bg"])
+        self.advanced_frame = tk.Frame(self.content_box, bg=self.theme["bg"])
+        self.advanced_frame.grid(row=0, column=0, sticky="nsew")
 
         self.main_paned = tk.PanedWindow(
             self.advanced_frame,
@@ -2112,7 +2120,7 @@ class LauncherApp:
             bd=0,
             bg=self.theme["border"],
             sashcursor="sb_h_double_arrow",
-            opaqueresize=True,
+            opaqueresize=False,
         )
         self.main_paned.pack(fill=tk.BOTH, expand=True)
 
@@ -2143,13 +2151,13 @@ class LauncherApp:
         self._build_left_panel(left_frame)
         self._build_right_panel(right_frame)
 
-        # 默认显示 Advanced 模式
+        # 初始模式显示与隐藏设置（使用 grid_remove 保留几何计算与底层资源，不占主窗 resize 计算）
         if self.ui_mode_var.get() == "simple":
-            self.advanced_frame.pack_forget()
-            self.simple_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+            self.advanced_frame.grid_remove()
+            self.simple_frame.grid()
         else:
-            self.simple_frame.pack_forget()
-            self.advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+            self.simple_frame.grid_remove()
+            self.advanced_frame.grid()
 
     # ── 模式切换 ──────────────────────────────────────────────────────────────
 
@@ -2171,17 +2179,30 @@ class LauncherApp:
     def _switch_ui_mode(self, mode):
         self.ui_mode_var.set(mode)
         self._update_mode_button_styles()
-        if mode == "simple":
-            self.advanced_frame.pack_forget()
-            self.simple_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
-        else:
-            self.simple_frame.pack_forget()
-            self.advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
-        self.root.update_idletasks()
+
+        # 使用 tk busy 遮罩拦截用户交互并防止半途未完成布局渲染暴露
         try:
-            self._simple_save_state()
+            self.root.tk.call("tk", "busy", "hold", self.root)
         except Exception:
             pass
+
+        try:
+            if mode == "simple":
+                self.advanced_frame.grid_remove()
+                self.simple_frame.grid()
+            else:
+                self.simple_frame.grid_remove()
+                self.advanced_frame.grid()
+            self.root.update_idletasks()
+            try:
+                self._simple_save_state()
+            except Exception:
+                pass
+        finally:
+            try:
+                self.root.tk.call("tk", "busy", "forget", self.root)
+            except Exception:
+                pass
 
     # ── Simple 模式界面 ──────────────────────────────────────────────────────
 
@@ -2376,7 +2397,10 @@ class LauncherApp:
         scrollable = tk.Frame(canvas, bg=theme["bg"])
 
         def _on_canvas_configure(event):
-            canvas.itemconfigure("inner", width=event.width)
+            new_w = getattr(event, "width", 0) or canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(canvas, "_last_width", -1):
+                canvas._last_width = new_w
+                canvas.itemconfigure("inner", width=new_w)
 
         _scrollregion_scheduled = [False]
 
@@ -2977,11 +3001,30 @@ class LauncherApp:
         form_wrapper = tk.Frame(tab1_canvas, bg=self.theme["bg"])
         tab1_win = tab1_canvas.create_window((0, 0), window=form_wrapper, anchor="nw")
 
+        _tab1_sr_scheduled = [False]
+
+        def _schedule_tab1_scrollregion():
+            if _tab1_sr_scheduled[0]:
+                return
+            _tab1_sr_scheduled[0] = True
+
+            def _apply():
+                _tab1_sr_scheduled[0] = False
+                try:
+                    tab1_canvas.configure(scrollregion=tab1_canvas.bbox("all"))
+                except Exception:
+                    pass
+
+            tab1_canvas.after_idle(_apply)
+
         def _on_tab1_form_configure(_e=None):
-            tab1_canvas.configure(scrollregion=tab1_canvas.bbox("all"))
+            _schedule_tab1_scrollregion()
 
         def _on_tab1_canvas_configure(_e=None):
-            tab1_canvas.itemconfig(tab1_win, width=tab1_canvas.winfo_width())
+            new_w = tab1_canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(tab1_canvas, "_last_width", -1):
+                tab1_canvas._last_width = new_w
+                tab1_canvas.itemconfig(tab1_win, width=new_w)
 
         form_wrapper.bind("<Configure>", _on_tab1_form_configure)
         tab1_canvas.bind("<Configure>", _on_tab1_canvas_configure)
@@ -3290,7 +3333,10 @@ class LauncherApp:
             canvas.after_idle(_apply)
 
         def _on_canvas_configure(_event=None):
-            canvas.itemconfig(canvas_window, width=canvas.winfo_width())
+            new_w = canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(canvas, "_last_width", -1):
+                canvas._last_width = new_w
+                canvas.itemconfig(canvas_window, width=new_w)
 
         content.bind("<Configure>", _on_content_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
@@ -4633,14 +4679,20 @@ class LauncherApp:
                 except Exception:
                     pass
 
+            def _update_canvas_window_width():
+                new_w = canvas.winfo_width()
+                if new_w > 0 and new_w != getattr(canvas, "_last_width", -1):
+                    canvas._last_width = new_w
+                    canvas.itemconfig(canvas_window, width=new_w)
+
             def on_content_configure(_event=None):
                 if not sr_scheduled[0]:
                     sr_scheduled[0] = True
                     canvas.after_idle(_apply_scrollregion)
-                canvas.itemconfig(canvas_window, width=canvas.winfo_width())
+                _update_canvas_window_width()
 
             def on_canvas_configure(_event=None):
-                canvas.itemconfig(canvas_window, width=canvas.winfo_width())
+                _update_canvas_window_width()
 
             content_frame.bind("<Configure>", on_content_configure)
             canvas.bind("<Configure>", on_canvas_configure)
@@ -4821,7 +4873,10 @@ class LauncherApp:
             self.steps_canvas.after_idle(_apply)
 
         def on_steps_canvas_configure(_event=None):
-            self.steps_canvas.itemconfig(self.steps_canvas_window, width=self.steps_canvas.winfo_width())
+            new_w = self.steps_canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(self.steps_canvas, "_last_width", -1):
+                self.steps_canvas._last_width = new_w
+                self.steps_canvas.itemconfig(self.steps_canvas_window, width=new_w)
 
         _WHEEL_ROUTER.register(self.steps_canvas)
         _WHEEL_ROUTER.bind_root(self.root)
