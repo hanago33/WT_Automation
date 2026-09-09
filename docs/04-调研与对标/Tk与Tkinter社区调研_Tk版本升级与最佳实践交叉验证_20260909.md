@@ -186,6 +186,10 @@ delta = -1 * int(event.delta / 120)
 **建议**：对 `0 < |delta| < 120` 的情况做余数累积，或改按像素滚动（`yview_scroll(-delta, "pixels")`）。
 应作为独立 fix 处理，不宜与版本升级混在一起。
 
+**处理状态（2026-09-09）**：已由共享模块 `wt_wheel_router.py` 修复——按 canvas 余数累积精细增量、
+凑满 ±120 才折算 1 格，整倍数事件即时直除不累积；主控台 `WT_Launcher` 与链路编辑器 `WT_Flow_Editor`
+均接入该共享路由（模块 docstring 详述设计依据，含 `winfo_containing` 失败时的 `event.widget` 降级）。
+
 ---
 
 ## 6. 主题库与迁移：不作为替代方案
