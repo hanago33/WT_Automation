@@ -128,3 +128,12 @@ control_maps/.library_index.json
 
 # 开发机专用调试脚本（含本机绝对路径）
 run_scan3.bat
+
+# PyInstaller 发布 exe（根目录，用源码或从 Release 获取）
+/apply_release.exe
+/deploy_release.exe
+/make_release.exe
+
+# C# 构建产物（uia_tree_dumper）
+uia_tree_dumper/**/bin/
+uia_tree_dumper/**/obj/
