@@ -5984,6 +5984,7 @@ class FlowEditorApp:
             bg=EDITOR_THEME["border"],
             showhandle=False,
             bd=0,
+            opaqueresize=False,
         )
         split.pack(fill=tk.BOTH, expand=True)
 
@@ -6010,6 +6011,8 @@ class FlowEditorApp:
         window_id = canvas.create_window((0, 0), window=content, anchor="nw")
 
         _sr_scheduled = [False]
+        _last_width = [0]
+        _canvas_cfg_scheduled = [False]
 
         def on_content_configure(_event=None):
             # 合帧到 after_idle：resize 风暴下 bbox("all") 每帧只算一次
@@ -6025,7 +6028,22 @@ class FlowEditorApp:
             canvas.after_idle(_apply)
 
         def on_canvas_configure(_event=None):
-            canvas.itemconfigure(window_id, width=canvas.winfo_width())
+            new_w = canvas.winfo_width()
+            if new_w <= 1 or new_w == _last_width[0]:
+                return
+            if _canvas_cfg_scheduled[0]:
+                return
+            _canvas_cfg_scheduled[0] = True
+            def _apply_w():
+                _canvas_cfg_scheduled[0] = False
+                try:
+                    cur_w = canvas.winfo_width()
+                    if cur_w > 1 and cur_w != _last_width[0]:
+                        _last_width[0] = cur_w
+                        canvas.itemconfigure(window_id, width=cur_w)
+                except Exception:
+                    pass
+            canvas.after_idle(_apply_w)
 
         def on_mousewheel(event):
             delta = 0
