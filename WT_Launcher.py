@@ -2308,7 +2308,8 @@ class LauncherApp:
             cursor="hand2",
             activebackground=theme["secondary_active"],
         )
-        self.btn_simple_submit_remote.pack(side=tk.LEFT, padx=(8, 0))
+        # 消除工具栏冗余：由勾选「远程模式」动态联动 btn_simple_run 承载，默认不再重复显示
+        # self.btn_simple_submit_remote.pack(side=tk.LEFT, padx=(8, 0))
         self.btn_simple_submit_chain = tk.Button(
             toolbar,
             text="提交 JSON 链路",
@@ -2329,6 +2330,9 @@ class LauncherApp:
             activebackground=theme["secondary_active"],
         )
         self.btn_simple_flow_graph.pack(side=tk.LEFT, padx=(8, 0))
+
+        self.simple_remote_var.trace_add("write", self._on_simple_remote_mode_changed)
+        self._on_simple_remote_mode_changed()
 
         self.simple_status_var = tk.StringVar(value="就绪")
         self.simple_status_label = tk.Label(
@@ -3377,6 +3381,28 @@ class LauncherApp:
             pass
         self._simple_set_status("已添加风机型号：{}".format(value), "idle")
 
+    def _on_simple_remote_mode_changed(self, *args):
+        """当「远程模式」勾选状态变化时，动态更新 Simple 主运行按钮文案与主题，并消除冗余按钮。"""
+        if not hasattr(self, "btn_simple_run"):
+            return
+        is_remote = bool(self.simple_remote_var.get())
+        if is_remote:
+            self.btn_simple_run.config(
+                text="☁ 提交远程队列",
+                bg="#2563eb",
+                activebackground="#1d4ed8",
+            )
+            if hasattr(self, "btn_simple_submit_remote"):
+                self.btn_simple_submit_remote.pack_forget()
+        else:
+            self.btn_simple_run.config(
+                text="▶ 运行所选板块",
+                bg="#059669",
+                activebackground="#047857",
+            )
+            if hasattr(self, "btn_simple_submit_remote"):
+                self.btn_simple_submit_remote.pack_forget()
+
     def _run_simple_mode(self):
         """运行 Simple 模式中勾选的板块（顺序执行，线程安全）。"""
         selected = []
@@ -3558,6 +3584,11 @@ class LauncherApp:
         """
         # 项目解析注入（对齐本地 Simple 运行）：应用覆盖、按塔展开、附带 runtimeConfig
         sections = self._prepare_remote_sections(sections)
+        # 为每个板块注入客户端幂等标记，防止快速重复提交或网络重试导致任务重复创建
+        batch_prefix = "bat_{}".format(uuid.uuid4().hex[:8])
+        for idx, sec in enumerate(sections or []):
+            if isinstance(sec, dict) and not sec.get("clientToken"):
+                sec["clientToken"] = "{}_{}_{}".format(batch_prefix, sec.get("key", "sec"), idx)
         self.open_task_queue()
         window = getattr(self, "_task_queue_window", None)
         if window is None:
