@@ -47,6 +47,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 import wt_dpi
 import wt_flow_editor_utils
+import wt_theme
 
 # pynput 全局热键：用于悬停跟踪模式下的冻结/采集/树导航快捷键。
 # 仅在探测模式开启时生效，避免与 Tk 自身快捷键冲突。
@@ -76,23 +77,24 @@ DEFAULT_MAX_DEPTH = 10
 MAX_MASTER_BACKUPS = 5
 
 
+_base_theme = wt_theme.get_palette()
 CONTROL_MAP_THEME = {
-    "bg": "#f4f7fb",
-    "panel": "#ffffff",
-    "panel_soft": "#fbfdff",
-    "toolbar": "#eaf1fb",
-    "border": "#d8e2f0",
-    "primary": "#2563eb",
-    "primary_soft": "#dbeafe",
-    "success": "#059669",
-    "success_soft": "#dcfce7",
-    "danger": "#dc2626",
-    "danger_soft": "#fee2e2",
-    "warning": "#b45309",
-    "warning_soft": "#fef3c7",
-    "text": "#1f2937",
-    "muted": "#64748b",
-    "font": ("Microsoft YaHei UI", 10),
+    "bg": _base_theme.get("bg", "#f4f7fb"),
+    "panel": _base_theme.get("panel", "#ffffff"),
+    "panel_soft": _base_theme.get("panel_soft", "#fbfdff"),
+    "toolbar": _base_theme.get("toolbar", "#eaf1fb"),
+    "border": _base_theme.get("border", "#d8e2f0"),
+    "primary": _base_theme.get("primary", "#2563eb"),
+    "primary_soft": _base_theme.get("primary_soft", "#dbeafe"),
+    "success": _base_theme.get("success", "#059669"),
+    "success_soft": _base_theme.get("success_soft", "#dcfce7"),
+    "danger": _base_theme.get("danger", "#dc2626"),
+    "danger_soft": _base_theme.get("danger_soft", "#fee2e2"),
+    "warning": _base_theme.get("warning", "#b45309"),
+    "warning_soft": _base_theme.get("warning_soft", "#fef3c7"),
+    "text": _base_theme.get("text", "#1f2937"),
+    "muted": _base_theme.get("muted", "#64748b"),
+    "font": ("Microsoft YaHei UI", 9),
 }
 
 
@@ -112,20 +114,44 @@ def _paint_button(btn, tone="default"):
         "danger": CONTROL_MAP_THEME["danger"],
         "warning": CONTROL_MAP_THEME["warning"],
     }
+    hover_map = {
+        "default": "#f1f5f9",
+        "primary": "#bfdbfe",
+        "success": "#bbf7d0",
+        "danger": "#fecaca",
+        "warning": "#fde68a",
+    }
+    bg_color = soft.get(tone, soft["default"])
+    fg_color = fg.get(tone, fg["default"])
+    hover_color = hover_map.get(tone, "#f1f5f9")
     btn.configure(
-        bg=soft.get(tone, soft["default"]),
-        fg=fg.get(tone, fg["default"]),
-        activebackground=CONTROL_MAP_THEME["panel_soft"],
-        activeforeground=fg.get(tone, fg["default"]),
+        bg=bg_color,
+        fg=fg_color,
+        activebackground=hover_color,
+        activeforeground=fg_color,
         relief="flat",
-        bd=1,
+        bd=0,
         highlightthickness=1,
         highlightbackground=CONTROL_MAP_THEME["border"],
         cursor="hand2",
-        padx=10,
-        pady=3,
+        padx=12,
+        pady=4,
         font=CONTROL_MAP_THEME["font"],
     )
+    def _on_enter(e):
+        try:
+            if btn["state"] != tk.DISABLED:
+                btn.configure(bg=hover_color)
+        except Exception:
+            pass
+    def _on_leave(e):
+        try:
+            if btn["state"] != tk.DISABLED:
+                btn.configure(bg=bg_color)
+        except Exception:
+            pass
+    btn.bind("<Enter>", _on_enter)
+    btn.bind("<Leave>", _on_leave)
     return btn
 
 
@@ -5880,8 +5906,9 @@ class ControlMapBuilderApp:
 
         supplement_row = tk.Frame(toolbar, bg=CONTROL_MAP_THEME["toolbar"])
         supplement_row.grid(row=5, column=0, columnspan=10, sticky="w", pady=(6, 0))
-        self.btn_hover_supplement = tk.Button(
-            supplement_row, text="🔴 悬停跟踪补采", command=self.cmd_toggle_hover_supplement, bg=CONTROL_MAP_THEME["danger_soft"]
+        self.btn_hover_supplement = _paint_button(
+            tk.Button(supplement_row, text="🔴 悬停跟踪补采", command=self.cmd_toggle_hover_supplement),
+            tone="danger",
         )
         self.btn_hover_supplement.pack(side=tk.LEFT, padx=(0, 3))
         # "只看不采"模式开关：开启后悬停仅高亮跟随，不触发补采写库（默认关闭，保持原有行为）
@@ -5893,15 +5920,17 @@ class ControlMapBuilderApp:
             command=self._on_look_only_toggle,
             bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"],
             activebackground=CONTROL_MAP_THEME["toolbar"], selectcolor=CONTROL_MAP_THEME["panel"],
+            cursor="hand2",
         ).pack(side=tk.LEFT, padx=(0, 3))
-        tk.Button(supplement_row, text="🎯 定点补采子树", command=self.cmd_point_supplement, bg=CONTROL_MAP_THEME["warning_soft"]).pack(side=tk.LEFT, padx=3)
-        tk.Button(supplement_row, text="🌱 补采选中控件", command=self.cmd_selected_supplement, bg=CONTROL_MAP_THEME["warning_soft"]).pack(side=tk.LEFT, padx=3)
-        tk.Label(supplement_row, text="上溯层级").pack(side=tk.LEFT, padx=(10, 2))
+        _paint_button(tk.Button(supplement_row, text="🎯 定点补采子树", command=self.cmd_point_supplement), tone="warning").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(supplement_row, text="🌱 补采选中控件", command=self.cmd_selected_supplement), tone="warning").pack(side=tk.LEFT, padx=3)
+        tk.Label(supplement_row, text="上溯层级", bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"]).pack(side=tk.LEFT, padx=(10, 2))
         tk.Spinbox(supplement_row, from_=0, to=8, textvariable=self.var_supplement_climb, width=4).pack(side=tk.LEFT)
         tk.Label(
             supplement_row,
             text="(Inspect 式跟踪：开启后鼠标悬停到哪里就实时补采哪里的子树并同步定位层级树；Esc 或再次点击停止；虚拟化控件需先在目标软件里展开；F6 冻结/解冻，F7 采集入库，Ctrl+Shift+方向键导航)",
             fg=CONTROL_MAP_THEME["warning"],
+            bg=CONTROL_MAP_THEME["toolbar"],
         ).pack(side=tk.LEFT, padx=(10, 0))
 
         # 操作按钮分两排排布，避免窗口缩小时单排按钮被遮挡：
@@ -5909,46 +5938,50 @@ class ControlMapBuilderApp:
         button_row1 = tk.Frame(toolbar, bg=CONTROL_MAP_THEME["toolbar"])
         button_row1.grid(row=1, column=0, columnspan=10, sticky="ew", pady=(10, 0))
         self._scan_button_frame1 = button_row1
-        tk.Button(button_row1, text="一键整树采集并保存", command=self.cmd_scan_and_save, bg=CONTROL_MAP_THEME["success_soft"]).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row1, text="整树采集预览", command=self.cmd_scan_preview).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row1, text="画框区域采集并保存", command=self.cmd_region_scan_and_save, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row1, text="画框区域预览", command=self.cmd_region_scan_preview, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row1, text="智能勾选", command=self.cmd_smart_check_results).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row1, text="全选结果", command=self.cmd_check_all_results).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row1, text="清空勾选", command=self.cmd_clear_checked_results).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row1, text="🗑 清空当前结果", command=self.cmd_clear_current_payload, bg=CONTROL_MAP_THEME["danger_soft"]).pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row1, text="一键整树采集并保存", command=self.cmd_scan_and_save), tone="success").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row1, text="整树采集预览", command=self.cmd_scan_preview), tone="default").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row1, text="画框区域采集并保存", command=self.cmd_region_scan_and_save), tone="primary").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row1, text="画框区域预览", command=self.cmd_region_scan_preview), tone="default").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row1, text="智能勾选", command=self.cmd_smart_check_results), tone="default").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row1, text="全选结果", command=self.cmd_check_all_results), tone="default").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row1, text="清空勾选", command=self.cmd_clear_checked_results), tone="default").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row1, text="🗑 清空当前结果", command=self.cmd_clear_current_payload), tone="danger").pack(side=tk.LEFT, padx=3)
         # 中止采集：仅在扫描进行中可用（_set_scan_ui_busy 控制），点击后置位
         # 取消事件，后台扫描线程在下一遍历检查点响应。
-        self._scan_cancel_btn = tk.Button(
-            button_row1, text="⏹ 中止采集", command=self.cmd_cancel_scan,
-            bg=CONTROL_MAP_THEME["danger_soft"], state=tk.DISABLED,
+        self._scan_cancel_btn = _paint_button(
+            tk.Button(
+                button_row1, text="⏹ 中止采集", command=self.cmd_cancel_scan,
+                state=tk.DISABLED,
+            ),
+            tone="danger",
         )
         self._scan_cancel_btn.pack(side=tk.LEFT, padx=3)
 
         button_row2 = tk.Frame(toolbar, bg=CONTROL_MAP_THEME["toolbar"])
         button_row2.grid(row=2, column=0, columnspan=10, sticky="ew", pady=(6, 0))
         self._scan_button_frame2 = button_row2
-        tk.Button(button_row2, text="📂 加载控件库文件", command=self.cmd_load_control_map_file, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row2, text="保存当前结果", command=self.cmd_save_current_payload).pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row2, text="📂 加载控件库文件", command=self.cmd_load_control_map_file), tone="primary").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row2, text="保存当前结果", command=self.cmd_save_current_payload), tone="default").pack(side=tk.LEFT, padx=3)
         tk.Checkbutton(button_row2, text="保存后自动合并入库", variable=self.var_auto_merge, bg=CONTROL_MAP_THEME["toolbar"],
                        fg=CONTROL_MAP_THEME["text"], activebackground=CONTROL_MAP_THEME["toolbar"],
-                       selectcolor=CONTROL_MAP_THEME["panel"]).pack(side=tk.LEFT, padx=(0, 4))
-        tk.Button(button_row2, text="打开控件库目录", command=self.cmd_open_control_map_dir).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row2, text="🔍 搜索控件", command=self.cmd_search_controls, bg=CONTROL_MAP_THEME["warning_soft"]).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row2, text="📥 合并入库", command=self.cmd_merge_into_library, bg=CONTROL_MAP_THEME["primary_soft"]).pack(side=tk.LEFT, padx=3)
-        tk.Button(button_row2, text="复制所选定位", command=self.cmd_copy_selected_locator).pack(side=tk.LEFT, padx=3)
-        self._btn_test_locator = tk.Button(button_row2, text="检验定位", command=self._toggle_probe_button, bg=CONTROL_MAP_THEME["primary_soft"])
+                       selectcolor=CONTROL_MAP_THEME["panel"], cursor="hand2").pack(side=tk.LEFT, padx=(0, 4))
+        _paint_button(tk.Button(button_row2, text="打开控件库目录", command=self.cmd_open_control_map_dir), tone="default").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row2, text="🔍 搜索控件", command=self.cmd_search_controls), tone="warning").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row2, text="📥 合并入库", command=self.cmd_merge_into_library), tone="primary").pack(side=tk.LEFT, padx=3)
+        _paint_button(tk.Button(button_row2, text="复制所选定位", command=self.cmd_copy_selected_locator), tone="default").pack(side=tk.LEFT, padx=3)
+        self._btn_test_locator = _paint_button(
+            tk.Button(button_row2, text="检验定位", command=self._toggle_probe_button),
+            tone="primary",
+        )
         self._btn_test_locator.pack(side=tk.LEFT, padx=3)
         self.var_tree_view_mode = tk.StringVar(value="flat")
         tk.Checkbutton(button_row2, text="层级树视图", variable=self.var_tree_view_mode, onvalue="hierarchy", offvalue="flat",
                       command=self._refresh_tree, bg=CONTROL_MAP_THEME["toolbar"], fg=CONTROL_MAP_THEME["text"],
-                      activebackground=CONTROL_MAP_THEME["toolbar"], selectcolor=CONTROL_MAP_THEME["panel"]).pack(side=tk.LEFT, padx=8)
-        tk.Button(button_row2, text="展开全部", command=self._cmd_expand_all_tree,
-                  font=("Microsoft YaHei UI", 9), padx=6, pady=0).pack(side=tk.LEFT, padx=2)
-        tk.Button(button_row2, text="折叠全部", command=self._cmd_collapse_all_tree,
-                  font=("Microsoft YaHei UI", 9), padx=6, pady=0).pack(side=tk.LEFT, padx=2)
-        tk.Label(button_row2, textvariable=self.var_status, fg=CONTROL_MAP_THEME["muted"]).pack(side=tk.RIGHT)
-        tk.Label(button_row2, textvariable=self.var_scan_progress, fg=CONTROL_MAP_THEME["success"]).pack(side=tk.RIGHT, padx=(10, 0))
+                      activebackground=CONTROL_MAP_THEME["toolbar"], selectcolor=CONTROL_MAP_THEME["panel"], cursor="hand2").pack(side=tk.LEFT, padx=8)
+        _paint_button(tk.Button(button_row2, text="展开全部", command=self._cmd_expand_all_tree), tone="default").pack(side=tk.LEFT, padx=2)
+        _paint_button(tk.Button(button_row2, text="折叠全部", command=self._cmd_collapse_all_tree), tone="default").pack(side=tk.LEFT, padx=2)
+        tk.Label(button_row2, textvariable=self.var_status, fg=CONTROL_MAP_THEME["muted"], bg=CONTROL_MAP_THEME["toolbar"]).pack(side=tk.RIGHT)
+        tk.Label(button_row2, textvariable=self.var_scan_progress, fg=CONTROL_MAP_THEME["success"], bg=CONTROL_MAP_THEME["toolbar"]).pack(side=tk.RIGHT, padx=(10, 0))
 
         # 主内容区：左右两栏，左2/3（控件候选），右1/3（扫描概览 + 控件详情）
         body = tk.Frame(self.root, bg=CONTROL_MAP_THEME["bg"])
@@ -5957,7 +5990,7 @@ class ControlMapBuilderApp:
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
-        left = tk.LabelFrame(body, text="控件候选", padx=10, pady=10,
+        left = tk.LabelFrame(body, text="控件候选", padx=12, pady=10,
                              bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
                              relief="flat", bd=1, highlightthickness=1,
                              highlightbackground=CONTROL_MAP_THEME["border"],
@@ -6021,17 +6054,17 @@ class ControlMapBuilderApp:
         self.control_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.control_tree.bind("<Button-1>", self._on_tree_click, add="+")
 
-        rename_frame = tk.LabelFrame(right, text="保存前命名", padx=10, pady=10,
+        rename_frame = tk.LabelFrame(right, text="保存前命名", padx=12, pady=10,
                                      bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"],
                                      relief="flat", bd=1, highlightthickness=1,
                                      highlightbackground=CONTROL_MAP_THEME["border"],
                                      font=(CONTROL_MAP_THEME["font"][0], 11, "bold"))
         rename_frame.pack(fill=tk.X, pady=(0, 8))
         tk.Label(rename_frame, text="保存控件名", bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"]).grid(row=0, column=0, sticky="w")
-        tk.Entry(rename_frame, textvariable=self.var_saved_control_name).grid(row=0, column=1, sticky="ew", padx=(8, 12))
+        tk.Entry(rename_frame, textvariable=self.var_saved_control_name, font=("Microsoft YaHei UI", 9), relief="flat", bd=0, highlightthickness=1, highlightbackground=CONTROL_MAP_THEME["border"]).grid(row=0, column=1, sticky="ew", padx=(8, 12), ipady=2)
         tk.Label(rename_frame, text="控件ID", bg=CONTROL_MAP_THEME["panel"], fg=CONTROL_MAP_THEME["text"]).grid(row=0, column=2, sticky="w")
-        tk.Entry(rename_frame, textvariable=self.var_saved_control_id).grid(row=0, column=3, sticky="ew", padx=(8, 12))
-        tk.Button(rename_frame, text="应用到当前控件", command=self.cmd_apply_current_control_alias, bg=CONTROL_MAP_THEME["success_soft"]).grid(row=0, column=4)
+        tk.Entry(rename_frame, textvariable=self.var_saved_control_id, font=("Microsoft YaHei UI", 9), relief="flat", bd=0, highlightthickness=1, highlightbackground=CONTROL_MAP_THEME["border"]).grid(row=0, column=3, sticky="ew", padx=(8, 12), ipady=2)
+        _paint_button(tk.Button(rename_frame, text="应用到当前控件", command=self.cmd_apply_current_control_alias), tone="success").grid(row=0, column=4, padx=(4, 0))
         tk.Label(
             rename_frame,
             text="扫描名通常只是系统原始控件名。保存前可改成业务语义名称，最终只保存已勾选控件。",

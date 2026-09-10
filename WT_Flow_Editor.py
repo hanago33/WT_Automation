@@ -68,6 +68,9 @@ def _safe_destroy(window):
 
 # ── 通用 Tkinter UI 构建辅助（供各 Dialog 类与主编辑器复用）──
 
+EDITOR_THEME = wt_theme.get_palette()
+
+
 def _make_dialog_window(parent, title, width=0, height=0, min_width=0, min_height=0, on_close=None, grab=True):
     """创建标准模态对话框窗口并返回 Toplevel。
 
@@ -76,6 +79,7 @@ def _make_dialog_window(parent, title, width=0, height=0, min_width=0, min_heigh
     window = tk.Toplevel(parent)
     window.title(title)
     window.transient(parent)
+    window.configure(bg=EDITOR_THEME["bg"])
     if grab:
         window.grab_set()
     if width and height:
@@ -100,9 +104,18 @@ def _get_text(widget):
 
 def _grid_label_entry(parent, label, variable, row, column, colspan=1):
     """在网格中构建一行 label + entry。"""
-    tk.Label(parent, text=label).grid(row=row, column=column, sticky="w", pady=4)
-    tk.Entry(parent, textvariable=variable).grid(
-        row=row, column=column + 1, columnspan=colspan, sticky="ew", padx=(8, 12), pady=4
+    tk.Label(parent, text=label, font=("Microsoft YaHei UI", 9)).grid(row=row, column=column, sticky="w", pady=4)
+    entry = tk.Entry(
+        parent,
+        textvariable=variable,
+        font=("Microsoft YaHei UI", 9),
+        relief=tk.FLAT,
+        bd=0,
+        highlightthickness=1,
+        highlightbackground=EDITOR_THEME["border"],
+    )
+    entry.grid(
+        row=row, column=column + 1, columnspan=colspan, sticky="ew", padx=(8, 12), pady=4, ipady=2
     )
 
 
@@ -132,21 +145,45 @@ def _make_button_row(parent, buttons, padx=8, pady=8):
     """构建一行按钮并返回其 Frame。
 
     buttons: [(text, command, options)]；options 中可含 'side'（默认 left）
-    与 'pack_padx'（按钮间距，默认 4），其余参数透传给 tk.Button。
+    与 'pack_padx'（按钮间距，默认 6），其余参数透传给 tk.Button。
     padx/pady 作为 pack 的外部间距传入（接受标量或二元组）。
     """
-    frame = tk.Frame(parent)
+    frame = tk.Frame(parent, bg=parent.cget("bg") if hasattr(parent, "cget") else EDITOR_THEME["bg"])
     frame.pack(fill=tk.X, padx=padx, pady=pady)
     for text, command, options in buttons:
         opts = dict(options or {})
         side = opts.pop("side", tk.LEFT)
-        pack_padx = opts.pop("pack_padx", 4)
+        pack_padx = opts.pop("pack_padx", 6)
         opts.setdefault("command", command)
-        tk.Button(frame, text=text, **opts).pack(side=side, padx=pack_padx)
+        opts.setdefault("cursor", "hand2")
+        opts.setdefault("relief", tk.FLAT)
+        opts.setdefault("bd", 0)
+        opts.setdefault("padx", 14)
+        opts.setdefault("pady", 5)
+        opts.setdefault("font", ("Microsoft YaHei UI", 9))
+        if "bg" not in opts:
+            opts["bg"] = "#ffffff"
+        if "highlightthickness" not in opts:
+            opts["highlightthickness"] = 1
+            opts["highlightbackground"] = EDITOR_THEME["border"]
+        btn = tk.Button(frame, text=text, **opts)
+        btn_bg = opts.get("bg", "#ffffff")
+        def _on_enter(e, b=btn, bg=btn_bg):
+            try:
+                if b["state"] != tk.DISABLED:
+                    b.configure(bg="#f1f5f9" if bg == "#ffffff" else bg)
+            except Exception:
+                pass
+        def _on_leave(e, b=btn, bg=btn_bg):
+            try:
+                if b["state"] != tk.DISABLED:
+                    b.configure(bg=bg)
+            except Exception:
+                pass
+        btn.bind("<Enter>", _on_enter)
+        btn.bind("<Leave>", _on_leave)
+        btn.pack(side=side, padx=pack_padx)
     return frame
-
-
-EDITOR_THEME = wt_theme.get_palette()
 
 DEFAULT_STEP_CONTROLS_BY_ID = {
     "configure_projection": [
@@ -5720,13 +5757,17 @@ class FlowEditorApp:
 
     def _create_action_button(self, parent, text, command, tone="default", **kwargs):
         colors = {
-            "default": {"bg": "#ffffff", "active": "#e2e8f0", "hover": "#f1f5f9"},
-            "primary": {"bg": EDITOR_THEME["primary_soft"], "active": "#93c5fd", "hover": "#bfdbfe"},
-            "success": {"bg": EDITOR_THEME["success_soft"], "active": "#86efac", "hover": "#bbf7d0"},
-            "danger": {"bg": EDITOR_THEME["danger_soft"], "active": "#fca5a5", "hover": "#fecaca"},
-            "accent": {"bg": "#e0e7ff", "active": "#a5b4fc", "hover": "#c7d2fe"},
+            "default": {"bg": "#ffffff", "active": "#e2e8f0", "hover": "#f8fafc", "border": EDITOR_THEME["border"]},
+            "primary": {"bg": EDITOR_THEME["primary_soft"], "active": "#93c5fd", "hover": "#dbeafe", "border": "#bfdbfe"},
+            "success": {"bg": EDITOR_THEME["success_soft"], "active": "#86efac", "hover": "#bbf7d0", "border": "#86efac"},
+            "danger": {"bg": EDITOR_THEME["danger_soft"], "active": "#fca5a5", "hover": "#fecaca", "border": "#fca5a5"},
+            "accent": {"bg": "#e0e7ff", "active": "#a5b4fc", "hover": "#c7d2fe", "border": "#c7d2fe"},
         }
         palette = colors.get(tone, colors["default"])
+        padx = kwargs.pop("padx", 12)
+        pady = kwargs.pop("pady", 5)
+        font = kwargs.pop("font", self.font_ui_button)
+        border_color = palette.get("border", EDITOR_THEME["border"])
         button = tk.Button(
             parent,
             text=text,
@@ -5737,12 +5778,12 @@ class FlowEditorApp:
             activeforeground=EDITOR_THEME["text"],
             relief=tk.FLAT,
             bd=0,
-            padx=10,
-            pady=5,
+            padx=padx,
+            pady=pady,
             cursor="hand2",
-            font=self.font_ui_button,
+            font=font,
             highlightthickness=1,
-            highlightbackground=EDITOR_THEME["border"],
+            highlightbackground=border_color,
             **kwargs,
         )
         def on_enter(_e):
@@ -5800,7 +5841,7 @@ class FlowEditorApp:
             highlightthickness=1,
             bd=0,
         )
-        header = tk.Frame(card, bg=palette["header_bg"], padx=12, pady=10)
+        header = tk.Frame(card, bg=palette["header_bg"], padx=16, pady=10)
         header.pack(fill=tk.X)
         tk.Label(
             header,
@@ -5820,7 +5861,8 @@ class FlowEditorApp:
                 anchor="w",
                 wraplength=980,
             ).pack(fill=tk.X, anchor="w", pady=(4, 0))
-        body = tk.Frame(card, bg=EDITOR_THEME["panel"], padx=12, pady=12)
+        tk.Frame(card, height=1, bg=palette["border"]).pack(fill=tk.X)
+        body = tk.Frame(card, bg=EDITOR_THEME["panel"], padx=16, pady=14)
         body.pack(fill=tk.BOTH, expand=True)
         return card, body
 
@@ -5833,7 +5875,7 @@ class FlowEditorApp:
             pass
 
     def _build_ui(self):
-        toolbar = tk.Frame(self.root, padx=12, pady=10, bg=EDITOR_THEME["toolbar"], highlightbackground=EDITOR_THEME["border"], highlightthickness=1)
+        toolbar = tk.Frame(self.root, padx=14, pady=8, bg=EDITOR_THEME["toolbar"], highlightbackground=EDITOR_THEME["border"], highlightthickness=1)
         toolbar.pack(fill=tk.X)
 
         # 文件操作组
@@ -5868,6 +5910,7 @@ class FlowEditorApp:
             fg=EDITOR_THEME["text"],
             activebackground=EDITOR_THEME["toolbar"],
             font=("Microsoft YaHei UI", 9),
+            cursor="hand2",
         ).pack(side=tk.LEFT, padx=4)
         
         # 快捷键提示标签
@@ -5911,12 +5954,23 @@ class FlowEditorApp:
         ).pack(side=tk.LEFT, padx=(0, 8))
         self.ui_scale_var.trace_add("write", lambda *_args: self._on_ui_scale_changed())
 
-        tk.Label(toolbar, textvariable=self.status_var, bg=EDITOR_THEME["toolbar"], fg=EDITOR_THEME["muted"]).pack(side=tk.RIGHT)
+        tk.Label(toolbar, textvariable=self.status_var, bg=EDITOR_THEME["toolbar"], fg=EDITOR_THEME["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.RIGHT)
 
-        path_bar = tk.Frame(self.root, padx=12, pady=8, bg=EDITOR_THEME["bg"])
+        path_bar = tk.Frame(self.root, padx=14, pady=6, bg=EDITOR_THEME["bg"])
         path_bar.pack(fill=tk.X)
-        tk.Label(path_bar, text="当前链路文件", bg=EDITOR_THEME["bg"]).pack(side=tk.LEFT)
-        tk.Entry(path_bar, textvariable=self.path_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        tk.Label(path_bar, text="当前链路文件", font=("Microsoft YaHei UI", 9, "bold"), fg=EDITOR_THEME["text"], bg=EDITOR_THEME["bg"]).pack(side=tk.LEFT)
+        path_entry = tk.Entry(
+            path_bar,
+            textvariable=self.path_var,
+            font=("Consolas", 9),
+            bg="#ffffff",
+            fg=EDITOR_THEME["text"],
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME["border"],
+        )
+        path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0), ipady=3)
 
         body = tk.Frame(self.root, padx=10, pady=10, bg=EDITOR_THEME["bg"])
         body.pack(fill=tk.BOTH, expand=True)
@@ -5931,6 +5985,7 @@ class FlowEditorApp:
             bg=EDITOR_THEME["border"],
             showhandle=False,
             bd=0,
+            opaqueresize=False,
         )
         split.pack(fill=tk.BOTH, expand=True)
 
@@ -5957,6 +6012,8 @@ class FlowEditorApp:
         window_id = canvas.create_window((0, 0), window=content, anchor="nw")
 
         _sr_scheduled = [False]
+        _last_width = [0]
+        _canvas_cfg_scheduled = [False]
 
         def on_content_configure(_event=None):
             # after_idle 语义（Tk doc/after.n）：回调在事件队列排空、
@@ -5975,7 +6032,22 @@ class FlowEditorApp:
             canvas.after_idle(_apply)
 
         def on_canvas_configure(_event=None):
-            canvas.itemconfigure(window_id, width=canvas.winfo_width())
+            new_w = canvas.winfo_width()
+            if new_w <= 1 or new_w == _last_width[0]:
+                return
+            if _canvas_cfg_scheduled[0]:
+                return
+            _canvas_cfg_scheduled[0] = True
+            def _apply_w():
+                _canvas_cfg_scheduled[0] = False
+                try:
+                    cur_w = canvas.winfo_width()
+                    if cur_w > 1 and cur_w != _last_width[0]:
+                        _last_width[0] = cur_w
+                        canvas.itemconfigure(window_id, width=cur_w)
+                except Exception:
+                    pass
+            canvas.after_idle(_apply_w)
 
         # 统一滚轮路由（wt_wheel_router）：注册即可，root 上一次绑定全局生效。
         # 不再用 Enter/Leave 动态 bind_all/unbind_all —— unbind_all 会把

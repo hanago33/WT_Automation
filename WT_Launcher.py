@@ -501,18 +501,18 @@ class RelativeRegionHelperDialog:
             left.columnconfigure(column, weight=1)
 
         row = 0
-        tk.Button(left, text="抓取当前前台窗口", command=self.capture_foreground_window).grid(row=row, column=0, sticky="ew", pady=4)
-        tk.Button(left, text="延时抓取父窗口", command=self.capture_foreground_window_with_delay).grid(row=row, column=1, sticky="ew", padx=(8, 12), pady=4)
-        tk.Button(left, text="手动画框选择区域", command=self.start_region_overlay_capture).grid(row=row, column=2, columnspan=2, sticky="ew", padx=(0, 12), pady=4)
-        tk.Button(left, text="最小化总控台", command=self.minimize_launcher).grid(row=row, column=4, sticky="ew", pady=4)
-        tk.Button(left, text="刷新预览", command=self._refresh_preview).grid(row=row, column=5, sticky="ew", padx=(8, 0), pady=4)
+        wt_theme.create_flat_button(left, "抓取当前前台窗口", self.capture_foreground_window, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=0, sticky="ew", pady=4)
+        wt_theme.create_flat_button(left, "延时抓取父窗口", self.capture_foreground_window_with_delay, tone="primary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=1, sticky="ew", padx=(8, 12), pady=4)
+        wt_theme.create_flat_button(left, "手动画框选择区域", self.start_region_overlay_capture, tone="primary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=2, columnspan=2, sticky="ew", padx=(0, 12), pady=4)
+        wt_theme.create_flat_button(left, "最小化总控台", self.minimize_launcher, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=4, sticky="ew", pady=4)
+        wt_theme.create_flat_button(left, "刷新预览", self._refresh_preview, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=5, sticky="ew", padx=(8, 0), pady=4)
         row += 1
         self._grid_label_entry(left, "延时秒数", self.var_capture_delay_seconds, row, 0)
         self._grid_label_entry(left, "鼠标中心 X", self.var_center_x, row, 2)
         self._grid_label_entry(left, "鼠标中心 Y", self.var_center_y, row, 4)
         row += 1
-        tk.Button(left, text="延时记录鼠标为区域中心", command=self.capture_mouse_center_with_delay).grid(row=row, column=0, columnspan=2, sticky="ew", pady=4)
-        tk.Button(left, text="立即读取当前鼠标", command=self.capture_mouse_center).grid(row=row, column=2, columnspan=1, sticky="ew", padx=(8, 12), pady=4)
+        wt_theme.create_flat_button(left, "延时记录鼠标为区域中心", self.capture_mouse_center_with_delay, tone="warning", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=0, columnspan=2, sticky="ew", pady=4)
+        wt_theme.create_flat_button(left, "立即读取当前鼠标", self.capture_mouse_center, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=2, columnspan=1, sticky="ew", padx=(8, 12), pady=4)
         tk.Label(
             left,
             text="建议优先使用“延时抓父窗口 + 手动画框选择区域”；若用鼠标中心，优先点延时记录，避免你点按钮时鼠标位置已经变了。",
@@ -561,44 +561,46 @@ class RelativeRegionHelperDialog:
         self.anchor_combo = ttk.Combobox(
             left,
             textvariable=self.var_anchor,
-            values=ALLOWED_RELATIVE_REGION_ANCHORS,
+            values=("center", "top_left", "top_right", "bottom_left", "bottom_right"),
             state="readonly",
         )
         self.anchor_combo.grid(row=row, column=3, sticky="ew", padx=(8, 12), pady=4)
         self.default_text_label = tk.Label(
             left,
-            text="默认输入文本",
+            text="输入文本",
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("text", "#1f2d3d"),
         )
         self.default_text_label.grid(row=row, column=4, sticky="w", pady=4)
-        self.default_text_entry = tk.Entry(left, textvariable=self.var_text)
-        self.default_text_entry.grid(row=row, column=5, sticky="ew", padx=(8, 12), pady=4)
+        self.default_text_entry = tk.Entry(left, textvariable=self.var_text, font=("Microsoft YaHei UI", 9), relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.theme.get("border", "#d7e0ee"))
+        self.default_text_entry.grid(row=row, column=5, sticky="ew", padx=(8, 12), pady=4, ipady=2)
         row += 1
 
         button_row = tk.Frame(left, bg=self.theme.get("card", "#ffffff"))
         button_row.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
-        tk.Button(button_row, text="复制 actionConfig", command=self.copy_action_config).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(button_row, text="复制完整步骤样例", command=self.copy_step_template).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        wt_theme.create_flat_button(button_row, "复制 actionConfig", self.copy_action_config, tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=5).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        wt_theme.create_flat_button(button_row, "复制完整步骤样例", self.copy_step_template, tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=5).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
         row += 1
 
         multi_row = tk.Frame(left, bg=self.theme.get("card", "#ffffff"))
         multi_row.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
-        tk.Button(
+        wt_theme.create_flat_button(
             multi_row,
-            text="批量画框采集",
-            command=self.start_multi_region_capture,
-            bg=self.theme.get("secondary", "#e2ecf9"),
-            relief=tk.FLAT,
-            cursor="hand2",
+            "批量画框采集",
+            self.start_multi_region_capture,
+            tone="primary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=5,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(
+        wt_theme.create_flat_button(
             multi_row,
-            text="导出校准数据",
-            command=self.export_multi_region_calibration,
-            bg=self.theme.get("secondary", "#e2ecf9"),
-            relief=tk.FLAT,
-            cursor="hand2",
+            "导出校准数据",
+            self.export_multi_region_calibration,
+            tone="success",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=5,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
         tk.Label(
             multi_row,
@@ -659,10 +661,18 @@ class RelativeRegionHelperDialog:
         self.preview_text.config(yscrollcommand=preview_scrollbar.set)
 
     def _grid_label_entry(self, parent, label, variable, row, column):
-        tk.Label(parent, text=label, bg=self.theme.get("card", "#ffffff"), fg=self.theme.get("text", "#1f2d3d")).grid(
+        tk.Label(parent, text=label, font=("Microsoft YaHei UI", 9), bg=self.theme.get("card", "#ffffff"), fg=self.theme.get("text", "#1f2d3d")).grid(
             row=row, column=column, sticky="w", pady=4
         )
-        tk.Entry(parent, textvariable=variable).grid(row=row, column=column + 1, sticky="ew", padx=(8, 12), pady=4)
+        tk.Entry(
+            parent,
+            textvariable=variable,
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self.theme.get("border", "#d7e0ee"),
+        ).grid(row=row, column=column + 1, sticky="ew", padx=(8, 12), pady=4, ipady=2)
 
     def _bind_preview_traces(self):
         for variable in (
@@ -2023,8 +2033,8 @@ class LauncherApp:
             command=lambda: self._switch_ui_mode("simple"),
             relief=tk.FLAT,
             bd=0,
-            padx=14,
-            pady=4,
+            padx=16,
+            pady=5,
             cursor="hand2",
         )
         self.btn_simple_mode.pack(side=tk.LEFT, padx=(0, 2))
@@ -2036,19 +2046,27 @@ class LauncherApp:
             command=lambda: self._switch_ui_mode("advanced"),
             relief=tk.FLAT,
             bd=0,
-            padx=14,
-            pady=4,
+            padx=16,
+            pady=5,
             cursor="hand2",
         )
         self.btn_advanced_mode.pack(side=tk.LEFT)
         self._update_mode_button_styles()
 
+        # ── 模式内容主容器（使用 grid 空间复用，避免 pack_forget 造成全量重排与黑闪） ──
+        self.content_box = tk.Frame(container, bg=self.theme["bg"])
+        self.content_box.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        self.content_box.grid_rowconfigure(0, weight=1)
+        self.content_box.grid_columnconfigure(0, weight=1)
+
         # ── Simple 模式内容区 ──
-        self.simple_frame = tk.Frame(container, bg=self.theme["bg"])
+        self.simple_frame = tk.Frame(self.content_box, bg=self.theme["bg"])
+        self.simple_frame.grid(row=0, column=0, sticky="nsew")
         self._build_simple_panel(self.simple_frame)
 
         # ── Advanced 模式内容区（原界面） ──
-        self.advanced_frame = tk.Frame(container, bg=self.theme["bg"])
+        self.advanced_frame = tk.Frame(self.content_box, bg=self.theme["bg"])
+        self.advanced_frame.grid(row=0, column=0, sticky="nsew")
 
         self.main_paned = tk.PanedWindow(
             self.advanced_frame,
@@ -2059,7 +2077,7 @@ class LauncherApp:
             bd=0,
             bg=self.theme["border"],
             sashcursor="sb_h_double_arrow",
-            opaqueresize=True,
+            opaqueresize=False,
         )
         self.main_paned.pack(fill=tk.BOTH, expand=True)
 
@@ -2090,13 +2108,13 @@ class LauncherApp:
         self._build_left_panel(left_frame)
         self._build_right_panel(right_frame)
 
-        # 默认显示 Advanced 模式
+        # 初始模式显示与隐藏设置（使用 grid_remove 保留几何计算与底层资源，不占主窗 resize 计算）
         if self.ui_mode_var.get() == "simple":
-            self.advanced_frame.pack_forget()
-            self.simple_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+            self.advanced_frame.grid_remove()
+            self.simple_frame.grid()
         else:
-            self.simple_frame.pack_forget()
-            self.advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+            self.simple_frame.grid_remove()
+            self.advanced_frame.grid()
 
     # ── 模式切换 ──────────────────────────────────────────────────────────────
 
@@ -2118,17 +2136,30 @@ class LauncherApp:
     def _switch_ui_mode(self, mode):
         self.ui_mode_var.set(mode)
         self._update_mode_button_styles()
-        if mode == "simple":
-            self.advanced_frame.pack_forget()
-            self.simple_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
-        else:
-            self.simple_frame.pack_forget()
-            self.advanced_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
-        self.root.update_idletasks()
+
+        # 使用 tk busy 遮罩拦截用户交互并防止半途未完成布局渲染暴露
         try:
-            self._simple_save_state()
+            self.root.tk.call("tk", "busy", "hold", self.root)
         except Exception:
             pass
+
+        try:
+            if mode == "simple":
+                self.advanced_frame.grid_remove()
+                self.simple_frame.grid()
+            else:
+                self.simple_frame.grid_remove()
+                self.advanced_frame.grid()
+            self.root.update_idletasks()
+            try:
+                self._simple_save_state()
+            except Exception:
+                pass
+        finally:
+            try:
+                self.root.tk.call("tk", "busy", "forget", self.root)
+            except Exception:
+                pass
 
     # ── Simple 模式界面 ──────────────────────────────────────────────────────
 
@@ -2149,151 +2180,167 @@ class LauncherApp:
 
         # ── 顶部操作栏 ──
         toolbar = tk.Frame(
-            parent, bg=theme["toolbar"], padx=14, pady=10,
+            parent, bg=theme["toolbar"], padx=14, pady=8,
             highlightthickness=1, highlightbackground=theme["border"],
         )
         toolbar.pack(fill=tk.X, pady=(0, 12))
 
-        tk.Label(toolbar, text="快捷运行", font=("Microsoft YaHei UI", 14, "bold"),
-                 bg=theme["toolbar"], fg=theme["text"]).pack(side=tk.LEFT)
+        # ── 第一行：项目工程区（左） + 远程协同区（右） ──
+        toolbar_top = tk.Frame(toolbar, bg=theme["toolbar"])
+        toolbar_top.pack(fill=tk.X, pady=(0, 6))
 
-        tk.Button(toolbar, text="全选", command=lambda: self._simple_toggle_all(True),
-                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-                  padx=12, pady=4, cursor="hand2",
-                  activebackground=theme["secondary_active"]).pack(side=tk.LEFT, padx=(18, 4))
-        tk.Button(toolbar, text="取消全选", command=lambda: self._simple_toggle_all(False),
-                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-                  padx=12, pady=4, cursor="hand2",
-                  activebackground=theme["secondary_active"]).pack(side=tk.LEFT, padx=4)
+        tk.Label(
+            toolbar_top, text="📁 项目工程:", font=("Microsoft YaHei UI", 9, "bold"),
+            bg=theme["toolbar"], fg=theme["text"],
+        ).pack(side=tk.LEFT, padx=(0, 6))
 
-        sep = tk.Frame(toolbar, width=1, bg=theme["border"])
-        sep.pack(side=tk.LEFT, fill=tk.Y, padx=12)
-
-        # ── 项目工作文件夹（自动解析键入值；不指定则不影响现有流程）──
         self.btn_simple_workdir = tk.Button(
-            toolbar, text="选择项目文件夹", command=self._simple_select_work_dir,
+            toolbar_top, text="选择项目文件夹", command=self._simple_select_work_dir,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=4, cursor="hand2",
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
             activebackground=theme["secondary_active"],
         )
         self.btn_simple_workdir.pack(side=tk.LEFT, padx=(0, 4))
         self.simple_workdir_label = tk.Label(
-            toolbar, text="", bg=theme["toolbar"], fg=theme["muted"],
+            toolbar_top, text="", bg=theme["toolbar"], fg=theme["muted"],
             font=("Microsoft YaHei UI", 9),
         )
         self.simple_workdir_label.pack(side=tk.LEFT, padx=(0, 8))
         self.btn_simple_params = tk.Button(
-            toolbar, text="项目参数", command=self._simple_edit_project_params,
+            toolbar_top, text="⚙ 项目参数", command=self._simple_edit_project_params,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=4, cursor="hand2",
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
             activebackground=theme["secondary_active"],
         )
         self.btn_simple_params.pack(side=tk.LEFT, padx=(0, 4))
         self.btn_simple_clear_workdir = tk.Button(
-            toolbar, text="清除", command=self._simple_clear_work_dir,
+            toolbar_top, text="清除", command=self._simple_clear_work_dir,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=4, cursor="hand2", state=tk.DISABLED,
+            padx=9, pady=4, cursor="hand2", state=tk.DISABLED, font=("Microsoft YaHei UI", 9),
             activebackground=theme["secondary_active"],
         )
         self.btn_simple_clear_workdir.pack(side=tk.LEFT, padx=(0, 4))
         self._simple_update_work_dir_label()
 
+        # 远程协同与扩展工具（右对齐）
+        self.btn_simple_flow_graph = tk.Button(
+            toolbar_top, text="🗺 流程图", command=self._open_flow_graph,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_flow_graph.pack(side=tk.RIGHT, padx=(4, 0))
+
+        self.btn_simple_submit_chain = tk.Button(
+            toolbar_top, text="🔗 提交链路", command=self._submit_chain_to_remote_queue,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_submit_chain.pack(side=tk.RIGHT, padx=(4, 0))
+
+        self.btn_simple_test_conn = tk.Button(
+            toolbar_top, text="⚡ 测试连接", command=self._simple_test_connection,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_test_conn.pack(side=tk.RIGHT, padx=(4, 0))
+
+        self.btn_task_monitor = tk.Button(
+            toolbar_top, text="📊 任务与监控", command=self.open_task_queue,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9, "bold"),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_task_monitor.pack(side=tk.RIGHT, padx=(4, 0))
+
+        def _toggle_simple_remote_mode():
+            new_val = not self.simple_remote_var.get()
+            self.simple_remote_var.set(new_val)
+            try:
+                self._simple_save_state()
+            except Exception:
+                pass
+
+        self.btn_simple_remote = tk.Button(
+            toolbar_top,
+            text="💻 本地模式 (点击切远程)",
+            command=_toggle_simple_remote_mode,
+            bg=theme["secondary"],
+            fg=theme["text"],
+            relief=tk.FLAT,
+            padx=14,
+            pady=4,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            activebackground=theme["secondary_active"],
+            activeforeground=theme["text"],
+            highlightthickness=1,
+            highlightbackground=theme.get("border_dark", "#cbd5e1"),
+        )
+        self.btn_simple_remote.pack(side=tk.RIGHT, padx=(8, 4))
+
+        # ── 中间柔和分割线 ──
+        toolbar_sep = tk.Frame(toolbar, height=1, bg=theme["border"])
+        toolbar_sep.pack(fill=tk.X, pady=4)
+
+        # ── 第二行：板块运行主控台 ──
+        toolbar_bottom = tk.Frame(toolbar, bg=theme["toolbar"])
+        toolbar_bottom.pack(fill=tk.X, pady=(2, 0))
+
+        tk.Label(
+            toolbar_bottom, text="快捷运行", font=("Microsoft YaHei UI", 12, "bold"),
+            bg=theme["toolbar"], fg=theme["text"],
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Button(
+            toolbar_bottom, text="全选", command=lambda: self._simple_toggle_all(True),
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        tk.Button(
+            toolbar_bottom, text="取消全选", command=lambda: self._simple_toggle_all(False),
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        ).pack(side=tk.LEFT, padx=4)
+
+        sep2 = tk.Frame(toolbar_bottom, width=1, bg=theme["border"])
+        sep2.pack(side=tk.LEFT, fill=tk.Y, padx=10)
+
         self.btn_simple_run = tk.Button(
-            toolbar, text="▶ 运行所选板块", command=self._run_simple_mode,
-            bg="#059669", fg="white", font=("Microsoft YaHei UI", 10, "bold"),
-            relief=tk.FLAT, padx=20, pady=6, cursor="hand2",
+            toolbar_bottom, text="▶ 运行所选板块", command=self._run_simple_mode,
+            bg="#059669", fg="white", font=("Microsoft YaHei UI", 11, "bold"),
+            relief=tk.FLAT, padx=24, pady=6, cursor="hand2",
             activebackground="#047857",
         )
         self.btn_simple_run.pack(side=tk.LEFT)
 
         self.btn_simple_stop = tk.Button(
-            toolbar, text="■ 停止排队", command=self._simple_stop_queue,
+            toolbar_bottom, text="■ 停止排队", command=self._simple_stop_queue,
             bg=theme["danger"], fg="white", font=("Microsoft YaHei UI", 10, "bold"),
-            relief=tk.FLAT, padx=16, pady=6, cursor="hand2",
+            relief=tk.FLAT, padx=18, pady=6, cursor="hand2",
             activebackground=theme["danger_active"], state=tk.DISABLED,
         )
         self.btn_simple_stop.pack(side=tk.LEFT, padx=(8, 0))
-        self.btn_simple_remote = tk.Checkbutton(
-            toolbar,
-            text="远程模式",
-            variable=self.simple_remote_var,
-            bg=theme["toolbar"],
-            fg=theme["muted"],
-            activebackground=theme["toolbar"],
-            activeforeground=theme["muted"],
-            selectcolor=theme["toolbar"],
-            relief=tk.FLAT,
-            cursor="hand2",
-            highlightthickness=0,
-        )
-        self.btn_simple_remote.pack(side=tk.LEFT, padx=(8, 0))
-        self.btn_task_monitor = tk.Button(
-            toolbar,
-            text="任务与监控",
-            command=self.open_task_queue,
-            bg=theme["secondary"],
-            fg=theme["text"],
-            relief=tk.FLAT,
-            padx=12,
-            pady=6,
-            cursor="hand2",
-            activebackground=theme["secondary_active"],
-        )
-        self.btn_task_monitor.pack(side=tk.LEFT, padx=(8, 0))
-        self.btn_simple_test_conn = tk.Button(
-            toolbar,
-            text="测试连接",
-            command=self._simple_test_connection,
-            bg=theme["secondary"],
-            fg=theme["text"],
-            relief=tk.FLAT,
-            padx=12,
-            pady=6,
-            cursor="hand2",
-            activebackground=theme["secondary_active"],
-        )
-        self.btn_simple_test_conn.pack(side=tk.LEFT, padx=(8, 0))
+
         self.btn_simple_submit_remote = tk.Button(
-            toolbar,
-            text="提交所选板块到远程队列",
+            toolbar_bottom, text="提交所选板块到远程队列",
             command=self._submit_simple_to_remote_queue,
-            bg=theme["secondary"],
-            fg=theme["text"],
-            relief=tk.FLAT,
-            padx=12,
-            pady=6,
-            cursor="hand2",
-            activebackground=theme["secondary_active"],
-        )
-        # 消除工具栏冗余：由勾选「远程模式」动态联动 btn_simple_run 承载，默认不再重复显示
-        # self.btn_simple_submit_remote.pack(side=tk.LEFT, padx=(8, 0))
-        self.btn_simple_submit_chain = tk.Button(
-            toolbar,
-            text="提交 JSON 链路",
-            command=self._submit_chain_to_remote_queue,
-            bg=theme["secondary"],
-            fg=theme["text"],
-            relief=tk.FLAT,
-            padx=12,
-            pady=6,
-            cursor="hand2",
-            activebackground=theme["secondary_active"],
-        )
-        self.btn_simple_submit_chain.pack(side=tk.LEFT, padx=(8, 0))
-        self.btn_simple_flow_graph = tk.Button(
-            toolbar, text="流程图", command=self._open_flow_graph,
             bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=12, pady=6, cursor="hand2",
+            padx=16, pady=6, cursor="hand2", font=("Microsoft YaHei UI", 10, "bold"),
             activebackground=theme["secondary_active"],
         )
-        self.btn_simple_flow_graph.pack(side=tk.LEFT, padx=(8, 0))
 
         self.simple_remote_var.trace_add("write", self._on_simple_remote_mode_changed)
         self._on_simple_remote_mode_changed()
 
         self.simple_status_var = tk.StringVar(value="就绪")
         self.simple_status_label = tk.Label(
-            toolbar, textvariable=self.simple_status_var, bg=theme["toolbar"],
+            toolbar_bottom, textvariable=self.simple_status_var, bg=theme["toolbar"],
             fg=theme["muted"], font=("Microsoft YaHei UI", 9), anchor="e",
         )
         self.simple_status_label.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(12, 0))
@@ -2307,7 +2354,10 @@ class LauncherApp:
         scrollable = tk.Frame(canvas, bg=theme["bg"])
 
         def _on_canvas_configure(event):
-            canvas.itemconfigure("inner", width=event.width)
+            new_w = getattr(event, "width", 0) or canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(canvas, "_last_width", -1):
+                canvas._last_width = new_w
+                canvas.itemconfigure("inner", width=new_w)
 
         _scrollregion_scheduled = [False]
 
@@ -2363,17 +2413,35 @@ class LauncherApp:
 
             card = tk.Frame(
                 scrollable, bg=theme["card"],
-                highlightthickness=1, highlightbackground=theme["border"],
-                padx=14, pady=12,
+                highlightthickness=1, highlightbackground=theme.get("border_dark", "#cbd5e1"),
+                padx=18, pady=14,
             )
 
-            # 标题行：勾选 + 图标 + 名称 + 配置徽标
+            # 顶部彩色辨识指示条 (Top Accent Bar)：3px 高度，未配置深灰，已配置科技蓝
+            top_bar = tk.Frame(
+                card, height=3,
+                bg=theme["primary"] if flow_path else theme.get("border_dark", "#cbd5e1"),
+            )
+            top_bar.pack(fill=tk.X, pady=(0, 10))
+
+            # 标题行：序号 + 勾选 + 图标 + 名称 + 配置徽标
             title_row = tk.Frame(card, bg=theme["card"])
             title_row.pack(fill=tk.X, anchor="w")
 
+            seq_badge = tk.Label(
+                title_row,
+                text="{:02d}".format(i + 1),
+                font=("Microsoft YaHei UI", 9, "bold"),
+                bg=theme["primary_soft"],
+                fg=theme["primary_text"],
+                padx=7,
+                pady=2,
+            )
+            seq_badge.pack(side=tk.LEFT, padx=(0, 6))
+
             tk.Checkbutton(
                 title_row, variable=enabled_var, bg=theme["card"],
-                font=("Microsoft YaHei UI", 12, "bold"), cursor="hand2",
+                font=("Microsoft YaHei UI", 11, "bold"), cursor="hand2",
                 command=lambda k=key: self._simple_on_toggle(k),
             ).pack(side=tk.LEFT)
             tk.Label(title_row, text="{} {}".format(sec["icon"], sec["title"]),
@@ -2385,30 +2453,62 @@ class LauncherApp:
             )
             badge_label.pack(side=tk.RIGHT)
 
-            # 路径行：文件名 + 所在目录
-            path_row = tk.Frame(card, bg=theme["card"])
-            path_row.pack(fill=tk.X, anchor="w", pady=(10, 0))
+            # 标题与内容区之间的细微分割线
+            title_sep = tk.Frame(card, height=1, bg=theme["border"])
+            title_sep.pack(fill=tk.X, pady=(8, 0))
 
-            tk.Label(path_row, text="流程文件", font=("Microsoft YaHei UI", 9),
-                     bg=theme["card"], fg=theme["muted"]).pack(side=tk.LEFT)
+            # 悬停聚焦反馈：鼠标滑入时边界高亮为科技蓝
+            def _bind_card_hover(wgt, c=card):
+                def _on_enter(_e):
+                    try:
+                        c.configure(highlightbackground=theme["primary"])
+                    except Exception:
+                        pass
+                def _on_leave(_e):
+                    try:
+                        c.configure(highlightbackground=theme.get("border_dark", "#cbd5e1"))
+                    except Exception:
+                        pass
+                wgt.bind("<Enter>", _on_enter, add="+")
+                wgt.bind("<Leave>", _on_leave, add="+")
+
+            _bind_card_hover(card)
+            _bind_card_hover(top_bar)
+            _bind_card_hover(title_row)
+
+            # 路径行：放入微缩卡片槽中
+            path_card = tk.Frame(
+                card, bg=theme.get("panel_soft", "#f8fafc"),
+                padx=12, pady=8,
+                highlightthickness=1, highlightbackground=theme["border"],
+            )
+            path_card.pack(fill=tk.X, anchor="w", pady=(10, 0))
+
+            path_row = tk.Frame(path_card, bg=theme.get("panel_soft", "#f8fafc"))
+            path_row.pack(fill=tk.X, anchor="w")
+
+            tk.Label(path_row, text="流程:", font=("Microsoft YaHei UI", 9, "bold"),
+                     bg=path_card["bg"], fg=theme["muted"]).pack(side=tk.LEFT)
             path_label = tk.Label(
                 path_row, text="（未设置）",
-                font=("Microsoft YaHei UI", 10, "bold"), bg=theme["card"],
+                font=("Microsoft YaHei UI", 9, "bold"), bg=path_card["bg"],
                 fg="#9ca3af", anchor="w",
             )
-            path_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+            path_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
 
             dir_label = tk.Label(
-                card, text="", font=("Consolas", 8), bg=theme["card"],
+                path_card, text="", font=("Consolas", 8), bg=path_card["bg"],
                 fg=theme["muted"], anchor="w", justify="left",
             )
             dir_label.pack(fill=tk.X, anchor="w", pady=(2, 0))
 
-            # 操作行
+            # 操作行 1：核心高频动作
             btn_row = tk.Frame(card, bg=theme["card"])
             btn_row.pack(fill=tk.X, anchor="w", pady=(10, 0))
+
+            # 操作行 2：辅助配置动作
             btn_row2 = tk.Frame(card, bg=theme["card"])
-            btn_row2.pack(fill=tk.X, anchor="w", pady=(8, 0))
+            btn_row2.pack(fill=tk.X, anchor="w", pady=(6, 0))
 
             def _make_import_flow(k=key):
                 return lambda: self._simple_import_flow(k)
@@ -2429,33 +2529,34 @@ class LauncherApp:
                 return lambda: self._simple_run_one(k)
 
             wt_theme.create_flat_button(
-                btn_row, text="导入流程", command=_make_import_flow(),
-                tone="subtle", font=("Microsoft YaHei UI", 9), padx=8, pady=2
-            ).pack(side=tk.LEFT, padx=(0, 4))
+                btn_row, text="▶ 运行此板块", command=_make_run_one(),
+                tone="success", font=("Microsoft YaHei UI", 9, "bold"), padx=16, pady=4
+            ).pack(side=tk.LEFT, padx=(0, 6))
             wt_theme.create_flat_button(
-                btn_row, text="导入Excel", command=_make_import_excel(),
-                tone="subtle", font=("Microsoft YaHei UI", 9), padx=8, pady=2
-            ).pack(side=tk.LEFT, padx=4)
+                btn_row, text="✎ 编辑流程", command=_make_edit(),
+                tone="secondary", font=("Microsoft YaHei UI", 9), padx=12, pady=4
+            ).pack(side=tk.LEFT, padx=2)
             wt_theme.create_flat_button(
-                btn_row, text="编辑流程", command=_make_edit(),
-                tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=2
-            ).pack(side=tk.LEFT, padx=4)
+                btn_row, text="清空", command=_make_clear(),
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=8, pady=4
+            ).pack(side=tk.RIGHT)
 
             wt_theme.create_flat_button(
-                btn_row2, text="▶ 运行此板块", command=_make_run_one(),
-                tone="success", font=("Microsoft YaHei UI", 9, "bold"), padx=10, pady=3
+                btn_row2, text="导入流程", command=_make_import_flow(),
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=9, pady=3
             ).pack(side=tk.LEFT, padx=(0, 4))
             wt_theme.create_flat_button(
-                btn_row2, text="导出", command=_make_export(),
-                tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=2
-            ).pack(side=tk.LEFT, padx=4)
+                btn_row2, text="导入Excel", command=_make_import_excel(),
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+            ).pack(side=tk.LEFT, padx=3)
             wt_theme.create_flat_button(
-                btn_row2, text="清空", command=_make_clear(),
-                tone="subtle", font=("Microsoft YaHei UI", 9), padx=8, pady=2
-            ).pack(side=tk.RIGHT)
+                btn_row2, text="导出", command=_make_export(),
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+            ).pack(side=tk.LEFT, padx=3)
 
             section_widgets[key] = {
                 "frame": card,
+                "top_bar": top_bar,
                 "path_label": path_label,
                 "dir_label": dir_label,
                 "badge_label": badge_label,
@@ -2491,6 +2592,11 @@ class LauncherApp:
             fg=self.theme["primary"] if path else "#9ca3af",
         )
         w["dir_label"].config(text=parent_dir or "")
+        top_bar = w.get("top_bar")
+        if top_bar:
+            top_bar.configure(
+                bg=self.theme["primary"] if path else self.theme.get("border_dark", "#cbd5e1")
+            )
         self._simple_update_badge(section_key)
         self._simple_refresh_summary()
 
@@ -2855,11 +2961,30 @@ class LauncherApp:
         form_wrapper = tk.Frame(tab1_canvas, bg=self.theme["bg"])
         tab1_win = tab1_canvas.create_window((0, 0), window=form_wrapper, anchor="nw")
 
+        _tab1_sr_scheduled = [False]
+
+        def _schedule_tab1_scrollregion():
+            if _tab1_sr_scheduled[0]:
+                return
+            _tab1_sr_scheduled[0] = True
+
+            def _apply():
+                _tab1_sr_scheduled[0] = False
+                try:
+                    tab1_canvas.configure(scrollregion=tab1_canvas.bbox("all"))
+                except Exception:
+                    pass
+
+            tab1_canvas.after_idle(_apply)
+
         def _on_tab1_form_configure(_e=None):
-            tab1_canvas.configure(scrollregion=tab1_canvas.bbox("all"))
+            _schedule_tab1_scrollregion()
 
         def _on_tab1_canvas_configure(_e=None):
-            tab1_canvas.itemconfig(tab1_win, width=tab1_canvas.winfo_width())
+            new_w = tab1_canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(tab1_canvas, "_last_width", -1):
+                tab1_canvas._last_width = new_w
+                tab1_canvas.itemconfig(tab1_win, width=new_w)
 
         form_wrapper.bind("<Configure>", _on_tab1_form_configure)
         tab1_canvas.bind("<Configure>", _on_tab1_canvas_configure)
@@ -2965,7 +3090,7 @@ class LauncherApp:
                         pass
                     combo_widgets[key] = combo
                 else:
-                    tk.Entry(row, textvariable=var, width=18).pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    tk.Entry(row, textvariable=var, width=18, font=("Microsoft YaHei UI", 9), relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.theme.get("border", "#d7e0ee")).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
                 entries[key] = var
 
         def _save():
@@ -3171,7 +3296,10 @@ class LauncherApp:
             canvas.after_idle(_apply)
 
         def _on_canvas_configure(_event=None):
-            canvas.itemconfig(canvas_window, width=canvas.winfo_width())
+            new_w = canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(canvas, "_last_width", -1):
+                canvas._last_width = new_w
+                canvas.itemconfig(canvas_window, width=new_w)
 
         content.bind("<Configure>", _on_content_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
@@ -3345,26 +3473,42 @@ class LauncherApp:
         self._simple_set_status("已添加风机型号：{}".format(value), "idle")
 
     def _on_simple_remote_mode_changed(self, *args):
-        """当「远程模式」勾选状态变化时，动态更新 Simple 主运行按钮文案与主题，并消除冗余按钮。"""
-        if not hasattr(self, "btn_simple_run"):
-            return
+        """当「远程模式」状态变化时，动态更新 Simple 远程切换按钮、主运行按钮文案与主题，并消除冗余按钮。"""
         is_remote = bool(self.simple_remote_var.get())
-        if is_remote:
-            self.btn_simple_run.config(
-                text="☁ 提交远程队列",
-                bg="#2563eb",
-                activebackground="#1d4ed8",
-            )
-            if hasattr(self, "btn_simple_submit_remote"):
-                self.btn_simple_submit_remote.pack_forget()
-        else:
-            self.btn_simple_run.config(
-                text="▶ 运行所选板块",
-                bg="#059669",
-                activebackground="#047857",
-            )
-            if hasattr(self, "btn_simple_submit_remote"):
-                self.btn_simple_submit_remote.pack_forget()
+        if hasattr(self, "btn_simple_remote"):
+            if is_remote:
+                self.btn_simple_remote.config(
+                    text="☁ 远程模式 (已启用)",
+                    bg="#2563eb",
+                    fg="#ffffff",
+                    activebackground="#1d4ed8",
+                    activeforeground="#ffffff",
+                    highlightbackground="#1d4ed8",
+                )
+            else:
+                self.btn_simple_remote.config(
+                    text="💻 本地模式 (点击切远程)",
+                    bg=self.theme["secondary"],
+                    fg=self.theme["text"],
+                    activebackground=self.theme["secondary_active"],
+                    activeforeground=self.theme["text"],
+                    highlightbackground=self.theme.get("border_dark", "#cbd5e1"),
+                )
+        if hasattr(self, "btn_simple_run"):
+            if is_remote:
+                self.btn_simple_run.config(
+                    text="☁ 提交远程队列",
+                    bg="#2563eb",
+                    activebackground="#1d4ed8",
+                )
+            else:
+                self.btn_simple_run.config(
+                    text="▶ 运行所选板块",
+                    bg="#059669",
+                    activebackground="#047857",
+                )
+        if hasattr(self, "btn_simple_submit_remote"):
+            self.btn_simple_submit_remote.pack_forget()
 
     def _run_simple_mode(self):
         """运行 Simple 模式中勾选的板块（顺序执行，线程安全）。"""
@@ -4316,9 +4460,9 @@ class LauncherApp:
             width = event_width or parent.winfo_width()
         except Exception:
             width = 0
-        if width <= 680:
+        if width <= 720:
             cols = 1
-        elif width <= 1000:
+        elif width <= 1360:
             cols = 2
         else:
             cols = 3
@@ -4328,7 +4472,7 @@ class LauncherApp:
             child.grid_forget()
         for idx, (sec, card) in enumerate(self._simple_cards):
             row, col = divmod(idx, cols)
-            card.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+            card.grid(row=row, column=col, sticky="nsew", padx=8, pady=8)
         for col in range(cols):
             parent.columnconfigure(col, weight=1, uniform="simple_cards")
         row_count = (len(self._simple_cards) + cols - 1) // cols
@@ -4347,8 +4491,8 @@ class LauncherApp:
             text=text,
             command=command,
             tone="secondary",
-            padx=10,
-            pady=5,
+            padx=12,
+            pady=6,
             font=("Microsoft YaHei UI", 9),
         )
 
@@ -4356,7 +4500,7 @@ class LauncherApp:
         frame = tk.LabelFrame(
             parent,
             text="  {}  ".format(title),
-            padx=10,
+            padx=8,
             pady=8,
             bg=self.theme["card"],
             fg=self.theme["primary"],
@@ -4366,82 +4510,53 @@ class LauncherApp:
             highlightthickness=0,
         )
         frame.pack(fill=tk.X, pady=(8, 0))
-        for text, handler in buttons:
-            self._create_secondary_button(frame, text, handler).pack(fill=tk.X, pady=3)
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        total_btns = len(buttons)
+        for idx, item in enumerate(buttons):
+            text = item[0]
+            handler = item[1]
+            is_hot = item[2] if len(item) > 2 else False
+            if is_hot:
+                btn = wt_theme.create_flat_button(
+                    frame,
+                    text="★ " + text,
+                    command=handler,
+                    tone="secondary",
+                    padx=10,
+                    pady=5,
+                    font=("Microsoft YaHei UI", 9, "bold"),
+                )
+                btn.configure(
+                    bg=self.theme.get("primary_soft", "#dbeafe"),
+                    fg=self.theme.get("primary_text", "#1e40af"),
+                    activebackground=self.theme.get("primary", "#2563eb"),
+                    activeforeground="#ffffff",
+                )
+            else:
+                btn = self._create_secondary_button(frame, text, handler)
+            if idx == total_btns - 1 and total_btns % 2 == 1:
+                btn.grid(row=idx // 2, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
+            else:
+                r = idx // 2
+                c = idx % 2
+                btn.grid(row=r, column=c, sticky="ew", padx=2, pady=2)
         return frame
 
     def _build_left_panel(self, parent):
         outer = tk.Frame(parent, bg=self.theme["card"])
         outer.pack(fill=tk.BOTH, expand=True)
 
-        canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0, bg=self.theme["card"])
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # ── 顶层常驻启停控制区 (Pinned Top Bar) ──
+        pinned_top = tk.Frame(outer, bg=self.theme["card"], padx=10, pady=8)
+        pinned_top.pack(fill=tk.X, side=tk.TOP)
 
-        scrollbar = wt_theme.create_modern_scrollbar(
-            outer,
-            orient=tk.VERTICAL,
-            command=canvas.yview,
-        )
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        content = tk.Frame(canvas, bg=self.theme["card"])
-        canvas_window = canvas.create_window((0, 0), window=content, anchor="nw")
-
-        _sr_scheduled = [False]
-
-        def _apply_scrollregion():
-            _sr_scheduled[0] = False
-            try:
-                canvas.configure(scrollregion=canvas.bbox("all"))
-            except Exception:
-                pass
-
-        def on_content_configure(_event=None):
-            # after_idle 语义（Tk doc/after.n）：回调在事件队列排空、
-            # 无事件可处理时执行一次。Configure 风暴期间不执行，风暴
-            # 结束才跑一次 —— 效果即合帧：风暴 N 次触发只做 1 次
-            # bbox("all") 全量重算（每帧调用会造成 resize 迟滞）
-            if not _sr_scheduled[0]:
-                _sr_scheduled[0] = True
-                canvas.after_idle(_apply_scrollregion)
-            canvas.itemconfig(canvas_window, width=canvas.winfo_width())
-
-        def on_canvas_configure(_event=None):
-            canvas.itemconfig(canvas_window, width=canvas.winfo_width())
-
-        content.bind("<Configure>", on_content_configure)
-        canvas.bind("<Configure>", on_canvas_configure)
-
-        # 注册进统一滚轮路由器：不再用 Enter/Leave 动态 bind_all/unbind_all
-        # （unbind_all 会连带拆掉其他区域的滚轮绑定，详见 _WheelRouter 注释）
-        _WHEEL_ROUTER.register(canvas)
-        _WHEEL_ROUTER.bind_root(self.root)
-
-        tk.Label(
-            content,
-            text="快捷入口",
-            font=("Microsoft YaHei UI", 12, "bold"),
-            bg=self.theme["card"],
-            fg=self.theme["text"],
-        ).pack(anchor="w")
-        tk.Label(
-            content,
-            text="提示：鼠标滚轮可上下滚动；拖动中间分隔条可调整左侧宽度。",
-            bg=self.theme["card"],
-            fg=self.theme["muted"],
-            justify=tk.LEFT,
-            anchor="w",
-            wraplength=360,
-        ).pack(fill=tk.X, anchor="w", pady=(4, 0))
-
-        action_frame = tk.Frame(content, bg=self.theme["card"])
-        action_frame.pack(fill=tk.X, pady=(10, 0))
+        action_frame = tk.Frame(pinned_top, bg=self.theme["card"])
+        action_frame.pack(fill=tk.X)
 
         self.start_button = tk.Button(
             action_frame,
-            text="启动自动化流程",
-            height=2,
+            text="▶ 启动自动化流程",
             command=self.start_automation,
             bg=self.theme["primary"],
             fg="white",
@@ -4449,14 +4564,15 @@ class LauncherApp:
             activeforeground="white",
             relief=tk.FLAT,
             bd=0,
-            font=("Microsoft YaHei UI", 10, "bold"),
+            font=("Microsoft YaHei UI", 11, "bold"),
             cursor="hand2",
+            pady=8,
         )
-        self.start_button.pack(fill=tk.X, pady=(0, 8))
+        self.start_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
 
         self.stop_button = tk.Button(
             action_frame,
-            text="停止当前流程",
+            text="■ 停止当前流程",
             command=self.stop_automation,
             state=tk.DISABLED,
             bg=self.theme["danger"],
@@ -4467,104 +4583,107 @@ class LauncherApp:
             bd=0,
             font=("Microsoft YaHei UI", 10, "bold"),
             cursor="hand2",
+            pady=8,
+            padx=14,
         )
-        self.stop_button.pack(fill=tk.X, pady=4)
+        self.stop_button.pack(side=tk.RIGHT, fill=tk.X, padx=(0, 0))
 
-        test_frame = tk.LabelFrame(
-            content,
-            text="步骤 / 流程包测试",
-            padx=10,
-            pady=10,
-            bg=self.theme["card"],
+        status_strip = tk.Frame(
+            pinned_top,
+            bg=self.theme.get("panel_soft", "#f8fafc"),
+            padx=8,
+            pady=4,
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
+        status_strip.pack(fill=tk.X, pady=(6, 0))
+        tk.Label(
+            status_strip,
+            text="状态:",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            bg=status_strip["bg"],
+            fg=self.theme["muted"],
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            status_strip,
+            textvariable=self.status_var,
+            font=("Microsoft YaHei UI", 8),
+            bg=status_strip["bg"],
             fg=self.theme["text"],
+            anchor="w",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        # ── 3-Tab 现代化功能分页 (Notebook) ──
+        notebook = ttk.Notebook(outer)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 4))
+
+        def _make_tab_page():
+            page_frame = tk.Frame(notebook, bg=self.theme["card"])
+            canvas = tk.Canvas(page_frame, highlightthickness=0, borderwidth=0, bg=self.theme["card"])
+            canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+            scrollbar = wt_theme.create_modern_scrollbar(
+                page_frame,
+                orient=tk.VERTICAL,
+                command=canvas.yview,
+            )
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            canvas.configure(yscrollcommand=scrollbar.set)
+
+            content_frame = tk.Frame(canvas, bg=self.theme["card"], padx=8, pady=6)
+            canvas_window = canvas.create_window((0, 0), window=content_frame, anchor="nw")
+
+            sr_scheduled = [False]
+
+            def _apply_scrollregion():
+                sr_scheduled[0] = False
+                try:
+                    canvas.configure(scrollregion=canvas.bbox("all"))
+                except Exception:
+                    pass
+
+            def _update_canvas_window_width():
+                new_w = canvas.winfo_width()
+                if new_w > 0 and new_w != getattr(canvas, "_last_width", -1):
+                    canvas._last_width = new_w
+                    canvas.itemconfig(canvas_window, width=new_w)
+
+            def on_content_configure(_event=None):
+                if not sr_scheduled[0]:
+                    sr_scheduled[0] = True
+                    canvas.after_idle(_apply_scrollregion)
+                _update_canvas_window_width()
+
+            def on_canvas_configure(_event=None):
+                _update_canvas_window_width()
+
+            content_frame.bind("<Configure>", on_content_configure)
+            canvas.bind("<Configure>", on_canvas_configure)
+
+            _WHEEL_ROUTER.register(canvas)
+            _WHEEL_ROUTER.bind_root(self.root)
+            return page_frame, content_frame
+
+        # ==========================================
+        # Tab 1: 🚀 步骤编排与测试
+        # ==========================================
+        tab1_page, tab1_content = _make_tab_page()
+        notebook.add(tab1_page, text=" 🚀 步骤编排与测试 ")
+
+        # 1. 链路定义文件
+        flow_file_frame = tk.LabelFrame(
+            tab1_content,
+            text="  链路定义文件  ",
+            padx=10,
+            pady=8,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
             bd=1,
             relief=tk.GROOVE,
         )
-        test_frame.pack(fill=tk.X, pady=(14, 0))
-        tk.Checkbutton(
-            test_frame,
-            text="跳过启动/导入（假定 WT 已处于测试界面）",
-            variable=self.skip_setup_var,
-            bg=self.theme["card"],
-            fg=self.theme["text"],
-            activebackground=self.theme["card"],
-        ).pack(anchor="w")
-        tk.Checkbutton(
-            test_frame,
-            text="运行前置顶 WT 主窗口（流程包/步骤测试前自动置顶）",
-            variable=self.pre_raise_var,
-            bg=self.theme["card"],
-            fg=self.theme["text"],
-            activebackground=self.theme["card"],
-        ).pack(anchor="w", pady=(4, 0))
-        tk.Checkbutton(
-            test_frame,
-            text="显示流程监视器",
-            variable=self.show_monitor_var,
-            bg=self.theme["card"],
-            fg=self.theme["text"],
-            activebackground=self.theme["card"],
-        ).pack(anchor="w", pady=(4, 0))
-        tk.Checkbutton(
-            test_frame,
-            text="启用 AI 失效介入（仅在普通执行和模板兜底都失败后调用 UI-TARS）",
-            variable=self.enable_ai_intervention_var,
-            command=self._refresh_config_summary,
-            bg=self.theme["card"],
-            fg=self.theme["text"],
-            activebackground=self.theme["card"],
-            wraplength=340,
-            justify=tk.LEFT,
-            anchor="w",
-        ).pack(anchor="w", pady=(4, 0))
-        tk.Checkbutton(
-            test_frame,
-            text="自动更新控件模板（每次运行截图与上次对比，不一致才替换，并自动关联步骤模板兜底）",
-            variable=self.template_auto_update_var,
-            command=self._refresh_config_summary,
-            bg=self.theme["card"],
-            fg=self.theme["text"],
-            activebackground=self.theme["card"],
-            wraplength=340,
-            justify=tk.LEFT,
-            anchor="w",
-        ).pack(anchor="w", pady=(4, 0))
+        flow_file_frame.pack(fill=tk.X, pady=(2, 0))
 
-        # 界面缩放（类似 Windows 显示缩放）
-        scale_row = tk.Frame(test_frame, bg=self.theme["card"])
-        scale_row.pack(fill=tk.X, pady=(8, 0))
-        tk.Label(
-            scale_row,
-            text="界面缩放",
-            bg=self.theme["card"],
-            fg=self.theme["text"],
-            font=("Microsoft YaHei UI", 9, "bold"),
-        ).pack(side=tk.LEFT)
-        ttk.Combobox(
-            scale_row,
-            textvariable=self.ui_scale_var,
-            values=[label for label, _ in wt_dpi.SCALE_PRESETS],
-            state="readonly",
-            width=8,
-        ).pack(side=tk.LEFT, padx=(8, 4))
-        tk.Label(
-            scale_row,
-            text="（修改后本窗口即时生效，其余窗口重启后生效）",
-            bg=self.theme["card"],
-            fg=self.theme.get("muted", self.theme["text"]),
-            font=("Microsoft YaHei UI", 8),
-        ).pack(side=tk.LEFT)
-        self.ui_scale_var.trace_add("write", lambda *_args: self._on_ui_scale_changed())
-
-        flow_file_frame = tk.Frame(test_frame, bg=self.theme["card"])
-        flow_file_frame.pack(fill=tk.X, pady=(8, 0))
-        tk.Label(
-            flow_file_frame,
-            text="当前链路文件",
-            bg=self.theme["card"],
-            fg=self.theme["text"],
-            font=("Microsoft YaHei UI", 9, "bold"),
-        ).pack(anchor="w")
         tk.Label(
             flow_file_frame,
             textvariable=self.flow_definition_path_var,
@@ -4573,20 +4692,53 @@ class LauncherApp:
             wraplength=340,
             bg=self.theme["card"],
             fg=self.theme["muted"],
-        ).pack(fill=tk.X, anchor="w", pady=(4, 0))
+        ).pack(fill=tk.X, anchor="w")
 
-        step_toolbar = tk.Frame(test_frame, bg=self.theme["card"])
-        step_toolbar.pack(fill=tk.X, pady=(8, 0))
+        flow_btn_row = tk.Frame(flow_file_frame, bg=self.theme["card"])
+        flow_btn_row.pack(fill=tk.X, pady=(6, 0))
         tk.Button(
-            step_toolbar,
-            text="加载链路文件",
+            flow_btn_row,
+            text="📂 加载链路文件",
             command=self.select_flow_definition_file,
             bg=self.theme["secondary"],
             activebackground=self.theme["secondary_active"],
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=12,
+            pady=4,
         ).pack(side=tk.LEFT)
+        tk.Button(
+            flow_btn_row,
+            text="🔄 刷新步骤",
+            command=self._refresh_flow_steps,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=12,
+            pady=4,
+        ).pack(side=tk.RIGHT)
+
+        # 2. 步骤列表与编排
+        test_frame = tk.LabelFrame(
+            tab1_content,
+            text="  步骤列表与执行  ",
+            padx=10,
+            pady=8,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        test_frame.pack(fill=tk.X, pady=(8, 0))
+
+        step_toolbar = tk.Frame(test_frame, bg=self.theme["card"])
+        step_toolbar.pack(fill=tk.X, pady=(2, 0))
         tk.Button(
             step_toolbar,
             text="全选",
@@ -4596,7 +4748,10 @@ class LauncherApp:
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
-        ).pack(side=tk.LEFT, padx=(8, 0))
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT)
         tk.Button(
             step_toolbar,
             text="全不选",
@@ -4606,43 +4761,42 @@ class LauncherApp:
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
-        ).pack(side=tk.LEFT, padx=(8, 0))
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(6, 0))
         tk.Button(
             step_toolbar,
-            text="上移已选",
+            text="↑ 上移已选",
             command=lambda: self._move_selected_steps(-1),
             bg=self.theme["secondary"],
             activebackground=self.theme["secondary_active"],
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
-        ).pack(side=tk.LEFT, padx=(8, 0))
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(6, 0))
         tk.Button(
             step_toolbar,
-            text="下移已选",
+            text="↓ 下移已选",
             command=lambda: self._move_selected_steps(1),
             bg=self.theme["secondary"],
             activebackground=self.theme["secondary_active"],
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
-        ).pack(side=tk.LEFT, padx=(8, 0))
-        tk.Button(
-            step_toolbar,
-            text="刷新步骤",
-            command=self._refresh_flow_steps,
-            bg=self.theme["secondary"],
-            activebackground=self.theme["secondary_active"],
-            relief=tk.FLAT,
-            bd=0,
-            cursor="hand2",
-        ).pack(side=tk.RIGHT)
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         steps_box = tk.Frame(test_frame, bg=self.theme["card"])
         steps_box.pack(fill=tk.X, pady=(8, 0))
         self.steps_canvas = tk.Canvas(
             steps_box,
-            height=260,
+            height=310,
             highlightthickness=1,
             highlightbackground=self.theme["border"],
             borderwidth=0,
@@ -4686,10 +4840,11 @@ class LauncherApp:
             self.steps_canvas.after_idle(_apply)
 
         def on_steps_canvas_configure(_event=None):
-            self.steps_canvas.itemconfig(self.steps_canvas_window, width=self.steps_canvas.winfo_width())
+            new_w = self.steps_canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(self.steps_canvas, "_last_width", -1):
+                self.steps_canvas._last_width = new_w
+                self.steps_canvas.itemconfig(self.steps_canvas_window, width=new_w)
 
-        # 注册进统一滚轮路由器：不再用 Enter/Leave 动态 bind_all/unbind_all
-        # （unbind_all 会连带拆掉其他区域的滚轮绑定，详见 _WheelRouter 注释）
         _WHEEL_ROUTER.register(self.steps_canvas)
         _WHEEL_ROUTER.bind_root(self.root)
 
@@ -4708,30 +4863,28 @@ class LauncherApp:
         action_row.pack(fill=tk.X, pady=(8, 0))
         tk.Button(
             action_row,
-            text="运行所选步骤",
+            text="▶ 运行所选步骤",
             command=self.start_selected_steps,
             bg=self.theme["secondary"],
             activebackground=self.theme["secondary_active"],
             relief=tk.FLAT,
             bd=0,
-            font=("Microsoft YaHei UI", 9, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
             cursor="hand2",
-        ).pack(
-            side=tk.LEFT, fill=tk.X, expand=True
-        )
+            pady=7,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
         tk.Button(
             action_row,
-            text="从所选开始",
+            text="⏩ 从所选开始",
             command=self.start_from_selected_step,
             bg=self.theme["secondary"],
             activebackground=self.theme["secondary_active"],
             relief=tk.FLAT,
             bd=0,
-            font=("Microsoft YaHei UI", 9, "bold"),
+            font=("Microsoft YaHei UI", 10, "bold"),
             cursor="hand2",
-        ).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0)
-        )
+            pady=7,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
 
         package_row = tk.Frame(test_frame, bg=self.theme["card"])
         package_row.pack(fill=tk.X, pady=(8, 0))
@@ -4758,23 +4911,216 @@ class LauncherApp:
             bd=0,
             font=("Microsoft YaHei UI", 9, "bold"),
             cursor="hand2",
+            padx=14,
+            pady=5,
         ).pack(side=tk.RIGHT)
 
-        tk.Label(
-            content,
-            text="模型配置",
-            font=("Microsoft YaHei UI", 12, "bold"),
+        # 3. 执行控制选项
+        options_frame = tk.LabelFrame(
+            tab1_content,
+            text="  执行控制选项  ",
+            padx=10,
+            pady=8,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        options_frame.pack(fill=tk.X, pady=(8, 0))
+        tk.Checkbutton(
+            options_frame,
+            text="跳过启动/导入（假定 WT 已处于测试界面）",
+            variable=self.skip_setup_var,
             bg=self.theme["card"],
             fg=self.theme["text"],
-        ).pack(anchor="w", pady=(18, 0))
+            activebackground=self.theme["card"],
+        ).pack(anchor="w")
+        tk.Checkbutton(
+            options_frame,
+            text="运行前置顶 WT 主窗口（流程包/步骤测试前自动置顶）",
+            variable=self.pre_raise_var,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+        ).pack(anchor="w", pady=(4, 0))
+        tk.Checkbutton(
+            options_frame,
+            text="显示流程监视器",
+            variable=self.show_monitor_var,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+        ).pack(anchor="w", pady=(4, 0))
+        tk.Checkbutton(
+            options_frame,
+            text="启用 AI 失效介入（仅在普通执行和模板兜底都失败后调用 UI-TARS）",
+            variable=self.enable_ai_intervention_var,
+            command=self._refresh_config_summary,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+            wraplength=340,
+            justify=tk.LEFT,
+            anchor="w",
+        ).pack(anchor="w", pady=(4, 0))
+        tk.Checkbutton(
+            options_frame,
+            text="自动更新控件模板（每次运行截图与上次对比，不一致才替换，并自动关联步骤模板兜底）",
+            variable=self.template_auto_update_var,
+            command=self._refresh_config_summary,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+            wraplength=340,
+            justify=tk.LEFT,
+            anchor="w",
+        ).pack(anchor="w", pady=(4, 0))
 
-        model_frame = tk.LabelFrame(
-            content,
-            text="UI-TARS / VLM 参数",
+        # ==========================================
+        # Tab 2: 🧰 常用工具箱
+        # ==========================================
+        tab2_page, tab2_content = _make_tab_page()
+        notebook.add(tab2_page, text=" 🧰 常用工具箱 ")
+
+        # ── 顶层常用推荐卡片 (Quick Launch Featured) ──
+        featured_frame = tk.LabelFrame(
+            tab2_content,
+            text="  ★ 核心常用推荐  ",
             padx=10,
             pady=10,
             bg=self.theme["card"],
+            fg=self.theme["primary"],
+            bd=1,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=1,
+            highlightbackground=self.theme.get("primary_soft", "#dbeafe"),
+        )
+        featured_frame.pack(fill=tk.X, pady=(2, 4))
+        featured_frame.columnconfigure(0, weight=1)
+        featured_frame.columnconfigure(1, weight=1)
+
+        featured_tools = [
+            ("🚀 打开流程链路编辑", self.open_flow_editor, "primary"),
+            ("🎨 进入模板制作", self.open_template_builder, "primary"),
+            ("🎯 进入控件库采集", self.open_control_map_builder, "primary"),
+            ("⚡ 实时控件检测", self.open_live_detector, "primary"),
+            ("📊 任务与服务器监控", self.open_task_queue, "success"),
+            ("📝 打开运行日志", self.open_log_file, "secondary"),
+        ]
+        for idx, (text, handler, tone) in enumerate(featured_tools):
+            btn = wt_theme.create_flat_button(
+                featured_frame,
+                text=text,
+                command=handler,
+                tone=tone,
+                padx=10,
+                pady=6,
+                font=("Microsoft YaHei UI", 9, "bold"),
+            )
+            r = idx // 2
+            c = idx % 2
+            btn.grid(row=r, column=c, sticky="ew", padx=3, pady=3)
+
+        self._build_tool_section(
+            tab2_content,
+            "流程设计与转换",
+            [
+                ("启动 WT AI Agent（自然语言编排）", self.open_wt_agent, True),
+                ("启动 pywinauto recorder", self.open_pywinauto_recorder, True),
+                ("同步录制脚本(增量·最新)", self.sync_recorded_scripts),
+                ("打开流程链路编辑", self.open_flow_editor, True),
+                ("相对区域取点", self.open_relative_region_helper),
+                ("转换 Recorder 脚本", self.convert_recorder_script),
+                ("导出流程 Excel", self.export_flow_excel),
+                ("导入流程 Excel", self.import_flow_excel),
+            ],
+        )
+        self._build_tool_section(
+            tab2_content,
+            "模板与资源库",
+            [
+                ("进入模板制作", self.open_template_builder, True),
+                ("打开控件库", self.open_control_import_standalone),
+                ("进入控件库采集", self.open_control_map_builder, True),
+                ("实时控件检测", self.open_live_detector, True),
+                ("外部控件采集(uia-peek/axe)", self.open_external_capture),
+                ("打开模板库目录", self.open_template_root_dir),
+                ("刷新模板库概览", self.refresh_template_library_summary_action),
+            ],
+        )
+        self._build_tool_section(
+            tab2_content,
+            "检查与日志",
+            [
+                ("运行环境检测", self.run_environment_check, True),
+                ("启动监控服务", self.start_server_monitor_service),
+                ("启动任务队列服务", self.start_task_queue_service),
+                ("停止任务队列服务", self.stop_task_queue_service),
+                ("任务与服务器监控", self.open_task_queue, True),
+                ("模型配置检查", self.run_model_check),
+                ("打开 UI-TARS 配置", self.open_ui_tars_config),
+                ("打开运行日志", self.open_log_file, True),
+                ("分析运行日志·最近一次", self.analyze_run_logs_last),
+                ("分析运行日志·汇总趋势", self.analyze_run_logs_aggregate),
+                ("一键日志打包", self.package_debug_logs),
+            ],
+        )
+
+        # ==========================================
+        # Tab 3: ⚙️ 环境与配置
+        # ==========================================
+        tab3_page, tab3_content = _make_tab_page()
+        notebook.add(tab3_page, text=" ⚙️ 环境与配置 ")
+
+        # 界面缩放
+        scale_card = tk.LabelFrame(
+            tab3_content,
+            text="  界面缩放  ",
+            padx=10,
+            pady=8,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        scale_card.pack(fill=tk.X, pady=(2, 0))
+        scale_row = tk.Frame(scale_card, bg=self.theme["card"])
+        scale_row.pack(fill=tk.X, pady=2)
+        tk.Label(
+            scale_row,
+            text="缩放比例",
+            bg=self.theme["card"],
             fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        ttk.Combobox(
+            scale_row,
+            textvariable=self.ui_scale_var,
+            values=[label for label, _ in wt_dpi.SCALE_PRESETS],
+            state="readonly",
+            width=8,
+        ).pack(side=tk.LEFT, padx=(8, 4))
+        tk.Label(
+            scale_row,
+            text="（修改后本窗口即时生效，其余窗口重启生效）",
+            bg=self.theme["card"],
+            fg=self.theme.get("muted", self.theme["text"]),
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT)
+        self.ui_scale_var.trace_add("write", lambda *_args: self._on_ui_scale_changed())
+
+        # 模型参数
+        model_frame = tk.LabelFrame(
+            tab3_content,
+            text="  UI-TARS / VLM 参数  ",
+            padx=10,
+            pady=10,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
             bd=1,
             relief=tk.GROOVE,
         )
@@ -4836,6 +5182,9 @@ class LauncherApp:
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=14,
+            pady=6,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True)
         tk.Button(
             model_action_frame,
@@ -4846,71 +5195,24 @@ class LauncherApp:
             relief=tk.FLAT,
             bd=0,
             cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=14,
+            pady=6,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
 
-        tk.Label(
-            content,
-            text="工具入口",
-            font=("Microsoft YaHei UI", 12, "bold"),
-            bg=self.theme["card"],
-            fg=self.theme["text"],
-        ).pack(anchor="w", pady=(18, 0))
-        self._build_tool_section(
-            content,
-            "流程设计与转换",
-            [
-                ("启动 WT AI Agent（自然语言编排）", self.open_wt_agent),
-                ("启动 pywinauto recorder", self.open_pywinauto_recorder),
-                ("同步录制脚本(增量·最新)", self.sync_recorded_scripts),
-                ("打开流程链路编辑", self.open_flow_editor),
-                ("相对区域取点", self.open_relative_region_helper),
-                ("转换 Recorder 脚本", self.convert_recorder_script),
-                ("导出流程 Excel", self.export_flow_excel),
-                ("导入流程 Excel", self.import_flow_excel),
-            ],
-        )
-        self._build_tool_section(
-            content,
-            "模板与资源库",
-            [
-                ("进入模板制作", self.open_template_builder),
-                ("打开控件库", self.open_control_import_standalone),
-                ("进入控件库采集", self.open_control_map_builder),
-                ("实时控件检测", self.open_live_detector),
-                ("外部控件采集(uia-peek/axe)", self.open_external_capture),
-                ("打开模板库目录", self.open_template_root_dir),
-                ("刷新模板库概览", self.refresh_template_library_summary_action),
-            ],
-        )
-        self._build_tool_section(
-            content,
-            "检查与日志",
-            [
-                ("运行环境检测", self.run_environment_check),
-                ("启动监控服务", self.start_server_monitor_service),
-                ("启动任务队列服务", self.start_task_queue_service),
-                ("停止任务队列服务", self.stop_task_queue_service),
-                ("任务与服务器监控", self.open_task_queue),
-                ("模型配置检查", self.run_model_check),
-                ("打开 UI-TARS 配置", self.open_ui_tars_config),
-                ("打开运行日志", self.open_log_file),
-                ("分析运行日志·最近一次", self.analyze_run_logs_last),
-                ("分析运行日志·汇总趋势", self.analyze_run_logs_aggregate),
-                ("一键日志打包", self.package_debug_logs),
-            ],
-        )
-
+        # 运行时状态详情
         info_frame = tk.LabelFrame(
-            content,
-            text="当前状态",
+            tab3_content,
+            text="  运行时状态详情  ",
             padx=10,
             pady=10,
             bg=self.theme["card"],
-            fg=self.theme["text"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
             bd=1,
             relief=tk.GROOVE,
         )
-        info_frame.pack(fill=tk.X, pady=(18, 0))
+        info_frame.pack(fill=tk.X, pady=(8, 0))
         tk.Label(info_frame, textvariable=self.status_var, justify=tk.LEFT, anchor="w", wraplength=370, fg=self.theme["muted"]).pack(fill=tk.X, anchor="w")
         tk.Label(info_frame, textvariable=self.current_step_var, justify=tk.LEFT, anchor="w", wraplength=370, pady=6, fg=self.theme["muted"]).pack(fill=tk.X, anchor="w")
         tk.Label(info_frame, textvariable=self.process_var, justify=tk.LEFT, anchor="w", wraplength=370, fg=self.theme["muted"]).pack(fill=tk.X, anchor="w")
@@ -4918,17 +5220,19 @@ class LauncherApp:
         for child in info_frame.winfo_children():
             child.configure(bg=self.theme["card"], fg=self.theme["text"])
 
+        # 配置概览
         config_frame = tk.LabelFrame(
-            content,
-            text="配置概览",
+            tab3_content,
+            text="  配置概览  ",
             padx=10,
             pady=10,
             bg=self.theme["card"],
-            fg=self.theme["text"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
             bd=1,
             relief=tk.GROOVE,
         )
-        config_frame.pack(fill=tk.X, pady=(18, 0))
+        config_frame.pack(fill=tk.X, pady=(8, 0))
         tk.Label(
             config_frame,
             textvariable=self.config_summary_var,
@@ -4939,17 +5243,19 @@ class LauncherApp:
             bg=self.theme["card"],
         ).pack(fill=tk.X, anchor="w")
 
+        # 模板库概览
         template_frame = tk.LabelFrame(
-            content,
-            text="模板库概览",
+            tab3_content,
+            text="  模板库概览  ",
             padx=10,
             pady=10,
             bg=self.theme["card"],
-            fg=self.theme["text"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
             bd=1,
             relief=tk.GROOVE,
         )
-        template_frame.pack(fill=tk.X, pady=(18, 0))
+        template_frame.pack(fill=tk.X, pady=(8, 0))
         tk.Label(
             template_frame,
             textvariable=self.template_summary_var,
@@ -5009,6 +5315,7 @@ class LauncherApp:
             "打开模板根目录",
             self.open_template_root_dir,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
 
     def _set_left_panel_width(self, target_width):
         if not hasattr(self, "main_paned"):
