@@ -137,3 +137,6 @@ run_scan3.bat
 # C# 构建产物（uia_tree_dumper）
 uia_tree_dumper/**/bin/
 uia_tree_dumper/**/obj/
+
+# 生成物（make_power_template.py 产物，运行即重新生成）
+/逐时功率计算模板.xlsx
