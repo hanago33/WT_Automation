@@ -2361,11 +2361,10 @@ def click_dropdown_runtime_candidate(wrapper):
         wrapper.set_focus()
     except Exception:
         pass
-    try:
-        wrapper.click_input()
-        return True, {"method": "click_input", "point": click_point}
-    except Exception:
-        pass
+    _clicked, _invoked, _reason = _safe_click_input(wrapper)
+    if _clicked:
+        return True, {"method": "invoke" if _invoked else "click_input",
+                      "point": click_point, "reason": _reason}
     ok, click_point = click_wrapper_center(wrapper, click_kind="left")
     if ok:
         return True, {"method": "center_click", "point": click_point}
@@ -4182,7 +4181,49 @@ def _recover_pyautogui_failsafe(exc):
     return recovered is not None
 
 
+def _rect_is_degenerate(rect):
+    """矩形是否为退化（不可点击）矩形：宽或高 <= 0。
+
+    WPF 控件未渲染/未实例化、窗口最小化或 UIA 尚未完成布局时，boundingRect 常
+    返回 (0,0,0,0)。此时由矩形中心推导出的点击坐标必然是屏幕 (0,0)（左上角），
+    形成"点击报成功、实际什么也没点"的假成功。所有由矩形推导点击点的地方都
+    必须先过本校验。
+    """
+    if not isinstance(rect, dict):
+        return True
+    try:
+        width = int(rect.get("width", 0) or 0)
+        height = int(rect.get("height", 0) or 0)
+    except (TypeError, ValueError):
+        return True
+    return width <= 0 or height <= 0
+
+
+def _click_point_is_degenerate(center):
+    """点击点是否为退化点：空值或屏幕左上角盲点 (0,0)。
+
+    屏幕左上角 (0,0) 不是任何流程的合法点击意图：它只可能来自退化矩形（0x0）
+    的中心推导，或坐标读取失败后的默认 0 值。一旦把鼠标点到 (0,0)，光标就停在
+    屏幕角落，pyautogui 失效保护（FAILSAFE=True）会让其后每一次 pyautogui 调用
+    在动作发出前直接抛 FailSafeException，症状是后续步骤瞬间失败、日志无点击记录。
+    故在所有物理点击出口兜底拦截。
+    """
+    if not center:
+        return True
+    try:
+        x = int(center[0])
+        y = int(center[1])
+    except (TypeError, ValueError, IndexError):
+        return True
+    return x <= 0 and y <= 0
+
+
 def _perform_relative_region_click(center, click_kind):
+    if _click_point_is_degenerate(center):
+        # 盲点 (0,0) 直接拒绝：不派发物理点击（否则会把鼠标停在屏幕角落，触发
+        # pyautogui 失效保护，导致后续步骤连锁失败），抛异常交调用方失败路径处理。
+        raise ValueError("refused degenerate click point: {!r}".format(center))
+
     def _dispatch():
         if click_kind == "double":
             pyautogui.doubleClick(center[0], center[1])
@@ -4213,7 +4254,7 @@ def is_text_like_wrapper(wrapper):
 
 def click_wrapper_center(wrapper, click_kind="left"):
     center = get_wrapper_center(wrapper)
-    if not center:
+    if _click_point_is_degenerate(center):
         return False, None
     try:
         _perform_relative_region_click(center, click_kind)
@@ -7872,6 +7913,11 @@ def _scroll_flow_control_into_view(control, step_id="", control_id="", force_top
                     # 光标落点在窗口内部（避免滚到其它窗口）
                     cx = max(win_rect[0] + 20, min(cx, win_rect[2] - 20))
                     cy = max(win_rect[1] + 40, min(cy, win_rect[3] - 20))
+                if _click_point_is_degenerate((cx, cy)):
+                    # 控件矩形退化(0x0)且窗口矩形不可用：滚轮落点会是屏幕角落，
+                    # 跳过（不把鼠标停在 (0,0)，避免触发后续 pyautogui 失效保护）
+                    _log(f"[滚动] 控件矩形退化且无窗口落点，跳过鼠标滚轮兜底: {_label}")
+                    return False
                 pyautogui.moveTo(cx, cy, duration=0.05)
                 pyautogui.scroll(-8, x=cx, y=cy)
                 time.sleep(0.3)
@@ -9507,6 +9553,24 @@ def click_relative_anchor(
             except Exception:
                 result_box["reason"] = "anchor_rect_failed"
                 return
+            _anchor_rect_dict = {
+                "left": rect.left, "top": rect.top,
+                "right": rect.right, "bottom": rect.bottom,
+                "width": int(rect.right) - int(rect.left),
+                "height": int(rect.bottom) - int(rect.top),
+            }
+            if _rect_is_degenerate(_anchor_rect_dict):
+                # 锚点矩形退化(0x0)：中心即 (0,0)，点击会落到屏幕左上角制造假成功
+                result_box["reason"] = "anchor_rect_degenerate"
+                _LOG_STEP(
+                    "锚点矩形退化(0x0)，放弃锚点点击防盲点(0,0): step={step_id}, "
+                    "anchor={anchor_control_id}, rect=({left},{top},{right},{bottom})".format(
+                        step_id=step_id,
+                        anchor_control_id=anchor_control_id,
+                        left=rect.left, top=rect.top, right=rect.right, bottom=rect.bottom,
+                    )
+                )
+                return
             if _wrapper_rect_offscreen(anchor):
                 # 滚动后仍离屏：显式失败（交由上层重试），不再盲点屏幕外坐标
                 result_box["reason"] = "anchor_offscreen_after_scroll"
@@ -9743,6 +9807,64 @@ def _find_list_item_ancestor(wrapper, max_depth=6):
     return None
 
 
+def _try_programmatic_invoke(control):
+    """尝试用 UIA InvokePattern 程序化触发控件（不依赖屏幕坐标）。
+
+    用于控件矩形为 0x0（未渲染/未实例化）时替代物理点击：Button 等支持 Invoke 的
+    控件即使无可点击矩形也能被程序化触发；返回 True 表示已成功派发 Invoke。
+    不支持 Invoke / 派发异常时返回 False，由调用方判定未就绪并放弃（不盲点 (0,0)）。
+    """
+    if control is None:
+        return False
+    try:
+        if hasattr(control, "invoke"):
+            control.invoke()
+            return True
+        control.patterns.Invoke.Invoke()
+        return True
+    except Exception:
+        return False
+
+
+def _safe_click_input(control, click_kind="left", step_id="", control_id=""):
+    """带退化矩形守卫的物理点击，返回 (ok, via_pattern, reason)。
+
+    矩形 0x0 说明控件未渲染/未实例化：pywinauto 的 click_input 会用矩形中心
+    （0x0 时即 (0,0)）派发点击，落到屏幕左上角却报 success，是典型"假成功"，
+    并把鼠标停在角落触发后续 pyautogui 失效保护、导致全线连锁失败。
+    因此 0x0 时优先改用 UIA Invoke 程序化触发（Button 等不依赖屏幕坐标），
+    不支持 Invoke 则显式判未就绪返回失败，交由上层重试/等待，绝不盲点 (0,0)。
+    """
+    if control is None:
+        return False, False, "control-is-none"
+    rect = get_wrapper_rectangle(control) or {}
+    if _rect_is_degenerate(rect):
+        if _try_programmatic_invoke(control):
+            _LOG_STEP(
+                "控件矩形为空(0x0)，已改用 UIA Invoke 程序化点击: "
+                "step={}, control={}".format(step_id, control_id)
+            )
+            return True, True, "invoke-on-degenerate-rect"
+        _LOG_STEP(
+            "控件矩形为空(0x0)且 Invoke 不可用，判定未就绪放弃点击: "
+            "step={}, control={}, rect={}".format(step_id, control_id, rect)
+        )
+        return False, False, "degenerate-rect-no-invoke"
+    try:
+        if click_kind == "right":
+            control.right_click_input()
+        elif click_kind == "double":
+            try:
+                control.double_click_input()
+            except Exception:
+                control.click_input(double=True)
+        else:
+            control.click_input()
+    except Exception as exc:
+        return False, False, "click-exception:{!r}".format(exc)
+    return True, False, ""
+
+
 def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint="", click_kind="left", control_map_path=None):
     control = find_flow_control(
         step_id,
@@ -9933,21 +10055,22 @@ def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
             )
             _selected_via_pattern = False
     if not _selected_via_pattern:
-        try:
-            if click_kind == "right":
-                control.right_click_input()
-            elif click_kind == "double":
-                try:
-                    control.double_click_input()
-                except Exception:
-                    control.click_input(double=True)
-            else:
-                control.click_input()
-        except Exception as click_exc:
+        # 退化矩形（0x0）守卫：0x0 时 click_input 会用矩形中心（即 (0,0)）派发点击，
+        # 落到屏幕左上角却报 success（假成功），并把鼠标停在角落触发后续 pyautogui
+        # 失效保护、导致全线连锁失败。_safe_click_input：0x0 → 优先 UIA Invoke；
+        # 不支持 Invoke → 判未就绪直接放弃，绝不盲点 (0,0)。
+        click_ok, _invoked_via_pattern, _click_reason = _safe_click_input(
+            control, click_kind=click_kind, step_id=step_id, control_id=control_id
+        )
+        if _invoked_via_pattern:
+            _selected_via_pattern = True
+        elif not click_ok:
+            if _click_reason == "degenerate-rect-no-invoke":
+                _finalize_step_timing(step_id, control_id, _t_act)
+                return False
             # 点击瞬间控件销毁/窗口无响应：改用坐标点击兜底，避免步骤以"崩溃"收场
-            click_ok = False
             _LOG_STEP(
-                f"控件点击异常，尝试坐标兜底: step={step_id}, control={control_id}, error={click_exc}"
+                f"控件点击异常，尝试坐标兜底: step={step_id}, control={control_id}, error={_click_reason}"
             )
     if not click_ok:
         fallback_ok, fallback_point = click_wrapper_center(control, click_kind=click_kind)
@@ -10160,9 +10283,8 @@ def check_all_unchecked_toggle_controls(
                 wrapper.set_focus()
             except Exception:
                 pass
-            try:
-                wrapper.click_input()
-            except Exception:
+            _toggle_clicked, _toggle_invoked, _toggle_reason = _safe_click_input(wrapper)
+            if not _toggle_clicked:
                 try:
                     click_wrapper_center(wrapper, click_kind="left")
                 except Exception:
@@ -10514,13 +10636,14 @@ def click_menu_candidate_by_text(step_id, control_id):
             name = get_wrapper_text(candidate)
             if not value_matches(name, target_name):
                 continue
-            try:
-                candidate.click_input()
+            _menu_clicked, _menu_invoked, _ = _safe_click_input(
+                candidate, step_id=step_id, control_id=control_id
+            )
+            if _menu_clicked:
                 time.sleep(0.12)
                 _LOG_STEP(f"已通过菜单候选直点控件: step={step_id}, control={control_id}, name={target_name}")
                 return True
-            except Exception:
-                continue
+            continue
     return False
 
 
@@ -10568,7 +10691,11 @@ def focus_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
             time.sleep(0.2)
             _finalize_step_timing(step_id, control_id, _t_act)
             return True
-        control.click_input()
+        _focus_clicked, _focus_invoked, _focus_reason = _safe_click_input(
+            control, step_id=step_id, control_id=control_id
+        )
+        if not _focus_clicked:
+            raise RuntimeError("focus click not dispatched: {}".format(_focus_reason))
         time.sleep(0.3)
         _finalize_step_timing(step_id, control_id, _t_act)
         return True
@@ -10700,7 +10827,10 @@ def _type_via_screen_keyboard(control, text):
     if get_wrapper_center(control) is None:
         return False
     try:
-        control.click_input()
+        _typing_clicked, _typing_invoked, _typing_reason = _safe_click_input(control)
+        if not _typing_clicked:
+            # 退化矩形且无 Invoke：无法聚焦宿主，直接判失败（不盲点 (0,0)）
+            return False
         time.sleep(0.25)
         send_keys(text)
         time.sleep(0.1)
@@ -10738,7 +10868,9 @@ def type_text_into_wrapper(control, text, force_top=False, force_bottom=False):
             pass
     else:
         try:
-            control.click_input()
+            _input_clicked, _input_invoked, _input_reason = _safe_click_input(control)
+            if not _input_clicked:
+                raise RuntimeError("input click not dispatched: {}".format(_input_reason))
             time.sleep(0.2)
         except Exception:
             try:
@@ -10968,11 +11100,21 @@ def type_text_into_flow_control(step_id, control_id, text, timeout_seconds=3, wi
 
 
 def get_wrapper_center(control):
+    """取控件中心点；矩形退化（宽或高 <= 0）时返回 None 而非 (0,0)。
+
+    返回 None 使调用方的 `if not center` 判空生效；若返回 (0,0)，该值是 truthy，
+    判空失效，物理点击会落到屏幕左上角并触发 pyautogui 失效保护，导致后续步骤
+    连锁失败（这正是"点击 (0,0)"漏检的根源）。
+    """
     try:
         rect = control.rectangle()
-        return int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2)
+        width = int(rect.right) - int(rect.left)
+        height = int(rect.bottom) - int(rect.top)
     except Exception:
         return None
+    if width <= 0 or height <= 0:
+        return None
+    return int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2)
 
 
 def drag_between_flow_controls(
