@@ -1077,6 +1077,22 @@ def _scroll_at_point(center, delta):
         pyautogui.scroll(0)
 
 
+def _is_degenerate_click_point(center):
+    """坐标兜底出口守卫：拒绝空值/屏幕左上角盲点 (0,0)。
+
+    防止 fallback 链把物理点击落到屏幕角落——那会把鼠标停在 (0,0)，
+    触发 pyautogui 失效保护（FAILSAFE=True）导致后续步骤连锁失败。
+    """
+    if not center:
+        return True
+    try:
+        x = int(center[0])
+        y = int(center[1])
+    except (TypeError, ValueError, IndexError):
+        return True
+    return x <= 0 and y <= 0
+
+
 def _perform_coordinate_action(action_name, center, text="", delta=0):
     """在屏幕坐标 center 上执行与 action_name 对应的鼠标/键盘动作。
 
@@ -1084,6 +1100,13 @@ def _perform_coordinate_action(action_name, center, text="", delta=0):
     """
     if action_name == "select_dropdown_item_runtime":
         _LOG_STEP("Warning: refusing raw coordinate click for select_dropdown_item_runtime")
+        return
+    if _is_degenerate_click_point(center):
+        # 盲点 (0,0) 直接拒绝：不派发任何鼠标动作，避免把鼠标停在屏幕角落
+        _LOG_STEP(
+            "coordinate fallback refused degenerate point: action={}, center={}".format(
+                action_name, center)
+        )
         return
     if action_name == "click":
         pyautogui.click(center[0], center[1])
@@ -1618,6 +1641,11 @@ def run_action_step_with_template_fallback(step_id, context, original_error=None
         # offsetX/offsetY（截图本身已包含目标位置，叠加会导致点偏）。
         # 若确需额外偏移，可用通用 positionOffset 字段。
         target_point = (int(center[0]), int(center[1]))
+        if _is_degenerate_click_point(target_point):
+            raise RuntimeError(
+                "template fallback 拒绝退化点击点(盲点 (0,0)): "
+                "step={}, point={}".format(step_id, target_point)
+            )
         if str(action_config.get("clickKind", "")).strip().lower() == "double":
             pyautogui.doubleClick(target_point[0], target_point[1])
         else:
