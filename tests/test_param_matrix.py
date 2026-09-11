@@ -379,6 +379,58 @@ class StepModeFilterTests(unittest.TestCase):
             WT_AUT_recorded._apply_param_table_expansion(merged, {"paramTable": csv})
 
 
+class JsonParamTableTests(unittest.TestCase):
+    """JSON 参数表：文档加密客户端环境下唯一不被加密的格式（防 pythonw 读成密文回归），
+    展开结果须与 CSV/Excel 完全一致。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="param_json_")
+        rows = [
+            {"stepMode": "create", "wohler": "1"},
+            {"stepMode": "copy", "wohler": "4"},
+            {"stepMode": "copyfull", "wohler": "10"},
+        ]
+        self.json_path = os.path.join(self.tmp, "params.json")
+        with open(self.json_path, "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False, indent=2)
+        self.csv_path = os.path.join(self.tmp, "params.csv")
+        with open(self.csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["stepMode", "wohler"])
+            w.writerow(["create", "1"])
+            w.writerow(["copy", "4"])
+            w.writerow(["copyfull", "10"])
+
+    def tearDown(self):
+        for name in ("params.json", "params.csv"):
+            p = os.path.join(self.tmp, name)
+            if os.path.exists(p):
+                os.remove(p)
+        try:
+            os.rmdir(self.tmp)
+        except OSError:
+            pass
+
+    def _template(self):
+        return [
+            {"id": "a", "name": "通用", "stepTags": [], "actionConfig": {"action": "click"}, "controls": []},
+            {"id": "b", "name": "新建", "stepTags": ["create"], "actionConfig": {"action": "click"}, "controls": []},
+            {"id": "c", "name": "复制", "stepTags": ["copy", "copyfull"], "actionConfig": {"action": "click"}, "controls": []},
+            {"id": "d", "name": "绘图", "stepTags": ["copyfull"], "actionConfig": {"action": "click"}, "controls": []},
+        ]
+
+    def test_json_scan_matches_csv_scan(self):
+        rj = ParameterScanner.scan(self.json_path, template_steps=self._template())
+        rc = ParameterScanner.scan(self.csv_path, template_steps=self._template())
+        self.assertEqual(rj["steps"], rc["steps"])
+
+    def test_json_read_columns_and_rows(self):
+        result = ParameterScanner.read_json(self.json_path)
+        self.assertEqual(result.column_names, ["stepmode", "wohler"])
+        self.assertEqual(len(result.rows), 3)
+        self.assertEqual(result.rows[0].values["wohler"], "1")
+
+
 class MastOverrideOrderTests(unittest.TestCase):
     """问题1 防回归：多塔"第二座塔"须按 mastEntries（CFT 行序）取，
     不能用 sorted(mastIds)[1]——排序会打乱 CFT 行序，曾把第二塔覆盖成第一塔的气象。

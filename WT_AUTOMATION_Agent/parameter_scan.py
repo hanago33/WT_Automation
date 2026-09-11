@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 from copy import deepcopy
@@ -96,7 +97,7 @@ def _snake_case(name: str) -> str:
 class ParameterScanner:
     """参数扫描器：Excel/CSV → 参数化 flow_definition。
 
-    支持格式：.xlsx / .xls / .csv / .tsv
+    支持格式：.xlsx / .xls / .csv / .tsv / .json
     """
 
     # ------------------------------------------------------------------
@@ -188,7 +189,15 @@ class ParameterScanner:
             ext = os.path.splitext(file_path)[1].lower()
             delimiter = "\t" if ext in (".tsv", ".tab") else ","
 
-        with open(file_path, "r", encoding="utf-8-sig", newline="") as f:
+        with open(file_path, "rb") as f:
+            raw = f.read()
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            # 中文 Windows 上 WPS/Excel 另存 CSV 常用 GBK，回退解码避免整表读失败
+            text = raw.decode("gbk", errors="replace")
+
+        with io.StringIO(text, newline="") as f:
             reader = csv.reader(f, delimiter=delimiter)
             header = next(reader)
             columns = [_snake_case(h) for h in header]
@@ -204,6 +213,46 @@ class ParameterScanner:
                     if ci < len(columns):
                         values[columns[ci]] = str(cell).strip()
                 rows.append(ParameterRow(index=ri, values=values))
+
+        return ScanResult(
+            rows=rows,
+            column_names=columns,
+            total_rows=len(rows),
+            source_path=file_path,
+        )
+
+    @staticmethod
+    def read_json(file_path: str, max_rows: int = 0) -> ScanResult:
+        """从 .json 读取参数表（对象数组；不受文档加密客户端影响的格式）。
+
+        格式：[{"列名": 值, ...}, ...]，列顺序以第一条记录为准；
+        行号从 2 起，与 Excel/CSV 首行表头对齐，保证展开 id 与既有格式一致。
+        """
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"文件不存在: {file_path}")
+        with open(file_path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        if isinstance(data, list) and not data:
+            return ScanResult(rows=[], column_names=[], total_rows=0, source_path=file_path)
+        if not isinstance(data, list):
+            raise ValueError(f"参数表 JSON 须为对象数组 [{{列: 值}}, ...]: {file_path}")
+        first = data[0]
+        if not isinstance(first, dict):
+            raise ValueError(f"参数表 JSON 的每行须为对象: {file_path}")
+        keys = list(first.keys())
+        columns = [_snake_case(str(k)) for k in keys]
+
+        rows: list[ParameterRow] = []
+        for ri, item in enumerate(data, start=2):
+            if max_rows > 0 and len(rows) >= max_rows:
+                break
+            if not isinstance(item, dict):
+                continue
+            values: dict[str, str] = {}
+            for key, col in zip(keys, columns):
+                cell = item.get(key)
+                values[col] = "" if cell is None else str(cell).strip()
+            rows.append(ParameterRow(index=ri, values=values))
 
         return ScanResult(
             rows=rows,
@@ -230,6 +279,8 @@ class ParameterScanner:
             )
         elif ext in (".csv", ".tsv", ".tab"):
             return ParameterScanner.read_csv(file_path, max_rows=max_rows)
+        elif ext == ".json":
+            return ParameterScanner.read_json(file_path, max_rows=max_rows)
         else:
             raise ValueError(f"不支持的参数表格式: {ext}")
 
