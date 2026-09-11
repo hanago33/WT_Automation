@@ -1095,13 +1095,33 @@ def _get_main_window_candidates():
 
 	复用预检同款 find_main_windows：按进程名 MUPSmartClient 识别主窗，UIPI 免疫，
 	比定位器自身的进程名枚举更可靠（实测运行中 MUP 枚举偶发为空导致误回退到自己 Tk 窗）。
+
+	防御：MUP 主窗口标题为空，而 Windows Terminal 窗口标题常被设为
+	"Meteodyn Universe / v1.10.1.0"（含关键词），会命中 MAIN_WINDOW_TITLE_RE 被误纳入
+	候选。定位器对终端窗口（CASCADIA_HOSTING_WINDOW_CLASS / XAML Island）做 UIA 遍历
+	会导致气象弹窗定位失败，并在 descendants 上触发 0x80040155 原生崩溃终止流程。
+	故：① 按类名排除终端窗口；② 仅保留进程名确属 MUPSmartClient 的窗口（主窗标题为空，
+	只能靠进程名权威识别）；过滤后为空才回退原始结果（保持旧行为，不因过滤而丢主窗）。
 	"""
 	try:
 		main_windows = _get_wt_window_helpers().find_main_windows(
 			MAIN_WINDOW_TITLE_RE,
 			class_name_keywords=("MUPSmartClient",),
+			exclude_class_keywords=("CASCADIA_HOSTING_WINDOW_CLASS",),
 		)
-		return list(main_windows or [])
+		main_windows = list(main_windows or [])
+		_filtered = [
+			w for w in main_windows
+			if "mupsmartclient" in str(w.get("processName", "") or "").lower()
+		]
+		if _filtered:
+			if len(_filtered) != len(main_windows):
+				log_step(
+					"[主窗候选] 过滤非 MUPSmartClient 进程窗口 {} 个（原 {} 个）".format(
+						len(main_windows) - len(_filtered), len(main_windows))
+				)
+			return _filtered
+		return main_windows
 	except Exception:
 		return []
 
@@ -2390,6 +2410,37 @@ def _attach_mup_data_diff(run_report, context):
 			run_report["mupDataDiffError"] = str(exc)
 
 
+def _log_integrity_self_check(window_info):
+	"""打印本工具与目标软件的完整性级别对比，提前暴露 UIPI 隔离风险。
+
+	UIPI 场景下"目标以管理员(High)运行、本工具普通权限(Medium)"会导致 UIA
+	内容树被系统隔离（窗口能找到但子树为空/控件读不到），中途极易被误判为
+	"控件不存在"。放在运行前打印，便于一眼区分"权限隔离"与"控件真的不存在"。
+	"""
+	try:
+		import ctypes
+		from wt_flow_locator import _process_integrity_tier
+		hwnd = int((window_info or {}).get("hwnd") or 0)
+		if not hwnd:
+			return
+		_target_pid = ctypes.c_ulong()
+		ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(_target_pid))
+		_self_tier = _process_integrity_tier(os.getpid())
+		_target_tier = _process_integrity_tier(int(_target_pid.value or 0))
+		log_step(
+			"[权限自检] 本工具完整性={}，目标(MUP)完整性={}".format(
+				_self_tier or "未知", _target_tier or "未知")
+		)
+		if _target_tier == "high" and _self_tier in ("medium", "low"):
+			log_step(
+				"[权限自检] 警告：目标以管理员/高完整性运行，而本工具未提权，"
+				"UIA 内容树可能被系统隔离(UIPI)，导致控件定位失败。"
+				"请以管理员身份重启本工具，或让目标软件以普通权限运行。"
+			)
+	except Exception:
+		pass
+
+
 def _preflight_check_main_window():
 	"""运行前窗口健康检查：主窗口存在则恢复+置顶，返回窗口信息；不存在则中止启动。"""
 	try:
@@ -2398,6 +2449,7 @@ def _preflight_check_main_window():
 			"[mup-preflight] 运行前窗口健康检查通过: "
 			"hwnd={hwnd} title={title} size={width}x{height}".format(**window_info)
 		)
+		_log_integrity_self_check(window_info)
 		return window_info
 	except Exception as exc:
 		raise RuntimeError(

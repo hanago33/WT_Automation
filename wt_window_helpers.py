@@ -126,7 +126,7 @@ def _get_window_owning_process_name(hwnd):
     return ""
 
 
-def find_main_windows(main_window_title_re, class_name_keywords=()):
+def find_main_windows(main_window_title_re, class_name_keywords=(), exclude_class_keywords=()):
     """枚举目标软件主窗口候选。
 
     - 默认按标题正则匹配（`main_window_title_re`），保持既有行为。
@@ -135,23 +135,33 @@ def find_main_windows(main_window_title_re, class_name_keywords=()):
       （不区分大小写）也纳入候选——用于 MUP 主窗口标题为空、仅靠类名可识别
       的场景；进程名匹配不受 UIPI 影响（普通权限 WT 也能读到提权 MUP 主窗口），
       避免前置顶误把 PowerShell 类后台窗口当主窗口置顶。
+    - 传入 `exclude_class_keywords`（如 ("CASCADIA_HOSTING_WINDOW_CLASS",)）时，
+      窗口类名含任一关键词的窗口**一律排除**（即使其标题命中正则）。用于排除
+      Windows Terminal 等"标题被设为目标软件名"的非目标窗口——它们标题会命中
+      main_window_title_re 被误纳入候选，导致定位器对其做 UIA 遍历（气象弹窗
+      定位失败 + 对 XAML Island 子树 descendants 触发 0x80040155 原生崩溃）。
     """
     windows = []
     keywords = tuple(str(k) for k in (class_name_keywords or ()) if str(k).strip())
+    excludes = tuple(str(k).lower() for k in (exclude_class_keywords or ()) if str(k).strip())
 
     @_ENUM_WINDOWS_PROC
     def callback(hwnd, _lparam):
         if not _USER32.IsWindowVisible(hwnd):
             return True
         title = _GET_WINDOW_TEXT(hwnd)
+        # 始终取类名：既用于 class 关键词匹配，也用于类名排除（排除优先于标题匹配）。
+        class_name = ""
+        class_buf = ctypes.create_unicode_buffer(256)
+        if _USER32.GetClassNameW(hwnd, class_buf, 256):
+            class_name = class_buf.value or ""
+        if excludes and any(e in class_name.lower() for e in excludes):
+            return True
         title_matched = bool(title) and main_window_title_re.search(title)
         class_matched = False
         process_matched = False
         if not title_matched and keywords:
-            class_buf = ctypes.create_unicode_buffer(256)
-            if _USER32.GetClassNameW(hwnd, class_buf, 256):
-                class_name = class_buf.value or ""
-                class_matched = any(k.lower() in class_name.lower() for k in keywords)
+            class_matched = any(k.lower() in class_name.lower() for k in keywords)
             # 标题/类名被 UIPI 挡空（提权 MUP 窗口）时，退级按进程名识别：
             # MUPSmartClient.exe 的窗口即使普通权限也能被正确定位。
             if not class_matched:
@@ -164,6 +174,12 @@ def find_main_windows(main_window_title_re, class_name_keywords=()):
         rect = _GET_WINDOW_RECT(hwnd)
         width = (rect.right - rect.left) if rect else 0
         height = (rect.bottom - rect.top) if rect else 0
+        # 进程名仅用于调用方做进程白名单过滤；读取失败（UIPI 挡空/API 不可用）
+        # 时降级为空串，绝不让单个窗口的进程名读取异常中断整个枚举。
+        try:
+            _proc_name = _get_window_owning_process_name(hwnd)
+        except Exception:
+            _proc_name = ""
         windows.append(
             {
                 "hwnd": int(hwnd),
@@ -172,6 +188,7 @@ def find_main_windows(main_window_title_re, class_name_keywords=()):
                 "width": width,
                 "height": height,
                 "classMatch": class_matched and not title_matched,
+                "processName": _proc_name,
             }
         )
         return True

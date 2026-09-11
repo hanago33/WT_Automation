@@ -545,6 +545,19 @@ def get_wrapper_class_name(wrapper):
     return normalize_match_text(_safe_get_value(lambda: wrapper.class_name(), ""))
 
 
+def _is_terminal_like_window(wrapper):
+    """判断是否为 Windows Terminal（Cascadia）类窗口。
+
+    这类窗口标题常被设为目标软件名而混入候选，但其 XAML Island 子树做 UIA
+    descendants 会触发 0x80040155 原生崩溃（Python except 抓不住，直接终止流程），
+    必须在任何 UIA 遍历前剔除。判定异常时保守返回 False（不放行也不误杀）。
+    """
+    try:
+        return "cascadia_hosting_window_class" in str(get_wrapper_class_name(wrapper) or "").lower()
+    except Exception:
+        return False
+
+
 def get_wrapper_control_type(wrapper):
     return normalize_control_type_name(
         _safe_get_value(lambda: getattr(wrapper.element_info, "control_type", ""), ""),
@@ -5692,6 +5705,15 @@ def iter_flow_search_windows(step_definition, window_title_hint="", control_defi
                     wrapped = _try_get_window_by_handle(hwnd)
                     if wrapped is None or is_automation_window(wrapped):
                         continue
+                    # 第二道防线：剔除 Windows Terminal 等终端类窗口。其标题常被设为
+                    # 目标软件名而混入候选，但对其 XAML Island 子树做 descendants 会触发
+                    # 0x80040155 原生崩溃（Python except 抓不住，直接终止流程），必须在
+                    # 任何 UIA 遍历前剔除。
+                    if _is_terminal_like_window(wrapped):
+                        _LOG_STEP(
+                            "[FlowLocator] 候选窗口排除终端类窗口: hwnd={}".format(hex(int(hwnd)))
+                        )
+                        continue
                     handle = _safe_get_value(lambda: getattr(wrapped.element_info, "handle", 0), 0)
                     if handle in seen:
                         continue
@@ -9743,6 +9765,25 @@ def _find_list_item_ancestor(wrapper, max_depth=6):
     return None
 
 
+def _try_programmatic_invoke(control):
+    """尝试用 UIA InvokePattern 程序化触发控件（不依赖屏幕坐标）。
+
+    用于控件矩形为 0x0（未渲染/未实例化）时替代物理点击：Button 等支持 Invoke 的
+    控件即使无可点击矩形也能被程序化触发；返回 True 表示已成功派发 Invoke。
+    不支持 Invoke / 派发异常时返回 False，由调用方判定未就绪并放弃（不盲点 (0,0)）。
+    """
+    if control is None:
+        return False
+    try:
+        if hasattr(control, "invoke"):
+            control.invoke()
+            return True
+        control.patterns.Invoke.Invoke()
+        return True
+    except Exception:
+        return False
+
+
 def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint="", click_kind="left", control_map_path=None):
     control = find_flow_control(
         step_id,
@@ -9932,6 +9973,27 @@ def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
                 f"SelectionItemPattern 选中失败，回退物理点击: step={step_id}, control={control_id}, error={sel_exc}"
             )
             _selected_via_pattern = False
+    # 物理点击前置校验：矩形 0x0 说明控件未渲染/未实例化，物理点击会落到屏幕 (0,0)
+    # "看似成功实则无效"（实测 step_28 保存后 HPC 按钮 rect=(0,0,0,0) 被 click_input
+    # 报 success 但计算未触发）。优先改用 UIA Invoke 程序化点击（Button 等支持 Invoke
+    # 的控件不依赖屏幕坐标，0x0 矩形也能触发）；不支持 Invoke 时显式失败交由上层
+    # 重试/等待，禁止盲点 (0,0) 制造假成功。
+    if not _selected_via_pattern:
+        _click_rect = get_wrapper_rectangle(control) or {}
+        if int(_click_rect.get("width", 0) or 0) <= 0 or int(_click_rect.get("height", 0) or 0) <= 0:
+            if _try_programmatic_invoke(control):
+                _selected_via_pattern = True
+                _LOG_STEP(
+                    "控件矩形为空(0x0)，已改用 UIA Invoke 程序化点击: step={}, control={}".format(
+                        step_id, control_id)
+                )
+            else:
+                _LOG_STEP(
+                    "控件矩形为空(0x0)且 Invoke 不可用，判定未就绪放弃点击: "
+                    "step={}, control={}, rect={}".format(step_id, control_id, _click_rect)
+                )
+                _finalize_step_timing(step_id, control_id, _t_act)
+                return False
     if not _selected_via_pattern:
         try:
             if click_kind == "right":
