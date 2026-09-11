@@ -295,6 +295,39 @@ Windows 层面的陈旧状态，重启即可全部清除，常见来源：
 > **预防**：执行切换脚本前，先关闭所有 WT 程序、命令行窗口与停留在 `D:\wt_python*` 的
 > 资源管理器窗口；切换完成后**重启一次**再投入使用，可避免此现象。
 
+### 6.6 文档加密客户端：按扩展名加密与"不同进程看到不同内容"
+
+本机装有文档安全客户端（如"株洲所文档云 Anyshare"），对**部分扩展名**做透明加密：
+被加密的文件，**放行程序读到明文，其他程序读到的却是密文**（密文头部固定为
+`17 DA 5F A0`，比明文大约多 1 KB）。实测（2026-09-11）：
+
+| 扩展名 | 磁盘是否被加密 | 影响 |
+|---|---|---|
+| `.xlsx` / `.xls` / `.csv` / `.txt` / `.docx` | **会**（写入后数分钟内异步加密） | openpyxl/csv 读 xlsx/csv 报 `File is not a zip file`；**git 读 .txt 读到密文** |
+| `.json` / `.py` / `.md` | 不会 | 任何进程均读到明文 |
+
+**两个已知踩坑**：
+
+1. **参数表 / Excel 类资产**：`pythonw.exe`（启动脚本实际使用的解释器）未被放行，
+   读 xlsx/csv 得到密文 → 参数表展开失败后**静默降级为原始步骤**（日志只有一行
+   `[paramTable] 展开失败，降级为原始步骤：File is not a zip file`，极易忽略）。
+   **对策**：参数表改用 `.json`（`ParameterScanner.read_json` 支持，见
+   `flow_packages/param_table_发送综合计算.json`）；根治办法是请 IT 把
+   `pythonw.exe` 加入放行名单。
+2. **git 提交以 `.txt` 结尾的消息/文件会失败**：`git commit -F msg.txt` 报
+   `error: a NUL byte in commit log message not allowed`（git 读到密文）。
+   **对策**：提交信息文件改用 `.md`；同理，**任何需要入库的文本资产避免用 `.txt`**
+   （入库前可用 `git hash-object <file>` 与 Python 侧 SHA1 对比，二者不一致即说明
+   git 读到的是密文）。
+
+**通用自检方法**（判断某文件对 git 是否可读）：
+
+```powershell
+# git 看到的内容 与 磁盘/Python 看到的内容 是否一致
+git hash-object <file>
+D:\wt_python\python.exe -c "import hashlib,sys; d=open(sys.argv[1],'rb').read(); d=d.replace(b'\r\n',b'\n'); print(hashlib.sha1(b'blob %d\0'%len(d)+d).hexdigest())" <file>
+```
+
 ---
 
 ## 七、日常维护
