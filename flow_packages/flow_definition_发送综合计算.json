@@ -1710,7 +1710,7 @@
         "action": "type_text",
         "timeoutSeconds": 3.0,
         "waitBefore": 0.0,
-        "waitAfter": 0.15,
+        "waitAfter": 1.0,
         "retryCount": 0,
         "retryInterval": 1.0,
         "onError": "continue",
@@ -1839,7 +1839,13 @@
         "waitAfter": 1.0,
         "retryCount": 1,
         "retryInterval": 1.0,
-        "onError": "continue"
+        "onError": "continue",
+        "precondition": {
+          "condition": "wait_exists",
+          "controlId": "WT6250_D220_文本_Text",
+          "timeoutSeconds": 15,
+          "diagnosticAutomationId": "MBAWRAWindTurbineTypeGridViewSelectorControl"
+        }
       },
       "auxChecks": [],
       "fallbacks": [],
@@ -2593,7 +2599,13 @@
         "waitAfter": 1.0,
         "retryCount": 1,
         "retryInterval": 1.0,
-        "onError": "continue"
+        "onError": "continue",
+        "precondition": {
+          "condition": "wait_exists",
+          "controlId": "WT6250_D220_文本_Text",
+          "timeoutSeconds": 15,
+          "diagnosticAutomationId": "MBAWRAWindTurbineTypeGridViewSelectorControl"
+        }
       },
       "auxChecks": [],
       "fallbacks": [],
