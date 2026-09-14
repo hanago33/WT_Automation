@@ -32,10 +32,26 @@ FLOW_CONTROL_CACHE = {}
 FLOW_PARENT_CACHE = {}
 _UIPI_BLOCK_CACHE = {}
 _UIPI_BLOCK_DETECTED = {"timestamp": 0.0, "diagnostic": None}
-# 气象弹窗诊断（dump 480+ Text 节点并回溯父链，约 9 秒/次）限流时间戳：
-# step_id -> 上次 dump 时刻。同一步骤短时间内只 dump 一次，避免动作阶段与
-# 续跑校验各付一次（实测两次共 ~19 秒纯诊断开销）。
+# 气象弹窗诊断（dump 480+ Text 节点并回溯父链，约 9 秒/次）限流标记：
+# step_id -> 已 dump 标记（值非空即本步已 dump 过）。步骤结束由
+# clear_step_diagnostic_state(step_id) 清除，保证"每步一次"语义；
+# 防字典无限增长：超 256 个条目时整体清空（正常流程单塔步数远小于此）。
 _CLIM_DIAG_LAST = {}
+
+
+def clear_step_diagnostic_state(step_id):
+    """步骤结束时清除该步的诊断限流标记（执行器在每步收尾时调用）。
+
+    诊断 dump 成本高（实-measured 26-36s/次），限流语义为"同一步骤生命周期
+    只 dump 一次"；但失败重试轮之间可能相隔 40s+，按墙钟窗口限流会被绕过，
+    故用标记位。步骤结束后清除，避免对下一次同 id 步骤（远程队列复跑）失效。
+    """
+    try:
+        if len(_CLIM_DIAG_LAST) > 256:
+            _CLIM_DIAG_LAST.clear()
+        _CLIM_DIAG_LAST.pop(str(step_id), None)
+    except Exception:
+        pass
 # UIPI 锁存有效时长：一次误检（UIA 瞬时枚举失败/辅助进程窗口）不应影响后续所有迭代
 _UIPI_BLOCK_TTL_SECONDS = 30.0
 
@@ -9167,15 +9183,17 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
             # [诊断] 气象弹窗列表项定位失败时（step_15/step_mt_refclim_select），
             # dump MTDClimatologySelectorControl 子树内所有 Text 节点，确认运行时
             # 树里 M1/Mast1 到底是否存在、rect/offscreen 如何（排查"可见但定位不到"）。
-            # 诊断限流：dump 480+ Text 节点并回溯父链约需 9 秒，同一步骤在动作阶段与
-            # 续跑校验会各触发一次（实测两次共 ~19s 纯诊断开销）。同一步骤 30s 内只 dump 一次。
+            # 诊断限流：同一步骤整个生命周期只 dump 一次。旧实现按 30s 墙钟窗口限流，
+            # 内网实测失败重试轮间隔 41-46s 恰好绕过窗口，step_mt_refclim_select 连 dump
+            # 三次（每次 26-36s，共 ~100s 纯诊断开销）。改为"步内一次"：步骤结束由
+            # clear_step_diagnostic_state(step_id) 清除标记，下一塔的展开步骤
+            # （step_mt_refclim_select_scan2_23 等带序号后缀）是不同 step_id，不受影响。
             _clim_diag_allowed = True
             if str(step_id).startswith("step_15") or str(step_id).startswith("step_mt_refclim_select"):
-                _now_diag = time.time()
-                if _now_diag - _CLIM_DIAG_LAST.get(str(step_id), 0.0) < 30.0:
+                if _CLIM_DIAG_LAST.get(str(step_id)):
                     _clim_diag_allowed = False
                 else:
-                    _CLIM_DIAG_LAST[str(step_id)] = _now_diag
+                    _CLIM_DIAG_LAST[str(step_id)] = time.time()
             if _clim_diag_allowed and (
                     str(step_id).startswith("step_15") or str(step_id).startswith("step_mt_refclim_select")):
                 _dbg_t0 = time.perf_counter()

@@ -165,3 +165,35 @@ class RoughnessPairsSectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ClimDiagOncePerStepTests(unittest.TestCase):
+    """气象弹窗诊断限流语义：同一步骤生命周期只 dump 一次。
+
+    背景：旧实现按 30s 墙钟窗口限流，内网实测失败重试轮间隔 41-46s 恰好绕过
+    窗口，step_mt_refclim_select 连续 dump 三次（每次 26-36s）。改为标记位后，
+    步骤结束由 clear_step_diagnostic_state 复位，保证复跑可重新诊断。
+    """
+
+    def setUp(self):
+        wt_flow_locator._CLIM_DIAG_LAST.clear()
+
+    def tearDown(self):
+        wt_flow_locator._CLIM_DIAG_LAST.clear()
+
+    def test_second_call_within_step_is_throttled(self):
+        wt_flow_locator._CLIM_DIAG_LAST["step_mt_refclim_select_scan2_23"] = 1234.0
+        allowed = not wt_flow_locator._CLIM_DIAG_LAST.get("step_mt_refclim_select_scan2_23")
+        self.assertFalse(allowed, "同一 step 已 dump 过必须被限流（每步一次）")
+
+    def test_clear_step_diagnostic_state_resets(self):
+        wt_flow_locator._CLIM_DIAG_LAST["step_15_scan2_17"] = 999.0
+        wt_flow_locator.clear_step_diagnostic_state("step_15_scan2_17")
+        self.assertNotIn("step_15_scan2_17", wt_flow_locator._CLIM_DIAG_LAST)
+        allowed = not wt_flow_locator._CLIM_DIAG_LAST.get("step_15_scan2_17")
+        self.assertTrue(allowed, "步末清除后同 id 复跑允许重新诊断")
+
+    def test_clear_bounded_at_256(self):
+        for i in range(260):
+            wt_flow_locator._CLIM_DIAG_LAST[f"s{i}"] = 1.0
+        wt_flow_locator.clear_step_diagnostic_state("s_new")
+        self.assertLessEqual(len(wt_flow_locator._CLIM_DIAG_LAST), 1, "超 256 条目整体清空防膨胀")

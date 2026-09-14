@@ -2097,6 +2097,13 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
             total_attempts = configured_retry_count + 1
             summary_parts.append(f"attempt={step_extra.get('attemptCount')}/{total_attempts}")
         _LOG_STEP("步骤结束: " + ", ".join(summary_parts))
+        # 步内诊断限流标记复位：气象弹窗诊断按"每步一次"限流，步骤结束必须清除，
+        # 否则远程队列复跑同名步骤时诊断被永久跳过（见 wt_flow_locator 注释）。
+        try:
+            from wt_flow_locator import clear_step_diagnostic_state
+            clear_step_diagnostic_state(step_id)
+        except Exception:
+            pass
         _REPORT_STEP_RESULT(
             context.get("run_report"),
             step_id,
