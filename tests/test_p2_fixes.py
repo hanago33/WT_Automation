@@ -48,6 +48,10 @@ class LabelRectCacheTests(unittest.TestCase):
         stack = ExitStack()
         stack.enter_context(patch.object(wt_flow_locator, "get_wrapper_top_level_window", return_value=top_window))
         stack.enter_context(patch.object(wt_flow_locator, "get_wrapper_handle", return_value=1001))
+        # 存活校验隔离：本组测试关注缓存行为，mock 元素没有真实窗口句柄，
+        # 直接置为存活；崩溃防护（失效 scope 跳过 descendants）由
+        # test_dead_scope_skips_descendants 单独覆盖。
+        stack.enter_context(patch.object(wt_flow_locator, "is_wrapper_alive", return_value=True))
         stack.enter_context(patch.object(wt_flow_locator, "get_wrapper_control_type", return_value="Text"))
         stack.enter_context(patch.object(wt_flow_locator, "get_wrapper_text", return_value="标签"))
         stack.enter_context(patch.object(wt_flow_locator, "get_wrapper_rectangle", return_value={
@@ -71,6 +75,61 @@ class LabelRectCacheTests(unittest.TestCase):
             wt_flow_locator._find_label_rects_for_wrapper(make_wrapper(), "标签")
             wt_flow_locator._find_label_rects_for_wrapper(make_wrapper(), "标签2")
         self.assertEqual(scan_count["n"], 2, "不同标签文本不共享缓存")
+
+    def test_dead_scope_skips_descendants(self):
+        """scope 存活探活失败时必须跳过 descendants 扫描。
+
+        背景：MUP 窗口销毁/重启后，对已失效的 UIA 元素调用 descendants() 会触发
+        provider 的 C 层致命异常（Windows fatal exception 0x80040155）直接终止
+        整个 Python 进程，try/except 无法拦截；因此探活失败必须提前跳过。
+        """
+        make_wrapper, scan_count, stack = self._scan_setup()
+        with stack:
+            with patch.object(wt_flow_locator, "is_wrapper_alive", return_value=False):
+                result = wt_flow_locator._find_label_rects_for_wrapper(make_wrapper(), "标签")
+        self.assertEqual(result, [], "失效 scope 不应产出任何标签矩形")
+        self.assertEqual(scan_count["n"], 0, "失效 scope 必须跳过 descendants 扫描（防进程崩溃）")
+
+
+class DebugPhaseTimingTests(unittest.TestCase):
+    """诊断/唤醒自耗时不得混入 JSON 列：t_json_ms 剔除、t_debug_ms 单列。
+
+    背景：气象弹窗诊断、Raw 诊断、唤醒点击这几段排查代码夹在 Phase3(整树结束)
+    与最终 t4 之间，会被整段计入 t_json_ms（实测单步 108s），导致"JSON 匹配慢"
+    的错误归因。
+    """
+
+    def setUp(self):
+        wt_flow_locator._step_timing.clear()
+        wt_flow_locator._DEBUG_PHASE_MS.clear()
+
+    def tearDown(self):
+        wt_flow_locator._step_timing.clear()
+        wt_flow_locator._DEBUG_PHASE_MS.clear()
+
+    def test_debug_phase_excluded_from_json_column(self):
+        # t3=0.3s → t4=10.3s 共 10000ms，其中 8000ms 是诊断自耗时
+        wt_flow_locator._add_debug_phase_ms("step_x", "ctrl_a", 8000.0)
+        wt_flow_locator._record_locator_timing("step_x", "ctrl_a", 0.0, 0.1, 0.2, 0.3, 10.3)
+        timing = wt_flow_locator.get_step_timing("step_x", "ctrl_a")
+        self.assertEqual(timing["t_json_ms"], 2000.0, "JSON 列必须剔除诊断耗时")
+        self.assertEqual(timing["t_debug_ms"], 8000.0, "诊断耗时单独记入 t_debug_ms")
+
+    def test_no_debug_keeps_json_unchanged(self):
+        wt_flow_locator._record_locator_timing("step_y", "ctrl_b", 0.0, 0.1, 0.2, 0.3, 1.3)
+        timing = wt_flow_locator.get_step_timing("step_y", "ctrl_b")
+        self.assertEqual(timing["t_json_ms"], 1000.0, "无诊断时 JSON 列不应被改动")
+        self.assertEqual(timing["t_debug_ms"], 0.0, "无诊断时 t_debug_ms 为 0")
+
+    def test_debug_accumulates_and_is_consumed(self):
+        wt_flow_locator._add_debug_phase_ms("step_z", "ctrl_c", 1500.0)
+        wt_flow_locator._add_debug_phase_ms("step_z", "ctrl_c", 500.0)
+        wt_flow_locator._record_locator_timing("step_z", "ctrl_c", 0.0, 0.1, 0.2, 0.3, 3.3)
+        timing = wt_flow_locator.get_step_timing("step_z", "ctrl_c")
+        self.assertEqual(timing["t_debug_ms"], 2000.0, "同一 key 多次累加")
+        self.assertEqual(timing["t_json_ms"], 1000.0, "3000ms 区间扣除 2000ms 诊断")
+        self.assertEqual(wt_flow_locator._DEBUG_PHASE_MS.get("step_z|ctrl_c"), None,
+                         "record 后应消费清零，避免跨步骤串账")
 
 
 class RoughnessPairsSectionTests(unittest.TestCase):

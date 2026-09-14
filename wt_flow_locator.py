@@ -32,6 +32,10 @@ FLOW_CONTROL_CACHE = {}
 FLOW_PARENT_CACHE = {}
 _UIPI_BLOCK_CACHE = {}
 _UIPI_BLOCK_DETECTED = {"timestamp": 0.0, "diagnostic": None}
+# 气象弹窗诊断（dump 480+ Text 节点并回溯父链，约 9 秒/次）限流时间戳：
+# step_id -> 上次 dump 时刻。同一步骤短时间内只 dump 一次，避免动作阶段与
+# 续跑校验各付一次（实测两次共 ~19 秒纯诊断开销）。
+_CLIM_DIAG_LAST = {}
 # UIPI 锁存有效时长：一次误检（UIA 瞬时枚举失败/辅助进程窗口）不应影响后续所有迭代
 _UIPI_BLOCK_TTL_SECONDS = 30.0
 
@@ -789,6 +793,21 @@ def _find_label_rects_for_wrapper(wrapper, label_text):
             if gc_was_enabled:
                 gc.disable()
             for scope in scopes:
+                # 存活校验（崩溃防护）：MUP 窗口销毁/重启后，对已失效的 UIA 元素调用
+                # descendants() 可能触发 provider 的 C 层致命异常（实测
+                # "Windows fatal exception: code 0x80040155" 直接终止整个 Python
+                # 进程——Python 侧 try/except 拦不住 C 层异常）。调用前先用
+                # IsWindow/轻量矩形探活，失效则跳过该 scope：宁可本轮拿不到标签
+                # 矩形（打分降级），也不能让整个流程崩掉。
+                try:
+                    if not is_wrapper_alive(scope):
+                        _record_silent_exception(
+                            "label_rects_scope_dead",
+                            RuntimeError("scope wrapper not alive, skip descendants"),
+                        )
+                        continue
+                except Exception:
+                    continue
                 # 提速：巨大 WPF 窗口全量 descendants 实测 15-36s（step_14『步长』
                 # 定位卡死的主因）。文本标签在 WPF 中几乎全为 Text(TextBlock)，
                 # 先用原生 control_type 条件过滤（毫秒级），异常时回退全量遍历；
@@ -2753,11 +2772,49 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                                 toggle=get_wrapper_toggle_state(dropdown_wrapper) or "(unknown)",
                             )
                         )
-                        # 展开后下拉选项所在的 Popup 窗口才创建（上面的窗口收集已覆盖），
-                        # 此处只需为枚举选项续时：定位可能已耗掉大部分预算。
+                        # 展开后下拉选项所在的 Popup 窗口**才创建**，必须在此重新收集并
+                        # 合并候选窗口——上面的窗口收集发生在"点击展开"之前，覆盖不到新
+                        # Popup。实测 step_10 版本下拉展开后仍"候选窗口=1"（无 Popup）→
+                        # raw/win32/sweep 三路探针全 0 → 只能走不可验证的盲点击。这里同时
+                        # 给 Telerik 虚拟化选项树的异步实体化留出时间（立即枚举必为 0）。
+                        for _exp_round in range(8):
+                            time.sleep(0.3)
+                            try:
+                                _new_popups = _filter_dropdown_windows_by_process(
+                                    _collect_dropdown_windows(), expected_process_id
+                                )
+                            except Exception:
+                                _new_popups = []
+                            _added_popup = 0
+                            for _w in _new_popups:
+                                try:
+                                    if not any(
+                                        get_wrapper_handle(x) == get_wrapper_handle(_w)
+                                        for x in dropdown_windows
+                                    ):
+                                        dropdown_windows.append(_w)
+                                        _added_popup += 1
+                                except Exception:
+                                    continue
+                            _now_has_popup = any(
+                                "popup" in (get_wrapper_class_name(w) or "").lower()
+                                or "popup" in (get_wrapper_control_type(w) or "").lower()
+                                for w in dropdown_windows
+                            )
+                            if _now_has_popup:
+                                # Popup 已入列：再等一轮让选项实体化，交给后续枚举
+                                time.sleep(0.3)
+                                break
+                            if _added_popup:
+                                break
+                        _LOG_STEP(
+                            "下拉展开后重新收集候选窗口: step={step_id}, control={control_id}, 候选窗口={count}".format(
+                                step_id=step_id, control_id=control_id, count=len(dropdown_windows)
+                            )
+                        )
                         remaining = deadline - time.time()
-                        if remaining < 2.0:
-                            deadline = time.time() + 2.0
+                        if remaining < 3.0:
+                            deadline = time.time() + 3.0
             expanded_attempted = True
             continue
         # 已展开：Control View 枚举可见选项
@@ -2881,6 +2938,51 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                 continue
             best_score, best_candidate = ranked_candidates[0]
             best_candidate_snapshot = get_wrapper_debug_snapshot(best_candidate)
+            # 候选自身文本与目标文本不符 → 不点击、剔除该候选、继续枚举。
+            # 背景：下拉展开初期可能只渲染出无关项（实测 IEC 参考只渲染出首项
+            # "默认"），它评分达标成为 best_candidate 被盲点击；若显示值又不可读
+            # （无 ValuePattern），下方原逻辑会直接报成功——结果把目标"组合"点成了
+            # "默认"且流程毫不知情。目标文本明确时（actionConfig.text/value），
+            # 以候选自身文本做一次前置否决：剔除后由枚举继续找正确项，最终自然落到
+            # 键盘键入过滤兜底（该类下拉已被实机证明可靠）。
+            _pre_target_norm = ""
+            if explicit_target and not is_placeholder_text(explicit_target):
+                _pre_target_norm = normalize_match_text(explicit_target).lower()
+            if not _pre_target_norm:
+                for _t in target_texts:
+                    if _t and not is_placeholder_text(_t):
+                        _pre_target_norm = normalize_match_text(_t).lower()
+                        break
+            if _pre_target_norm:
+                _cand_tokens = []
+                try:
+                    _cand_tokens = [
+                        str(_tk).strip().lower()
+                        for _tk in (get_wrapper_runtime_text_candidates(best_candidate) or [])
+                        if str(_tk).strip()
+                    ]
+                except Exception:
+                    _cand_tokens = []
+                if _cand_tokens:
+                    _any_match = False
+                    for _tk in _cand_tokens:
+                        if _pre_target_norm in _tk or _tk in _pre_target_norm:
+                            _any_match = True
+                            break
+                    if not _any_match:
+                        _LOG_STEP(
+                            "候选文本与目标不符，剔除并继续枚举: step={step_id}, control={control_id}, target={target}, candidate={candidate}".format(
+                                step_id=step_id,
+                                control_id=control_id,
+                                target=_pre_target_norm,
+                                candidate="|".join(_cand_tokens)[:80],
+                            )
+                        )
+                        _fk = _wrapper_identity_key(best_candidate)
+                        if _fk:
+                            failed_option_keys.add(_fk)
+                        time.sleep(0.15)
+                        continue
             clicked, click_meta = click_dropdown_runtime_candidate(best_candidate)
             if clicked:
                 time.sleep(0.12)
@@ -4371,7 +4473,49 @@ def make_flow_control_cache_key(step_id, control_definition, window_title_hint="
     )
 
 
-def get_cached_flow_control(step_id, control_definition, window_title_hint=""):
+def _cached_wrapper_loose_match(wrapper, control_definition):
+    """缓存宽松校验：无"完全符合"时，允许目标名是控件实际文本的前缀/子串。
+
+    场景：气象列表项选中后 MUP 会给名称加运行期后缀（实测 'W2512960_140_Auto0'
+    vs target 'W2512960_140_Auto'），严格的 wrapper_matches_control_definition 失败
+    → 缓存被丢弃 → 动作阶段重复整树定位+诊断+唤醒（多付约 19 秒）。仅当以下三条
+    同时满足才放行，否则仍按严格校验失败处理，不会跨控件误命中：
+      ① targetMethod 含 name/label_text/ui_path（文本类定位，非纯 automation_id）；
+      ② 控件类型与定义一致；
+      ③ 目标名是实际文本的前缀或子串。
+    """
+    try:
+        if not isinstance(control_definition, dict):
+            return False
+        methods = [m.strip() for m in split_locator_parts(str(control_definition.get("targetMethod", "")))]
+        if not any(m in {"name", "label_text", "ui_path"} for m in methods):
+            return False
+        vals = [v.strip() for v in split_locator_parts(str(control_definition.get("targetValue", "")))]
+        exp_name = ""
+        for _m, _v in zip(methods, vals):
+            if _m in {"name", "label_text"}:
+                exp_name = normalize_match_text(_v)
+                break
+        if not exp_name:
+            return False
+        inspect_data = control_definition.get("inspectData") or {}
+        expected_type = normalize_control_type_name(
+            str(control_definition.get("controlType", "") or ""),
+            str((inspect_data or {}).get("controlType", "") or ""),
+        )
+        if expected_type:
+            actual_type = normalize_control_type_name(str(get_wrapper_control_type(wrapper) or ""))
+            if actual_type != expected_type:
+                return False
+        actual_text = normalize_match_text(get_wrapper_text(wrapper))
+        if not actual_text:
+            return False
+        return actual_text.startswith(exp_name) or exp_name in actual_text
+    except Exception:
+        return False
+
+
+def _get_cached_flow_control_exact(step_id, control_definition, window_title_hint=""):
     cache_key = make_flow_control_cache_key(step_id, control_definition, window_title_hint)
     entry = FLOW_CONTROL_CACHE.get(cache_key)
     if not entry:
@@ -4384,8 +4528,10 @@ def get_cached_flow_control(step_id, control_definition, window_title_hint=""):
         FLOW_CONTROL_CACHE.pop(cache_key, None)
         return None
     if not wrapper_matches_control_definition(wrapper, control_definition):
-        FLOW_CONTROL_CACHE.pop(cache_key, None)
-        return None
+        # 无"完全符合"时放宽（如名称带运行期后缀）：见 _cached_wrapper_loose_match。
+        if not _cached_wrapper_loose_match(wrapper, control_definition):
+            FLOW_CONTROL_CACHE.pop(cache_key, None)
+            return None
     expected_window_title = (
         normalize_match_text(control_definition.get("windowTitle", ""))
         or normalize_match_text(((_GET_STEP_DEFINITION(step_id) or {}).get("windowTitle", "")))
@@ -4397,11 +4543,30 @@ def get_cached_flow_control(step_id, control_definition, window_title_hint=""):
     return wrapper
 
 
+def get_cached_flow_control(step_id, control_definition, window_title_hint=""):
+    """取控件定位缓存；指定 hint 未命中时回退"空 hint"共享缓存。
+
+    动作阶段与续跑校验/唤醒阶段的 window_title_hint 常不相同（缓存键含 hint），
+    导致同一控件被反复整树定位——实测气象列表"唤醒命中后，动作阶段又重新诊断+
+    唤醒"，多付约 19 秒。空 hint 键作为跨 hint 的共享缓存回退；命中后仍会经过
+    wrapper 存活 / 控件定义匹配 / 期望窗口标题校验，不会跨窗口误命中。
+    """
+    wrapper = _get_cached_flow_control_exact(step_id, control_definition, window_title_hint)
+    if wrapper is None and str(window_title_hint or "").strip():
+        wrapper = _get_cached_flow_control_exact(step_id, control_definition, "")
+    return wrapper
+
+
 def cache_flow_control(step_id, control_definition, wrapper, window_title_hint=""):
     if wrapper is None or not is_wrapper_alive(wrapper):
         return
     cache_key = make_flow_control_cache_key(step_id, control_definition, window_title_hint)
     FLOW_CONTROL_CACHE[cache_key] = {"timestamp": time.time(), "wrapper": wrapper}
+    # 同时写"空 hint"共享键（不覆盖已有条目）：让不同 hint 的后续调用也能复用，
+    # 与 get_cached_flow_control 的空 hint 回退配对，避免同一控件重复定位。
+    if str(window_title_hint or "").strip():
+        empty_key = make_flow_control_cache_key(step_id, control_definition, "")
+        FLOW_CONTROL_CACHE.setdefault(empty_key, {"timestamp": time.time(), "wrapper": wrapper})
 
 
 def get_wrapper_handle(wrapper):
@@ -7702,9 +7867,23 @@ def _find_by_bbox_fallback(candidates, expected_pos, window_title_hint=""):
 # ── 定位分阶段耗时统计 ────────────────────────────────────────────────────
 # key: "step_id|control_id" → {
 #     "t_windows_ms": float, "t_fast_ms": float, "t_descendants_ms": float,
-#     "t_json_ms": float, "t_action_ms": float, "t_total_ms": float,
+#     "t_json_ms": float, "t_debug_ms": float, "t_action_ms": float, "t_total_ms": float,
 # }
 _step_timing = {}
+
+# 自诊断/唤醒阶段累计耗时（毫秒）：key 同上。
+# 气象弹窗诊断、Raw 诊断、唤醒点击这几段排查代码夹在 Phase3(整树结束) 与最终 t4
+# 之间，会被整段计入 t_json_ms（实测单步 108s，导致"JSON 匹配慢"的错误归因）。
+# 各段用 _add_debug_phase_ms 累加，_record_locator_timing 再从 JSON 列中扣除。
+_DEBUG_PHASE_MS = {}
+
+# 诊断明细开关：默认只输出摘要（计数 + 少量样例），避免 dump 480+ Text 节点并回溯
+# 父链（约 9 秒/次）成为流程自伤。排查"可见但定位不到"时设环境变量
+# WT_DIAG_VERBOSE=1 恢复全量明细。
+try:
+    _DIAG_VERBOSE = str(os.environ.get("WT_DIAG_VERBOSE", "")).strip().lower() in {"1", "true", "yes", "on"}
+except Exception:
+    _DIAG_VERBOSE = False
 
 
 def get_step_timing(step_id, control_id=""):
@@ -7713,14 +7892,29 @@ def get_step_timing(step_id, control_id=""):
     return _step_timing.pop(key, None)
 
 
+def _add_debug_phase_ms(step_id, control_id, delta_ms):
+    """累加"自诊断/唤醒"耗时（毫秒），供 _record_locator_timing 从 JSON 列中剔除。"""
+    try:
+        key = f"{step_id}|{control_id}"
+        _DEBUG_PHASE_MS[key] = float(_DEBUG_PHASE_MS.get(key, 0.0)) + float(delta_ms or 0.0)
+    except Exception:
+        pass
+
+
 def _record_locator_timing(step_id, control_id, t0, t1, t2, t3, t4):
     """记录 find_flow_control 四个阶段的耗时（毫秒），供下游汇总。"""
     key = f"{step_id}|{control_id}"
+    _json_raw_ms = round((t4 - t3) * 1000, 2)
+    # 诊断/唤醒自耗时剔除：t4 在"唤醒命中(9287 附近)/失败退出"路径下被推迟到诊断段
+    # 之后，会把自诊断耗时混进 JSON 匹配列。单独记为 t_debug_ms 并从 JSON 列扣除，
+    # 保证 t_json_ms 只反映真正的定位兜底耗时（t_total_ms 口径不变，仍等于各段之和）。
+    _debug_ms = round(float(_DEBUG_PHASE_MS.pop(key, 0.0)), 2)
     _step_timing[key] = {
         "t_windows_ms": round((t1 - t0) * 1000, 2),
         "t_fast_ms": round((t2 - t1) * 1000, 2),
         "t_descendants_ms": round((t3 - t2) * 1000, 2),
-        "t_json_ms": round((t4 - t3) * 1000, 2),
+        "t_json_ms": round(max(0.0, _json_raw_ms - _debug_ms), 2),
+        "t_debug_ms": _debug_ms,
         "t_action_ms": 0.0,
         "t_total_ms": 0.0,
     }
@@ -7965,16 +8159,18 @@ def _finalize_step_timing(step_id, control_id, t_act_start):
         return
     t_act_ms = round((time.perf_counter() - t_act_start) * 1000, 2)
     timing["t_action_ms"] = t_act_ms
+    _debug_ms = float(timing.get("t_debug_ms", 0.0) or 0.0)
+    # 总计口径不变：等于 各段之和（JSON 已剔除诊断，诊断单独计入），与拆分前一致。
     timing["t_total_ms"] = round(
         timing["t_windows_ms"] + timing["t_fast_ms"] + timing["t_descendants_ms"]
-        + timing["t_json_ms"] + t_act_ms, 2
+        + timing["t_json_ms"] + _debug_ms + t_act_ms, 2
     )
     _LOG_STEP(
         "[定位耗时] step={}, ctrl={}, 窗枚举={:.1f}ms, 快查={:.1f}ms, "
-        "整树={:.1f}ms, JSON={:.1f}ms, 动作={:.1f}ms, 总计={:.1f}ms".format(
+        "整树={:.1f}ms, JSON={:.1f}ms, 诊断={:.1f}ms, 动作={:.1f}ms, 总计={:.1f}ms".format(
             step_id, control_id,
             timing["t_windows_ms"], timing["t_fast_ms"], timing["t_descendants_ms"],
-            timing["t_json_ms"], t_act_ms, timing["t_total_ms"],
+            timing["t_json_ms"], _debug_ms, t_act_ms, timing["t_total_ms"],
         )
     )
     _step_timing.pop(key, None)
@@ -8619,6 +8815,9 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                             _low_confidence_match = best_match
                             _low_confidence_score = best_score
                 _t2 = time.perf_counter()  # Phase 2: 快速查询结束
+                # 快速探测标记：本轮的"整树预算守卫"命中时为 True，用于随后跳过
+                # label→输入框 / Tab 导航 / JSON 模糊匹配等分钟级兜底（见下方守卫注释）。
+                _fast_probe_skipped = False
                 for window in windows:
                     if expects_raw:
                         break
@@ -8655,6 +8854,7 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                             "[FlowLocator] 快速探测(预算≤1s)跳过整树遍历: step={}, control={}, budget={}s".format(
                                 step_id, control_id or "(first)", timeout_seconds)
                         )
+                        _fast_probe_skipped = True
                         continue
                     candidates = [window]
                     expected_type = normalize_control_type_name(
@@ -8695,6 +8895,14 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         if best_score > _low_confidence_score:
                             _low_confidence_match = best_match
                             _low_confidence_score = best_score
+                # 快速探测收口：wait 轮询等极小预算场景下，快查/Raw-FindAll 未命中即返回，
+                # 跳过 label→输入框、Tab 导航、JSON 模糊匹配等兜底——这些阶段对巨大 WPF
+                # 树单轮可静默数百秒（实测复制综合后 wait 单轮 478s 全耗在此），而 wait
+                # 语义本就应快速失败交上层轮询，无需在此深度兜底。
+                if _fast_probe_skipped:
+                    _t3 = _t4 = time.perf_counter()
+                    _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
+                    return None
                 # --- 阈值放宽：fast+descendants 不足自适应阈值时，取最高正分 ---
                 # 仅 mid/low 丰富度允许放宽；high（阈值 100，有 automationId/uiPath 可精确定位）
                 # 必须维持精确匹配，任何正分低置信命中都不得当作成功。
@@ -8926,7 +9134,18 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
             # [诊断] 气象弹窗列表项定位失败时（step_15/step_mt_refclim_select），
             # dump MTDClimatologySelectorControl 子树内所有 Text 节点，确认运行时
             # 树里 M1/Mast1 到底是否存在、rect/offscreen 如何（排查"可见但定位不到"）。
+            # 诊断限流：dump 480+ Text 节点并回溯父链约需 9 秒，同一步骤在动作阶段与
+            # 续跑校验会各触发一次（实测两次共 ~19s 纯诊断开销）。同一步骤 30s 内只 dump 一次。
+            _clim_diag_allowed = True
             if str(step_id).startswith("step_15") or str(step_id).startswith("step_mt_refclim_select"):
+                _now_diag = time.time()
+                if _now_diag - _CLIM_DIAG_LAST.get(str(step_id), 0.0) < 30.0:
+                    _clim_diag_allowed = False
+                else:
+                    _CLIM_DIAG_LAST[str(step_id)] = _now_diag
+            if _clim_diag_allowed and (
+                    str(step_id).startswith("step_15") or str(step_id).startswith("step_mt_refclim_select")):
+                _dbg_t0 = time.perf_counter()
                 try:
                     _clim_diag_windows = windows or [w for w in iter_flow_search_windows(
                         step_definition, window_title_hint=window_title_hint,
@@ -8939,7 +9158,12 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                             _clim_desc = _clim_win.descendants(control_type="Text")
                         except Exception:
                             _clim_desc = []
-                        for _t in (_clim_desc or []):
+                        # 降噪：默认只回溯前 30 个节点（回溯父链是主要耗时源），全量明细
+                        # 仅在 WT_DIAG_VERBOSE=1 时采集/打印（全量约 9s/次，属流程自伤）。
+                        _clim_probe = list(_clim_desc or [])
+                        if not _DIAG_VERBOSE:
+                            _clim_probe = _clim_probe[:30]
+                        for _t in _clim_probe:
                             try:
                                 _clim_chain = []
                                 _cur = _t
@@ -8957,8 +9181,12 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                                 })
                             except Exception:
                                 continue
-                        _LOG_STEP("[FlowLocator][气象弹窗诊断] step={} Text节点数={} 明细={}".format(
-                            step_id, len(_clim_texts), json.dumps(_clim_texts, ensure_ascii=False)[:4000]))
+                        if _DIAG_VERBOSE:
+                            _clim_detail = json.dumps(_clim_texts, ensure_ascii=False)[:4000]
+                        else:
+                            _clim_detail = json.dumps(_clim_texts[:5], ensure_ascii=False)[:600]
+                        _LOG_STEP("[FlowLocator][气象弹窗诊断] step={} Text节点数={} verbose={} 明细={}".format(
+                            step_id, len(_clim_desc or []), _DIAG_VERBOSE, _clim_detail))
                         # Raw View 补充诊断：用 RawViewWalker 从窗口根枚举，专找
                         # M1/Mast1/全文检索/PART_ItemsScrollViewer 相关节点——验证
                         # "键入后列表项是否落入 Raw View（isControlElement=False）"。
@@ -8977,7 +9205,10 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                                 _child = _walker.GetNextSiblingElement(_child)
                             _visited = 0
                             _idx = 0
-                            while _idx < len(_queue) and _visited < 30000 and _idx < 30000:
+                            # 降噪：默认 BFS 上限 3000 元素（WT_DIAG_VERBOSE=1 时恢复
+                            # 30000）；深层遍历收益递减且是秒级开销来源。
+                            _raw_visit_cap = 30000 if _DIAG_VERBOSE else 3000
+                            while _idx < len(_queue) and _visited < _raw_visit_cap and _idx < _raw_visit_cap:
                                 _el = _queue[_idx]
                                 _idx += 1
                                 _visited += 1
@@ -9001,18 +9232,33 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                                     except Exception:
                                         _ct = ""
                                     _raw_hits.append({"name": _nm[:60], "ct": _ct})
-                            _LOG_STEP("[FlowLocator][气象弹窗Raw诊断] step={} Raw命中数={} 明细={}".format(
-                                step_id, len(_raw_hits), json.dumps(_raw_hits, ensure_ascii=False)[:2500]))
+                            if _DIAG_VERBOSE:
+                                _raw_detail = json.dumps(_raw_hits, ensure_ascii=False)[:2500]
+                            else:
+                                _raw_detail = json.dumps(_raw_hits[:10], ensure_ascii=False)[:400]
+                            _LOG_STEP("[FlowLocator][气象弹窗Raw诊断] step={} Raw命中数={} verbose={} 明细={}".format(
+                                step_id, len(_raw_hits), _DIAG_VERBOSE, _raw_detail))
                         except Exception as _raw_exc:
                             _LOG_STEP("[FlowLocator][气象弹窗Raw诊断] 异常: " + repr(_raw_exc)[:200])
                 except Exception as _clim_exc:
                     _LOG_STEP("[FlowLocator][气象弹窗诊断] 异常: " + repr(_clim_exc)[:200])
+                finally:
+                    _add_debug_phase_ms(step_id, control_id, (time.perf_counter() - _dbg_t0) * 1000)
             # [唤醒] 气象数据列表面板：键入过滤后 UIA 树里列表行消失（MUP/Telerik
             # 虚拟化回收，视觉仍显示、手动单击可高亮选中）。此时向列表首行坐标发
             # 一次物理单击，强制 RadGridView 重新实例化行，再重试枚举目标项。
-            if (str(step_id).startswith("step_15") or str(step_id).startswith("step_mt_refclim_select")) \
+            # 适用范围扩展到"打开气象弹窗后、弹窗内控件尚未实体化"的全部相关步骤：
+            # step_14 / step_mt_refclim_search 定位"全文检索"输入框，与列表项同理，
+            # 都可能因 Telerik 虚拟化延迟而暂时不在 UIA 树——实测 step_mt_refclim_search
+            # 在弹窗已打开（Text 节点数由 475 增至 877）的情况下仍找不到"全文检索"，
+            # 而紧随其后的 select 步骤靠唤醒才命中。故一并纳入唤醒兜底。
+            _clim_wake_steps = ("step_14", "step_15",
+                                "step_mt_refclim_search", "step_mt_refclim_select")
+            if any(str(step_id).startswith(_p) for _p in _clim_wake_steps) \
                     and not _clim_wakeup_done:
                 _clim_wakeup_done = True
+                _dbg_t0 = time.perf_counter()
+                _dbg_accounted = False
                 try:
                     _target_name = ""
                     _cd0 = controls[0] if controls else {}
@@ -9063,9 +9309,25 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                     for _t in (_wake_desc2 or []):
                         try:
                             _tn = normalize_match_text(get_wrapper_text(_t))
-                            if _target_name and (_tn == _target_name or _target_name in _tn):
+                            if not (_target_name and (_tn == _target_name or _target_name in _tn)):
+                                continue
+                            # 定义校验：同名控件可能有多个（实测主窗内另有一个宽 1856
+                            # 的"全文检索"TextBlock，被先命中 → rect 跨窗口 → type_text
+                            # 点击/输入失败）。优先返回与控件定义（类型/ui_path）完全匹配者；
+                            # 找不到完全匹配时，回退首个同名候选取保持旧行为。
+                            _cd_here = controls[0] if controls else {}
+                            _full_match = False
+                            try:
+                                _full_match = bool(
+                                    _cd_here and wrapper_matches_control_definition(_t, _cd_here)
+                                )
+                            except Exception:
+                                _full_match = False
+                            if _full_match:
                                 _woken = _t
                                 break
+                            if _woken is None:
+                                _woken = _t
                         except Exception:
                             continue
                     if _woken is not None:
@@ -9074,6 +9336,10 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         cache_wrapper_parent_chain(_wake_win, _woken)
                         for _cd in controls:
                             cache_flow_control(step_id, _cd, _woken, window_title_hint=window_title_hint)
+                        # 先把本段自耗时入账再 record：record 在此 return 之前执行，
+                        # finally 来不及累加，若不入账则 JSON 列剔除失效。
+                        _add_debug_phase_ms(step_id, control_id, (time.perf_counter() - _dbg_t0) * 1000)
+                        _dbg_accounted = True
                         _t4 = time.perf_counter()
                         _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
                         return _woken
@@ -9081,6 +9347,9 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         step_id, _target_name or ""))
                 except Exception as _wake_exc:
                     _LOG_STEP("[FlowLocator][气象弹窗唤醒] 异常: " + repr(_wake_exc)[:200])
+                finally:
+                    if not _dbg_accounted:
+                        _add_debug_phase_ms(step_id, control_id, (time.perf_counter() - _dbg_t0) * 1000)
             # [preScrollToTop] 失败兜底：遍历前已由 _prescroll_top_once 处理过
             # （点击 Expander/滚动/滚轮），若仍定位不到，直接报未命中。
             last_error = RuntimeError(
@@ -9096,13 +9365,14 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
     if timing:
         _LOG_STEP(
             "[定位耗时-失败] step={}, ctrl={}, 窗枚举={:.1f}ms, 快查={:.1f}ms, "
-            "整树={:.1f}ms, JSON={:.1f}ms, 总计={:.1f}ms".format(
+            "整树={:.1f}ms, JSON={:.1f}ms, 诊断={:.1f}ms, 总计={:.1f}ms".format(
                 step_id,
                 control_id,
                 timing["t_windows_ms"],
                 timing["t_fast_ms"],
                 timing["t_descendants_ms"],
                 timing["t_json_ms"],
+                float(timing.get("t_debug_ms", 0.0) or 0.0),
                 round(elapsed * 1000, 2),
             )
         )
@@ -9275,6 +9545,8 @@ def wait_for_flow_control_condition(
                 held_control = get_cached_flow_control(step_id, control_definition, window_title_hint="")
         except Exception:
             held_control = None
+    # 周期性补唤醒时间戳（见循环尾）：仅对配置了 preScrollToTop 的等待步骤生效
+    _wait_wake_last = 0.0
     while time.time() < deadline:
         control = held_control
         if control is None:
@@ -9397,6 +9669,22 @@ def wait_for_flow_control_condition(
                     held_control = None
             except Exception:
                 held_control = None
+        # 周期性补唤醒：preScrollToTop 的"点击'风电场参数'标题"只执行一次
+        # （_PRESCROLL_TOP_DONE_GLOBAL 保证），若新副本编辑器始终未实体化则会一直
+        # 找不到目标控件（实测 wait 空转至超时）。人工在编辑器区域点一下即恢复，
+        # 故按 ~4 秒间隔补一次"编辑器空白点击"强制唤醒；仅对配置了 preScrollToTop
+        # 的等待步骤生效（如 step_copy_wait_editor），不影响普通等待步骤。
+        try:
+            if _step_config_bool(step_id, "preScrollToTop") and (time.time() - _wait_wake_last) >= 4.0:
+                _wait_wake_last = time.time()
+                _wk_windows = list(iter_flow_search_windows(
+                    _GET_STEP_DEFINITION(step_id) or {},
+                    window_title_hint=window_title_hint,
+                    control_definition=control_definition,
+                ))
+                _prescroll_wake_blank_click(_wk_windows, step_id)
+        except Exception:
+            pass
         time.sleep(max(0.1, float(poll_interval_seconds)))
     return False
 
@@ -9632,6 +9920,14 @@ def click_relative_anchor(
                     f"锚点相对点击看门狗已超时，跳过延迟点击: step={step_id}, anchor={anchor_control_id}"
                 )
                 return
+            # 先移动到位并短暂停顿，再执行点击：实测多塔"参考气象"下拉的右侧配置
+            # 图标需先 hover 进入可点击态（用户观察到"鼠标悬停在配置按钮上但没执行
+            # 点击"），pyautogui.click 的"瞬时移动+点击"会让图标来不及响应。分两步。
+            try:
+                pyautogui.moveTo(px, py, duration=0.12)
+                time.sleep(0.18)
+            except Exception:
+                pass
             if kind == "double":
                 pyautogui.doubleClick(px, py)
             else:
@@ -10012,6 +10308,21 @@ def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
         f"control_type={get_wrapper_control_type(control)}, class={get_wrapper_class_name(control)}, "
         f"name={get_wrapper_text(control)!r}, rect={get_wrapper_rectangle(control)}"
     )
+    # 目标禁用时明确判失败：禁用控件的点击必然无效，但旧逻辑会静默报"点击成功"
+    # （假成功）。实测 step_28 保存后若 HPC 按钮因机型/版本未选全而处于禁用态，
+    # 定位器照样点击并报 success，导致后续步骤全部误判。此处打印显著日志并中止，
+    # 便于一眼区分"没点到"与"点了但控件被禁用"。
+    try:
+        _enabled_now = str(get_wrapper_is_enabled(control) or "").strip().lower()
+    except Exception:
+        _enabled_now = ""
+    if _enabled_now in {"false", "0"}:
+        _LOG_STEP(
+            "目标控件处于禁用状态(IsEnabled=False)，放弃点击（避免假成功）: "
+            "step={}, control={}, name={!r}".format(step_id, control_id, get_wrapper_text(control))
+        )
+        _finalize_step_timing(step_id, control_id, _t_act)
+        return False
     if click_kind in ("left", "single", "") and _list_item_target is not None:
         # ListBoxItem 物理点击常只触发悬停不选中（Telerik/WPF 卡片列表，如综合卡片），
         # 改用 SelectionItemPattern.Select() 程序化选中，可靠且不依赖屏幕坐标/分辨率。
@@ -10364,6 +10675,16 @@ def check_all_unchecked_toggle_controls(
     if failed > 0:
         raise RuntimeError(
             "check_all_toggles 存在未勾选成功的行: step={step}, control={control}, result={result}".format(
+                step=step_id, control=control_id, result=summary
+            )
+        )
+    # 全部候选被禁用、一个都没勾上：这是"界面未就绪/上一步未生效"的典型症状
+    # （实测 CFD 结果选择页 skipped_disabled=16 却报 success，热稳定度实际一个
+    # 都没勾）。不得静默成功，否则下游计算配置错误且流程毫不知情。
+    if total > 0 and skipped_disabled == total:
+        raise RuntimeError(
+            "check_all_toggles 全部候选被禁用，未勾选任何项（界面可能未就绪）: "
+            "step={step}, control={control}, result={result}".format(
                 step=step_id, control=control_id, result=summary
             )
         )

@@ -814,6 +814,14 @@ def _find_label_rects_for_wrapper(wrapper, label_text):
             if gc_was_enabled:
                 gc.disable()
             for scope in scopes:
+                # 存活校验（崩溃防护）：MUP 窗口销毁/重启后对失效 UIA 元素调用
+                # descendants() 可能触发 C 层致命异常（实测 0x80040155 直接终止
+                # 整个 Python 进程，try/except 拦不住）。探活失败即跳过该 scope。
+                try:
+                    if not is_wrapper_alive(scope):
+                        continue
+                except Exception:
+                    continue
                 for candidate in scope.descendants():
                     if get_wrapper_control_type(candidate) not in {"Text", "Static", "Label", "Document"}:
                         continue
@@ -2435,6 +2443,46 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                 continue
             best_score, best_candidate = ranked_candidates[0]
             best_candidate_snapshot = get_wrapper_debug_snapshot(best_candidate)
+            # 候选自身文本与目标不符 → 不点击、剔除该候选、继续枚举（与主定位器同款：
+            # 目标文本明确时，防止只渲染出无关项时被盲点击选中并因显示值不可读而误报成功）。
+            _pre_target_norm = ""
+            if explicit_target and not is_placeholder_text(explicit_target):
+                _pre_target_norm = normalize_match_text(explicit_target).lower()
+            if not _pre_target_norm:
+                for _t in target_texts:
+                    if _t and not is_placeholder_text(_t):
+                        _pre_target_norm = normalize_match_text(_t).lower()
+                        break
+            if _pre_target_norm:
+                _cand_tokens = []
+                try:
+                    _cand_tokens = [
+                        str(_tk).strip().lower()
+                        for _tk in (get_wrapper_runtime_text_candidates(best_candidate) or [])
+                        if str(_tk).strip()
+                    ]
+                except Exception:
+                    _cand_tokens = []
+                if _cand_tokens:
+                    _any_match = False
+                    for _tk in _cand_tokens:
+                        if _pre_target_norm in _tk or _tk in _pre_target_norm:
+                            _any_match = True
+                            break
+                    if not _any_match:
+                        _LOG_STEP(
+                            "候选文本与目标不符，剔除并继续枚举: step={step_id}, control={control_id}, target={target}, candidate={candidate}".format(
+                                step_id=step_id,
+                                control_id=control_id,
+                                target=_pre_target_norm,
+                                candidate="|".join(_cand_tokens)[:80],
+                            )
+                        )
+                        _fk = _wrapper_identity_key(best_candidate)
+                        if _fk:
+                            failed_option_keys.add(_fk)
+                        time.sleep(0.15)
+                        continue
             clicked, click_meta = click_dropdown_runtime_candidate(best_candidate)
             if clicked:
                 time.sleep(0.12)
@@ -7187,7 +7235,7 @@ def _find_by_bbox_fallback(candidates, expected_pos, window_title_hint=""):
 # ── 定位分阶段耗时统计 ────────────────────────────────────────────────────
 # key: "step_id|control_id" → {
 #     "t_windows_ms": float, "t_fast_ms": float, "t_descendants_ms": float,
-#     "t_json_ms": float, "t_action_ms": float, "t_total_ms": float,
+#     "t_json_ms": float, "t_debug_ms": float, "t_action_ms": float, "t_total_ms": float,
 # }
 _step_timing = {}
 
@@ -7199,13 +7247,18 @@ def get_step_timing(step_id, control_id=""):
 
 
 def _record_locator_timing(step_id, control_id, t0, t1, t2, t3, t4):
-    """记录 find_flow_control 四个阶段的耗时（毫秒），供下游汇总。"""
+    """记录 find_flow_control 四个阶段的耗时（毫秒），供下游汇总。
+
+    t_debug_ms 保留字段（与主定位器日志格式对齐）：本副本无气象弹窗自诊断段，
+    恒为 0；主定位器用它承载诊断/唤醒自耗时并从 JSON 列中剔除。
+    """
     key = f"{step_id}|{control_id}"
     _step_timing[key] = {
         "t_windows_ms": round((t1 - t0) * 1000, 2),
         "t_fast_ms": round((t2 - t1) * 1000, 2),
         "t_descendants_ms": round((t3 - t2) * 1000, 2),
         "t_json_ms": round((t4 - t3) * 1000, 2),
+        "t_debug_ms": 0.0,
         "t_action_ms": 0.0,
         "t_total_ms": 0.0,
     }
@@ -7429,16 +7482,17 @@ def _finalize_step_timing(step_id, control_id, t_act_start):
         return
     t_act_ms = round((time.perf_counter() - t_act_start) * 1000, 2)
     timing["t_action_ms"] = t_act_ms
+    _debug_ms = float(timing.get("t_debug_ms", 0.0) or 0.0)
     timing["t_total_ms"] = round(
         timing["t_windows_ms"] + timing["t_fast_ms"] + timing["t_descendants_ms"]
-        + timing["t_json_ms"] + t_act_ms, 2
+        + timing["t_json_ms"] + _debug_ms + t_act_ms, 2
     )
     _LOG_STEP(
         "[定位耗时] step={}, ctrl={}, 窗枚举={:.1f}ms, 快查={:.1f}ms, "
-        "整树={:.1f}ms, JSON={:.1f}ms, 动作={:.1f}ms, 总计={:.1f}ms".format(
+        "整树={:.1f}ms, JSON={:.1f}ms, 诊断={:.1f}ms, 动作={:.1f}ms, 总计={:.1f}ms".format(
             step_id, control_id,
             timing["t_windows_ms"], timing["t_fast_ms"], timing["t_descendants_ms"],
-            timing["t_json_ms"], t_act_ms, timing["t_total_ms"],
+            timing["t_json_ms"], _debug_ms, t_act_ms, timing["t_total_ms"],
         )
     )
     _step_timing.pop(key, None)
@@ -8004,13 +8058,14 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
     if timing:
         _LOG_STEP(
             "[定位耗时-失败] step={}, ctrl={}, 窗枚举={:.1f}ms, 快查={:.1f}ms, "
-            "整树={:.1f}ms, JSON={:.1f}ms, 总计={:.1f}ms".format(
+            "整树={:.1f}ms, JSON={:.1f}ms, 诊断={:.1f}ms, 总计={:.1f}ms".format(
                 step_id,
                 control_id,
                 timing["t_windows_ms"],
                 timing["t_fast_ms"],
                 timing["t_descendants_ms"],
                 timing["t_json_ms"],
+                float(timing.get("t_debug_ms", 0.0) or 0.0),
                 round(elapsed * 1000, 2),
             )
         )
@@ -9114,6 +9169,14 @@ def check_all_unchecked_toggle_controls(
     if failed > 0:
         raise RuntimeError(
             "check_all_toggles 存在未勾选成功的行: step={step}, control={control}, result={result}".format(
+                step=step_id, control=control_id, result=summary
+            )
+        )
+    # 全部候选被禁用、一个都没勾上：界面未就绪/上一步未生效的典型症状，不得静默成功。
+    if total > 0 and skipped_disabled == total:
+        raise RuntimeError(
+            "check_all_toggles 全部候选被禁用，未勾选任何项（界面可能未就绪）: "
+            "step={step}, control={control}, result={result}".format(
                 step=step_id, control=control_id, result=summary
             )
         )
