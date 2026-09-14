@@ -22,7 +22,10 @@ REPO = subprocess.check_output(["git", "rev-parse", "--show-toplevel"],
 SYNC_REF = "wt_last_sync"
 OUT_DIR = os.path.join(REPO, "release_out")
 # 运行时不需要、且可能很大的目录，打包时跳过
-EXCLUDE_TOP_DIRS = {".zcode", "dist", "release_out", ".git", "build"}
+# 另排除 AI 工具/IDE 的本地目录（.workbuddy-ai/.codebuddy）：与运行无关，
+# 且可能含本地会话/记忆记录，不应随发布包外发到内网。
+EXCLUDE_TOP_DIRS = {".zcode", "dist", "release_out", ".git", "build",
+                    ".workbuddy-ai", ".codebuddy"}
 # 同步工具自身不进发布包（避免把 ~5MB 的 exe 反复打包带过去）
 # 注意：apply_release.py（仅 1.5KB）仍保留，供内网机使用
 EXCLUDE_FILES = {"make_release.py", "make_release.exe", "apply_release.exe",
