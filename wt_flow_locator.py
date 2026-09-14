@@ -2607,249 +2607,240 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
     win32_probe = {"count": 0, "samples": []}
     # 诊断探针：点扫掠（from_point 实体化）探测次数/命中次数/匹配文本/命中样例。
     sweep_probe = {"count": 0, "hits": 0, "matched": "", "samples": []}
+    # 分段计时：预收集(窗口枚举/资产注入) / 展开(自愈点击+等渲染+重收集) / 枚举。
+    # 本函数不经过 _finalize_step_timing（那是 find+动作两段式的记账），且共有
+    # 10 个 return 出口，逐点埋点必漏；用 try/finally 统一在出口打一条耗时汇总，
+    # 填补内网日志中下拉步骤（step_10 实测 48.6s 无任何阶段耗时记录）的观测空洞。
+    _dd_t_total = time.perf_counter()
+    _dd_t_precoll = 0.0
+    _dd_t_expand = 0.0
+    _dd_phase = "预收集"
+    _dd_result = ""
     _loop_started = time.time()
     _progress_log_at = 0.0
-    while time.time() < deadline:
-        # 进度日志：枚举过程（FindAll/树遍历/展开重试）可能耗时数十秒且无任何输出，
-        # 每 ≥4 秒打一条进度，便于定位"卡在枚举"还是"命中但值校验失败"。
-        _loop_now = time.time()
-        if _loop_now - _progress_log_at >= 4.0:
-            _progress_log_at = _loop_now
-            _LOG_STEP(
-                "下拉选项枚举进度: step={step_id}, control={control_id}, "
-                "elapsed={elapsed:.1f}s, 候选窗口={windows}, raw探针={raw}, win32探针={win32}, sweep探针={sweep}, 已剔除错误项={failed}".format(
-                    step_id=step_id,
-                    control_id=control_id,
-                    elapsed=_loop_now - _loop_started,
-                    windows=len(dropdown_windows),
-                    raw=raw_probe["count"],
-                    win32=win32_probe["count"],
-                    sweep=sweep_probe["count"],
-                    failed=len(failed_option_keys),
+    # 预收集阶段结束（窗口枚举+资产注入），结算耗时
+    _dd_t_precoll = time.perf_counter() - _dd_t_total
+    try:
+        while time.time() < deadline:
+            # 进度日志：枚举过程（FindAll/树遍历/展开重试）可能耗时数十秒且无任何输出，
+            # 每 ≥4 秒打一条进度，便于定位"卡在枚举"还是"命中但值校验失败"。
+            _loop_now = time.time()
+            if _loop_now - _progress_log_at >= 4.0:
+                _progress_log_at = _loop_now
+                _LOG_STEP(
+                    "下拉选项枚举进度: step={step_id}, control={control_id}, "
+                    "elapsed={elapsed:.1f}s, 候选窗口={windows}, raw探针={raw}, win32探针={win32}, sweep探针={sweep}, 已剔除错误项={failed}".format(
+                        step_id=step_id,
+                        control_id=control_id,
+                        elapsed=_loop_now - _loop_started,
+                        windows=len(dropdown_windows),
+                        raw=raw_probe["count"],
+                        win32=win32_probe["count"],
+                        sweep=sweep_probe["count"],
+                        failed=len(failed_option_keys),
+                    )
                 )
-            )
-        # 第一次迭代先确保下拉框展开：展开后的选项才可见/可操作，且避免误点
-        # 收起状态下枚举到的离屏选项（UIA-to-MSAA bridge 选项无矩形、点击不可验证）。
-        if not expanded_attempted:
-            dropdown_wrapper = find_flow_control(
-                step_id, control_id, timeout_seconds=2.0, window_title_hint=window_title_hint, control_map_path=control_map_path
-            )
-            if dropdown_wrapper is not None:
-                # 值检查捷径：若下拉框当前值已等于目标选项（此前可能已选中），
-                # 无需展开/枚举，直接判定成功。读取父级 ComboBox 的 ValuePattern。
-                if search_text and not is_placeholder_text(search_text):
-                    current_value = get_wrapper_value(dropdown_wrapper)
-                    if current_value and normalize_match_text(current_value) == normalize_match_text(search_text):
-                        _LOG_STEP(
-                            "下拉框当前值已匹配目标: step={step_id}, control={control_id}, value={value}".format(
-                                step_id=step_id, control_id=control_id, value=current_value
+            # 第一次迭代先确保下拉框展开：展开后的选项才可见/可操作，且避免误点
+            # 收起状态下枚举到的离屏选项（UIA-to-MSAA bridge 选项无矩形、点击不可验证）。
+            if not expanded_attempted:
+                _dd_phase = "展开(自愈点击+等渲染+重收集)"
+                _dd_t_expand_start = time.perf_counter()
+                dropdown_wrapper = find_flow_control(
+                    step_id, control_id, timeout_seconds=2.0, window_title_hint=window_title_hint, control_map_path=control_map_path
+                )
+                if dropdown_wrapper is not None:
+                    # 值检查捷径：若下拉框当前值已等于目标选项（此前可能已选中），
+                    # 无需展开/枚举，直接判定成功。读取父级 ComboBox 的 ValuePattern。
+                    if search_text and not is_placeholder_text(search_text):
+                        current_value = get_wrapper_value(dropdown_wrapper)
+                        if current_value and normalize_match_text(current_value) == normalize_match_text(search_text):
+                            _LOG_STEP(
+                                "下拉框当前值已匹配目标: step={step_id}, control={control_id}, value={value}".format(
+                                    step_id=step_id, control_id=control_id, value=current_value
+                                )
                             )
-                        )
-                        return True, {
-                            "method": "value_already_matched",
-                            "value": current_value,
-                            "targetTexts": target_texts,
-                        }
-                # 防御：find_flow_control 定位到的 wrapper 若是 WPF Popup 窗口（下拉
-                # 已展开时的弹出层，class/type 常为 Popup/Window），确保它进入枚举窗口
-                # 列表——枚举阶段直接扫 Popup 子树即可命中选项，避免它只存在于
-                # find_flow_control 的窗口遍历而 _collect_dropdown_windows 漏收。
-                _wrapper_class = get_wrapper_class_name(dropdown_wrapper) or ""
-                _wrapper_type = get_wrapper_control_type(dropdown_wrapper) or ""
-                if "popup" in _wrapper_class.lower() or "popup" in _wrapper_type.lower():
-                    _popup_handle = get_wrapper_handle(dropdown_wrapper)
-                    if not any(get_wrapper_handle(w) == _popup_handle for w in dropdown_windows):
-                        dropdown_windows.append(dropdown_wrapper)
-                toggle_state = get_wrapper_toggle_state(dropdown_wrapper)
-                should_click = toggle_state in {"", "0", "Off", "off", "0.0", "Indeterminate"}
-                # 若步骤目标控件本身是"下拉选项 ListItem"（targetValue 含 ListItem/ListBoxItem/MenuItem），
-                # 说明下拉已由前置步骤展开、dropdown_wrapper 是可见选项而非下拉框本体：再点击它会
-                # 直接选中该项并收起下拉，导致后续枚举 0 命中（症状：raw探针=0、误选中非目标选项，
-                # 如三个下拉都选中"气压"）。跳过"自愈点击展开"，直接进入枚举命中目标选项。
-                # 用配置判断而非运行时类型：find_flow_control fallback 阶段返回的 wrapper 类型不可靠。
-                _dropdown_target_value = str((control_definition or {}).get("targetValue", "") or "")
-                if should_click and any(
-                    _key in _dropdown_target_value
-                    for _key in ("ListBoxItem", "ListItem", "MenuItem")
-                ):
-                    should_click = False
-                # 阶段3 直点快捷：目标控件本身就是下拉选项（targetValue 含
-                # ListItem/ListBoxItem/MenuItem）时，若定位到的选项已有可见矩形，
-                # 说明下拉已由前置步骤（如相对区域点击）展开——直接点击该选项并
-                # 校验即完成选择，不再依赖 Popup 窗口枚举（WPF Popup 是独立顶层
-                # HWND，_collect_dropdown_windows 可能漏收，导致 raw探针=0）。
-                if any(
-                    _key in _dropdown_target_value
-                    for _key in ("ListBoxItem", "ListItem", "MenuItem")
-                ):
-                    if _candidate_has_visible_rect(dropdown_wrapper):
-                        _opt_score = score_dropdown_runtime_candidate(
-                            dropdown_wrapper,
-                            target_texts,
-                            expected_window_titles=expected_window_titles,
-                            expected_process_id=expected_process_id,
-                        )
-                        if _opt_score >= 0:
-                            _opt_clicked, _opt_click_meta = click_dropdown_runtime_candidate(dropdown_wrapper)
-                            if _opt_clicked:
-                                time.sleep(0.15)
-                                _opt_snapshot = get_wrapper_debug_snapshot(dropdown_wrapper)
-                                _opt_text = get_wrapper_text(dropdown_wrapper) or ""
-                                _LOG_STEP(
-                                    "已直接点击下拉选项（目标控件即选项本身）: step={step_id}, control={control_id}, text={text}, click={method}".format(
-                                        step_id=step_id,
-                                        control_id=control_id,
-                                        text=_opt_text,
-                                        method=_opt_click_meta.get("method", ""),
+                            return True, {
+                                "method": "value_already_matched",
+                                "value": current_value,
+                                "targetTexts": target_texts,
+                            }
+                    # 防御：find_flow_control 定位到的 wrapper 若是 WPF Popup 窗口（下拉
+                    # 已展开时的弹出层，class/type 常为 Popup/Window），确保它进入枚举窗口
+                    # 列表——枚举阶段直接扫 Popup 子树即可命中选项，避免它只存在于
+                    # find_flow_control 的窗口遍历而 _collect_dropdown_windows 漏收。
+                    _wrapper_class = get_wrapper_class_name(dropdown_wrapper) or ""
+                    _wrapper_type = get_wrapper_control_type(dropdown_wrapper) or ""
+                    if "popup" in _wrapper_class.lower() or "popup" in _wrapper_type.lower():
+                        _popup_handle = get_wrapper_handle(dropdown_wrapper)
+                        if not any(get_wrapper_handle(w) == _popup_handle for w in dropdown_windows):
+                            dropdown_windows.append(dropdown_wrapper)
+                    toggle_state = get_wrapper_toggle_state(dropdown_wrapper)
+                    should_click = toggle_state in {"", "0", "Off", "off", "0.0", "Indeterminate"}
+                    # 若步骤目标控件本身是"下拉选项 ListItem"（targetValue 含 ListItem/ListBoxItem/MenuItem），
+                    # 说明下拉已由前置步骤展开、dropdown_wrapper 是可见选项而非下拉框本体：再点击它会
+                    # 直接选中该项并收起下拉，导致后续枚举 0 命中（症状：raw探针=0、误选中非目标选项，
+                    # 如三个下拉都选中"气压"）。跳过"自愈点击展开"，直接进入枚举命中目标选项。
+                    # 用配置判断而非运行时类型：find_flow_control fallback 阶段返回的 wrapper 类型不可靠。
+                    _dropdown_target_value = str((control_definition or {}).get("targetValue", "") or "")
+                    if should_click and any(
+                        _key in _dropdown_target_value
+                        for _key in ("ListBoxItem", "ListItem", "MenuItem")
+                    ):
+                        should_click = False
+                    # 阶段3 直点快捷：目标控件本身就是下拉选项（targetValue 含
+                    # ListItem/ListBoxItem/MenuItem）时，若定位到的选项已有可见矩形，
+                    # 说明下拉已由前置步骤（如相对区域点击）展开——直接点击该选项并
+                    # 校验即完成选择，不再依赖 Popup 窗口枚举（WPF Popup 是独立顶层
+                    # HWND，_collect_dropdown_windows 可能漏收，导致 raw探针=0）。
+                    if any(
+                        _key in _dropdown_target_value
+                        for _key in ("ListBoxItem", "ListItem", "MenuItem")
+                    ):
+                        if _candidate_has_visible_rect(dropdown_wrapper):
+                            _opt_score = score_dropdown_runtime_candidate(
+                                dropdown_wrapper,
+                                target_texts,
+                                expected_window_titles=expected_window_titles,
+                                expected_process_id=expected_process_id,
+                            )
+                            if _opt_score >= 0:
+                                _opt_clicked, _opt_click_meta = click_dropdown_runtime_candidate(dropdown_wrapper)
+                                if _opt_clicked:
+                                    time.sleep(0.15)
+                                    _opt_snapshot = get_wrapper_debug_snapshot(dropdown_wrapper)
+                                    _opt_text = get_wrapper_text(dropdown_wrapper) or ""
+                                    _LOG_STEP(
+                                        "已直接点击下拉选项（目标控件即选项本身）: step={step_id}, control={control_id}, text={text}, click={method}".format(
+                                            step_id=step_id,
+                                            control_id=control_id,
+                                            text=_opt_text,
+                                            method=_opt_click_meta.get("method", ""),
+                                        )
                                     )
+                                    return True, {
+                                        "method": "direct_option_click",
+                                        "targetTexts": target_texts,
+                                        "clickMeta": _opt_click_meta,
+                                        "bestCandidate": _opt_snapshot,
+                                        "valueVerified": _opt_text,
+                                    }
+                            _LOG_STEP(
+                                "直接点击下拉选项路径未命中（无可见矩形/评分未过/点击失败），转枚举路径: step={step_id}, control={control_id}".format(
+                                    step_id=step_id, control_id=control_id
                                 )
-                                return True, {
-                                    "method": "direct_option_click",
-                                    "targetTexts": target_texts,
-                                    "clickMeta": _opt_click_meta,
-                                    "bestCandidate": _opt_snapshot,
-                                    "valueVerified": _opt_text,
-                                }
-                        _LOG_STEP(
-                            "直接点击下拉选项路径未命中（无可见矩形/评分未过/点击失败），转枚举路径: step={step_id}, control={control_id}".format(
-                                step_id=step_id, control_id=control_id
                             )
-                        )
-                    else:
-                        # 阶段1c 诊断：目标选项无可见矩形 = 下拉很可能未展开（前置展开
-                        # 步骤 click_relative_region 假成功 / 坐标漂移），记录关键证据。
-                        _LOG_STEP(
-                            "疑似下拉未展开: 目标选项无可见矩形 step={step_id}, control={control_id}, "
-                            "wrapper={class_name}/{control_type}, toggle={toggle}".format(
-                                step_id=step_id,
-                                control_id=control_id,
-                                class_name=get_wrapper_class_name(dropdown_wrapper) or "(empty)",
-                                control_type=get_wrapper_control_type(dropdown_wrapper) or "(empty)",
-                                toggle=toggle_state or "(unknown)",
-                            )
-                        )
-                # 无论本次是否点击展开，都尽量让 Popup 窗口进入枚举列表：前置步骤
-                # 可能已把下拉展开（toggle=On），此时 Popup 已存在但不在旧的
-                # dropdown_windows 里，不补会让后续枚举漏掉 RadComboBoxItem。
-                # 性能：三路全量收集含全桌面 UIA 枚举 + 多次 ElementFromHandle，
-                # 单次数秒；预收集已含 Popup（下拉已展开）时无需重收，直接复用。
-                _has_popup_window = any(
-                    "popup" in (get_wrapper_class_name(w) or "").lower()
-                    or "popup" in (get_wrapper_control_type(w) or "").lower()
-                    for w in dropdown_windows
-                )
-                if not _has_popup_window:
-                    try:
-                        popup_windows = _collect_dropdown_windows()
-                        popup_windows = _filter_dropdown_windows_by_process(popup_windows, expected_process_id)
-                        for w in popup_windows:
-                            if not any(
-                                get_wrapper_handle(x) == get_wrapper_handle(w)
-                                for x in dropdown_windows
-                            ):
-                                dropdown_windows.append(w)
-                    except Exception:
-                        pass
-                if should_click:
-                    clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
-                    if clicked:
-                        _LOG_STEP(
-                            "下拉框未展开，已自愈点击展开: step={step_id}, control={control_id}, toggle={toggle}".format(
-                                step_id=step_id, control_id=control_id, toggle=toggle_state or "(unknown)"
-                            )
-                        )
-                        time.sleep(0.4)
-                        # 等待展开动画完成：轮询 ToggleState 直到 On（最多约 1.2 秒），
-                        # 避免展开尚未渲染完就枚举导致选项不可见。
-                        for _wait in range(4):
-                            if get_wrapper_toggle_state(dropdown_wrapper) in {"1", "On", "on", "1.0"}:
-                                break
-                            time.sleep(0.2)
-                        _LOG_STEP(
-                            "下拉框展开状态: step={step_id}, control={control_id}, toggleAfter={toggle}".format(
-                                step_id=step_id,
-                                control_id=control_id,
-                                toggle=get_wrapper_toggle_state(dropdown_wrapper) or "(unknown)",
-                            )
-                        )
-                        # 展开后下拉选项所在的 Popup 窗口**才创建**，必须在此重新收集并
-                        # 合并候选窗口——上面的窗口收集发生在"点击展开"之前，覆盖不到新
-                        # Popup。实测 step_10 版本下拉展开后仍"候选窗口=1"（无 Popup）→
-                        # raw/win32/sweep 三路探针全 0 → 只能走不可验证的盲点击。这里同时
-                        # 给 Telerik 虚拟化选项树的异步实体化留出时间（立即枚举必为 0）。
-                        for _exp_round in range(8):
-                            time.sleep(0.3)
-                            try:
-                                _new_popups = _filter_dropdown_windows_by_process(
-                                    _collect_dropdown_windows(), expected_process_id
+                        else:
+                            # 阶段1c 诊断：目标选项无可见矩形 = 下拉很可能未展开（前置展开
+                            # 步骤 click_relative_region 假成功 / 坐标漂移），记录关键证据。
+                            _LOG_STEP(
+                                "疑似下拉未展开: 目标选项无可见矩形 step={step_id}, control={control_id}, "
+                                "wrapper={class_name}/{control_type}, toggle={toggle}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    class_name=get_wrapper_class_name(dropdown_wrapper) or "(empty)",
+                                    control_type=get_wrapper_control_type(dropdown_wrapper) or "(empty)",
+                                    toggle=toggle_state or "(unknown)",
                                 )
-                            except Exception:
-                                _new_popups = []
-                            _added_popup = 0
-                            for _w in _new_popups:
-                                try:
-                                    if not any(
-                                        get_wrapper_handle(x) == get_wrapper_handle(_w)
-                                        for x in dropdown_windows
-                                    ):
-                                        dropdown_windows.append(_w)
-                                        _added_popup += 1
-                                except Exception:
-                                    continue
-                            _now_has_popup = any(
-                                "popup" in (get_wrapper_class_name(w) or "").lower()
-                                or "popup" in (get_wrapper_control_type(w) or "").lower()
-                                for w in dropdown_windows
                             )
-                            if _now_has_popup:
-                                # Popup 已入列：再等一轮让选项实体化，交给后续枚举
+                    # 无论本次是否点击展开，都尽量让 Popup 窗口进入枚举列表：前置步骤
+                    # 可能已把下拉展开（toggle=On），此时 Popup 已存在但不在旧的
+                    # dropdown_windows 里，不补会让后续枚举漏掉 RadComboBoxItem。
+                    # 性能：三路全量收集含全桌面 UIA 枚举 + 多次 ElementFromHandle，
+                    # 单次数秒；预收集已含 Popup（下拉已展开）时无需重收，直接复用。
+                    _has_popup_window = any(
+                        "popup" in (get_wrapper_class_name(w) or "").lower()
+                        or "popup" in (get_wrapper_control_type(w) or "").lower()
+                        for w in dropdown_windows
+                    )
+                    if not _has_popup_window:
+                        try:
+                            popup_windows = _collect_dropdown_windows()
+                            popup_windows = _filter_dropdown_windows_by_process(popup_windows, expected_process_id)
+                            for w in popup_windows:
+                                if not any(
+                                    get_wrapper_handle(x) == get_wrapper_handle(w)
+                                    for x in dropdown_windows
+                                ):
+                                    dropdown_windows.append(w)
+                        except Exception:
+                            pass
+                    if should_click:
+                        clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
+                        if clicked:
+                            _LOG_STEP(
+                                "下拉框未展开，已自愈点击展开: step={step_id}, control={control_id}, toggle={toggle}".format(
+                                    step_id=step_id, control_id=control_id, toggle=toggle_state or "(unknown)"
+                                )
+                            )
+                            time.sleep(0.4)
+                            # 等待展开动画完成：轮询 ToggleState 直到 On（最多约 1.2 秒），
+                            # 避免展开尚未渲染完就枚举导致选项不可见。
+                            for _wait in range(4):
+                                if get_wrapper_toggle_state(dropdown_wrapper) in {"1", "On", "on", "1.0"}:
+                                    break
+                                time.sleep(0.2)
+                            _LOG_STEP(
+                                "下拉框展开状态: step={step_id}, control={control_id}, toggleAfter={toggle}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    toggle=get_wrapper_toggle_state(dropdown_wrapper) or "(unknown)",
+                                )
+                            )
+                            # 展开后下拉选项所在的 Popup 窗口**才创建**，必须在此重新收集并
+                            # 合并候选窗口——上面的窗口收集发生在"点击展开"之前，覆盖不到新
+                            # Popup。实测 step_10 版本下拉展开后仍"候选窗口=1"（无 Popup）→
+                            # raw/win32/sweep 三路探针全 0 → 只能走不可验证的盲点击。这里同时
+                            # 给 Telerik 虚拟化选项树的异步实体化留出时间（立即枚举必为 0）。
+                            for _exp_round in range(8):
                                 time.sleep(0.3)
-                                break
-                            if _added_popup:
-                                break
-                        _LOG_STEP(
-                            "下拉展开后重新收集候选窗口: step={step_id}, control={control_id}, 候选窗口={count}".format(
-                                step_id=step_id, control_id=control_id, count=len(dropdown_windows)
+                                try:
+                                    _new_popups = _filter_dropdown_windows_by_process(
+                                        _collect_dropdown_windows(), expected_process_id
+                                    )
+                                except Exception:
+                                    _new_popups = []
+                                _added_popup = 0
+                                for _w in _new_popups:
+                                    try:
+                                        if not any(
+                                            get_wrapper_handle(x) == get_wrapper_handle(_w)
+                                            for x in dropdown_windows
+                                        ):
+                                            dropdown_windows.append(_w)
+                                            _added_popup += 1
+                                    except Exception:
+                                        continue
+                                _now_has_popup = any(
+                                    "popup" in (get_wrapper_class_name(w) or "").lower()
+                                    or "popup" in (get_wrapper_control_type(w) or "").lower()
+                                    for w in dropdown_windows
+                                )
+                                if _now_has_popup:
+                                    # Popup 已入列：再等一轮让选项实体化，交给后续枚举
+                                    time.sleep(0.3)
+                                    break
+                                if _added_popup:
+                                    break
+                            _LOG_STEP(
+                                "下拉展开后重新收集候选窗口: step={step_id}, control={control_id}, 候选窗口={count}".format(
+                                    step_id=step_id, control_id=control_id, count=len(dropdown_windows)
+                                )
                             )
-                        )
-                        remaining = deadline - time.time()
-                        if remaining < 3.0:
-                            deadline = time.time() + 3.0
-            expanded_attempted = True
-            continue
-        # 已展开：Control View 枚举可见选项
-        ranked_candidates = []
-        for candidate in iter_dropdown_runtime_candidates(dropdown_windows):
-            # 内层超时退出：枚举目标窗口 UIA 子树可能较慢，超时提前中断
-            if time.time() > deadline:
-                break
-            if failed_option_keys and _wrapper_identity_key(candidate) in failed_option_keys:
+                            remaining = deadline - time.time()
+                            if remaining < 3.0:
+                                deadline = time.time() + 3.0
+                expanded_attempted = True
+                _dd_t_expand += time.perf_counter() - _dd_t_expand_start
+                _dd_phase = "枚举"
                 continue
-            score = score_dropdown_runtime_candidate(
-                candidate,
-                target_texts,
-                expected_window_titles=expected_window_titles,
-                expected_process_id=expected_process_id,
-            )
-            if score < 0:
-                continue
-            ranked_candidates.append((score, candidate))
-        # Control View 无候选时补一轮 Raw View 枚举（Telerik 虚拟化选项）
-        if not ranked_candidates:
-            for candidate in _iter_dropdown_raw_view_candidates(dropdown_windows):
+            # 已展开：Control View 枚举可见选项
+            ranked_candidates = []
+            for candidate in iter_dropdown_runtime_candidates(dropdown_windows):
+                # 内层超时退出：枚举目标窗口 UIA 子树可能较慢，超时提前中断
                 if time.time() > deadline:
                     break
                 if failed_option_keys and _wrapper_identity_key(candidate) in failed_option_keys:
                     continue
-                raw_probe["count"] += 1
-                if len(raw_probe["samples"]) < 5:
-                    raw_probe["samples"].append(
-                        "{}|{}|{}".format(
-                            get_wrapper_text(candidate) or "(empty)",
-                            get_wrapper_class_name(candidate) or "",
-                            get_wrapper_control_type(candidate) or "",
-                        )
-                    )
                 score = score_dropdown_runtime_candidate(
                     candidate,
                     target_texts,
@@ -2859,170 +2850,210 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                 if score < 0:
                     continue
                 ranked_candidates.append((score, candidate))
-            # win32/MSAA 兜底：Telerik 虚拟化下拉选项 UIA 不可见（rawTotalControls=4），
-            # 采集靠 win32 才能枚举到（totalControls=424）。按文本匹配目标选项后坐标点击。
+            # Control View 无候选时补一轮 Raw View 枚举（Telerik 虚拟化选项）
             if not ranked_candidates:
-                for candidate in _iter_dropdown_win32_text_candidates(dropdown_windows, target_texts):
+                for candidate in _iter_dropdown_raw_view_candidates(dropdown_windows):
                     if time.time() > deadline:
                         break
                     if failed_option_keys and _wrapper_identity_key(candidate) in failed_option_keys:
                         continue
-                    win32_probe["count"] += 1
-                    if len(win32_probe["samples"]) < 5:
-                        win32_probe["samples"].append(
+                    raw_probe["count"] += 1
+                    if len(raw_probe["samples"]) < 5:
+                        raw_probe["samples"].append(
                             "{}|{}|{}".format(
                                 get_wrapper_text(candidate) or "(empty)",
                                 get_wrapper_class_name(candidate) or "",
                                 get_wrapper_control_type(candidate) or "",
                             )
                         )
-                    ranked_candidates.append((75, candidate))
-            # 点扫掠兜底：Telerik 虚拟化下拉选项不在任何 UIA/MSAA 树中（枚举均取不到），
-            # 复刻采集器 _realize_options_by_point_sweep：物理移动鼠标触发 WPF 实体化 +
-            # Desktop.from_point 命中读取，匹配目标后直接点击。
-            if not ranked_candidates:
-                _sweep_anchor = _get_dropdown_sweep_anchor(dropdown_wrapper, dropdown_windows)
-                if _sweep_anchor:
-                    _opt_wrapper, _opt_text, _sweep_stats = _sweep_dropdown_option_by_point(
-                        _sweep_anchor, target_texts
+                    score = score_dropdown_runtime_candidate(
+                        candidate,
+                        target_texts,
+                        expected_window_titles=expected_window_titles,
+                        expected_process_id=expected_process_id,
                     )
-                    sweep_probe["count"] += _sweep_stats["probes"]
-                    sweep_probe["hits"] += _sweep_stats["hits"]
-                    if _sweep_stats.get("hitTexts"):
-                        sweep_probe["samples"] = list(_sweep_stats["hitTexts"][:5])
-                    if _opt_wrapper is not None and _opt_text:
-                        sweep_probe["matched"] = _opt_text
+                    if score < 0:
+                        continue
+                    ranked_candidates.append((score, candidate))
+                # win32/MSAA 兜底：Telerik 虚拟化下拉选项 UIA 不可见（rawTotalControls=4），
+                # 采集靠 win32 才能枚举到（totalControls=424）。按文本匹配目标选项后坐标点击。
+                if not ranked_candidates:
+                    for candidate in _iter_dropdown_win32_text_candidates(dropdown_windows, target_texts):
+                        if time.time() > deadline:
+                            break
+                        if failed_option_keys and _wrapper_identity_key(candidate) in failed_option_keys:
+                            continue
+                        win32_probe["count"] += 1
+                        if len(win32_probe["samples"]) < 5:
+                            win32_probe["samples"].append(
+                                "{}|{}|{}".format(
+                                    get_wrapper_text(candidate) or "(empty)",
+                                    get_wrapper_class_name(candidate) or "",
+                                    get_wrapper_control_type(candidate) or "",
+                                )
+                            )
+                        ranked_candidates.append((75, candidate))
+                # 点扫掠兜底：Telerik 虚拟化下拉选项不在任何 UIA/MSAA 树中（枚举均取不到），
+                # 复刻采集器 _realize_options_by_point_sweep：物理移动鼠标触发 WPF 实体化 +
+                # Desktop.from_point 命中读取，匹配目标后直接点击。
+                if not ranked_candidates:
+                    _sweep_anchor = _get_dropdown_sweep_anchor(dropdown_wrapper, dropdown_windows)
+                    if _sweep_anchor:
+                        _opt_wrapper, _opt_text, _sweep_stats = _sweep_dropdown_option_by_point(
+                            _sweep_anchor, target_texts
+                        )
+                        sweep_probe["count"] += _sweep_stats["probes"]
+                        sweep_probe["hits"] += _sweep_stats["hits"]
+                        if _sweep_stats.get("hitTexts"):
+                            sweep_probe["samples"] = list(_sweep_stats["hitTexts"][:5])
+                        if _opt_wrapper is not None and _opt_text:
+                            sweep_probe["matched"] = _opt_text
+                            _LOG_STEP(
+                                "已通过点扫掠命中并点击下拉选项: step={step_id}, control={control_id}, text={text}, probes={probes}, hits={hits}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    text=_opt_text,
+                                    probes=_sweep_stats["probes"],
+                                    hits=_sweep_stats["hits"],
+                                )
+                            )
+                            return True, {
+                                "method": "point_sweep",
+                                "targetTexts": target_texts,
+                                "bestCandidate": get_wrapper_debug_snapshot(_opt_wrapper),
+                                "valueVerified": _opt_text,
+                            }
+                if not ranked_candidates:
+                    continue
+            ranked_candidates.sort(key=lambda item: item[0], reverse=True)
+            last_ranked_candidates = ranked_candidates[:5]
+            if ranked_candidates and ranked_candidates[0][0] >= 70:
+                best_candidate = ranked_candidates[0][1]
+                # 仅当下拉框确已展开时才点击选项：收起状态下点击 bridge 离屏选项无效。
+                # TogglePattern 在 Telerik 上常挂在 PART_DropDownButton 子元素，ComboBox 根
+                # 读取失败返回 ""——此时不再简单禁用整条"枚举+点击"路径：
+                #   1) 用 Toggle / ExpandCollapse 状态判定（_dropdown_currently_expanded）；
+                #   2) 状态未知且候选已有可见矩形时，视为已展开可点（离屏/未渲染选项矩形为空）；
+                #   3) 状态未知且候选无可见矩形时，补一次幂等展开点击后重判。
+                dropdown_expanded = _dropdown_currently_expanded(dropdown_wrapper)
+                if dropdown_expanded is None and dropdown_wrapper is not None:
+                    if _candidate_has_visible_rect(best_candidate):
+                        dropdown_expanded = True
+                    else:
+                        _exp_clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
+                        if _exp_clicked:
+                            time.sleep(0.3)
+                            dropdown_expanded = _dropdown_currently_expanded(dropdown_wrapper)
+                            if dropdown_expanded is not True and _candidate_has_visible_rect(best_candidate):
+                                dropdown_expanded = True
+                if dropdown_expanded is not True and dropdown_wrapper is None and _candidate_has_visible_rect(best_candidate):
+                    # 下拉框本体不可得但选项已渲染在屏（如焦点已在下拉内）：同样允许点击
+                    dropdown_expanded = True
+                if dropdown_expanded is not True:
+                    time.sleep(0.15)
+                    continue
+                best_score, best_candidate = ranked_candidates[0]
+                best_candidate_snapshot = get_wrapper_debug_snapshot(best_candidate)
+                # 候选自身文本与目标文本不符 → 不点击、剔除该候选、继续枚举。
+                # 背景：下拉展开初期可能只渲染出无关项（实测 IEC 参考只渲染出首项
+                # "默认"），它评分达标成为 best_candidate 被盲点击；若显示值又不可读
+                # （无 ValuePattern），下方原逻辑会直接报成功——结果把目标"组合"点成了
+                # "默认"且流程毫不知情。目标文本明确时（actionConfig.text/value），
+                # 以候选自身文本做一次前置否决：剔除后由枚举继续找正确项，最终自然落到
+                # 键盘键入过滤兜底（该类下拉已被实机证明可靠）。
+                _pre_target_norm = ""
+                if explicit_target and not is_placeholder_text(explicit_target):
+                    _pre_target_norm = normalize_match_text(explicit_target).lower()
+                if not _pre_target_norm:
+                    for _t in target_texts:
+                        if _t and not is_placeholder_text(_t):
+                            _pre_target_norm = normalize_match_text(_t).lower()
+                            break
+                if _pre_target_norm:
+                    _cand_tokens = []
+                    try:
+                        _cand_tokens = [
+                            str(_tk).strip().lower()
+                            for _tk in (get_wrapper_runtime_text_candidates(best_candidate) or [])
+                            if str(_tk).strip()
+                        ]
+                    except Exception:
+                        _cand_tokens = []
+                    if _cand_tokens:
+                        _any_match = False
+                        for _tk in _cand_tokens:
+                            if _pre_target_norm in _tk or _tk in _pre_target_norm:
+                                _any_match = True
+                                break
+                        if not _any_match:
+                            _LOG_STEP(
+                                "候选文本与目标不符，剔除并继续枚举: step={step_id}, control={control_id}, target={target}, candidate={candidate}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    target=_pre_target_norm,
+                                    candidate="|".join(_cand_tokens)[:80],
+                                )
+                            )
+                            _fk = _wrapper_identity_key(best_candidate)
+                            if _fk:
+                                failed_option_keys.add(_fk)
+                            time.sleep(0.15)
+                            continue
+                clicked, click_meta = click_dropdown_runtime_candidate(best_candidate)
+                if clicked:
+                    time.sleep(0.12)
+                    verify_value = ""
+                    if dropdown_wrapper is not None:
+                        try:
+                            verify_value = _read_dropdown_display_text(dropdown_wrapper)
+                        except Exception:
+                            verify_value = ""
+                    if verify_value:
+                        verify_norm = normalize_match_text(verify_value).lower()
+                        matched_target = False
+                        if explicit_target and not is_placeholder_text(explicit_target):
+                            matched_target = normalize_match_text(explicit_target).lower() == verify_norm
+                        if not matched_target:
+                            for target in target_texts:
+                                if target and normalize_match_text(target).lower() == verify_norm:
+                                    matched_target = True
+                                    break
+                        if not matched_target:
+                            _LOG_STEP(
+                                "候选点击后显示值未确认: step={step_id}, control={control_id}, expected={expected}, actual={actual}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    expected=" / ".join(target_texts) or "(empty)",
+                                    actual=verify_value,
+                                )
+                            )
+                            # 该候选已确认点错：剔除后重新展开，避免下一轮重复点击同一个错误项
+                            failed_key = _wrapper_identity_key(best_candidate)
+                            if failed_key:
+                                failed_option_keys.add(failed_key)
+                            expanded_attempted = False
+                            continue
                         _LOG_STEP(
-                            "已通过点扫掠命中并点击下拉选项: step={step_id}, control={control_id}, text={text}, probes={probes}, hits={hits}".format(
+                            "已通过运行时下拉候选点击控件并校验显示值: step={step_id}, control={control_id}, score={score}, value={value}".format(
                                 step_id=step_id,
                                 control_id=control_id,
-                                text=_opt_text,
-                                probes=_sweep_stats["probes"],
-                                hits=_sweep_stats["hits"],
+                                score=best_score,
+                                value=verify_value,
                             )
                         )
                         return True, {
-                            "method": "point_sweep",
+                            "score": best_score,
                             "targetTexts": target_texts,
-                            "bestCandidate": get_wrapper_debug_snapshot(_opt_wrapper),
-                            "valueVerified": _opt_text,
+                            "clickMeta": click_meta,
+                            "bestCandidate": best_candidate_snapshot,
+                            "valueVerified": verify_value,
                         }
-            if not ranked_candidates:
-                continue
-        ranked_candidates.sort(key=lambda item: item[0], reverse=True)
-        last_ranked_candidates = ranked_candidates[:5]
-        if ranked_candidates and ranked_candidates[0][0] >= 70:
-            best_candidate = ranked_candidates[0][1]
-            # 仅当下拉框确已展开时才点击选项：收起状态下点击 bridge 离屏选项无效。
-            # TogglePattern 在 Telerik 上常挂在 PART_DropDownButton 子元素，ComboBox 根
-            # 读取失败返回 ""——此时不再简单禁用整条"枚举+点击"路径：
-            #   1) 用 Toggle / ExpandCollapse 状态判定（_dropdown_currently_expanded）；
-            #   2) 状态未知且候选已有可见矩形时，视为已展开可点（离屏/未渲染选项矩形为空）；
-            #   3) 状态未知且候选无可见矩形时，补一次幂等展开点击后重判。
-            dropdown_expanded = _dropdown_currently_expanded(dropdown_wrapper)
-            if dropdown_expanded is None and dropdown_wrapper is not None:
-                if _candidate_has_visible_rect(best_candidate):
-                    dropdown_expanded = True
-                else:
-                    _exp_clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
-                    if _exp_clicked:
-                        time.sleep(0.3)
-                        dropdown_expanded = _dropdown_currently_expanded(dropdown_wrapper)
-                        if dropdown_expanded is not True and _candidate_has_visible_rect(best_candidate):
-                            dropdown_expanded = True
-            if dropdown_expanded is not True and dropdown_wrapper is None and _candidate_has_visible_rect(best_candidate):
-                # 下拉框本体不可得但选项已渲染在屏（如焦点已在下拉内）：同样允许点击
-                dropdown_expanded = True
-            if dropdown_expanded is not True:
-                time.sleep(0.15)
-                continue
-            best_score, best_candidate = ranked_candidates[0]
-            best_candidate_snapshot = get_wrapper_debug_snapshot(best_candidate)
-            # 候选自身文本与目标文本不符 → 不点击、剔除该候选、继续枚举。
-            # 背景：下拉展开初期可能只渲染出无关项（实测 IEC 参考只渲染出首项
-            # "默认"），它评分达标成为 best_candidate 被盲点击；若显示值又不可读
-            # （无 ValuePattern），下方原逻辑会直接报成功——结果把目标"组合"点成了
-            # "默认"且流程毫不知情。目标文本明确时（actionConfig.text/value），
-            # 以候选自身文本做一次前置否决：剔除后由枚举继续找正确项，最终自然落到
-            # 键盘键入过滤兜底（该类下拉已被实机证明可靠）。
-            _pre_target_norm = ""
-            if explicit_target and not is_placeholder_text(explicit_target):
-                _pre_target_norm = normalize_match_text(explicit_target).lower()
-            if not _pre_target_norm:
-                for _t in target_texts:
-                    if _t and not is_placeholder_text(_t):
-                        _pre_target_norm = normalize_match_text(_t).lower()
-                        break
-            if _pre_target_norm:
-                _cand_tokens = []
-                try:
-                    _cand_tokens = [
-                        str(_tk).strip().lower()
-                        for _tk in (get_wrapper_runtime_text_candidates(best_candidate) or [])
-                        if str(_tk).strip()
-                    ]
-                except Exception:
-                    _cand_tokens = []
-                if _cand_tokens:
-                    _any_match = False
-                    for _tk in _cand_tokens:
-                        if _pre_target_norm in _tk or _tk in _pre_target_norm:
-                            _any_match = True
-                            break
-                    if not _any_match:
-                        _LOG_STEP(
-                            "候选文本与目标不符，剔除并继续枚举: step={step_id}, control={control_id}, target={target}, candidate={candidate}".format(
-                                step_id=step_id,
-                                control_id=control_id,
-                                target=_pre_target_norm,
-                                candidate="|".join(_cand_tokens)[:80],
-                            )
-                        )
-                        _fk = _wrapper_identity_key(best_candidate)
-                        if _fk:
-                            failed_option_keys.add(_fk)
-                        time.sleep(0.15)
-                        continue
-            clicked, click_meta = click_dropdown_runtime_candidate(best_candidate)
-            if clicked:
-                time.sleep(0.12)
-                verify_value = ""
-                if dropdown_wrapper is not None:
-                    try:
-                        verify_value = _read_dropdown_display_text(dropdown_wrapper)
-                    except Exception:
-                        verify_value = ""
-                if verify_value:
-                    verify_norm = normalize_match_text(verify_value).lower()
-                    matched_target = False
-                    if explicit_target and not is_placeholder_text(explicit_target):
-                        matched_target = normalize_match_text(explicit_target).lower() == verify_norm
-                    if not matched_target:
-                        for target in target_texts:
-                            if target and normalize_match_text(target).lower() == verify_norm:
-                                matched_target = True
-                                break
-                    if not matched_target:
-                        _LOG_STEP(
-                            "候选点击后显示值未确认: step={step_id}, control={control_id}, expected={expected}, actual={actual}".format(
-                                step_id=step_id,
-                                control_id=control_id,
-                                expected=" / ".join(target_texts) or "(empty)",
-                                actual=verify_value,
-                            )
-                        )
-                        # 该候选已确认点错：剔除后重新展开，避免下一轮重复点击同一个错误项
-                        failed_key = _wrapper_identity_key(best_candidate)
-                        if failed_key:
-                            failed_option_keys.add(failed_key)
-                        expanded_attempted = False
-                        continue
                     _LOG_STEP(
-                        "已通过运行时下拉候选点击控件并校验显示值: step={step_id}, control={control_id}, score={score}, value={value}".format(
+                        "已通过运行时下拉候选点击控件（显示值不可读，保留点击证据）: step={step_id}, control={control_id}, score={score}, texts={texts}".format(
                             step_id=step_id,
                             control_id=control_id,
                             score=best_score,
-                            value=verify_value,
+                            texts=" / ".join(target_texts) or "(empty)",
                         )
                     )
                     return True, {
@@ -3030,244 +3061,208 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                         "targetTexts": target_texts,
                         "clickMeta": click_meta,
                         "bestCandidate": best_candidate_snapshot,
-                        "valueVerified": verify_value,
+                        "valueVerification": "unreadable",
                     }
-                _LOG_STEP(
-                    "已通过运行时下拉候选点击控件（显示值不可读，保留点击证据）: step={step_id}, control={control_id}, score={score}, texts={texts}".format(
-                        step_id=step_id,
-                        control_id=control_id,
-                        score=best_score,
-                        texts=" / ".join(target_texts) or "(empty)",
-                    )
-                )
-                return True, {
-                    "score": best_score,
-                    "targetTexts": target_texts,
-                    "clickMeta": click_meta,
-                    "bestCandidate": best_candidate_snapshot,
-                    "valueVerification": "unreadable",
-                }
-        time.sleep(0.15)
+            time.sleep(0.15)
 
-    # ---- 键盘导航兜底 ----
-    _LOG_STEP(
-        "运行时下拉枚举未命中，进入键盘导航兜底: step={step_id}, control={control_id}, "
-        "elapsed={elapsed:.1f}s, raw探针={raw}, 已剔除错误项={failed}".format(
-            step_id=step_id,
-            control_id=control_id,
-            elapsed=time.time() - _loop_started,
-            raw=raw_probe["count"],
-            failed=len(failed_option_keys),
-        )
-    )
-    # 虚拟化下拉列表（如 MTD PART_DropDownButton）的选项在弹出窗口枚举和
-    # 子树遍历中均不可见，仅当鼠标悬停时才实体化。若枚举阶段未命中，尝试用
-    # 键盘方向键导航定位目标选项。
-    option_values = []
-    inspect_data = control_definition.get("inspectData", {}) or {}
-    if isinstance(inspect_data, dict):
-        option_values = [str(v).strip() for v in (inspect_data.get("optionValues", []) or []) if str(v).strip()]
-    if not option_values and isinstance(control_definition, dict):
-        option_values = [str(v).strip() for v in (control_definition.get("optionValues", []) or []) if str(v).strip()]
-    option_values_injected = False
-    if not option_values:
-        try:
-            from mup_assets import inject_dropdown_option_values
-            option_values, option_values_injected = inject_dropdown_option_values(
-                control_definition, option_values
+        # ---- 键盘导航兜底 ----
+        _LOG_STEP(
+            "运行时下拉枚举未命中，进入键盘导航兜底: step={step_id}, control={control_id}, "
+            "elapsed={elapsed:.1f}s, raw探针={raw}, 已剔除错误项={failed}".format(
+                step_id=step_id,
+                control_id=control_id,
+                elapsed=time.time() - _loop_started,
+                raw=raw_probe["count"],
+                failed=len(failed_option_keys),
             )
-        except Exception:
-            pass
-    if option_values:
-        # 在 optionValues 中查找目标文本的索引（精确或包含匹配）。
-        target_index = -1
-        search_texts = [explicit_target] if explicit_target else target_texts
-        for search in search_texts:
-            if not search:
-                continue
-            normalized_search = normalize_match_text(search).lower()
-            for idx, opt in enumerate(option_values):
-                if normalize_match_text(opt).lower() == normalized_search:
-                    target_index = idx
-                    break
-            if target_index < 0:
+        )
+        # 虚拟化下拉列表（如 MTD PART_DropDownButton）的选项在弹出窗口枚举和
+        # 子树遍历中均不可见，仅当鼠标悬停时才实体化。若枚举阶段未命中，尝试用
+        # 键盘方向键导航定位目标选项。
+        option_values = []
+        inspect_data = control_definition.get("inspectData", {}) or {}
+        if isinstance(inspect_data, dict):
+            option_values = [str(v).strip() for v in (inspect_data.get("optionValues", []) or []) if str(v).strip()]
+        if not option_values and isinstance(control_definition, dict):
+            option_values = [str(v).strip() for v in (control_definition.get("optionValues", []) or []) if str(v).strip()]
+        option_values_injected = False
+        if not option_values:
+            try:
+                from mup_assets import inject_dropdown_option_values
+                option_values, option_values_injected = inject_dropdown_option_values(
+                    control_definition, option_values
+                )
+            except Exception:
+                pass
+        if option_values:
+            # 在 optionValues 中查找目标文本的索引（精确或包含匹配）。
+            target_index = -1
+            search_texts = [explicit_target] if explicit_target else target_texts
+            for search in search_texts:
+                if not search:
+                    continue
+                normalized_search = normalize_match_text(search).lower()
                 for idx, opt in enumerate(option_values):
-                    if normalized_search in normalize_match_text(opt).lower():
+                    if normalize_match_text(opt).lower() == normalized_search:
                         target_index = idx
                         break
+                if target_index < 0:
+                    for idx, opt in enumerate(option_values):
+                        if normalized_search in normalize_match_text(opt).lower():
+                            target_index = idx
+                            break
+                if target_index >= 0:
+                    break
             if target_index >= 0:
-                break
-        if target_index >= 0:
-            # 防错位前置：发方向键/回车前确保下拉框确已展开且获得键盘焦点。
-            # 未展开/未定位到下拉框时会盲发按键、落到当前焦点控件，可能误触发无关按钮。
-            nav_ready = dropdown_wrapper is not None
-            downs = target_index
-            if nav_ready:
-                if _dropdown_currently_expanded(dropdown_wrapper) is not True:
-                    _exp_clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
-                    if _exp_clicked:
-                        time.sleep(0.3)
-                        for _wait_t in range(4):
-                            if _dropdown_currently_expanded(dropdown_wrapper) is True:
-                                break
-                            time.sleep(0.2)
-                try:
-                    dropdown_wrapper.set_focus()
-                except Exception:
-                    pass
-                if _dropdown_currently_expanded(dropdown_wrapper) is not True:
-                    _LOG_STEP(
-                        "键盘导航前置：下拉框未确认展开，跳过盲发按键转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
-                            step_id=step_id,
-                            control_id=control_id,
-                            option=option_values[target_index],
-                        )
-                    )
-                    nav_ready = False
-                else:
-                    # 从当前选中项出发做相对导航：重跑流程时下拉框当前值可能已落在目标
-                    # 之前的某项，若每次都从固定起点 DOWN N 次会选到第 2N 项导致错位。
+                # 防错位前置：发方向键/回车前确保下拉框确已展开且获得键盘焦点。
+                # 未展开/未定位到下拉框时会盲发按键、落到当前焦点控件，可能误触发无关按钮。
+                nav_ready = dropdown_wrapper is not None
+                downs = target_index
+                if nav_ready:
+                    if _dropdown_currently_expanded(dropdown_wrapper) is not True:
+                        _exp_clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
+                        if _exp_clicked:
+                            time.sleep(0.3)
+                            for _wait_t in range(4):
+                                if _dropdown_currently_expanded(dropdown_wrapper) is True:
+                                    break
+                                time.sleep(0.2)
                     try:
-                        current_display = _read_dropdown_display_text(dropdown_wrapper)
+                        dropdown_wrapper.set_focus()
                     except Exception:
-                        current_display = ""
-                    downs, needs_home = _dropdown_nav_delta(option_values, current_display, target_index)
-                    if needs_home:
-                        # 当前值无法在候选列表中解析：先 HOME 归零再绝对导航
-                        send_keys("{HOME}")
-                        time.sleep(0.08)
-            if nav_ready:
-                if downs > 0:
-                    for _ in range(downs):
-                        send_keys("{DOWN}")
-                        time.sleep(0.06)
-                elif downs < 0:
-                    for _ in range(-downs):
-                        send_keys("{UP}")
-                        time.sleep(0.06)
-                send_keys("{ENTER}")
-                time.sleep(0.15)
-                # 键盘导航后统一读显示值验证（对全部选项来源生效，不限于注入的安装目录
-                # 名单）：读到且不匹配，或读不到（不可验证），都不判定成功，转键入搜索，
-                # 避免"防错位"被绕过导致点错。
-                navigate_ok = False
-                try:
-                    display = _read_dropdown_display_text(dropdown_wrapper) if dropdown_wrapper is not None else ""
-                except Exception:
-                    display = ""
-                if display:
-                    display_norm = normalize_match_text(display).lower()
-                    navigate_ok = any(
-                        normalize_match_text(s).lower() and normalize_match_text(s).lower() in display_norm
-                        for s in search_texts if s
-                    )
-                if not navigate_ok:
-                    _LOG_STEP(
-                        "键盘导航后显示值未确认，转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
-                            step_id=step_id,
-                            control_id=control_id,
-                            option=option_values[target_index],
+                        pass
+                    if _dropdown_currently_expanded(dropdown_wrapper) is not True:
+                        _LOG_STEP(
+                            "键盘导航前置：下拉框未确认展开，跳过盲发按键转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
+                                step_id=step_id,
+                                control_id=control_id,
+                                option=option_values[target_index],
+                            )
                         )
-                    )
-                else:
+                        nav_ready = False
+                    else:
+                        # 从当前选中项出发做相对导航：重跑流程时下拉框当前值可能已落在目标
+                        # 之前的某项，若每次都从固定起点 DOWN N 次会选到第 2N 项导致错位。
+                        try:
+                            current_display = _read_dropdown_display_text(dropdown_wrapper)
+                        except Exception:
+                            current_display = ""
+                        downs, needs_home = _dropdown_nav_delta(option_values, current_display, target_index)
+                        if needs_home:
+                            # 当前值无法在候选列表中解析：先 HOME 归零再绝对导航
+                            send_keys("{HOME}")
+                            time.sleep(0.08)
+                if nav_ready:
+                    if downs > 0:
+                        for _ in range(downs):
+                            send_keys("{DOWN}")
+                            time.sleep(0.06)
+                    elif downs < 0:
+                        for _ in range(-downs):
+                            send_keys("{UP}")
+                            time.sleep(0.06)
+                    send_keys("{ENTER}")
+                    time.sleep(0.15)
+                    # 键盘导航后统一读显示值验证（对全部选项来源生效，不限于注入的安装目录
+                    # 名单）：读到且不匹配，或读不到（不可验证），都不判定成功，转键入搜索，
+                    # 避免"防错位"被绕过导致点错。
+                    navigate_ok = False
+                    try:
+                        display = _read_dropdown_display_text(dropdown_wrapper) if dropdown_wrapper is not None else ""
+                    except Exception:
+                        display = ""
+                    if display:
+                        display_norm = normalize_match_text(display).lower()
+                        navigate_ok = any(
+                            normalize_match_text(s).lower() and normalize_match_text(s).lower() in display_norm
+                            for s in search_texts if s
+                        )
+                    if not navigate_ok:
+                        _LOG_STEP(
+                            "键盘导航后显示值未确认，转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
+                                step_id=step_id,
+                                control_id=control_id,
+                                option=option_values[target_index],
+                            )
+                        )
+                    else:
+                        _LOG_STEP(
+                            "键盘导航选中下拉项并通过显示值校验: step={step_id}, control={control_id}, option={option}, index={idx}, totalOptions={total}".format(
+                                step_id=step_id,
+                                control_id=control_id,
+                                option=option_values[target_index],
+                                idx=target_index,
+                                total=len(option_values),
+                            )
+                        )
+                        return True, {
+                            "method": "keyboard_navigate",
+                            "targetIndex": target_index,
+                            "targetOption": option_values[target_index],
+                            "optionValues": option_values,
+                            "targetTexts": target_texts,
+                            "valueVerified": display,
+                        }
+        # ---- 键盘导航兜底结束 ----
+
+        # ---- 值检查 + 键入搜索兜底（不依赖 optionValues / 下拉项 UIA 可见性）----
+        # Telerik RadComboBox 的虚拟化选项在 UIA 中不可枚举，但支持键入过滤：
+        # 展开后键入目标文本会自动跳转/过滤，ENTER 即选中。仅当调用方显式指定了
+        # 目标选项文本（actionConfig.value）时才启用，避免误把控件名当键入内容。
+        if search_text and not is_placeholder_text(search_text):
+            # 复用循环前已定位的下拉框，避免在键入兜底里重复整树 FindAll
+            # （实测 step_24a 测风对象 9.5s 二次定位）；仅当未定位/已失效时才重找。
+            if dropdown_wrapper is None or not is_wrapper_alive(dropdown_wrapper):
+                dropdown_wrapper = find_flow_control(
+                    step_id, control_id, timeout_seconds=2.0, window_title_hint=window_title_hint, control_map_path=control_map_path
+                )
+            if dropdown_wrapper is not None:
+                current_value = get_wrapper_value(dropdown_wrapper)
+                # 1) 当前值已等于目标：无需展开选择，直接成功
+                if current_value and normalize_match_text(current_value) == normalize_match_text(search_text):
                     _LOG_STEP(
-                        "键盘导航选中下拉项并通过显示值校验: step={step_id}, control={control_id}, option={option}, index={idx}, totalOptions={total}".format(
-                            step_id=step_id,
-                            control_id=control_id,
-                            option=option_values[target_index],
-                            idx=target_index,
-                            total=len(option_values),
+                        "下拉框当前值已匹配目标: step={step_id}, control={control_id}, value={value}".format(
+                            step_id=step_id, control_id=control_id, value=current_value
                         )
                     )
                     return True, {
-                        "method": "keyboard_navigate",
-                        "targetIndex": target_index,
-                        "targetOption": option_values[target_index],
-                        "optionValues": option_values,
+                        "method": "value_already_matched",
+                        "value": current_value,
                         "targetTexts": target_texts,
-                        "valueVerified": display,
                     }
-    # ---- 键盘导航兜底结束 ----
+                # 2) 确保下拉框处于展开状态后键入目标文本 + ENTER
+                #    Telerik RadComboBox 展开后键盘焦点自动落到列表，键入目标文本会
+                #    自动过滤/跳转，ENTER 即选中（选项经 UIA-to-MSAA bridge 暴露，
+                #    无法通过 UIA 枚举/坐标点击操作，键入是唯一可靠路径）。
+                expanded_confirmed = False
+                toggle_state = get_wrapper_toggle_state(dropdown_wrapper)
+                if toggle_state in {"1", "On", "on", "1.0"}:
+                    expanded_confirmed = True
+                else:
+                    ok_click, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
+                    if ok_click:
+                        time.sleep(0.4)
+                        for _wait in range(4):
+                            if get_wrapper_toggle_state(dropdown_wrapper) in {"1", "On", "on", "1.0"}:
+                                expanded_confirmed = True
+                                break
+                            time.sleep(0.2)
+                if expanded_confirmed:
+                    try:
+                        dropdown_wrapper.set_focus()
+                    except Exception:
+                        pass
+                    try:
+                        send_keys(_escape_send_keys_text(search_text))
+                        time.sleep(0.35)
 
-    # ---- 值检查 + 键入搜索兜底（不依赖 optionValues / 下拉项 UIA 可见性）----
-    # Telerik RadComboBox 的虚拟化选项在 UIA 中不可枚举，但支持键入过滤：
-    # 展开后键入目标文本会自动跳转/过滤，ENTER 即选中。仅当调用方显式指定了
-    # 目标选项文本（actionConfig.value）时才启用，避免误把控件名当键入内容。
-    if search_text and not is_placeholder_text(search_text):
-        # 复用循环前已定位的下拉框，避免在键入兜底里重复整树 FindAll
-        # （实测 step_24a 测风对象 9.5s 二次定位）；仅当未定位/已失效时才重找。
-        if dropdown_wrapper is None or not is_wrapper_alive(dropdown_wrapper):
-            dropdown_wrapper = find_flow_control(
-                step_id, control_id, timeout_seconds=2.0, window_title_hint=window_title_hint, control_map_path=control_map_path
-            )
-        if dropdown_wrapper is not None:
-            current_value = get_wrapper_value(dropdown_wrapper)
-            # 1) 当前值已等于目标：无需展开选择，直接成功
-            if current_value and normalize_match_text(current_value) == normalize_match_text(search_text):
-                _LOG_STEP(
-                    "下拉框当前值已匹配目标: step={step_id}, control={control_id}, value={value}".format(
-                        step_id=step_id, control_id=control_id, value=current_value
-                    )
-                )
-                return True, {
-                    "method": "value_already_matched",
-                    "value": current_value,
-                    "targetTexts": target_texts,
-                }
-            # 2) 确保下拉框处于展开状态后键入目标文本 + ENTER
-            #    Telerik RadComboBox 展开后键盘焦点自动落到列表，键入目标文本会
-            #    自动过滤/跳转，ENTER 即选中（选项经 UIA-to-MSAA bridge 暴露，
-            #    无法通过 UIA 枚举/坐标点击操作，键入是唯一可靠路径）。
-            expanded_confirmed = False
-            toggle_state = get_wrapper_toggle_state(dropdown_wrapper)
-            if toggle_state in {"1", "On", "on", "1.0"}:
-                expanded_confirmed = True
-            else:
-                ok_click, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
-                if ok_click:
-                    time.sleep(0.4)
-                    for _wait in range(4):
-                        if get_wrapper_toggle_state(dropdown_wrapper) in {"1", "On", "on", "1.0"}:
-                            expanded_confirmed = True
-                            break
-                        time.sleep(0.2)
-            if expanded_confirmed:
-                try:
-                    dropdown_wrapper.set_focus()
-                except Exception:
-                    pass
-                try:
-                    send_keys(_escape_send_keys_text(search_text))
-                    time.sleep(0.35)
-
-                    # Telerik 键入过滤只是"高亮/过滤"，直接 ENTER 常只收起不选中
-                    # （实测：选项可见但收起后框内无选中内容）。键入后目标项已
-                    # 实体化可见，首选重试"枚举+点击"真实选中；均未命中再补
-                    # DOWN/UP 提交 selection + ENTER 确认。
-                    typed_clicked = False
-                    retry_deadline = time.time() + 3.0
-                    for candidate in iter_dropdown_runtime_candidates(dropdown_windows):
-                        if time.time() > retry_deadline:
-                            break
-                        score = score_dropdown_runtime_candidate(
-                            candidate,
-                            target_texts,
-                            expected_window_titles=expected_window_titles,
-                            expected_process_id=expected_process_id,
-                        )
-                        if score < 70:
-                            continue
-                        if dropdown_wrapper is None or get_wrapper_toggle_state(
-                            dropdown_wrapper
-                        ) not in {"1", "On", "on", "1.0"}:
-                            break  # 下拉框已收起，停止补点
-                        clicked_cand, _click_meta = click_dropdown_runtime_candidate(candidate)
-                        if clicked_cand:
-                            typed_clicked = True
-                            break
-                    if not typed_clicked:
+                        # Telerik 键入过滤只是"高亮/过滤"，直接 ENTER 常只收起不选中
+                        # （实测：选项可见但收起后框内无选中内容）。键入后目标项已
+                        # 实体化可见，首选重试"枚举+点击"真实选中；均未命中再补
+                        # DOWN/UP 提交 selection + ENTER 确认。
+                        typed_clicked = False
                         retry_deadline = time.time() + 3.0
-                        for candidate in _iter_dropdown_raw_view_candidates(dropdown_windows):
+                        for candidate in iter_dropdown_runtime_candidates(dropdown_windows):
                             if time.time() > retry_deadline:
                                 break
                             score = score_dropdown_runtime_candidate(
@@ -3281,155 +3276,193 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                             if dropdown_wrapper is None or get_wrapper_toggle_state(
                                 dropdown_wrapper
                             ) not in {"1", "On", "on", "1.0"}:
-                                break
+                                break  # 下拉框已收起，停止补点
                             clicked_cand, _click_meta = click_dropdown_runtime_candidate(candidate)
                             if clicked_cand:
                                 typed_clicked = True
                                 break
+                        if not typed_clicked:
+                            retry_deadline = time.time() + 3.0
+                            for candidate in _iter_dropdown_raw_view_candidates(dropdown_windows):
+                                if time.time() > retry_deadline:
+                                    break
+                                score = score_dropdown_runtime_candidate(
+                                    candidate,
+                                    target_texts,
+                                    expected_window_titles=expected_window_titles,
+                                    expected_process_id=expected_process_id,
+                                )
+                                if score < 70:
+                                    continue
+                                if dropdown_wrapper is None or get_wrapper_toggle_state(
+                                    dropdown_wrapper
+                                ) not in {"1", "On", "on", "1.0"}:
+                                    break
+                                clicked_cand, _click_meta = click_dropdown_runtime_candidate(candidate)
+                                if clicked_cand:
+                                    typed_clicked = True
+                                    break
 
-                    if typed_clicked:
-                        time.sleep(0.25)
-                        _LOG_STEP(
-                            "键入过滤后点击选中下拉项(候选命中): step={step_id}, control={control_id}, option={option}".format(
-                                step_id=step_id, control_id=control_id, option=search_text
-                            )
-                        )
-                    else:
-                        # 键入已高亮第一个匹配项；DOWN/UP 提交 selection 后再 ENTER 确认
-                        send_keys("{DOWN}")
-                        time.sleep(0.12)
-                        send_keys("{UP}")
-                        time.sleep(0.12)
-                        send_keys("{ENTER}")
-                        time.sleep(0.3)
-                except Exception as exc:
-                    _LOG_STEP(
-                        "键入搜索失败: step={step_id}, control={control_id}, error={error}".format(
-                            step_id=step_id, control_id=control_id, error=exc
-                        )
-                    )
-                else:
-                    verify_value = _read_dropdown_display_text(dropdown_wrapper)
-                    if verify_value and normalize_match_text(verify_value) == normalize_match_text(search_text):
-                        _LOG_STEP(
-                            "键盘键入搜索选中下拉项: step={step_id}, control={control_id}, option={option}".format(
-                                step_id=step_id, control_id=control_id, option=verify_value
-                            )
-                        )
-                        return True, {
-                            "method": "keyboard_type_search",
-                            "targetOption": verify_value,
-                            "targetTexts": target_texts,
-                        }
-                    if verify_value:
-                        # 读到了值但不同于目标 → 确认未选中（如键入文本不匹配任何选项），
-                        # 不靠"收起"兜底，避免误判成功。
-                        _LOG_STEP(
-                            "键盘键入搜索后值不匹配: step={step_id}, control={control_id}, expected={expected}, actual={actual}".format(
-                                step_id=step_id,
-                                control_id=control_id,
-                                expected=search_text,
-                                actual=verify_value,
-                            )
-                        )
-                    else:
-                        # 读不到值（无 ValuePattern 的 bridge 控件）时，收起状态作为间接证据：
-                        # 键入+ENTER 后下拉框自动收起 = 已选中目标（Telerik 选中后收起）。
-                        if get_wrapper_toggle_state(dropdown_wrapper) in {"0", "Off", "off", "0.0"}:
+                        if typed_clicked:
+                            time.sleep(0.25)
                             _LOG_STEP(
-                                "键盘键入搜索后下拉框已收起（视为选中）: step={step_id}, control={control_id}, option={option}".format(
+                                "键入过滤后点击选中下拉项(候选命中): step={step_id}, control={control_id}, option={option}".format(
                                     step_id=step_id, control_id=control_id, option=search_text
                                 )
                             )
+                        else:
+                            # 键入已高亮第一个匹配项；DOWN/UP 提交 selection 后再 ENTER 确认
+                            send_keys("{DOWN}")
+                            time.sleep(0.12)
+                            send_keys("{UP}")
+                            time.sleep(0.12)
+                            send_keys("{ENTER}")
+                            time.sleep(0.3)
+                    except Exception as exc:
+                        _LOG_STEP(
+                            "键入搜索失败: step={step_id}, control={control_id}, error={error}".format(
+                                step_id=step_id, control_id=control_id, error=exc
+                            )
+                        )
+                    else:
+                        verify_value = _read_dropdown_display_text(dropdown_wrapper)
+                        if verify_value and normalize_match_text(verify_value) == normalize_match_text(search_text):
+                            _LOG_STEP(
+                                "键盘键入搜索选中下拉项: step={step_id}, control={control_id}, option={option}".format(
+                                    step_id=step_id, control_id=control_id, option=verify_value
+                                )
+                            )
                             return True, {
-                                "method": "keyboard_type_search_collapsed",
-                                "targetOption": search_text,
+                                "method": "keyboard_type_search",
+                                "targetOption": verify_value,
                                 "targetTexts": target_texts,
                             }
-    # ---- 值检查 + 键入搜索兜底结束 ----
+                        if verify_value:
+                            # 读到了值但不同于目标 → 确认未选中（如键入文本不匹配任何选项），
+                            # 不靠"收起"兜底，避免误判成功。
+                            _LOG_STEP(
+                                "键盘键入搜索后值不匹配: step={step_id}, control={control_id}, expected={expected}, actual={actual}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    expected=search_text,
+                                    actual=verify_value,
+                                )
+                            )
+                        else:
+                            # 读不到值（无 ValuePattern 的 bridge 控件）时，收起状态作为间接证据：
+                            # 键入+ENTER 后下拉框自动收起 = 已选中目标（Telerik 选中后收起）。
+                            if get_wrapper_toggle_state(dropdown_wrapper) in {"0", "Off", "off", "0.0"}:
+                                _LOG_STEP(
+                                    "键盘键入搜索后下拉框已收起（视为选中）: step={step_id}, control={control_id}, option={option}".format(
+                                        step_id=step_id, control_id=control_id, option=search_text
+                                    )
+                                )
+                                return True, {
+                                    "method": "keyboard_type_search_collapsed",
+                                    "targetOption": search_text,
+                                    "targetTexts": target_texts,
+                                }
+        # ---- 值检查 + 键入搜索兜底结束 ----
 
-    if last_ranked_candidates:
-        candidate_text = "; ".join(
-            "#{index} score={score} title={title} class={class_name} control={control_type} rect={rect}".format(
-                index=index + 1,
-                score=item[0],
-                title=get_wrapper_text(item[1]) or "(empty)",
-                class_name=get_wrapper_class_name(item[1]) or "(empty)",
-                control_type=get_wrapper_control_type(item[1]) or "(empty)",
-                rect=get_wrapper_rectangle(item[1]) or {},
+        if last_ranked_candidates:
+            candidate_text = "; ".join(
+                "#{index} score={score} title={title} class={class_name} control={control_type} rect={rect}".format(
+                    index=index + 1,
+                    score=item[0],
+                    title=get_wrapper_text(item[1]) or "(empty)",
+                    class_name=get_wrapper_class_name(item[1]) or "(empty)",
+                    control_type=get_wrapper_control_type(item[1]) or "(empty)",
+                    rect=get_wrapper_rectangle(item[1]) or {},
+                )
+                for index, item in enumerate(last_ranked_candidates)
             )
-            for index, item in enumerate(last_ranked_candidates)
-        )
-        _LOG_STEP(
-            "运行时下拉项未命中: step={step_id}, control={control_id}, targets={targets}, expectedTitles={titles}, foreground={foreground}, candidates={candidates}".format(
-                step_id=step_id,
-                control_id=control_id,
-                targets=" / ".join(target_texts) or "(empty)",
-                titles=" / ".join(expected_window_titles) or "(empty)",
-                foreground=get_wrapper_text(foreground_before) or "(empty)",
-                candidates=candidate_text,
-            )
-        )
-    else:
-        # 阶段0 诊断：未枚举到候选项时，列出实际收集到的窗口（标题|pid|类名）与
-        # 定位到的下拉控件身份，用于区分"下拉未展开"（无 Popup 窗口）vs
-        # "Popup 被漏收/被进程过滤"（有 Popup 但不在枚举窗口列表）。
-        _window_desc = []
-        for _w in dropdown_windows[:10]:
-            try:
-                _w_pid = get_wrapper_process_id(_w)
-            except Exception:
-                _w_pid = "?"
-            _window_desc.append(
-                "{title}|pid={pid}|{class_name}".format(
-                    title=get_wrapper_text(_w) or "(no-title)",
-                    pid=_w_pid,
-                    class_name=get_wrapper_class_name(_w) or "",
+            _LOG_STEP(
+                "运行时下拉项未命中: step={step_id}, control={control_id}, targets={targets}, expectedTitles={titles}, foreground={foreground}, candidates={candidates}".format(
+                    step_id=step_id,
+                    control_id=control_id,
+                    targets=" / ".join(target_texts) or "(empty)",
+                    titles=" / ".join(expected_window_titles) or "(empty)",
+                    foreground=get_wrapper_text(foreground_before) or "(empty)",
+                    candidates=candidate_text,
                 )
             )
-        _wrapper_desc = "(none)"
-        if dropdown_wrapper is not None:
-            _wrapper_desc = "{}|{}|{}".format(
-                get_wrapper_class_name(dropdown_wrapper) or "(empty)",
-                get_wrapper_control_type(dropdown_wrapper) or "(empty)",
-                get_wrapper_toggle_state(dropdown_wrapper) or "(empty)",
+        else:
+            # 阶段0 诊断：未枚举到候选项时，列出实际收集到的窗口（标题|pid|类名）与
+            # 定位到的下拉控件身份，用于区分"下拉未展开"（无 Popup 窗口）vs
+            # "Popup 被漏收/被进程过滤"（有 Popup 但不在枚举窗口列表）。
+            _window_desc = []
+            for _w in dropdown_windows[:10]:
+                try:
+                    _w_pid = get_wrapper_process_id(_w)
+                except Exception:
+                    _w_pid = "?"
+                _window_desc.append(
+                    "{title}|pid={pid}|{class_name}".format(
+                        title=get_wrapper_text(_w) or "(no-title)",
+                        pid=_w_pid,
+                        class_name=get_wrapper_class_name(_w) or "",
+                    )
+                )
+            _wrapper_desc = "(none)"
+            if dropdown_wrapper is not None:
+                _wrapper_desc = "{}|{}|{}".format(
+                    get_wrapper_class_name(dropdown_wrapper) or "(empty)",
+                    get_wrapper_control_type(dropdown_wrapper) or "(empty)",
+                    get_wrapper_toggle_state(dropdown_wrapper) or "(empty)",
+                )
+            _LOG_STEP(
+                "运行时下拉项未命中且未枚举到候选项: step={step_id}, control={control_id}, targets={targets}, "
+                "expectedTitles={titles}, foreground={foreground}, rawProbe={probe}, win32Probe={win32}, sweepProbe={sweep}, "
+                "windows={windows}, wrapper={wrapper}".format(
+                    step_id=step_id,
+                    control_id=control_id,
+                    targets=" / ".join(target_texts) or "(empty)",
+                    titles=" / ".join(expected_window_titles) or "(empty)",
+                    foreground=get_wrapper_text(foreground_before) or "(empty)",
+                    probe=json.dumps(raw_probe, ensure_ascii=False),
+                    win32=json.dumps(win32_probe, ensure_ascii=False),
+                    sweep=json.dumps(sweep_probe, ensure_ascii=False),
+                    windows="; ".join(_window_desc) or "(none)",
+                    wrapper=_wrapper_desc,
+                )
             )
-        _LOG_STEP(
-            "运行时下拉项未命中且未枚举到候选项: step={step_id}, control={control_id}, targets={targets}, "
-            "expectedTitles={titles}, foreground={foreground}, rawProbe={probe}, win32Probe={win32}, sweepProbe={sweep}, "
-            "windows={windows}, wrapper={wrapper}".format(
-                step_id=step_id,
-                control_id=control_id,
-                targets=" / ".join(target_texts) or "(empty)",
-                titles=" / ".join(expected_window_titles) or "(empty)",
-                foreground=get_wrapper_text(foreground_before) or "(empty)",
-                probe=json.dumps(raw_probe, ensure_ascii=False),
-                win32=json.dumps(win32_probe, ensure_ascii=False),
-                sweep=json.dumps(sweep_probe, ensure_ascii=False),
-                windows="; ".join(_window_desc) or "(none)",
-                wrapper=_wrapper_desc,
-            )
-        )
-    # 失败止血：本函数失败前可能已"自愈点击展开"下拉，失败路径原逻辑不收起残留的
-    # Popup 弹层。残留弹层会拦截后续步骤对该位置控件的物理点击——实测多塔"点"下拉
-    # (step_mt_refpoint) 失败后，下一步"参考气象"锚点点击 (443,186) 正好落入残留弹层
-    # 候选 rect (48,168)-(481,189) 内，导致"点击报成功但弹窗未开"的假成功连锁。
-    # 发 ESC 前由 _dismiss_expanded_dropdown 实时复查弹层仍在（枚举阶段快照不可作
-    # 发送依据）；期望进程 id 优先取已定位下拉框自身（比前台推断更可靠），前台进程兜底。
-    try:
-        _dismiss_pids = set()
-        if expected_process_id:
-            _dismiss_pids.add(str(expected_process_id))
+        # 失败止血：本函数失败前可能已"自愈点击展开"下拉，失败路径原逻辑不收起残留的
+        # Popup 弹层。残留弹层会拦截后续步骤对该位置控件的物理点击——实测多塔"点"下拉
+        # (step_mt_refpoint) 失败后，下一步"参考气象"锚点点击 (443,186) 正好落入残留弹层
+        # 候选 rect (48,168)-(481,189) 内，导致"点击报成功但弹窗未开"的假成功连锁。
+        # 发 ESC 前由 _dismiss_expanded_dropdown 实时复查弹层仍在（枚举阶段快照不可作
+        # 发送依据）；期望进程 id 优先取已定位下拉框自身（比前台推断更可靠），前台进程兜底。
         try:
-            _dropdown_pid = get_wrapper_process_id(dropdown_wrapper) if dropdown_wrapper is not None else None
+            _dismiss_pids = set()
+            if expected_process_id:
+                _dismiss_pids.add(str(expected_process_id))
+            try:
+                _dropdown_pid = get_wrapper_process_id(dropdown_wrapper) if dropdown_wrapper is not None else None
+            except Exception:
+                _dropdown_pid = None
+            if _dropdown_pid:
+                _dismiss_pids.add(str(_dropdown_pid))
+            _dismiss_expanded_dropdown(step_id=step_id, control_id=control_id, expected_process_ids=_dismiss_pids)
         except Exception:
-            _dropdown_pid = None
-        if _dropdown_pid:
-            _dismiss_pids.add(str(_dropdown_pid))
-        _dismiss_expanded_dropdown(step_id=step_id, control_id=control_id, expected_process_ids=_dismiss_pids)
-    except Exception:
-        pass
-    return False, {"targetTexts": target_texts}
+            pass
+        _dd_result = "失败(枚举/兜底未命中)"
+        return False, {"targetTexts": target_texts}
+    finally:
+        # 统一出口耗时汇总：预收集 / 展开 / 枚举+兜底 三段 + 结果标记。
+        # finally 保证 10 个 return 出口（含 value_already_matched 捷径、候选点击、
+        # 键盘导航、键入过滤、超时失败）全部覆盖，且异常路径同样记账。
+        _dd_total_s = time.perf_counter() - _dd_t_total
+        _dd_enum_s = max(0.0, _dd_total_s - _dd_t_precoll - _dd_t_expand)
+        try:
+            _LOG_STEP(
+                "[下拉运行时耗时] step={sid}, ctrl={cid}, 结果={result}, "
+                "预收集={pre:.2f}s, 展开={exp:.2f}s, 枚举与兜底={enum:.2f}s, 总计={total:.2f}s".format(
+                    sid=step_id, cid=control_id, result=(_dd_result or "成功"),
+                    pre=_dd_t_precoll, exp=_dd_t_expand, enum=_dd_enum_s, total=_dd_total_s,
+                )
+            )
+        except Exception:
+            pass
 
 
 def _dismiss_expanded_dropdown(step_id="", control_id="", expected_process_ids=None):
@@ -9816,6 +9849,12 @@ def click_relative_anchor(
     offset_x = int(round(float(offset[0]) if len(offset) > 0 else 0))
     offset_y = int(round(float(offset[1]) if len(offset) > 1 else 0))
 
+    # 出口耗时汇总：锚点点击不经过 _finalize_step_timing（无 find+动作两段式
+    # 记账），内网日志里 step_7/step_13 这类锚点步骤只有一句"已通过锚点相对点击"，
+    # 前面 10-15 秒花在锚点定位/激活/滚动上完全没有记录。主线程侧统一计时，
+    # 覆盖看门狗内的全部活动（含守护线程中的定位与点击）。
+    _anc_t0 = time.perf_counter()
+
     result_box = {}
     done_evt = threading.Event()
     # 看门狗超时共享标志：线程解除挂起后必须检查，超时则跳过点击（防幽灵点击）
@@ -9977,7 +10016,15 @@ def click_relative_anchor(
         _LOG_STEP(f"锚点相对点击异常: step={step_id}, anchor={anchor_control_id}, error={result_box['error']}")
         return False, {"reason": "error", "error": result_box["error"]}
 
-    return bool(result_box.get("ok")), result_box.get("meta", {})
+    _ok = bool(result_box.get("ok"))
+    _LOG_STEP(
+        "[锚点点击耗时] step={sid}, anchor={cid}, 结果={result}, 总计={total:.2f}s".format(
+            sid=step_id, cid=anchor_control_id,
+            result="成功" if _ok else (result_box.get("reason") or "失败"),
+            total=time.perf_counter() - _anc_t0,
+        )
+    )
+    return _ok, result_box.get("meta", {})
 
 
 def _is_list_item_wrapper(wrapper):
