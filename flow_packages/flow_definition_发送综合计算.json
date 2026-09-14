@@ -4088,7 +4088,7 @@
       "actionConfig": {
         "timeoutSeconds": 3.0,
         "waitBefore": 0.0,
-        "waitAfter": 0.15,
+        "waitAfter": 1.0,
         "action": "click",
         "controlId": "PART_DropDownButton_IEC_参考_下拉框_Button",
         "retryCount": 0,
@@ -4251,7 +4251,7 @@
         "action": "select_dropdown_item_runtime",
         "controlId": "PART_DropDownButton_IEC_参考_下拉框_Button",
         "timeoutSeconds": 3.0,
-        "waitBefore": 0.2,
+        "waitBefore": 0.8,
         "waitAfter": 0.3,
         "retryCount": 1,
         "retryInterval": 1.0,
