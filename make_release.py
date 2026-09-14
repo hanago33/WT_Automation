@@ -79,6 +79,15 @@ else:
     for p in git("ls-files", "--others", "--exclude-standard"):
         if p:
             changed.add(p)
+    # 4) 核心运行时文件强制纳入：wt_flow_executor.py 的断言豁免/前置等待逻辑
+    #    与 wt_flow_locator.py 强耦合（缺一即回归旧行为），且历史上多次改动
+    #    locator 而忘带 executor，导致内网执行器停在旧版（内网日志 step_11
+    #    假失败正是此因）。增量包无论 git 是否检测到改动，都确保带上。
+    CORE_RUNTIME_FILES = {"wt_flow_executor.py", "wt_flow_locator.py"}
+    for core in CORE_RUNTIME_FILES:
+        if os.path.exists(os.path.join(REPO, core)):
+            changed.add(core)
+            deleted.discard(core)
     pkg_prefix = "发布包"
 
 # 过滤：去掉运行期不需要的目录 + 同步工具本身 + 已删除的文件不复制

@@ -292,6 +292,11 @@ def _is_unreadable_value_control(control_id, step_definition=None):
       - Text/TextBlock/全文检索：标签文本，读到的不是输入框的值
       - 无 label_text 消歧的 textbox：目标可能是多个同名输入框之一，读到的
         可能是错误控件或离屏控件
+      - 泛化 automationId 的 textbox（即使有 label_text 消歧）：WPF 数字框
+        （wohler 指数等 RadNumericInput）键入成功后 ValuePattern/重定位/渲染
+        文本三级兜底全部读不到目标值（内网 step_11 实测：name 已显示 '1'
+        仍断言失败 8s），且泛化 id 重定位兜底反而常落到别的空输入框上。
+        自动断言在这类控件上只产出假失败，不拦截真实输入错误。
     """
     if not control_id:
         return False
@@ -341,6 +346,12 @@ def _is_unreadable_value_control(control_id, step_definition=None):
             return True
     # textbox 无 label_text 消歧：目标可能是多个同名输入框之一
     if "textbox" in normalized and "label" not in normalized and "label_text" not in normalized:
+        return True
+    # 泛化 automationId 的 textbox + label_text 消歧（wohler 指数/海拔等 WPF
+    # 数字框）：键入成功但三级读值兜底全失败（内网 step_11 假失败实证），
+    # 自动断言只剩假失败价值。豁免语义 = 键入动作成功即通过（断言仅在
+    # 动作成功后评估，见 _resolve_continue_when 调用点）。
+    if "textbox" in normalized and (",edit," in normalized or "controltype edit" in normalized):
         return True
     return False
 

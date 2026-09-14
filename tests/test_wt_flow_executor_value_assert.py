@@ -127,6 +127,41 @@ class ResolveContinueWhenTests(unittest.TestCase):
         cw = wt_flow_executor._resolve_continue_when(ac, sd)
         self.assertIsNone(cw)
 
+    def test_auto_assert_skipped_for_generic_textbox_with_label(self):
+        # 泛化 automationId（WPF 每个 TextBox 都叫 textbox）+ label_text 消歧的
+        # 数字框（wohler 指数/海拔）：键入成功但 ValuePattern/重定位/渲染文本
+        # 三级读值兜底全失败（内网 step_11 假失败实证，白白多花 8s 且误报 failed），
+        # 不得 auto-assert value_equals。
+        ac = {"action": "type_text", "controlId": "control_map_55", "text": "1"}
+        sd = {
+            "id": "step_11",
+            "controls": [{
+                "id": "control_map_55",
+                "targetMethod": "automation_id,control_type,label_text",
+                "targetValue": "textbox,Edit,Wohler 指数",
+                "inspectData": {"automationId": "textbox", "controlType": "Edit", "className": "TextBox"},
+            }],
+        }
+        cw = wt_flow_executor._resolve_continue_when(ac, sd)
+        self.assertIsNone(cw)
+
+    def test_auto_assert_kept_for_unique_automation_id_edit(self):
+        # 唯一 automationId 的普通 Edit：ValuePattern 可靠，保留自动值断言
+        # （豁免只针对泛化 id，防止把有效校验一并砍掉）。
+        ac = {"action": "type_text", "controlId": "ctrl_x", "text": "abc"}
+        sd = {
+            "id": "s9",
+            "controls": [{
+                "id": "ctrl_x",
+                "targetMethod": "automation_id,control_type",
+                "targetValue": "WRAEditorView_Edit_Name,Edit",
+                "inspectData": {"automationId": "WRAEditorView_Edit_Name", "controlType": "Edit"},
+            }],
+        }
+        cw = wt_flow_executor._resolve_continue_when(ac, sd)
+        self.assertIsNotNone(cw)
+        self.assertEqual(cw.get("condition"), "value_equals")
+
     def test_explicit_value_equals_without_expected_takes_from_action(self):
         # 显式配置 value_equals 但未填 expectedValue → 从动作值自动取
         ac = {
