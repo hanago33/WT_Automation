@@ -6749,6 +6749,19 @@ class LauncherApp:
                             f"项目条件：测风塔 {_mast_count} 座 → {_tower_cn}，综合描述={runtime_config.get('synthesisDesc')}",
                             tag="system",
                         )
+                    # 生效参数汇总：把本次实际注入运行期的关键项目参数打印出来，
+                    # 避免"界面新建/选择的值是否真的生效"需要翻覆盖日志才能确认
+                    # （实测曾因未点项目参数弹窗"保存"，cpVersion 仍为旧值）。
+                    self._append_log(
+                        "项目参数生效：机型={}，Cp版本={}，测风塔={}，轮毂高度={}，空气密度={}".format(
+                            runtime_config.get("turbineType", "") or "(空)",
+                            runtime_config.get("cpVersion", "") or "(空)",
+                            runtime_config.get("mastName", "") or "(空)",
+                            runtime_config.get("hubHeight", "") or "(空)",
+                            runtime_config.get("airDensity", "") or "(空)",
+                        ),
+                        tag="system",
+                    )
                     text_ovr = _inject_mast_config_xml_override(
                         flow_definition_path, parsed.get("text_overrides", {}) or {}, parsed_rc, self._append_log
                     )
