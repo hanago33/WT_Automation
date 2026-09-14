@@ -197,3 +197,87 @@ class ClimDiagOncePerStepTests(unittest.TestCase):
             wt_flow_locator._CLIM_DIAG_LAST[f"s{i}"] = 1.0
         wt_flow_locator.clear_step_diagnostic_state("s_new")
         self.assertLessEqual(len(wt_flow_locator._CLIM_DIAG_LAST), 1, "超 256 条目整体清空防膨胀")
+
+
+class FastLocatorGenericPruneTests(unittest.TestCase):
+    """泛化 automationId（>4 命中）剪枝：label_text 预过滤 + 全空回退。
+
+    背景：WPF 每个 TextBox/PART_ContentHost 共享同名 automationId，FindAll 返回
+    几十个候选，≤4 早退失效后掉进 name/descendants 全树遍历（内网 step_11 快查
+    13.7s / step_3 整树 35s 主因）。剪枝只做"标签命中的候选优先"，评分侧仍完整
+    校验，剪错目标时行为不差于现状。
+    """
+
+    def _mk_cands(self, n):
+        import unittest.mock as _mock
+        cands = []
+        for i in range(n):
+            c = _mock.MagicMock()
+            c.element_info.element = _mock.MagicMock()
+            c.element_info.handle = i + 1
+            cands.append(c)
+        return cands
+
+    def _cd(self, label="Wohler 指数"):
+        return {
+            "targetMethod": "automation_id,control_type,label_text",
+            "targetValue": "textbox,Edit," + label,
+            "inspectData": {"automationId": "textbox", "controlType": "Edit"},
+        }
+
+    def test_label_hint_parsed_from_target_value_position(self):
+        # 采集端形态：label 在 targetValue 第三段（control_map_55 同款）
+        self.assertEqual(
+            wt_flow_locator._fast_locator_label_hint(self._cd()), "Wohler 指数"
+        )
+
+    def test_generic_aid_over4_with_label_pruned(self):
+        import unittest.mock as _mock
+        cands = self._mk_cands(10)
+        calls = {"n": 0}
+
+        def fake_sibling(el, label, walker, props):
+            calls["n"] += 1
+            return calls["n"] % 3 == 0
+
+        with _mock.patch.object(wt_flow_locator, "_iter_uia_findall_by_automation_id", return_value=cands), \
+             _mock.patch.object(wt_flow_locator, "_raw_sibling_label_matches", side_effect=fake_sibling), \
+             _mock.patch.object(wt_flow_locator, "_raw_element_child_text_matches", return_value=False), \
+             _mock.patch.object(wt_flow_locator, "_raw_view_filter_props", return_value={}), \
+             _mock.patch.object(wt_flow_locator, "_LOG_STEP"):
+            out = wt_flow_locator.iter_fast_locator_candidates(_mock.MagicMock(), self._cd())
+        self.assertEqual(len(out), 3, "剪枝后应只剩标签命中的 3 个候选")
+
+    def test_prune_all_miss_falls_back_to_full(self):
+        import unittest.mock as _mock
+        cands = self._mk_cands(6)
+        win = _mock.MagicMock()
+        win.children = _mock.MagicMock(side_effect=lambda **kw: [])
+        win.descendants = _mock.MagicMock(side_effect=lambda **kw: [])
+        with _mock.patch.object(wt_flow_locator, "_iter_uia_findall_by_automation_id", return_value=list(cands)), \
+             _mock.patch.object(wt_flow_locator, "_raw_sibling_label_matches", return_value=False), \
+             _mock.patch.object(wt_flow_locator, "_raw_element_child_text_matches", return_value=False), \
+             _mock.patch.object(wt_flow_locator, "_raw_view_filter_props", return_value={}), \
+             _mock.patch.object(wt_flow_locator, "get_cached_parent_wrappers", return_value=[]), \
+             _mock.patch.object(wt_flow_locator, "_LOG_STEP"):
+            out = wt_flow_locator.iter_fast_locator_candidates(win, self._cd("某标签"))
+        self.assertGreaterEqual(len(out), 6, "剪枝全空时必须回退全量候选，不得比现状差")
+
+    def test_le4_no_prune(self):
+        import unittest.mock as _mock
+        cands = self._mk_cands(3)
+        with _mock.patch.object(wt_flow_locator, "_iter_uia_findall_by_automation_id", return_value=cands), \
+             _mock.patch.object(wt_flow_locator, "_raw_sibling_label_matches", side_effect=AssertionError("不应进入剪枝")), \
+             _mock.patch.object(wt_flow_locator, "_LOG_STEP"):
+            out = wt_flow_locator.iter_fast_locator_candidates(_mock.MagicMock(), self._cd())
+        self.assertEqual(len(out), 3)
+
+    def test_no_label_definition_no_prune(self):
+        import unittest.mock as _mock
+        cands = self._mk_cands(8)
+        cd = {"targetMethod": "automation_id,control_type", "targetValue": "PART_DropDownButton,Button"}
+        with _mock.patch.object(wt_flow_locator, "_iter_uia_findall_by_automation_id", return_value=cands), \
+             _mock.patch.object(wt_flow_locator, "_raw_sibling_label_matches", side_effect=AssertionError("不应进入剪枝")), \
+             _mock.patch.object(wt_flow_locator, "_LOG_STEP"):
+            out = wt_flow_locator.iter_fast_locator_candidates(_mock.MagicMock(), cd)
+        self.assertGreaterEqual(len(out), 8)

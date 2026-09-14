@@ -5250,14 +5250,28 @@ def _fast_locator_label_hint(control_definition):
         if not isinstance(control_definition, dict):
             return ""
         methods = split_locator_parts(control_definition.get("targetMethod", ""))
-        if "label_text" not in {m.strip() for m in methods}:
+        method_set = {m.strip() for m in methods}
+        if "label_text" not in method_set:
             return ""
-        return (
+        hint = (
             control_definition.get("labelText", "")
             or (control_definition.get("inspectData", {}) or {}).get("labelText", "")
             or control_definition.get("relatedLabelName", "")
             or (control_definition.get("inspectData", {}) or {}).get("relatedLabelName", "")
         )
+        if hint:
+            return str(hint)
+        # 显式 labelText 字段缺失时，按 targetMethod 位置配对解析 targetValue
+        # 中 label_text 段（采集端把控件库条目写成 targetValue=...,Edit,Wohler 指数
+        # 的第三段形式，control_map_55 等即此形态；此前只认显式字段导致快查
+        # 剪枝与 FindAll label 预过滤对该类定义全部失效）。
+        values = split_locator_parts(control_definition.get("targetValue", ""))
+        for method, value in zip(methods, values):
+            if method.strip() == "label_text":
+                value = str(value).strip()
+                if value:
+                    return value
+        return ""
     except Exception:
         return ""
 
@@ -5298,6 +5312,56 @@ def iter_fast_locator_candidates(window, control_definition):
             break  # 只跑一次 automation_id FindAll（两个 query 等价，合并）
     if automation_id_hits and len(automation_id_hits) <= 4:
         return result
+    # 泛化 automationId 剪枝（>4 命中）：WPF 每个 TextBox/PART_ContentHost 都叫
+    # 同名 automationId，FindAll 常返回几十个候选，早退失效后要么在 fast 阶段
+    # 对全部候选做完整评分（每个都触发 label 全树扫描），要么掉进 name/descendants
+    # 全树遍历（巨大 WPF 窗口 2-13s，内网 step_11 快查 13.7s / step_3 整树 35s 主因）。
+    # 控件定义带 label_text 时，用 Raw 兄弟标签预过滤（毫秒级，与
+    # _iter_uia_findall_by_automation_id 内部同款）把候选剪到标签命中的少数几个：
+    #   - 剪后非空 → 直接返回（后续评分侧 wrapper_matches_control_definition 仍
+    #     完整校验，剪错目标时评分不过 → 上层回退整树扫描，行为不差于现状）；
+    #   - 剪后为空（标签离屏/结构差异）→ 放弃剪枝、保留原候选，交给评分兜底。
+    # 定义无 label_text 时不剪（无判据），维持原 name/descendants 路径。
+    if (
+        automation_id_hits
+        and len(automation_id_hits) > 4
+        and _fast_locator_label_hint(control_definition)
+    ):
+        try:
+            from pywinauto.uia_defines import IUIA
+            from pywinauto.uia_element_info import UIAElementInfo
+            from pywinauto.controls.uiawrapper import UIAWrapper as _UIAWrap
+            _walker = IUIA().iuia.RawViewWalker
+            _props = _raw_view_filter_props()
+            _prune_label = _fast_locator_label_hint(control_definition)
+            _pruned = []
+            for _cand in automation_id_hits:
+                try:
+                    _el = _cand.element_info.element
+                    _ok = _raw_sibling_label_matches(_el, _prune_label, _walker, _props)
+                    if not _ok:
+                        # Telerik 多选下拉等级文本在子节点而非兄弟，与 FindAll
+                        # 迭代器内同款回退，防真实候选被误剪。
+                        _ok = _raw_element_child_text_matches(_el, _prune_label, _walker, _props)
+                    if _ok:
+                        _pruned.append(_cand)
+                except Exception:
+                    _pruned.append(_cand)  # 单候选判断异常时保守保留，交评分侧裁决
+            if _pruned:
+                _LOG_STEP(
+                    "[快查剪枝] 泛化 automationId 候选 {}→{}（label_text 预过滤）".format(
+                        len(automation_id_hits), len(_pruned)
+                    )
+                )
+                return _pruned
+            # 剪枝全空 → 掉回原路径（不 return，继续走 name/descendants）
+            _LOG_STEP(
+                "[快查剪枝] label_text 预过滤 0 命中，回退全量候选: 候选数={}".format(
+                    len(automation_id_hits)
+                )
+            )
+        except Exception as exc:
+            _record_silent_exception("fast_locator_generic_prune", exc)
     for query in build_fast_locator_queries(control_definition):
         if query.get("automation_id"):
             continue  # 已在上方处理
