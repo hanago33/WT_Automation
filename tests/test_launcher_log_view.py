@@ -259,6 +259,89 @@ class StepLinkageTests(unittest.TestCase):
         self.assertIn("定位失败", app.log_text.texts()[0])
 
 
+class _FakeTree(object):
+    """Treeview 替身：只需要 identify_row / selection。"""
+
+    def __init__(self, selected=(), row_at_y=None):
+        self._selected = list(selected)
+        self._row_at_y = dict(row_at_y or {})
+
+    def identify_row(self, y):
+        return self._row_at_y.get(y, "")
+
+    def selection(self):
+        return tuple(self._selected)
+
+
+class _FakeClickEvent(object):
+    def __init__(self, y):
+        self.y = y
+
+
+class ReportTreeClickLinkageTests(unittest.TestCase):
+    """报告表格点击 → 日志联动。
+
+    联动刻意绑在「用户点击」而非 ``<<TreeviewSelect>>`` 上：实测
+    ``selection_set()`` 同样会触发该虚拟事件且**异步**到达，而刷新报告时
+    总会 ``selection_set("0")`` 定位首行 —— 若绑在选中事件上，每次刷新都会
+    把用户正在看的页签切走、并把日志筛到第 1 步。
+    """
+
+    STEPS = [
+        {"stepId": "step_1", "stepName": "点击-综合"},
+        {"stepId": "step_2", "stepName": "输入-名称"},
+    ]
+
+    def _app_with_tree(self, selected=("1",), row_at_y=None):
+        app = _make_app(lines=SAMPLE)
+        app.run_report_step_items = list(self.STEPS)
+        app.run_report_tree = _FakeTree(selected=selected, row_at_y=row_at_y)
+        return app
+
+    def test_click_on_row_filters_log_and_switches_tab(self):
+        app = self._app_with_tree(selected=("1",), row_at_y={40: "1"})
+        app._on_run_report_tree_click(_FakeClickEvent(40))
+        self.assertEqual(app.log_step_var.get(), "step_2")
+        self.assertEqual(len(app.log_text.lines), 2)
+        self.assertEqual(app.report_notebook.selected, [app.log_tab])
+
+    def test_click_on_empty_area_is_ignored(self):
+        """点在表格空白处不应改动筛选（否则会莫名其妙切页）。"""
+        app = self._app_with_tree(selected=("1",), row_at_y={})
+        app._on_run_report_tree_click(_FakeClickEvent(999))
+        self.assertEqual(app.log_step_var.get(), "")
+        self.assertEqual(app.report_notebook.selected, [])
+        self.assertFalse(app._log_filter.is_active())
+
+    def test_click_without_selection_is_ignored(self):
+        app = self._app_with_tree(selected=(), row_at_y={40: "1"})
+        app._on_run_report_tree_click(_FakeClickEvent(40))
+        self.assertEqual(app.log_step_var.get(), "")
+
+    def test_click_with_out_of_range_iid_is_ignored(self):
+        app = self._app_with_tree(selected=("99",), row_at_y={40: "99"})
+        app._on_run_report_tree_click(_FakeClickEvent(40))
+        self.assertEqual(app.log_step_var.get(), "")
+
+    def test_programmatic_selection_does_not_touch_log_view(self):
+        """回归：刷新报告会 selection_set("0") 并显式回调，此时不得联动。"""
+        app = self._app_with_tree(selected=("0",))
+        app._set_run_report_detail_text = lambda _text: None
+        app._on_run_report_step_select()
+        self.assertEqual(app.log_step_var.get(), "")
+        self.assertEqual(app.report_notebook.selected, [])
+        self.assertFalse(app._log_filter.is_active())
+
+    def test_item_lookup_by_iid(self):
+        app = self._app_with_tree()
+        self.assertEqual(app._run_report_item_by_iid("0"), self.STEPS[0])
+        self.assertEqual(app._run_report_item_by_iid("1"), self.STEPS[1])
+        self.assertIsNone(app._run_report_item_by_iid("9"))
+        self.assertIsNone(app._run_report_item_by_iid(""))
+        self.assertIsNone(app._run_report_item_by_iid("abc"))
+        self.assertIsNone(app._run_report_item_by_iid(None))
+
+
 class IntegrationWithQueryModuleTests(unittest.TestCase):
     """视图与 wt_log_query 使用同一套过滤语义（避免两处规则分叉）。"""
 

@@ -5499,6 +5499,12 @@ class LauncherApp:
         self.run_report_tree.column("strategy", width=260, minwidth=160, stretch=False, anchor="w")
         self.run_report_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.run_report_tree.bind("<<TreeviewSelect>>", self._on_run_report_step_select)
+        # 日志联动绑定在「用户点击」上，而不是 <<TreeviewSelect>>：
+        # 实测 selection_set() 同样会触发该虚拟事件，且是**异步**到达的
+        # （调用后要跑一次事件循环才到）。而 _refresh_run_report_view 每次刷新都会
+        # selection_set("0") 定位首行 —— 若绑在选中事件上，每次刷新都会把用户正在看
+        # 的页签切走、并把日志筛到第 1 步。绑 ButtonRelease-1 与事件时序无关。
+        self.run_report_tree.bind("<ButtonRelease-1>", self._on_run_report_tree_click)
         self.run_report_tree.tag_configure("success", foreground="#059669")
         self.run_report_tree.tag_configure("failed", foreground="#dc2626")
         self.run_report_tree.tag_configure("skipped", foreground="#d97706")
@@ -5623,7 +5629,11 @@ class LauncherApp:
         self._render_log_view()
 
     def _filter_log_by_step(self, step_id):
-        """供运行报告页联动：筛出指定步骤的日志，并切到「运行日志」页。"""
+        """筛出指定步骤的日志，并切到「运行日志」页。
+
+        由 `_on_run_report_tree_click` 在**用户点击报告表格行**时调用；
+        程序化选中（刷新后定位首行）不会走到这里，以免把用户正在看的页签切走。
+        """
         if not step_id:
             return
         self.log_step_var.set(str(step_id))
@@ -5845,9 +5855,37 @@ class LauncherApp:
             "extra": item.get("extra", {}),
         }
         self._set_run_report_detail_text(json.dumps(detail_payload, ensure_ascii=False, indent=2))
-        # 联动：把「运行日志」页筛到该步骤并切过去。
-        # 这一步正是「回溯到 UI 首次未按预期变化的那一步」的操作路径 ——
-        # 改造前两个页签互不相通，只能靠肉眼在几百行里找。
+
+    def _run_report_item_by_iid(self, iid):
+        """按 Treeview iid 取回步骤结果条目（插入时 iid = 列表下标）。"""
+        try:
+            index = int(iid)
+        except (TypeError, ValueError):
+            return None
+        if 0 <= index < len(self.run_report_step_items):
+            return self.run_report_step_items[index]
+        return None
+
+    def _on_run_report_tree_click(self, event=None):
+        """用户点击报告表格某行 → 把「运行日志」页筛到该步骤并切过去。
+
+        这正是「回溯到 UI 首次未按预期变化的那一步」的操作路径 ——
+        改造前两个页签互不相通，只能靠肉眼在几百行日志里找。
+        """
+        if not hasattr(self, "run_report_tree"):
+            return
+        if event is not None:
+            try:
+                if not self.run_report_tree.identify_row(event.y):
+                    return  # 点在空白区：不改动筛选，避免误触发
+            except Exception:
+                return
+        selected = self.run_report_tree.selection()
+        if not selected:
+            return
+        item = self._run_report_item_by_iid(selected[-1])
+        if not item:
+            return
         self._filter_log_by_step(item.get("stepId", ""))
 
     def open_last_run_report(self):
