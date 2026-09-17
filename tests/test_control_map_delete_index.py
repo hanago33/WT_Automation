@@ -1,7 +1,7 @@
 # encoding: utf-8
 """控件库「删除选中控件」下标解析的回归测试。
 
-背景（P0③ 的两次修复）：
+背景（P0③ 的三轮修复）：
   1. 列表视图的 Treeview iid 是「排序 + 筛选后的 0-based 显示位置」，而
      `_get_filtered_controls()` 三个分支都会排序、`var_sort` 默认就是「质量优先」，
      所以显示位置与原始下标通常不同 —— 直接用显示位置当原始下标会删错控件。
@@ -9,8 +9,15 @@
      （`_build_controls_from_payload` 按 index 配对构造；`edit_selected_control`
      也用同一个 source_index 回写）。因此两处删除必须共用同一组下标，
      只修其中一处会让两数组错位，后续控件元数据全部错配并写回文件。
+  3. 树形视图（iid=uiPath）与分组视图（iid=hierarchy:N）的 iid 不是数字，
+     旧实现 `_get_selected_indexes()` 用 `int(iid)` 把它们全过滤掉 →
+     `selected_indexes` 为空 → 提示「当前选择无有效控件」，**删除功能在
+     这两种视图下完全不可用**。现改为经 `_get_control_for_locator_test`
+     解析（与编辑路径同一套逻辑），三种视图统一。
 
-本文件的核心断言就是这个不变量：删除后两个数组仍然平行、且删掉的是同一个控件。
+本文件的核心断言是两条不变量：
+  - 删除后 `flatControls` 与 `controlDefinitions` 仍然平行、删掉的是同一个控件；
+  - 同一个控件在列表 / 树形 / 分组三种视图下选中，删除结果一致。
 
 被测对象是 `ControlMapImportDialog` 的真实方法（通过轻量宿主绑定），
 不实例化对话框，无需 Tk 交互环境。
@@ -31,7 +38,7 @@ import WT_Flow_Editor as E
 #: 需要绑定到宿主上的实例方法
 BOUND_METHODS = (
     "delete_selected_controls",
-    "_get_selected_indexes",
+    "_get_control_for_locator_test",
     "_get_filtered_controls",
     "_build_controls_from_payload",
     "_merge_control_map_control_metadata",
@@ -50,7 +57,7 @@ RAW_CONTROLS = (
     ("D", "推荐保留", 80),
 )
 
-#: 「质量优先」排序后的显示顺序（应与其原始下标不同，才能暴露错位）
+#: 「质量优先」排序后的显示顺序（与其原始下标不同，才能暴露错位）
 EXPECTED_DISPLAY_ORDER = ["B", "D", "C", "A"]
 
 
@@ -115,6 +122,7 @@ class Harness:
         self.var_time_filter = FakeVar("全部时间")
         self.var_file_scope = FakeVar("single")
         self.control_tree = FakeTree(selected_iids)
+        self._tree_node_map = {}                     # 树形/分组视图：iid -> 控件字典
         self.file_listbox = FakeListbox()
         self.control_map_files = [{"path": "dummy_control_map.json"}]
         self.var_status = FakeVar("")
@@ -133,6 +141,20 @@ class Harness:
         for name in STATIC_METHODS:
             setattr(self, name, getattr(E.ControlMapImportDialog, name))
 
+    def tree_iid_for(self, display_index):
+        """构造一个树形视图 iid，指向排序列表第 display_index 个控件。"""
+        control = self._get_filtered_controls()[display_index]
+        iid = "Pane > Custom > %s" % control.get("name", "")
+        self._tree_node_map[iid] = control
+        return iid
+
+    def group_iid_for(self, display_index):
+        """构造一个分组视图 iid（hierarchy:N），指向排序列表第 display_index 个控件。"""
+        control = self._get_filtered_controls()[display_index]
+        iid = "hierarchy:%d" % (display_index + 7)
+        self._tree_node_map[iid] = control
+        return iid
+
 
 def make_harness(payload=None, selected_iids=("0",)):
     return Harness(payload if payload is not None else make_payload(), selected_iids)
@@ -143,46 +165,41 @@ def names_of(container):
 
 
 class ResolveSourceIndexTests(unittest.TestCase):
-    """`_resolve_control_source_indexes` 纯逻辑。"""
+    """`_resolve_control_source_indexes` 纯逻辑（iid + 解析函数）。"""
 
-    def resolve(self, selected, filtered):
-        return E.ControlMapImportDialog._resolve_control_source_indexes(selected, filtered)
+    resolve = staticmethod(E.ControlMapImportDialog._resolve_control_source_indexes)
 
-    def test_display_position_maps_to_source_index(self):
-        filtered = [{"_sourceIndex": 1}, {"_sourceIndex": 3}, {"_sourceIndex": 2}, {"_sourceIndex": 0}]
-        self.assertEqual(self.resolve([0], filtered), [1])
-        self.assertEqual(self.resolve([0, 1], filtered), [1, 3])
-        self.assertEqual(self.resolve([3], filtered), [0])
+    def test_resolves_through_lookup(self):
+        controls = {"0": {"_sourceIndex": 1}, "1": {"_sourceIndex": 3}}
+        self.assertEqual(self.resolve(["0"], controls.get), [1])
+        self.assertEqual(self.resolve(["0", "1"], controls.get), [1, 3])
 
-    def test_identity_when_not_sorted(self):
-        filtered = [{"_sourceIndex": i} for i in range(4)]
-        self.assertEqual(self.resolve([0, 1, 2, 3], filtered), [0, 1, 2, 3])
+    def test_lookup_returning_non_dict_is_skipped(self):
+        self.assertEqual(self.resolve(["x"], lambda _iid: None), [])
+        self.assertEqual(self.resolve(["x"], lambda _iid: "控件名"), [])
 
-    def test_missing_source_index_falls_back_to_display_position(self):
-        filtered = [{"_sourceIndex": 2}, {"name": "无标注"}]
-        self.assertEqual(self.resolve([1], filtered), [1])
+    def test_missing_source_index_is_skipped(self):
+        self.assertEqual(self.resolve(["x"], lambda _iid: {"name": "无标注"}), [])
 
-    def test_out_of_range_is_skipped(self):
-        filtered = [{"_sourceIndex": 0}]
-        self.assertEqual(self.resolve([5], filtered), [])
-        self.assertEqual(self.resolve([-1], filtered), [])
+    def test_negative_source_index_is_skipped(self):
+        self.assertEqual(self.resolve(["x"], lambda _iid: {"_sourceIndex": -1}), [])
 
-    def test_non_numeric_and_none_are_skipped(self):
-        filtered = [{"_sourceIndex": 0}]
-        self.assertEqual(self.resolve(["hierarchy:3"], filtered), [])
-        self.assertEqual(self.resolve([None], filtered), [])
+    def test_lookup_raising_is_tolerated(self):
+        def boom(_iid):
+            raise KeyError("no such iid")
+
+        self.assertEqual(self.resolve(["x"], boom), [])
 
     def test_duplicates_collapse(self):
-        filtered = [{"_sourceIndex": 2}, {"_sourceIndex": 2}]
-        self.assertEqual(self.resolve([0, 1], filtered), [2])
+        self.assertEqual(self.resolve(["a", "b"], lambda _iid: {"_sourceIndex": 2}), [2])
 
     def test_empty_inputs(self):
-        self.assertEqual(self.resolve([], []), [])
-        self.assertEqual(self.resolve(None, None), [])
+        self.assertEqual(self.resolve([], lambda _iid: {"_sourceIndex": 0}), [])
+        self.assertEqual(self.resolve(None, lambda _iid: {"_sourceIndex": 0}), [])
 
 
 class DeleteSelectedControlsTests(unittest.TestCase):
-    """删除路径必须让两个平行数组共用同一组真实下标。"""
+    """删除路径必须让两个平行数组共用同一组真实下标，且三种视图行为一致。"""
 
     def setUp(self):
         self._patchers = [
@@ -260,10 +277,12 @@ class DeleteSelectedControlsTests(unittest.TestCase):
         self.assertFalse(self.askyesno.called)
 
     def test_unresolvable_selection_aborts_without_deleting(self):
-        harness = make_harness(selected_iids=("99",))
+        """选中的 iid 完全无法解析时必须中止，不能删错。"""
+        harness = make_harness(selected_iids=("不存在的 iid",))
         harness.delete_selected_controls()
         self.assertEqual(len(harness.current_payload["flatControls"]), 4)
         self.assertEqual(len(harness.current_payload["controlDefinitions"]), 4)
+        self.assertFalse(self.askyesno.called)
 
     def test_no_definitions_falls_back_to_flat_only(self):
         payload = make_payload()
@@ -272,6 +291,64 @@ class DeleteSelectedControlsTests(unittest.TestCase):
         harness.delete_selected_controls()
         self.assertEqual(names_of(harness.current_payload["flatControls"]),
                          ["A", "C", "D"])
+
+    # ── 三种视图一致性（第 3 轮修复）──────────────────────────────────
+
+    def test_tree_view_selection_deletes_the_same_control(self):
+        """树形视图：iid 是 uiPath 字符串，旧实现会直接提示「无有效控件」。"""
+        harness = make_harness(selected_iids=())
+        iid = harness.tree_iid_for(0)          # 排序后第 0 个 = 控件 B（原始下标 1）
+        harness.control_tree = FakeTree((iid,))
+
+        harness.delete_selected_controls()
+        payload = harness.current_payload
+        self.assertEqual(names_of(payload["flatControls"]), ["A", "C", "D"])
+        self.assertEqual([d["name"] for d in payload["controlDefinitions"]], ["A", "C", "D"])
+
+    def test_grouped_view_selection_deletes_the_same_control(self):
+        """分组视图：iid 是 hierarchy:N。"""
+        harness = make_harness(selected_iids=())
+        iid = harness.group_iid_for(1)         # 排序后第 1 个 = 控件 D（原始下标 3）
+        harness.control_tree = FakeTree((iid,))
+
+        harness.delete_selected_controls()
+        payload = harness.current_payload
+        self.assertEqual(names_of(payload["flatControls"]), ["A", "B", "C"])
+        self.assertEqual([d["name"] for d in payload["controlDefinitions"]], ["A", "B", "C"])
+
+    def test_all_view_modes_delete_the_same_control(self):
+        """同一控件在列表 / 树形 / 分组三种视图下选中，删除结果必须一致。"""
+        results = []
+        for mode in ("flat", "tree", "group"):
+            harness = make_harness(selected_iids=())
+            if mode == "flat":
+                harness.control_tree = FakeTree(("0",))
+            elif mode == "tree":
+                harness.control_tree = FakeTree((harness.tree_iid_for(0),))
+            else:
+                harness.control_tree = FakeTree((harness.group_iid_for(0),))
+            harness.delete_selected_controls()
+            results.append(names_of(harness.current_payload["flatControls"]))
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(results[1], results[2])
+        self.assertEqual(results[0], ["A", "C", "D"])
+
+    def test_tree_node_without_source_index_is_skipped(self):
+        """树节点若没有 _sourceIndex 标注，宁可跳过也不猜下标。"""
+        harness = make_harness(selected_iids=())
+        harness._tree_node_map["Pane > 容器节点"] = {"name": "容器"}
+        harness.control_tree = FakeTree(("Pane > 容器节点",))
+        harness.delete_selected_controls()
+        self.assertEqual(len(harness.current_payload["flatControls"]), 4)
+        self.assertFalse(self.askyesno.called)
+
+    def test_mixed_view_selection_only_deletes_resolvable(self):
+        """混合选择：可解析的照常删除，不可解析的被忽略。"""
+        harness = make_harness(selected_iids=())
+        iid = harness.tree_iid_for(0)                            # 可解析 → 原始下标 1
+        harness.control_tree = FakeTree((iid, "hierarchy:999"))  # 后者不可解析
+        harness.delete_selected_controls()
+        self.assertEqual(names_of(harness.current_payload["flatControls"]), ["A", "C", "D"])
 
 
 if __name__ == "__main__":
