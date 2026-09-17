@@ -318,6 +318,50 @@ def log_event(
     return record
 
 
+# ── 日志文件轮转 ────────────────────────────────────────────────────────────
+# wt_automation.log 是跨运行追加的单一文件，改造前没有任何轮转，会无限增长。
+# 轮转策略：按大小切分为 path.1（最近）… path.N（最旧），超出份数的最旧备份
+# 被覆盖丢弃 —— 标准 numbered rotation，不额外引入归档目录（那只是多一层
+# 间接，收益不足以抵消复杂度）。
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 5
+_rotate_lock = threading.Lock()
+
+
+def should_rotate(path, max_bytes=None):
+    """判断日志文件是否达到轮转阈值。"""
+    limit = LOG_MAX_BYTES if max_bytes is None else int(max_bytes)
+    try:
+        return os.path.getsize(path) >= limit
+    except OSError:
+        return False
+
+
+def rotate_log(path, max_bytes=None, backup_count=None):
+    """按大小轮转日志文件；返回 True 表示本次发生了轮转。
+
+    调用方在每次追加前调用即可：体积未达阈值时只是一次 ``getsize``（微秒级），
+    远低于持有常驻文件句柄的代价 —— 后者在 Windows 上会导致外部删除/清屏
+    （``WT_Launcher`` 的"清屏"会 ``os.remove(LOG_FILE)``）失败并留下失效句柄。
+    """
+    if not should_rotate(path, max_bytes):
+        return False
+    backups = LOG_BACKUP_COUNT if backup_count is None else int(backup_count)
+    with _rotate_lock:
+        # 双重检查：并发写入方可能已被前一个持锁者轮转过
+        if not should_rotate(path, max_bytes):
+            return False
+        try:
+            for index in range(backups - 1, 0, -1):
+                src = "%s.%d" % (path, index)
+                if os.path.exists(src):
+                    os.replace(src, "%s.%d" % (path, index + 1))
+            os.replace(path, "%s.1" % path)
+        except OSError:
+            return False
+    return True
+
+
 # ── 行格式 ──────────────────────────────────────────────────────────────────
 def format_line(level, message, module=None, run_id=None, timestamp=None):
     """按统一格式组装一行日志。

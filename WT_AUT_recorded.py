@@ -317,6 +317,10 @@ MONITOR_THEME = {
 
 
 class MonitorWindow:
+    # 日志 Text 行数上限：长流程（100+ 步 × 每步数行）下防止 Text 无限增长。
+    # 与 wt_task_queue_window._LOG_MAX_LINES 取值一致，保持各日志区行为统一。
+    LOG_MAX_LINES = 400
+
     def __init__(self):
         wt_dpi.enable_process_dpi_awareness()
         self.root = tk.Tk()
@@ -424,11 +428,27 @@ class MonitorWindow:
         else:
             self.text_widget.insert(tk.END, message, kind)
         self.text_widget.insert(tk.END, "\n")
+        self._trim_to_max_lines()
         self.text_widget.see(tk.END)
         self.text_widget.config(state=tk.DISABLED)
         # 注意：不再调用 self.root.update()。本方法可能被后台自动化线程调用，
         # 跨线程进入 Tcl 事件循环会导致解释器重入崩溃（access violation）。
         # Tk 会在下一个 idle 周期自动刷新，无需手动 pump。
+
+    def _trim_to_max_lines(self):
+        """头部裁剪：超过 LOG_MAX_LINES 时删除最早的多余行。
+
+        与 wt_task_queue_window 同款算法：Tk 行号从 1 计，
+        delete("1.0", "N.0") 删的是第 1..N-1 行，故要删到 (多余行数+1).0
+        才能恰好剩 LOG_MAX_LINES 行。
+        """
+        try:
+            row = int(self.text_widget.index("end-1c").split(".")[0] or 0)
+            excess = max(0, row - 1) - self.LOG_MAX_LINES
+            if excess > 0:
+                self.text_widget.delete("1.0", "%d.0" % (excess + 1))
+        except Exception:
+            pass
 
     def update_status(self, status):
         text = "状态：{}".format(status)
@@ -487,11 +507,16 @@ def _ui_safe_call(callback):
 
 
 def _append_log_file(line):
-    """把一行日志追加到 LOG_FILE。
+    """把一行日志追加到 LOG_FILE（必要时先按大小轮转）。
 
-    单独成函数：便于测试替换（避免测试真的落盘/删文件），也是后续改为
-    进程内持有句柄 + 按大小轮转的收口点。
+    单独成函数：便于测试替换（避免测试真的落盘/删文件）。
+    每次追加前做一次体积检查，而不是持有常驻句柄 —— 后者会让外部删除日志
+    （WT_Launcher 的"清屏"）在 Windows 上失败并留下失效句柄。
     """
+    try:
+        wt_logging.rotate_log(LOG_FILE)
+    except Exception:
+        pass
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
