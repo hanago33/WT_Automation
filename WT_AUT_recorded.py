@@ -44,6 +44,7 @@ import wt_window_helpers
 import wt_dpi
 import wt_flow_executor
 import wt_flow_locator
+import wt_logging
 import wt_projection_helpers
 import wt_run_reporting
 import wt_run_status
@@ -481,32 +482,56 @@ def _ui_safe_call(callback):
     return False
 
 
-def log_step(step_name):
+def _append_log_file(line):
+    """把一行日志追加到 LOG_FILE。
+
+    单独成函数：便于测试替换（避免测试真的落盘/删文件），也是后续改为
+    进程内持有句柄 + 按大小轮转的收口点。
+    """
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def log_step(step_name, level=None):
+    """写一条运行日志（主链路唯一日志出口）。
+
+    ``level`` 省略时按内容自动判定，兼容既有单参数调用；显式传入级别时以传入值为准。
+    级别低于当前阈值（默认 INFO，见 wt_logging）的行直接丢弃，因此高频 DEBUG 诊断
+    转储在正常运行时不产生任何输出。
+    """
     global monitor_window
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_line = f"[{timestamp}] {step_name}"
+    resolved = wt_logging.normalize_level(level, default=None) if level is not None else None
+    if resolved is None:
+        resolved = wt_logging.detect_level(step_name)
+    if not wt_logging.is_enabled(resolved):
+        return
+
+    log_line = wt_logging.format_line(resolved, step_name)
     print(log_line, end="\n")
 
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(log_line + "\n")
-        try:
-            wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
-        except Exception:
-            pass
+    _append_log_file(log_line)
+    try:
+        wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
+    except Exception:
+        pass
 
     if monitor_window:
-        if any(k in step_name for k in ("失败", "错误")):
-            kind = "error"
-        elif any(k in step_name for k in ("完成", "成功")):
-            kind = "success"
-        elif any(k in step_name for k in ("警告", "跳过")):
-            kind = "warning"
-        else:
-            kind = "info"
+        # 级别由写入方决定，替代改造前按关键字猜测的 4 套分类器（规则互不一致，
+        # 且「已剔除错误项=0」含"错误"会被误判为 error 红字）。
+        kind = wt_logging.tag_for_level(resolved)
         # log/update_status 可能在后台自动化线程被调用，须调度到主线程执行，
         # 避免跨线程 Tcl 重入崩溃。
         _ui_safe_call(lambda: monitor_window.log(log_line, kind=kind))
         _ui_safe_call(lambda: monitor_window.update_status(step_name))
+
+
+def log_at(level, message):
+    """级别感知记录器，经 configure_* 注入给 wt_flow_locator / wt_flow_executor。
+
+    与 log_step 的差别仅在于级别由调用方显式给出（用于定位耗时、回退来源等
+    需要按档位分级的场景）。
+    """
+    log_step(message, level=level)
 
 
 
@@ -1133,6 +1158,7 @@ def _get_flow_locator():
 			get_step_definition=_get_flow_step_resolved,
 			log_step=log_step,
 			get_main_window_candidates=_get_main_window_candidates,
+			log_at=log_at,
 		)
 		_FLOW_LOCATOR_CONFIGURED = True
 	return wt_flow_locator
@@ -1266,6 +1292,7 @@ def _get_flow_executor():
 			get_step_params=_get_step_params,
 			resolve_dynamic_value=_resolve_dynamic_value,
 			log_step=log_step,
+			log_at=log_at,
 			click_flow_control=_click_flow_control,
 			click_relative_region=_click_relative_region,
 		click_relative_anchor=_click_relative_anchor,
@@ -2523,7 +2550,14 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 				"（或 --steps/--from-step/--to-step 参数未匹配到步骤）；"
 				"若该路径不存在，说明流程文件未上传/未部署到本机".format(FLOW_DEFINITION_FILE)
 			)
-		log_step(f"执行步骤列表: {steps_to_run}")
+		# 步骤清单改为摘要：改造前把全部 stepId 单行倾倒（实测 111 步 = 2665 字符，
+		# 占整份日志 14% 字符量）。完整清单在 DEBUG 档输出，并随运行报告留存。
+		log_step(
+			"已解析待执行步骤 {} 个（{} … {}）；完整清单见运行报告".format(
+				len(steps_to_run), steps_to_run[0], steps_to_run[-1]
+			)
+		)
+		log_step(f"执行步骤列表: {steps_to_run}", level=wt_logging.DEBUG)
 		log_step(
 			f"当前运行参数: gmExe={GM_EXE}, sourceFilePath={SOURCE_FILE_PATH}, outputDir={OUTPUT_DIR}, projectionFilePath={PROJECTION_FILE_PATH}"
 		)

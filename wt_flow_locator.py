@@ -20,12 +20,20 @@ except ImportError:
     fuzz = None
 
 from wt_flow_editor_utils import uipath_is_main_window_root
+import wt_logging
 
 
 FLOW_WINDOW_CACHE_TTL_SECONDS = 60.0
 FLOW_CONTROL_CACHE_TTL_SECONDS = 12.0
 FLOW_PARENT_CACHE_TTL_SECONDS = 20.0
 FLOW_UIPI_BLOCK_CACHE_TTL_SECONDS = 3.0
+
+# 定位耗时分级阈值（秒）。
+# 改造前统一用 0.8s 单阈值触发「流程控件定位耗时较长」，实测 0.83s 也报警：
+# 样本 9 次告警中 8 次 < 5s，属误报，且把真正需要关注的长耗时淹没。
+SLOW_LOCATE_DEBUG_SECONDS = 0.8
+SLOW_LOCATE_INFO_SECONDS = 3.0
+SLOW_LOCATE_WARN_SECONDS = 8.0
 
 FLOW_WINDOW_CACHE = {}
 FLOW_CONTROL_CACHE = {}
@@ -69,9 +77,64 @@ _control_map_cache = {}
 
 _GET_STEP_DEFINITION = lambda step_id: {}
 _LOG_STEP = lambda message: None
+# 可选的级别感知记录器：签名 (level, message) -> None。
+# 未注入时 _log_at() 按 wt_logging 阈值门控后回退到 _LOG_STEP，保持既有
+# 单参数 _LOG_STEP 契约不变（大量测试与 tools/generic_flow 依赖该签名）。
+_LOG_AT = None
 # 目标软件主窗口候选提供者：运行时注入（如 WT_AUT_recorded 用 find_main_windows 按进程名
 # 找 MUPSmartClient 主窗）。fallback 用它的 hwnd 包装成 UIA wrapper，比枚举解析进程名可靠。
 _GET_MAIN_WINDOW_CANDIDATES = lambda: []
+
+
+def _log_at(level, message):
+    """按级别输出日志（级别感知）。"""
+    if _LOG_AT is not None:
+        try:
+            _LOG_AT(level, message)
+            return
+        except Exception:
+            pass
+    if wt_logging.is_enabled(level):
+        _LOG_STEP(message)
+
+
+def _log_debug(message):
+    """DEBUG 级日志：默认不输出，需 WT_LOG_LEVEL=DEBUG 或 WT_DEBUG_EVENTS=1。"""
+    _log_at(wt_logging.DEBUG, message)
+
+
+def _locate_elapsed_level(elapsed):
+    """定位耗时档位：>=8s WARN / >=3s INFO / >=0.8s DEBUG / 否则 None（不输出）。"""
+    if elapsed >= SLOW_LOCATE_WARN_SECONDS:
+        return wt_logging.WARN
+    if elapsed >= SLOW_LOCATE_INFO_SECONDS:
+        return wt_logging.INFO
+    if elapsed >= SLOW_LOCATE_DEBUG_SECONDS:
+        return wt_logging.DEBUG
+    return None
+
+
+def _log_locate_elapsed(message, elapsed):
+    """按档位输出定位耗时告警，避免 0.8s 级误报稀释真实告警。"""
+    level = _locate_elapsed_level(elapsed)
+    if level is None:
+        return
+    _log_at(level, message)
+
+
+def _log_window_fallback_source(source, count):
+    """窗口严格过滤无命中后的回退来源，收敛为一行。
+
+    改造前同一路径连发两行（「采用运行时主窗口候选 N 个」+「回退候选窗口 N 个」），
+    且因 MUP 主窗标题为空而每步必触发。
+    级别约定：主窗候选 / win32 枚举属正常降级 → DEBUG；
+    前置窗口回退可能命中错误窗口（调试知识库模式 C）→ INFO。
+    """
+    message = "[FlowLocator] 窗口严格过滤无命中，回退来源={}，候选 {} 个".format(source, count)
+    if source == "foreground_window":
+        _LOG_STEP(message)
+    else:
+        _log_debug(message)
 
 
 # #region debug-point fan-type-create-error:report
@@ -237,14 +300,16 @@ def _snapshot_silent_exception_counts():
         return dict(_SILENT_EXCEPTION_COUNTS)
 
 
-def configure_flow_locator(get_step_definition=None, log_step=None, get_main_window_candidates=None):
-    global _GET_STEP_DEFINITION, _LOG_STEP, _GET_MAIN_WINDOW_CANDIDATES
+def configure_flow_locator(get_step_definition=None, log_step=None, get_main_window_candidates=None, log_at=None):
+    global _GET_STEP_DEFINITION, _LOG_STEP, _GET_MAIN_WINDOW_CANDIDATES, _LOG_AT
     if callable(get_step_definition):
         _GET_STEP_DEFINITION = get_step_definition
     if callable(log_step):
         _LOG_STEP = log_step
     if callable(get_main_window_candidates):
         _GET_MAIN_WINDOW_CANDIDATES = get_main_window_candidates
+    if callable(log_at):
+        _LOG_AT = log_at
 
 
 # #region self-healing selector (#4)
@@ -6041,26 +6106,26 @@ def iter_flow_search_windows(step_definition, window_title_hint="", control_defi
                 return wrapped_result
 
             result = _wrap_hwnd_candidates(_GET_MAIN_WINDOW_CANDIDATES())
-            if result:
-                _LOG_STEP("[FlowLocator] 窗口过滤严格无命中，采用运行时主窗口候选 {} 个".format(len(result)))
+            source = "main_window_candidates" if result else ""
             if not result:
                 result = _wrap_hwnd_candidates(_enum_visible_mup_win32_windows())
+                if result:
+                    source = "win32_enumeration"
             if not result:
                 # 前台仅当是真实应用窗（非自动化自身 Tk 进度/监视窗）才回退；绝不把
                 # 自动化自己"WT自动化 …"进度窗当作目标定位（必然"未找到匹配控件"）。
                 fg_wrapper = _try_get_window_by_handle(foreground_handle)
                 if fg_wrapper is not None and not is_automation_window(fg_wrapper):
-                    _LOG_STEP("[FlowLocator] 窗口过滤严格无命中，回退前置窗口单候选")
                     result = [fg_wrapper]
+                    source = "foreground_window"
                 else:
-                    _LOG_STEP(
-                        "[FlowLocator] 窗口过滤严格无命中且前置为自动化自身窗口，"
-                        "放弃本次窗口回退（不把自身进度窗当目标）"
-                    )
+                    source = "blocked_by_self_window"
             if result:
-                _LOG_STEP(
-                    "[FlowLocator] 窗口过滤严格无命中，回退候选窗口 {} 个".format(len(result))
-                )
+                # 收敛为一行：改造前「采用主窗候选」与「回退候选窗口」在同一路径上
+                # 各发一行，实测 16 步产生 16 行重复噪音（占样本 11.9%）。
+                # 正常降级路径（主窗候选 / win32 枚举）降为 DEBUG；仅前置窗口回退
+                # 保留 INFO —— 那是可能命中错误窗口的降级信号（见调试知识库模式 C）。
+                _log_window_fallback_source(source, len(result))
                 if use_window_cache:
                     cache_flow_windows(cache_key, result)
                 return result
@@ -8278,7 +8343,7 @@ def _finalize_step_timing(step_id, control_id, t_act_start):
         timing["t_windows_ms"] + timing["t_fast_ms"] + timing["t_descendants_ms"]
         + timing["t_json_ms"] + _debug_ms + t_act_ms, 2
     )
-    _LOG_STEP(
+    message = (
         "[定位耗时] step={}, ctrl={}, 窗枚举={:.1f}ms, 快查={:.1f}ms, "
         "整树={:.1f}ms, JSON={:.1f}ms, 诊断={:.1f}ms, 动作={:.1f}ms, 总计={:.1f}ms".format(
             step_id, control_id,
@@ -8286,6 +8351,12 @@ def _finalize_step_timing(step_id, control_id, t_act_start):
             timing["t_json_ms"], _debug_ms, t_act_ms, timing["t_total_ms"],
         )
     )
+    # 全量分段计时默认只进 DEBUG：正常运行时是纯噪音（占样本 8.2%），
+    # 仅当总计达到 INFO 档（>=3s）才在常规视图中输出，便于直接定位瓶颈段。
+    if timing["t_total_ms"] >= SLOW_LOCATE_INFO_SECONDS * 1000:
+        _LOG_STEP(message)
+    else:
+        _log_debug(message)
     _step_timing.pop(key, None)
 
 
@@ -8912,11 +8983,11 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         cache_wrapper_parent_chain(window, best_match)
                         cache_flow_control(step_id, control_definition, best_match, window_title_hint=window_title_hint)
                         elapsed = time.time() - search_started
-                        if elapsed >= 0.8:
-                            _LOG_STEP(
-                                f"流程控件定位耗时较长: step={step_id}, control={control_id or '(first)'}, "
-                                f"seconds={elapsed:.2f}, score={best_score}, phase=fast"
-                            )
+                        _log_locate_elapsed(
+                            f"流程控件定位耗时较长: step={step_id}, control={control_id or '(first)'}, "
+                            f"seconds={elapsed:.2f}, score={best_score}, phase=fast",
+                            elapsed,
+                        )
                         if str(step_id).strip() == "step_2":
                             _emit_fan_type_create_debug_event("B", "wt_flow_locator.py:find_flow_control:fast-hit", "step_2 control matched", {"window": get_wrapper_debug_snapshot(window), "control": get_wrapper_debug_snapshot(best_match), "score": best_score})
                         _t2 = _t3 = _t4 = time.perf_counter()
@@ -8949,11 +9020,11 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         cache_wrapper_parent_chain(window, best_match)
                         cache_flow_control(step_id, control_definition, best_match, window_title_hint=window_title_hint)
                         elapsed = time.time() - search_started
-                        if elapsed >= 0.8:
-                            _LOG_STEP(
-                                f"流程控件定位命中(FindAll): step={step_id}, control={control_id or '(first)'}, "
-                                f"seconds={elapsed:.2f}, score={best_score}"
-                            )
+                        _log_locate_elapsed(
+                            f"流程控件定位命中(FindAll): step={step_id}, control={control_id or '(first)'}, "
+                            f"seconds={elapsed:.2f}, score={best_score}",
+                            elapsed,
+                        )
                         _t3 = _t4 = time.perf_counter()
                         _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
                         return best_match
@@ -8993,11 +9064,11 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         cache_wrapper_parent_chain(window, best_match)
                         cache_flow_control(step_id, control_definition, best_match, window_title_hint=window_title_hint)
                         elapsed = time.time() - search_started
-                        if elapsed >= 0.8:
-                            _LOG_STEP(
-                                f"流程控件定位耗时较长: step={step_id}, control={control_id or '(first)'}, "
-                                f"seconds={elapsed:.2f}, score={best_score}, phase=fallback"
-                            )
+                        _log_locate_elapsed(
+                            f"流程控件定位耗时较长: step={step_id}, control={control_id or '(first)'}, "
+                            f"seconds={elapsed:.2f}, score={best_score}, phase=fallback",
+                            elapsed,
+                        )
                         if str(step_id).strip() == "step_2":
                             _emit_fan_type_create_debug_event("B", "wt_flow_locator.py:find_flow_control:descendant-hit", "step_2 control matched by descendants", {"window": get_wrapper_debug_snapshot(window), "control": get_wrapper_debug_snapshot(best_match), "score": best_score})
                         _t3 = _t4 = time.perf_counter()
@@ -9188,11 +9259,11 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                     cache_flow_control(step_id, control_definition, best_match, window_title_hint=window_title_hint)
                 _maybe_report_self_heal(step_id, control_id, best_match, controls)
                 elapsed = time.time() - search_started
-                if elapsed >= 0.8:
-                    _LOG_STEP(
-                        f"流程控件定位耗时较长：step={step_id}, control={control_id or '(first)'}, "
-                        f"seconds={elapsed:.2f}, score={best_score}"
-                    )
+                _log_locate_elapsed(
+                    f"流程控件定位耗时较长：step={step_id}, control={control_id or '(first)'}, "
+                    f"seconds={elapsed:.2f}, score={best_score}",
+                    elapsed,
+                )
                 _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
                 return best_match
             if len(windows) <= 2:
@@ -10431,7 +10502,7 @@ def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
     # 若目标控件位于 ListBoxItem 内（如卡片标题文本），向上找父级 ListItem，
     # 用 SelectionItemPattern 程序化选中（物理点击常只触发悬停不触发选中）。
     _list_item_target = control if _is_list_item else _find_list_item_ancestor(control)
-    _LOG_STEP(
+    _log_debug(
         f"[DEBUG] click_flow_control 判定: step={step_id}, control={control_id}, "
         f"is_list_item={_is_list_item}, list_item_target={_list_item_target is not None}, "
         f"control_type={get_wrapper_control_type(control)}, class={get_wrapper_class_name(control)}, "
@@ -11522,7 +11593,7 @@ def type_text_into_flow_control(step_id, control_id, text, timeout_seconds=3, wi
             # #endregion
         return False
     _t_act = time.perf_counter()  # 动作执行阶段计时开始
-    _LOG_STEP(
+    _log_debug(
         f"[DEBUG] type_text_into_flow_control 判定: step={step_id}, control={control_id}, "
         f"control_type={get_wrapper_control_type(control)}, class={get_wrapper_class_name(control)}, "
         f"name={get_wrapper_text(control)!r}, rect={get_wrapper_rectangle(control)}"
