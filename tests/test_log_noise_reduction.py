@@ -298,6 +298,13 @@ class NoiseRegressionGuardTests(unittest.TestCase):
         self.assertIn("已解析待执行步骤", code)
         self.assertIn("完整清单见运行报告", code)
 
+    def test_prune_count_demoted_to_debug(self):
+        """剪枝计数属内部算法细节，走 DEBUG 出口；0 命中回退仍保留 INFO。"""
+        code = self._code_only("wt_flow_locator.py")
+        self.assertNotIn('_LOG_STEP(\n                    "[快查剪枝] 泛化', code)
+        self.assertIn("[快查剪枝] 泛化", code, "消息本身应保留，只是换级别出口")
+        self.assertIn("[快查剪枝] label_text 预过滤 0 命中", code)
+
 
 if __name__ == "__main__":
     unittest.main()

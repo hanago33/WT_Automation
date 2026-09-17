@@ -5413,7 +5413,10 @@ def iter_fast_locator_candidates(window, control_definition):
                 except Exception:
                     _pruned.append(_cand)  # 单候选判断异常时保守保留，交评分侧裁决
             if _pruned:
-                _LOG_STEP(
+                # 剪枝计数属内部算法细节（占样本 3.7%），降 DEBUG；
+                # 下方「0 命中回退全量候选」保留 INFO —— 那是 label_text 预过滤
+                # 失效的降级信号，可能指向定位器配置问题（知识库模式 M）。
+                _log_debug(
                     "[快查剪枝] 泛化 automationId 候选 {}→{}（label_text 预过滤）".format(
                         len(automation_id_hits), len(_pruned)
                     )
