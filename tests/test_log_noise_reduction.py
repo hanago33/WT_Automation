@@ -9,6 +9,7 @@
 另含降噪回归守卫：断言已移除的噪音来源不会复活。
 """
 import builtins
+import json
 import os
 import re
 import sys
@@ -128,6 +129,33 @@ class WindowFallbackLoggingTests(LogCaptureMixin, unittest.TestCase):
             wt_flow_locator._log_window_fallback_source("main_window_candidates", 1)
             self.assertEqual(len(self.captured), 1, "每次回退只应产生一行日志")
 
+    def test_self_window_block_is_reported_at_info(self):
+        """回归：前台是自动化自身窗口时无法回退 —— 这行诊断必须显式留下。
+
+        早期版本把它合并进 _log_window_fallback_source 后，因该分支候选恒为空
+        而再未走到那里，导致诊断信息被静默丢弃（只剩通用的「跳过全窗口软化」）。
+        """
+        with _env_without_log_switch():
+            wt_flow_locator._log_window_fallback_source("blocked_by_self_window", 0)
+            self.assertEqual(len(self.captured), 1, "该分支必须输出一行诊断")
+            self.assertIn("前台为自动化自身窗口", self.captured[0])
+
+    def test_self_window_block_reported_even_with_zero_candidates(self):
+        """候选数为 0 也要记 —— 这正是早期丢日志的条件。"""
+        with _env_without_log_switch(WT_LOG_LEVEL="DEBUG"):
+            wt_flow_locator._log_window_fallback_source("blocked_by_self_window", 0)
+            self.assertEqual(len(self.captured), 1)
+
+    def test_all_three_sources_are_handled(self):
+        """三种来源都必须有明确去向，不得有「只赋值不消费」的死分支。"""
+        with _env_without_log_switch(WT_LOG_LEVEL="DEBUG"):
+            for source in ("main_window_candidates", "win32_enumeration",
+                           "foreground_window", "blocked_by_self_window"):
+                with self.subTest(source=source):
+                    self.captured[:] = []
+                    wt_flow_locator._log_window_fallback_source(source, 1)
+                    self.assertEqual(len(self.captured), 1, "%s 应产出一行" % source)
+
     def test_debug_path_emits_when_enabled(self):
         with _env_without_log_switch(WT_LOG_LEVEL="DEBUG"):
             wt_flow_locator._log_window_fallback_source("main_window_candidates", 2)
@@ -244,6 +272,110 @@ class LogStepLevelTests(unittest.TestCase):
             self.recorder.log_step("已剔除错误项=0")
         self.assertIn("[INFO ]", self.lines[0], "无害上下文不应被判为 ERROR")
 
+    def test_jsonl_is_written_even_for_gated_debug_lines(self):
+        """回归 P0-3：JSONL 是机读全量镜像，不受文本级别门控。
+
+        否则被降噪砍掉的 DEBUG 诊断在任何开关下都不进 JSONL，
+        JSONL 就退化成文本日志的重复副本。
+        """
+        path = os.path.join(TESTS_DIR, ".tmp_jsonl_gate", "gate.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8"):
+            pass  # 截断而非删除
+        wt_logging.start_jsonl(path)
+        self.addCleanup(wt_logging.stop_jsonl)
+
+        with _env_without_log_switch():
+            self.recorder.log_step("已通过流程链路匹配点击控件: step=step_1")
+            self.recorder.log_step("[DEBUG] click_flow_control 判定: step=step_1")
+            self.recorder.log_step("[定位耗时] step=step_1, 总计=1275.9ms")
+            self.recorder.log_step("执行步骤列表: ['step_1']", level=wt_logging.DEBUG)
+
+        with open(path, "r", encoding="utf-8") as f:
+            records = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(len(records), 4, "JSONL 应记录全部 4 条（含 DEBUG）")
+        self.assertEqual(len(self.lines), 3, "文本日志仍受门控，只写 3 行")
+        self.assertIn(
+            wt_logging.DEBUG, [r["level"] for r in records], "DEBUG 级别必须进 JSONL"
+        )
+
+
+class RunEndBannerLevelTests(unittest.TestCase):
+    """收尾标记的级别必须由运行状态显式决定。
+
+    回归背景：banner 的 extra 恒含「失败 0」（`failedCount` 初值就是 0），
+    若交给 `log_step` 靠文本推断，**成功运行会被判成 ERROR 红字**，
+    并进一步污染「ERROR 及以上」筛选（P3 的功能性误导）。
+    """
+
+    def setUp(self):
+        wt_logging.reset_min_level()
+        self.addCleanup(wt_logging.reset_min_level)
+        import WT_AUT_recorded
+
+        self.recorder = WT_AUT_recorded
+        self.lines = []
+        for target, attr, repl in (
+            (WT_AUT_recorded, "_append_log_file", self.lines.append),
+            (builtins, "print", lambda *a, **k: None),
+        ):
+            p = patch.object(target, attr, repl)
+            p.start()
+            self.addCleanup(p.stop)
+
+    @staticmethod
+    def _report(success, failed, executed=None):
+        return {
+            "summary": {
+                "totalElapsedSeconds": 123.4,
+                "executedCount": executed if executed is not None else success + failed,
+                "successCount": success,
+                "failedCount": failed,
+                "skippedCount": 0,
+            }
+        }
+
+    def _banner_level(self, report, status, level):
+        self.lines[:] = []
+        self.recorder._log_run_end_banner(report, status, level=level)
+        self.assertEqual(len(self.lines), 1, "应恰好写出一行收尾标记")
+        return wt_logging.level_from_line(self.lines[0])
+
+    def test_successful_run_banner_is_info(self):
+        level = self._banner_level(
+            self._report(16, 0), "成功", wt_logging.INFO
+        )
+        self.assertEqual(level, wt_logging.INFO, "成功运行不得判为 ERROR")
+
+    def test_failed_run_banner_is_error(self):
+        level = self._banner_level(
+            self._report(1, 15), "失败", wt_logging.ERROR
+        )
+        self.assertEqual(level, wt_logging.ERROR)
+
+    def test_success_banner_still_contains_failed_zero(self):
+        """确认 extra 确实带「失败 0」—— 这正是不能靠文本推断的原因。"""
+        self.lines[:] = []
+        self.recorder._log_run_end_banner(self._report(16, 0), "成功", level=wt_logging.INFO)
+        self.assertIn("失败 0", self.lines[0])
+
+    def test_success_banner_not_matched_by_error_filter(self):
+        import wt_log_query
+
+        self.lines[:] = []
+        self.recorder._log_run_end_banner(self._report(16, 0), "成功", level=wt_logging.INFO)
+        log_filter = wt_log_query.LogFilter(min_level=wt_logging.ERROR)
+        self.assertFalse(
+            log_filter.matches(self.lines[0]),
+            "成功收尾行不应被「ERROR 及以上」筛出",
+        )
+
+    def test_banner_survives_missing_summary(self):
+        """报告缺字段时不应抛错，级别仍按传入值。"""
+        level = self._banner_level({}, "成功", wt_logging.INFO)
+        self.assertEqual(level, wt_logging.INFO)
+
 
 class NoiseRegressionGuardTests(unittest.TestCase):
     """降噪回归守卫：已被移除的噪音来源不得复活。
@@ -296,7 +428,9 @@ class NoiseRegressionGuardTests(unittest.TestCase):
     def test_step_list_dump_is_summarized(self):
         code = self._code_only("WT_AUT_recorded.py")
         self.assertIn("已解析待执行步骤", code)
-        self.assertIn("完整清单见运行报告", code)
+        # 措辞必须点明「运行结束后」——运行报告要到 finalize 才落盘，
+        # 运行中该文件尚不存在。
+        self.assertIn("完整清单见运行结束后的运行报告", code)
 
     def test_prune_count_demoted_to_debug(self):
         """剪枝计数属内部算法细节，走 DEBUG 出口；0 命中回退仍保留 INFO。"""

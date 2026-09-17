@@ -202,6 +202,10 @@ def format_run_banner(kind, run_id=None, step_count=None, status=None, elapsed_s
 _jsonl_path = ""
 _jsonl_lock = threading.Lock()
 
+# JSONL 目录保留的最近运行数。每次运行一个文件，长流程单次可达数十 MB，
+# 不设上限会长期累积。runId 内含时间戳，按文件名排序即按时间排序。
+JSONL_KEEP_RUNS = 50
+
 # 文本 → 结构化 的桥接：项目日志的消息格式统一为 `step=<id>, control=<id>`。
 # 解析失败只是缺字段，不影响其它字段；需要可靠字段的新调用点应直接传
 # step_id / control_id 给 log_event。
@@ -209,8 +213,49 @@ _STEP_FIELD_RE = re.compile(r"\bstep=([^,\s]+)")
 _CONTROL_FIELD_RE = re.compile(r"\b(?:control|ctrl|anchor)=([^,\s]+)")
 
 
+def jsonl_files_to_prune(path, keep=None):
+    """返回应被清理的 ``*.jsonl`` 路径列表（**纯函数，不做删除**）。
+
+    与删除动作分开：选择逻辑可被测试直接验证，不必真的动文件
+    （测试环境可能禁止删除）。
+    runId 形如 ``wt_run_20260917_102341_123_001``，按文件名排序即按时间排序。
+    """
+    limit = JSONL_KEEP_RUNS if keep is None else int(keep)
+    if limit <= 0:
+        return []
+    directory = os.path.dirname(str(path or ""))
+    if not directory or not os.path.isdir(directory):
+        return []
+    try:
+        names = sorted(name for name in os.listdir(directory) if name.endswith(".jsonl"))
+    except OSError:
+        return []
+    if len(names) <= limit:
+        return []
+    return [os.path.join(directory, name) for name in names[:-limit]]
+
+
+def prune_jsonl_dir(path, keep=None):
+    """清理同目录下过期的 ``*.jsonl``，只保留最近 ``keep`` 个。
+
+    返回被删除的文件数；删除失败（被占用 / 无权限 / 环境禁删）静默跳过，
+    不影响日志写入。
+    """
+    removed = 0
+    for target in jsonl_files_to_prune(path, keep=keep):
+        try:
+            os.remove(target)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def start_jsonl(path):
-    """开启 JSONL 旁路；返回实际生效的路径（不可用时为空串）。"""
+    """开启 JSONL 旁路；返回实际生效的路径（不可用时为空串）。
+
+    同时清理目录里过期的历史文件，避免 ``logs/run_logs/`` 无限增长。
+    """
     global _jsonl_path
     candidate = str(path or "")
     if candidate:
@@ -221,6 +266,11 @@ def start_jsonl(path):
         except Exception:
             candidate = ""
     _jsonl_path = candidate
+    if candidate:
+        try:
+            prune_jsonl_dir(candidate)
+        except Exception:
+            pass
     return _jsonl_path
 
 
@@ -405,8 +455,24 @@ _BENIGN_ERROR_CONTEXT = (
     "无错误",
     "零错误",
     "0 个错误",
+    # 计数型零值：运行摘要/收尾标记恒含「失败 0」「failed=0」（failedCount 初值为 0），
+    # 成功运行也一定有这些字段。改造前会把「运行结束 · 状态=成功 · 成功 16 / 失败 0」
+    # 判成 ERROR 红字 —— 与「已剔除错误项=0」同一类误判。
+    "失败 0",
+    "失败=0",
+    "失败0",
+)
+
+# 英文无害上下文：按小写匹配（大小写不敏感）
+_BENIGN_ERROR_CONTEXT_EN = (
     "no error",
     "0 error",
+    "failed=0",
+    "failed 0",
+    "failedcount=0",
+    "failedcount: 0",
+    "failures=0",
+    "0 failed",
 )
 
 # 英文错误词（小写匹配，覆盖 status=failed / Failure / Exception 等）
@@ -427,7 +493,9 @@ def classify(line):
     if "critical" in lowered or any(tok in text for tok in _CRIT_TOKENS):
         return "error"
 
-    benign = any(ctx in text for ctx in _BENIGN_ERROR_CONTEXT)
+    benign = any(ctx in text for ctx in _BENIGN_ERROR_CONTEXT) or any(
+        ctx in lowered for ctx in _BENIGN_ERROR_CONTEXT_EN
+    )
     if not benign and (
         any(tok in text for tok in _ERROR_TOKENS)
         or any(tok in lowered for tok in _ERROR_TOKENS_EN)
@@ -484,6 +552,25 @@ def tag_for_line(line):
     if level is not None:
         return _TAG_BY_LEVEL[level]
     return classify(line)
+
+
+def tag_for_message(level, message):
+    """UI 着色标签：**级别定基调，INFO/DEBUG 档再按内容细分 success/system**。
+
+    为什么不能只用 ``tag_for_level``：success / system 是**内容类别**而非级别 ——
+    五级体系里没有它们，于是 ``tag_for_level(INFO)`` 恒为 ``info``，
+    「WT自动化流程完成」等行会由绿变灰，色板里的 success 色值也再无任何路径产出。
+    但「完成 / 开始」这类语义需要一眼区分，故按内容补细分。
+
+    只细分 INFO/DEBUG：ERROR/WARN 的语义已由级别表达，不应被内容改写
+    （否则「运行结束 · 状态=成功 · 失败 0」这类含"失败"二字的信息行会被抢走颜色）。
+    """
+    tag = tag_for_level(level)
+    if tag in ("info", "debug"):
+        content_tag = classify(message)
+        if content_tag in ("success", "system"):
+            return content_tag
+    return tag
 
 
 # ── 配色（延迟从 wt_theme 取） ──────────────────────────────────────────────

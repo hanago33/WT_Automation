@@ -535,6 +535,12 @@ def log_step(step_name, level=None):
     resolved = wt_logging.normalize_level(level, default=None) if level is not None else None
     if resolved is None:
         resolved = wt_logging.detect_level(step_name)
+
+    # JSONL 旁路**不受级别门控**：它的价值就是「文本精简、机读完整」——
+    # 被降噪砍掉的 DEBUG 诊断（分段计时 / 判定转储 / 剪枝计数）只在这里留存。
+    # 若放到门控之后，JSONL 就退化成文本日志的重复副本，不再提供增量价值。
+    wt_logging.log_event(resolved, step_name)
+
     if not wt_logging.is_enabled(resolved):
         return
 
@@ -542,17 +548,15 @@ def log_step(step_name, level=None):
     print(log_line, end="\n")
 
     _append_log_file(log_line)
-    # JSONL 旁路：与文本日志同源同时写（未开启旁路时是 no-op）。
-    wt_logging.log_event(resolved, step_name)
     try:
         wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
     except Exception:
         pass
 
     if monitor_window:
-        # 级别由写入方决定，替代改造前按关键字猜测的 4 套分类器（规则互不一致，
-        # 且「已剔除错误项=0」含"错误"会被误判为 error 红字）。
-        kind = wt_logging.tag_for_level(resolved)
+        # 着色标签：级别定基调，INFO/DEBUG 档再按内容细分 success/system
+        # （「完成」「开始」是内容类别而非级别，只按级别取色会让它们永久丢失颜色）。
+        kind = wt_logging.tag_for_message(resolved, step_name)
         # log/update_status 可能在后台自动化线程被调用，须调度到主线程执行，
         # 避免跨线程 Tcl 重入崩溃。
         _ui_safe_call(lambda: monitor_window.log(log_line, kind=kind))
@@ -568,10 +572,15 @@ def log_at(level, message):
     log_step(message, level=level)
 
 
-def _log_run_end_banner(run_report, status):
+def _log_run_end_banner(run_report, status, level=None):
     """运行结束边界标记（人读友好，便于在长日志里定位一次运行的收尾）。
 
     取运行报告 summary 里的耗时与计数；任何缺失都不影响标记本身。
+
+    **级别必须由调用方显式给出**（成功路径 INFO / 失败路径 ERROR）：
+    本函数的 extra 恒含「失败 0」（`failedCount` 初值就是 0），若交给
+    `log_step` 靠文本推断，成功运行会被判成 ERROR 红字 —— 正是 P0 修过的
+    「假红字」同类问题。
     """
     summary = {}
     if isinstance(run_report, dict):
@@ -597,7 +606,8 @@ def _log_run_end_banner(run_report, status):
             elapsed_seconds=summary.get("totalElapsedSeconds"),
             step_count=summary.get("executedCount"),
             extra=extra,
-        )
+        ),
+        level=level,
     )
 
 
@@ -1455,7 +1465,7 @@ def _get_wt_window_helpers():
 def _get_wt_run_reporting():
 	global _WT_RUN_REPORTING_CONFIGURED
 	if not _WT_RUN_REPORTING_CONFIGURED:
-		wt_run_reporting.configure_run_reporting(base_dir=BASE_DIR, log_step=log_step)
+		wt_run_reporting.configure_run_reporting(base_dir=BASE_DIR, log_step=log_step, log_at=log_at)
 		_WT_RUN_REPORTING_CONFIGURED = True
 	return wt_run_reporting
 
@@ -2618,9 +2628,11 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 				"若该路径不存在，说明流程文件未上传/未部署到本机".format(FLOW_DEFINITION_FILE)
 			)
 		# 步骤清单改为摘要：改造前把全部 stepId 单行倾倒（实测 111 步 = 2665 字符，
-		# 占整份日志 14% 字符量）。完整清单在 DEBUG 档输出，并随运行报告留存。
+		# 占整份日志 14% 字符量）。完整清单在 DEBUG 档输出。
+		# 措辞点明「运行结束后」——运行报告要到 finalize_run_report 才落盘，
+		# 运行进行中该文件尚不存在，原先的「见运行报告」会指向不存在的文件。
 		log_step(
-			"已解析待执行步骤 {} 个（{} … {}）；完整清单见运行报告".format(
+			"已解析待执行步骤 {} 个（{} … {}）；完整清单见运行结束后的运行报告".format(
 				len(steps_to_run), steps_to_run[0], steps_to_run[-1]
 			)
 		)
@@ -2803,7 +2815,7 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 		log_step("WT自动化流程完成")
 		_attach_mup_data_diff(context.get("run_report"), context)
 		_get_wt_run_reporting().finalize_run_report(context.get("run_report"), "success")
-		_log_run_end_banner(context.get("run_report"), "成功")
+		_log_run_end_banner(context.get("run_report"), "成功", level=wt_logging.INFO)
 		wt_logging.stop_jsonl()
 		wt_run_status.publish(
 			status="success",
@@ -2832,7 +2844,9 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 				error=str(e),
 			)
 			_log_run_end_banner(
-				context.get("run_report") if "context" in locals() else None, "失败"
+				context.get("run_report") if "context" in locals() else None,
+				"失败",
+				level=wt_logging.ERROR,
 			)
 			wt_logging.stop_jsonl()
 		except Exception:

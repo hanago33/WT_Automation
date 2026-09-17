@@ -5,36 +5,33 @@
 改用 ``tempfile.mkdtemp`` 每次创建独立目录，互不干扰。
 """
 import os
+import shutil
 import sys
 import tempfile
 import unittest
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TESTS_DIR)
-if PROJECT_DIR not in sys.path:
-    sys.path.insert(0, PROJECT_DIR)
+for _path in (PROJECT_DIR, TESTS_DIR):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
+from _tk_support import shared_tk_root
 
 import wt_logging
 
 
-def _make_hidden_tk_root():
-    """创建隐藏的 Tk 根窗口；不可用时抛 SkipTest（**附具体原因**，便于排查）。
+def _safe_rmtree(path):
+    """best-effort 清理临时目录。
 
-    skip 理由里带上底层异常，避免"无显示环境"这种笼统说法掩盖真实原因。
+    某些环境（沙箱批量删除守卫）会以 ``SystemExit`` 拒绝删除 ——
+    它属于 ``BaseException``，必须一并吞掉，否则清理失败会被记成测试错误。
+    清理是尽力而为，不应影响测试结论。
     """
     try:
-        import tkinter as tk
-    except Exception as exc:
-        raise unittest.SkipTest("无 tkinter 可用：%r" % (exc,))
-    try:
-        root = tk.Tk()
-    except Exception as exc:
-        raise unittest.SkipTest("无法创建 Tk 根窗口：%r" % (exc,))
-    try:
-        root.withdraw()
-    except Exception:
+        shutil.rmtree(path, ignore_errors=True)
+    except BaseException:
         pass
-    return tk, root
 
 
 class LogRotationTests(unittest.TestCase):
@@ -44,6 +41,8 @@ class LogRotationTests(unittest.TestCase):
         base = os.path.join(TESTS_DIR, ".tmp_rotate")
         os.makedirs(base, exist_ok=True)
         self.dir = tempfile.mkdtemp(prefix="rot_", dir=base)
+        # 必须登记清理：否则每次跑测都留下一个目录（实测曾累积到 128 个）。
+        self.addCleanup(_safe_rmtree, self.dir)
         self.path = os.path.join(self.dir, "wt_automation.log")
 
     def _write(self, text):
@@ -199,14 +198,8 @@ class MonitorWindowLineCapTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.tk, cls.root = _make_hidden_tk_root()
-
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            cls.root.destroy()
-        except Exception:
-            pass
+        # 共享根窗口：本类**不得 destroy** —— 同进程内销毁后其它类再建会失败。
+        cls.tk, cls.root = shared_tk_root()
 
     def _make_window(self):
         """绕过 __init__ 直接构造，避免创建可见窗口。"""
@@ -294,6 +287,33 @@ class TagStyleConsistencyGuardTests(unittest.TestCase):
                             code,
                             "%s 的 %s 仍硬编码 %s 色值" % (name, attr, tag),
                         )
+
+
+class SharedTkRootGuardTests(unittest.TestCase):
+    """守卫：用了共享根窗口的测试文件不得再销毁它。
+
+    同进程内销毁 Tk 根窗口后，**其它**测试类再 `Tk()` 会失败
+    （`TclError: invalid command name "tcl_findLibrary"`），
+    且失败会落在后一个用到 Tk 的类上 —— 表现为那组测试被整组 skip，极难定位。
+    """
+
+    # 拼接构造，避免本守卫自身的源码命中该字面量
+    _DESTROY_CALL = "destroy" + "()"
+
+    def test_users_of_shared_root_do_not_destroy_it(self):
+        offenders = []
+        for name in sorted(os.listdir(TESTS_DIR)):
+            if not name.endswith(".py") or name == "_tk_support.py":
+                continue
+            with open(os.path.join(TESTS_DIR, name), encoding="utf-8-sig") as f:
+                source = f.read()
+            if "shared_tk_root" not in source:
+                continue
+            if self._DESTROY_CALL in source:
+                offenders.append(name)
+        self.assertEqual(
+            offenders, [], "这些文件既用共享根窗口又销毁它：%s" % offenders
+        )
 
 
 if __name__ == "__main__":

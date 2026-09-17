@@ -148,6 +148,40 @@ class ClassifyTests(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(wt_logging.classify(line), expected)
 
+    def test_count_zero_summary_is_not_an_error(self):
+        """计数型零值：运行摘要/收尾标记恒含「失败 0」「failed=0」，
+        成功运行也一定有这些字段 —— 不能判成 ERROR（含「成功」时判 success 是对的）。"""
+        lines = [
+            "========== 运行结束 · 状态=成功 · 用时 123.4s · 步骤 16 步 · 成功 16 / 失败 0 ==========",
+            "运行结果摘要已写入: status=success, executed=16, success=16, failed=0, skipped=0",
+            "运行结果摘要已写入: status=success, FAILED=0",
+            "全流程 失败 0 次",
+        ]
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertNotEqual(
+                    wt_logging.classify(line), "error", "计数为 0 不应判为 error"
+                )
+
+    def test_successful_summary_is_coloured_success(self):
+        """成功收尾行应拿到 success 着色，而不是被 error 抢走。"""
+        line = (
+            "========== 运行结束 · 状态=成功 · 用时 123.4s · "
+            "步骤 16 步 · 成功 16 / 失败 0 =========="
+        )
+        self.assertEqual(wt_logging.classify(line), "success")
+
+    def test_count_zero_does_not_mask_real_failures(self):
+        """白名单只针对「0」，真实失败计数仍须判 error。"""
+        lines = [
+            "运行结果摘要已写入: status=failed, executed=16, success=1, failed=15",
+            "步骤结束: step=x, status=failed, error=控件未找到",
+            "失败 3 次后放弃",
+        ]
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertEqual(wt_logging.classify(line), "error")
+
     def test_plain_line_is_info(self):
         line = "[FlowLocator] 窗口过滤严格无命中，采用运行时主窗口候选 1 个"
         self.assertEqual(wt_logging.classify(line), "info")
@@ -506,6 +540,123 @@ class JsonlSidecarTests(unittest.TestCase):
         self.assertEqual(wt_logging.extract_step_fields(""), ("", ""))
         self.assertEqual(wt_logging.extract_step_fields(None), ("", ""))
         self.assertEqual(wt_logging.extract_step_fields("没有字段"), ("", ""))
+
+
+class TagForMessageTests(unittest.TestCase):
+    """着色标签：级别定基调，INFO/DEBUG 档按内容细分 success/system。
+
+    回归背景：只按级别取 tag 会让 ``tag_for_level(INFO)`` 恒为 ``info``，
+    「WT自动化流程完成」由绿变灰，色板里的 success 色值再无任何路径产出。
+    """
+
+    def test_completion_line_gets_success_tag(self):
+        self.assertEqual(
+            wt_logging.tag_for_message(wt_logging.INFO, "WT自动化流程完成"), "success"
+        )
+
+    def test_start_line_gets_system_tag(self):
+        self.assertEqual(
+            wt_logging.tag_for_message(wt_logging.INFO, "开始执行步骤: step=step_1"), "system"
+        )
+
+    def test_plain_info_stays_info(self):
+        """既无成功/开始语义、也无异常语义的行保持 info。"""
+        self.assertEqual(
+            wt_logging.tag_for_message(wt_logging.INFO, "下拉选项枚举进度: step=step_1"),
+            "info",
+        )
+
+    def test_success_wording_gets_success_tag(self):
+        """「已通过」属成功语义 —— 动作成功行应保留绿色。"""
+        self.assertEqual(
+            wt_logging.tag_for_message(wt_logging.INFO, "已通过流程链路匹配点击控件"),
+            "success",
+        )
+
+    def test_error_level_is_not_overridden_by_content(self):
+        """ERROR 的语义由级别表达，不被内容改写。"""
+        self.assertEqual(
+            wt_logging.tag_for_message(wt_logging.ERROR, "运行结束 · 成功 16 / 失败 0"),
+            "error",
+        )
+
+    def test_success_wording_at_error_level_stays_error(self):
+        self.assertEqual(
+            wt_logging.tag_for_message(wt_logging.ERROR, "流程完成但存在失败步骤"), "error"
+        )
+
+    def test_debug_level_can_still_be_system(self):
+        self.assertEqual(
+            wt_logging.tag_for_message(wt_logging.DEBUG, "启动时预扫描"), "system"
+        )
+
+    def test_warning_level_is_not_overridden(self):
+        self.assertEqual(
+            wt_logging.tag_for_message(wt_logging.WARN, "流程完成但有跳过"), "warning"
+        )
+
+
+class JsonlRetentionTests(unittest.TestCase):
+    """JSONL 目录保留策略：每次运行一个文件，必须设上限，否则长期累积。"""
+
+    PROBE_DIR = os.path.join(TESTS_DIR, ".tmp_jsonl_retention")
+
+    def setUp(self):
+        os.makedirs(self.PROBE_DIR, exist_ok=True)
+        for index in range(6):
+            path = os.path.join(self.PROBE_DIR, "wt_run_20260917_10%02d000_000_001.jsonl" % index)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("{}\n")
+
+    def _names(self):
+        return sorted(n for n in os.listdir(self.PROBE_DIR) if n.endswith(".jsonl"))
+
+    def test_selection_keeps_latest_n(self):
+        """选择逻辑是纯函数，不依赖真的删除（测试环境可能禁删）。"""
+        targets = wt_logging.jsonl_files_to_prune(
+            os.path.join(self.PROBE_DIR, "new.jsonl"), keep=2
+        )
+        self.assertEqual(len(targets), 4)
+        self.assertTrue(all(t.endswith(".jsonl") for t in targets))
+        self.assertNotIn("_100500_", " ".join(os.path.basename(t) for t in targets),
+                         "最新的两个不应在清理列表中")
+
+    def test_selection_noop_when_below_limit(self):
+        self.assertEqual(
+            wt_logging.jsonl_files_to_prune(os.path.join(self.PROBE_DIR, "n.jsonl"), keep=100),
+            [],
+        )
+
+    def test_zero_or_negative_keep_is_noop(self):
+        for keep in (0, -1):
+            with self.subTest(keep=keep):
+                self.assertEqual(
+                    wt_logging.jsonl_files_to_prune(
+                        os.path.join(self.PROBE_DIR, "n.jsonl"), keep=keep
+                    ),
+                    [],
+                )
+
+    def test_missing_directory_is_safe(self):
+        self.assertEqual(
+            wt_logging.jsonl_files_to_prune(os.path.join(self.PROBE_DIR, "无目录", "n.jsonl")),
+            [],
+        )
+        self.assertEqual(wt_logging.jsonl_files_to_prune(""), [])
+
+    def test_prune_actually_removes_files(self):
+        """真实删除路径。环境禁删（沙箱守卫）时跳过，不算失败。"""
+        try:
+            removed = wt_logging.prune_jsonl_dir(
+                os.path.join(self.PROBE_DIR, "new.jsonl"), keep=2
+            )
+        except SystemExit:
+            self.skipTest("环境禁删（沙箱批量删除守卫）")
+        self.assertEqual(removed, 4)
+        self.assertEqual(len(self._names()), 2)
+
+    def test_default_keep_is_sane(self):
+        self.assertGreaterEqual(wt_logging.JSONL_KEEP_RUNS, 10)
 
 
 class DependencyConstraintTests(unittest.TestCase):
