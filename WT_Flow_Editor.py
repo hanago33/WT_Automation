@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -5618,6 +5619,11 @@ class FlowEditorApp:
         # RPA风格新增变量
         self.var_action = tk.StringVar(value="click")
         self.var_target_control_id = tk.StringVar()
+        # 动作切换时的「目标控件」暂存：切到不使用目标控件的动作（如固定等待）会清空该字段，
+        # 暂存后切回原动作可自动还原，避免用户已选控件被静默丢弃。
+        # 键为动作名；加载步骤时清空，防止跨步骤串味。
+        self._action_target_stash = {}
+        self._shown_action_name = None
         self.var_input_text = tk.StringVar()
         self.var_post_input_keys = tk.StringVar()
         self.var_require_blur_submit = tk.BooleanVar(value=False)
@@ -7977,11 +7983,29 @@ class FlowEditorApp:
         self._update_action_editor_visibility()
 
     def _on_action_changed(self, _event=None):
+        """用户切换动作时的处理（仅由动作下拉的 <<ComboboxSelected>> 触发）。
+
+        `_update_action_editor_visibility` 在切到不使用「目标控件」的动作时会清空该字段，
+        这是必要的（保存路径对任何非空目标都会写入 controlId，清空可避免产出伪造字段）。
+        但用户只是「路过」另一个动作再切回来时，已选控件不该丢 —— 这里在清空前暂存，
+        切回同一动作时自动还原。
+        """
         if self.var_action_type.get().strip() != "action":
             self.var_action_type.set("action")
         if self.var_strategy.get().strip() in {"", "script"}:
             self.var_strategy.set("action")
+        previous_action = self._shown_action_name
+        new_action = self.var_action.get().strip() or "click"
+        previous_target = self.var_target_control_id.get().strip()
+        if previous_action and previous_action != new_action and previous_target:
+            self._action_target_stash[previous_action] = previous_target
         self._update_action_editor_visibility()
+        # 切回需要目标控件的动作且字段为空时，还原该动作上次用过的控件
+        if get_action_schema(new_action).get("target_required") \
+                and not self.var_target_control_id.get().strip():
+            stashed = self._action_target_stash.get(new_action)
+            if stashed:
+                self._set_target_control_value(stashed)
 
     def _update_action_editor_visibility(self):
         if not hasattr(self, "action_combo"):
@@ -8104,12 +8128,16 @@ class FlowEditorApp:
             self.post_input_keys_combo.configure(state="readonly" if show_post_input else "disabled")
         if hasattr(self, "require_blur_submit_check"):
             self.require_blur_submit_check.configure(state="normal" if show_post_input else "disabled")
+        # 记录当前展示的动作名，供 _on_action_changed 判断「切换前」用的是哪个动作
+        self._shown_action_name = action_name
 
     def _load_action_editor_from_config(self, step):
         action_config = step.get("actionConfig", {}) if isinstance(step, dict) else {}
         action_name = str(action_config.get("action", "")).strip()
         action_defaults = build_action_default_config(action_name or "click")
         schema = get_action_schema(action_name or "click")
+        # 换步骤时清空动作切换暂存，避免上一步暂存的控件被还原到本步
+        self._action_target_stash = {}
         self.var_action.set(action_name or "click")
         self._set_target_control_value(str(action_config.get("controlId", "")).strip())
         input_key = str(schema.get("input_key", "")).strip()
@@ -8990,10 +9018,17 @@ class FlowEditorApp:
         return dialog.result
 
     def cmd_add_control(self):
-        step = self.steps[self.selected_index] if self.selected_index is not None and 0 <= self.selected_index < len(self.steps) else {}
+        # 未选中步骤时必须先拦住：本函数后面有两处 self.steps[self.selected_index]
+        # （控件序号、追加控件），selected_index 为 None 时会抛 TypeError 并被 Tk 回调
+        # 吞掉，表现为「点了新增控件没反应」。守卫写法与 cmd_edit_control 保持一致。
+        if self.selected_index is None:
+            messagebox.showinfo("提示", "请先选择一个步骤。")
+            return
+        step = self.steps[self.selected_index]
+        existing_controls = step.get("controls", []) if isinstance(step, dict) else []
         new_control = self._open_control_dialog(
             {
-                "id": f"{self.var_id.get().strip() or 'step'}_control_{len(self.steps[self.selected_index].get('controls', [])) + 1}",
+                "id": f"{self.var_id.get().strip() or 'step'}_control_{len(existing_controls) + 1}",
                 "windowTitle": self.var_window_title.get().strip(),
             }
         )
@@ -9273,19 +9308,19 @@ class FlowEditorApp:
         """批量刷新步骤控件定位：按 automationId 从合并后的总控件库匹配最新定义，
         覆盖 targetMethod/targetValue/helpText/functionText，一键同步全部已绑定步骤。"""
         if not self.steps:
-            messagebox.showinfo("提示", "当前流程没有步骤，无需刷新。", parent=self.window)
+            messagebox.showinfo("提示", "当前流程没有步骤，无需刷新。", parent=self.root)
             return
         if not os.path.exists(MASTER_CONTROL_FILE):
             messagebox.showinfo(
                 "提示",
                 f"未找到总控件库：\n{MASTER_CONTROL_FILE}\n\n请先在控件库界面执行『合并去重并保存』生成总控件信息。",
-                parent=self.window,
+                parent=self.root,
             )
             return
         master_data = load_json_file(MASTER_CONTROL_FILE)
         flat_controls = master_data.get("flatControls", []) if isinstance(master_data, dict) else []
         if not flat_controls:
-            messagebox.showinfo("提示", "总控件库为空，请先采集并合并控件。", parent=self.window)
+            messagebox.showinfo("提示", "总控件库为空，请先采集并合并控件。", parent=self.root)
             return
 
         by_aid = {}
@@ -9328,7 +9363,7 @@ class FlowEditorApp:
             messagebox.showinfo(
                 "刷新完成",
                 f"扫描 {len(self.steps)} 个步骤，未发现可更新的控件（匹配 0，未匹配 {unmatched}，无 automationId 跳过 {skipped}）。",
-                parent=self.window,
+                parent=self.root,
             )
             return
         self._mark_dirty(f"批量刷新步骤定位：更新 {updated} 个控件，未匹配 {unmatched} 个")
@@ -9338,30 +9373,30 @@ class FlowEditorApp:
         messagebox.showinfo(
             "刷新完成",
             f"已更新 {updated} 个步骤控件的定位，未匹配 {unmatched} 个（无 automationId 跳过 {skipped} 个）：\n\n{preview}",
-            parent=self.window,
+            parent=self.root,
         )
 
     def cmd_repair_flow_audit_issues(self):
         """一键修复审核问题：确定性修复当前步骤 + 展示待确认项。"""
         if not self.steps:
-            messagebox.showinfo("提示", "当前流程没有步骤，无需修复。", parent=self.window)
+            messagebox.showinfo("提示", "当前流程没有步骤，无需修复。", parent=self.root)
             return
         try:
             from WT_AUTOMATION_Agent import flow_repair
 
             repaired_flow, report = flow_repair.repair_flow_definition({"steps": self.steps}, MASTER_CONTROL_FILE)
         except Exception as exc:
-            messagebox.showerror("修复失败", str(exc), parent=self.window)
+            messagebox.showerror("修复失败", str(exc), parent=self.root)
             return
         repaired_steps = repaired_flow.get("steps", [])
         if not isinstance(repaired_steps, list) or len(repaired_steps) != len(self.steps):
-            messagebox.showerror("修复失败", "修复模块返回的步骤数量不一致，已取消应用。", parent=self.window)
+            messagebox.showerror("修复失败", "修复模块返回的步骤数量不一致，已取消应用。", parent=self.root)
             return
         self.steps = repaired_steps
         auto_count = int(report.get("auto_fixed_count", 0) or 0)
         pending_count = int(report.get("pending_confirm_count", 0) or 0)
         if auto_count == 0 and pending_count == 0:
-            messagebox.showinfo("修复完成", "未发现可自动修复或需要确认的问题。", parent=self.window)
+            messagebox.showinfo("修复完成", "未发现可自动修复或需要确认的问题。", parent=self.root)
             return
         self._mark_dirty(f"一键修复审核问题：自动修复 {auto_count} 项，待确认 {pending_count} 项")
         if self.selected_index is not None:
@@ -9373,7 +9408,7 @@ class FlowEditorApp:
         messagebox.showinfo(
             "修复完成",
             f"已自动修复 {auto_count} 项；仍有 {pending_count} 项待确认：\n\n{pending_preview or '（无）'}\n\n请保存流程文件后再次运行检查确认。",
-            parent=self.window,
+            parent=self.root,
         )
 
     def cmd_add_flow_package(self):
@@ -9632,9 +9667,9 @@ class FlowEditorApp:
             if self.selected_index is not None:
                 self._select_step(self.selected_index)
             self._refresh_overview()
-            messagebox.showinfo("完成", f"已重新编号 {changed_count} 个步骤ID。", parent=self.window)
+            messagebox.showinfo("完成", f"已重新编号 {changed_count} 个步骤ID。", parent=self.root)
         else:
-            messagebox.showinfo("完成", "所有步骤ID已是顺序排列，无需调整。", parent=self.window)
+            messagebox.showinfo("完成", "所有步骤ID已是顺序排列，无需调整。", parent=self.root)
 
     def cmd_new_default(self):
         if self.dirty and not messagebox.askyesno("确认", "当前修改未保存，确定新建默认链路吗？"):
@@ -9894,14 +9929,10 @@ class FlowEditorApp:
         if self._concurrent_enabled:
             return
         
-        try:
-            import threading
-            import queue as queue_module
-        except Exception as exc:
-            messagebox.showerror("启动失败", f"无法启动伴随拾取模式：\n{exc}", parent=self.root)
-            self.var_concurrent_mode.set(False)
-            return
-        
+        # queue / threading 已在模块顶部导入。
+        # 原先此处是局部 `import queue as queue_module`，而 _poll_concurrent_events
+        # 里用 `except queue_module.Empty` —— 局部名在该函数不可见，
+        # 每轮取空队列时都会抛 NameError，被外层 except 吞掉（循环靠异常退出而非 break）。
         try:
             from pynput import keyboard, mouse
         except Exception as exc:
@@ -9910,7 +9941,7 @@ class FlowEditorApp:
             return
         
         # 使用线程安全的队列传递 Ctrl 键状态和点击事件
-        self._concurrent_event_queue = queue_module.Queue()
+        self._concurrent_event_queue = queue.Queue()
         
         self._concurrent_enabled = True
         self._concurrent_ctrl_pressed = False
@@ -10010,7 +10041,7 @@ class FlowEditorApp:
                         if self._point_in_editor(x, y):
                             continue
                         self._concurrent_capture_and_append(x, y)
-                except queue_module.Empty:
+                except queue.Empty:
                     break
         except Exception:
             pass
@@ -10341,7 +10372,9 @@ class FlowEditorApp:
             fg_color = "#991b1b" if is_error else "#166534"
             
             toast.configure(bg=bg_color, highlightbackground=fg_color, highlightthickness=2)
-            label = tk.Label(toast, text=message, bg=bg_color, fg=fg_color, font=(self.default_font, 12, "bold"), padx=30, pady=15)
+            # 字体族用本文件统一的 "Microsoft YaHei UI"（原为 self.default_font，
+            # 该类从未定义过该属性 → AttributeError 被外层 except 吞掉，Toast 永远不显示）
+            label = tk.Label(toast, text=message, bg=bg_color, fg=fg_color, font=("Microsoft YaHei UI", 12, "bold"), padx=30, pady=15)
             label.pack()
             
             toast.update_idletasks()
