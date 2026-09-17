@@ -17,6 +17,26 @@ if PROJECT_DIR not in sys.path:
 import wt_logging
 
 
+def _make_hidden_tk_root():
+    """创建隐藏的 Tk 根窗口；不可用时抛 SkipTest（**附具体原因**，便于排查）。
+
+    skip 理由里带上底层异常，避免"无显示环境"这种笼统说法掩盖真实原因。
+    """
+    try:
+        import tkinter as tk
+    except Exception as exc:
+        raise unittest.SkipTest("无 tkinter 可用：%r" % (exc,))
+    try:
+        root = tk.Tk()
+    except Exception as exc:
+        raise unittest.SkipTest("无法创建 Tk 根窗口：%r" % (exc,))
+    try:
+        root.withdraw()
+    except Exception:
+        pass
+    return tk, root
+
+
 class LogRotationTests(unittest.TestCase):
     """按大小轮转：path -> path.1 -> path.2 …，超出份数的最旧备份被覆盖。"""
 
@@ -93,21 +113,93 @@ class LogRotationTests(unittest.TestCase):
         self.assertGreaterEqual(wt_logging.LOG_BACKUP_COUNT, 1)
 
 
+class _RecordingTextWidget(object):
+    """记录 ``tag_configure`` 调用的轻量替身。
+
+    样式逻辑（取色、哪些标签加粗）与 Tk 无关，用替身即可验证 ——
+    不依赖显示环境，也不会被全量测试里其它用例的 Tk 状态影响。
+    """
+
+    def __init__(self):
+        self.tags = {}
+
+    def tag_configure(self, tag, **options):
+        self.tags[tag] = dict(options)
+
+    def foreground(self, tag):
+        return self.tags.get(tag, {}).get("foreground")
+
+    def font(self, tag):
+        return self.tags.get(tag, {}).get("font")
+
+
+class LogTagStyleTests(unittest.TestCase):
+    """日志标签统一样式：颜色取自 wt_theme，错误加粗以便一眼可见。"""
+
+    def _widget(self, **kwargs):
+        widget = _RecordingTextWidget()
+        wt_logging.configure_log_tags(widget, **kwargs)
+        return widget
+
+    def test_all_level_tags_get_palette_colors(self):
+        widget = self._widget(dark=True, font_family="Consolas", font_size=9)
+        colors = wt_logging.level_colors(dark=True)
+        for tag in ("debug", "info", "warning", "error", "success", "system"):
+            with self.subTest(tag=tag):
+                self.assertEqual(widget.foreground(tag), colors[tag])
+
+    def test_error_is_bold(self):
+        widget = self._widget(dark=True, font_family="Consolas", font_size=9)
+        self.assertIn("bold", str(widget.font("error")))
+
+    def test_warning_is_not_bold(self):
+        """只有错误加粗，避免警告与错误抢注意力。"""
+        widget = self._widget(dark=True, font_family="Consolas", font_size=9)
+        self.assertNotIn("bold", str(widget.font("warning") or ""))
+
+    def test_other_levels_inherit_widget_font(self):
+        widget = self._widget(dark=True, font_family="Consolas", font_size=9)
+        for tag in ("debug", "info", "success", "system"):
+            with self.subTest(tag=tag):
+                self.assertIsNone(widget.font(tag), "%s 不应单独设字体" % tag)
+
+    def test_without_font_only_color_is_set(self):
+        widget = self._widget(dark=False)
+        self.assertEqual(widget.foreground("error"), wt_logging.level_colors(False)["error"])
+        self.assertIsNone(widget.font("error"))
+
+    def test_requested_tag_subset_is_respected(self):
+        widget = _RecordingTextWidget()
+        configured = wt_logging.configure_log_tags(
+            widget, dark=False, tags=("info", "error")
+        )
+        self.assertEqual(configured, ["info", "error"])
+        self.assertEqual(sorted(widget.tags), ["error", "info"])
+
+    def test_unknown_tag_is_skipped(self):
+        widget = _RecordingTextWidget()
+        wt_logging.configure_log_tags(widget, dark=False, tags=("info", "time", "nope"))
+        self.assertEqual(sorted(widget.tags), ["info"])
+
+    def test_light_and_dark_variants_differ(self):
+        light = self._widget(dark=False)
+        dark = self._widget(dark=True)
+        self.assertNotEqual(light.foreground("info"), dark.foreground("info"))
+
+    def test_emphasis_tags_only_contain_error(self):
+        self.assertEqual(tuple(wt_logging.EMPHASIS_TAGS), ("error",))
+
+
 class MonitorWindowLineCapTests(unittest.TestCase):
-    """监视器窗口日志区行数上限：长流程下 Text 不得无限增长。"""
+    """监视器窗口日志区行数上限：长流程下 Text 不得无限增长。
+
+    本组依赖真实 Tk 的行号语义（裁剪的 off-by-one 只有真控件能验证）。
+    若环境无法创建 Tk 根窗口则整组跳过，不影响其它测试。
+    """
 
     @classmethod
     def setUpClass(cls):
-        try:
-            import tkinter as tk
-        except Exception:
-            raise unittest.SkipTest("无 tkinter 可用")
-        cls.tk = tk
-        try:
-            cls.root = tk.Tk()
-        except Exception:
-            raise unittest.SkipTest("无法创建 Tk 根窗口（无显示环境）")
-        cls.root.withdraw()
+        cls.tk, cls.root = _make_hidden_tk_root()
 
     @classmethod
     def tearDownClass(cls):
@@ -162,82 +254,6 @@ class MonitorWindowLineCapTests(unittest.TestCase):
             wt_task_queue_window.TaskQueueWindow._LOG_MAX_LINES,
             "各日志区的行数上限应保持一致",
         )
-
-
-class LogTagStyleTests(unittest.TestCase):
-    """日志标签统一样式：颜色取自 wt_theme，错误加粗以便一眼可见。"""
-
-    @classmethod
-    def setUpClass(cls):
-        try:
-            import tkinter as tk
-        except Exception:
-            raise unittest.SkipTest("无 tkinter 可用")
-        cls.tk = tk
-        try:
-            cls.root = tk.Tk()
-        except Exception:
-            raise unittest.SkipTest("无法创建 Tk 根窗口（无显示环境）")
-        cls.root.withdraw()
-
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            cls.root.destroy()
-        except Exception:
-            pass
-
-    def _text(self):
-        return self.tk.Text(self.root, font=("Consolas", 9))
-
-    def test_all_level_tags_get_palette_colors(self):
-        widget = self._text()
-        wt_logging.configure_log_tags(
-            widget, dark=True, font_family="Consolas", font_size=9
-        )
-        colors = wt_logging.level_colors(dark=True)
-        for tag in ("debug", "info", "warning", "error", "success", "system"):
-            with self.subTest(tag=tag):
-                self.assertEqual(widget.tag_cget(tag, "foreground"), colors[tag])
-
-    def test_error_is_bold(self):
-        widget = self._text()
-        wt_logging.configure_log_tags(
-            widget, dark=True, font_family="Consolas", font_size=9
-        )
-        self.assertIn("bold", str(widget.tag_cget("error", "font")))
-
-    def test_warning_is_not_bold(self):
-        """只有错误加粗，避免警告与错误抢注意力。"""
-        widget = self._text()
-        wt_logging.configure_log_tags(
-            widget, dark=True, font_family="Consolas", font_size=9
-        )
-        self.assertNotIn("bold", str(widget.tag_cget("warning", "font") or ""))
-
-    def test_without_font_only_color_is_set(self):
-        widget = self._text()
-        wt_logging.configure_log_tags(widget, dark=False)
-        self.assertEqual(widget.tag_cget("error", "foreground"), wt_logging.level_colors(False)["error"])
-        self.assertEqual(str(widget.tag_cget("error", "font") or ""), "")
-
-    def test_requested_tag_subset_is_respected(self):
-        widget = self._text()
-        configured = wt_logging.configure_log_tags(
-            widget, dark=False, tags=("info", "error")
-        )
-        self.assertEqual(configured, ["info", "error"])
-
-    def test_light_and_dark_variants_differ(self):
-        light, dark = self._text(), self._text()
-        wt_logging.configure_log_tags(light, dark=False)
-        wt_logging.configure_log_tags(dark, dark=True)
-        self.assertNotEqual(
-            light.tag_cget("info", "foreground"), dark.tag_cget("info", "foreground")
-        )
-
-    def test_emphasis_tags_only_contain_error(self):
-        self.assertEqual(tuple(wt_logging.EMPHASIS_TAGS), ("error",))
 
 
 class TagStyleConsistencyGuardTests(unittest.TestCase):
