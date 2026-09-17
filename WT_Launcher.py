@@ -12,6 +12,7 @@ import time
 import urllib.request
 import tkinter as tk
 import zipfile
+import uuid
 import ctypes
 import contextlib
 import io

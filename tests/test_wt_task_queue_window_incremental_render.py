@@ -89,6 +89,20 @@ class FakeText:
         self.lines.append((text.rstrip("\n"), tag))
         self.log.append(("insert", text, tag))
 
+    def get(self, start, end):
+        """模拟 tk.Text.get(start, end)：返回指定行范围的文本内容。
+        支持 "N.0" 到 "N.end" 的单行读取（P0④ 末行对比所需）。
+        """
+        s_row = int(start.split(".")[0])
+        e_row = int(end.split(".")[0])
+        e_is_end = end.endswith(".end")
+        if s_row == e_row and e_is_end:
+            line_idx = s_row - 1  # Tk 行号从 1 计，转为 0-based
+            if 0 <= line_idx < len(self.lines):
+                return self.lines[line_idx][0]
+            return ""
+        raise AssertionError("FakeText.get() 仅支持单行读取，收到: %r -> %r" % (start, end))
+
     def see(self, where):
         self.log.append(("see", where))
 

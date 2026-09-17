@@ -1928,6 +1928,16 @@ class TaskQueueWindow:
         if not need_full and rendered_count() > len(text_lines):
             # 快照比已渲染行数还短：服务器日志轮转/换任务，全量重绘兜底
             need_full = True
+        if not need_full and text_lines:
+            current = rendered_count()
+            if current > 0 and len(text_lines) == current:
+                # 行数相同时检查末行内容是否变化：
+                # 服务器返回固定长度滚动窗口（tail=300）时，日志持续推进但
+                # 行数始终等于 tail 上限，不补内容对比会永久零绘制（P0④）。
+                last_rendered = widget.get(f"{current}.0", f"{current}.end").strip()
+                last_incoming = text_lines[-1].strip()
+                if last_rendered != last_incoming:
+                    need_full = True
         widget.config(state=tk.NORMAL)
         if need_full:
             widget.delete("1.0", tk.END)

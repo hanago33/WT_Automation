@@ -3574,15 +3574,15 @@ class ControlMapImportDialog:
                 from tools import merge_standard_control_library as msl
 
                 def _progress(pct, msg):
-                    self.root.after(0, lambda p=pct, m=msg: self.var_status.set(
+                    self.window.after(0, lambda p=pct, m=msg: self.var_status.set(
                         f"正在合并控件库 ({p}%): {m}"))
 
                 stats = msl.run_merge(CONTROL_MAP_DIR, catalog_path, report_path,
                                       MASTER_CONTROL_FILE, progress_callback=_progress)
             except Exception as exc:  # noqa: BLE001 - 合并失败需完整反馈到状态栏
-                self.root.after(0, lambda: self._on_merge_done(None, exc))
+                self.window.after(0, lambda: self._on_merge_done(None, exc))
             else:
-                self.root.after(0, lambda: self._on_merge_done(stats, None))
+                self.window.after(0, lambda: self._on_merge_done(stats, None))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -5156,12 +5156,25 @@ class ControlMapImportDialog:
         try:
             flat_controls = payload.get("flatControls", [])
             if flat_controls:
-                # 需要将 uiPath 转为索引
+                # 优先通过 _sourceIndex 定位真实下标，避免排序/筛选后显示位置与原始数组错位。
+                # 与编辑路径（edit_selected_control L4682）保持一致的查找顺序：
+                # 1. 列表视图：iid 是筛选后的 0-based 显示位置，从 _get_filtered_controls()[idx]
+                #    取 _sourceIndex（原始数组真实下标），不受排序影响。
+                # 2. 树形视图：iid 是 uiPath 字符串，查 _tree_node_index（字符串键）。
+                # 3. fallback：直接用 int(idx)（理论上不应走到，保留以防遗漏场景）。
+                filtered_for_delete = self._get_filtered_controls()
                 indices_to_delete = set()
                 for idx in selected_indexes:
-                    # 如果 idx 是 uiPath 字符串
-                    if idx in self._tree_node_index:
-                        indices_to_delete.add(self._tree_node_index[idx])
+                    # 列表视图路径：idx 是 0-based 显示位置
+                    if 0 <= idx < len(filtered_for_delete):
+                        src = filtered_for_delete[idx].get("_sourceIndex")
+                        if isinstance(src, int):
+                            indices_to_delete.add(src)
+                            continue
+                    # 树形视图路径：iid 是 uiPath 字符串存入 _tree_node_index
+                    str_idx = str(idx)
+                    if str_idx in self._tree_node_index:
+                        indices_to_delete.add(self._tree_node_index[str_idx])
                     else:
                         try:
                             indices_to_delete.add(int(idx))
