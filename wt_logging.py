@@ -24,6 +24,7 @@
 """
 
 import os
+import re
 import time
 
 # ── 级别枚举 ────────────────────────────────────────────────────────────────
@@ -235,6 +236,31 @@ def detect_level(line):
     if tag in ("success", "system"):
         return INFO
     return INFO
+
+
+# 已格式化行形如：`[2026-09-17 09:30:12.345] [INFO ] 消息`
+_LEVEL_TOKEN_RE = re.compile(r"^\[[^\]]*\]\s+\[(DEBUG|INFO|WARN|ERROR|CRIT)\s*\]")
+
+
+def level_from_line(line):
+    """从已格式化的日志行中提取写入方显式写入的级别；缺失时返回 None。"""
+    match = _LEVEL_TOKEN_RE.match(str(line or "").lstrip())
+    if not match:
+        return None
+    return normalize_level(match.group(1), default=None)
+
+
+def tag_for_line(line):
+    """把一行日志归入 UI 标签（error / warning / success / system / debug / info）。
+
+    优先采用写入方显式写入的级别 token（log_step 会写 ``[INFO ]`` 等），
+    仅在缺失时回退到关键字猜测 —— 避免 UI 侧二次猜测与写入方判断不一致
+    （改造前 4 个分类器各猜一套，规则互不相同）。
+    """
+    level = level_from_line(line)
+    if level is not None:
+        return _TAG_BY_LEVEL[level]
+    return classify(line)
 
 
 # ── 配色（延迟从 wt_theme 取） ──────────────────────────────────────────────

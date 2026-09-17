@@ -20,6 +20,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import wt_dpi
 import wt_theme
+import wt_logging
 import wt_wheel_router
 from flow_excel_io import (
     DEFAULT_FLOW_XLSX,
@@ -1712,13 +1713,9 @@ class ServerMonitorWindow:
         # 滚动条先 pack（防止内容长行挤压滚动条，与队列窗口日志区修复保持一致）
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        for tag, color in (
-            ("info", "#e6edf3"),
-            ("error", "#ff7b72"),
-            ("warning", "#e3b341"),
-            ("success", "#7ee787"),
-            ("system", "#79c0ff"),
-        ):
+        # 日志配色统一从 wt_theme 取（深底变体），不再就地硬编码 ——
+        # 改造前同一系统存在 4 套互不相同的日志配色。
+        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
             self.log_text.tag_configure(tag, foreground=color)
 
         self._after_id = self.window.after(2000, self._poll_loop)
@@ -1786,13 +1783,9 @@ class ServerMonitorWindow:
 
     @staticmethod
     def _classify_line(line):
-        if any(key in line for key in ("错误", "失败", "ERROR", "Traceback", "Exception")):
-            return "error"
-        if any(key in line for key in ("警告", "WARN", "Warning")):
-            return "warning"
-        if any(key in line for key in ("完成", "成功", "SUCCESS")):
-            return "success"
-        return "info"
+        # 统一委托给 wt_logging：优先读写入方显式级别，缺失时关键字兜底。
+        # 改造前此处与 _tag_for_line / 队列窗口各有一套规则，互不一致。
+        return wt_logging.tag_for_line(line)
 
     def _mark_offline(self, error_text):
         self.conn_var.set(f"未连接：{error_text}")
@@ -5402,11 +5395,8 @@ class LauncherApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=scrollbar.set)
 
-        self.log_text.tag_configure("info", foreground="#f8fafc")
-        self.log_text.tag_configure("error", foreground="#f87171")
-        self.log_text.tag_configure("success", foreground="#4ade80")
-        self.log_text.tag_configure("system", foreground="#60a5fa")
-        self.log_text.tag_configure("warning", foreground="#fbbf24")
+        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
+            self.log_text.tag_configure(tag, foreground=color)
 
         summary_frame = tk.LabelFrame(
             report_tab,
@@ -5531,16 +5521,8 @@ class LauncherApp:
             self._append_log(line, tag=tag)
 
     def _tag_for_line(self, line):
-        text = line.lower()
-        if "错误" in line or "failed" in text or "traceback" in text:
-            return "error"
-        if "警告" in line or "warning" in text:
-            return "warning"
-        if "完成" in line or "成功" in line:
-            return "success"
-        if "启动" in line or "开始" in line or "状态" in line:
-            return "system"
-        return "info"
+        # 同 _classify_line：统一委托 wt_logging，消除同系统内多套分类规则。
+        return wt_logging.tag_for_line(line)
 
     def _load_recent_log(self, max_lines=15):
         if not os.path.exists(LOG_FILE):

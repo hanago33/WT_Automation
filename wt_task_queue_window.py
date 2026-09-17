@@ -15,6 +15,7 @@ import urllib.request
 from tkinter import filedialog, messagebox, ttk
 
 import wt_theme
+import wt_logging
 
 
 DEFAULT_URL = "http://127.0.0.1:8768"
@@ -695,13 +696,8 @@ class TaskQueueWindow:
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        for tag, color in (
-            ("info", "#e2e8f0"),
-            ("error", "#f87171"),
-            ("warning", "#fbbf24"),
-            ("success", "#34d399"),
-            ("system", "#60a5fa"),
-        ):
+        # 日志配色统一从 wt_theme 取（深底变体），不再就地硬编码。
+        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
             self.log_text.tag_configure(tag, foreground=color)
 
         main_paned.add(right_frame, minsize=420, width=580)
@@ -864,13 +860,8 @@ class TaskQueueWindow:
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.monitor_log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        for tag, color in (
-            ("info", "#e2e8f0"),
-            ("error", "#f87171"),
-            ("warning", "#fbbf24"),
-            ("success", "#34d399"),
-            ("system", "#60a5fa"),
-        ):
+        # 同 log_text：配色统一由 wt_logging 从 wt_theme 取。
+        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
             self.monitor_log_text.tag_configure(tag, foreground=color)
 
     def _build_flows_tab(self, parent):
@@ -1971,15 +1962,8 @@ class TaskQueueWindow:
 
     @staticmethod
     def _classify_line(line):
-        if any(key in line for key in ("错误", "失败", "ERROR", "Traceback", "Exception")):
-            return "error"
-        if any(key in line for key in ("警告", "WARN", "Warning")):
-            return "warning"
-        if any(key in line for key in ("完成", "成功", "SUCCESS")):
-            return "success"
-        if any(key in line for key in ("queue", "启动", "开始")):
-            return "system"
-        return "info"
+        # 统一委托 wt_logging：优先读写入方显式级别，缺失时关键字兜底。
+        return wt_logging.tag_for_line(line)
 
     @staticmethod
     def _friendly_error(raw):

@@ -352,11 +352,13 @@ class MonitorWindow:
             padx=8, pady=6,
         )
         self.text_widget.pack(expand=True, fill=tk.BOTH, padx=6, pady=(6, 0))
+        # 日志配色统一从 wt_theme 取（浅底变体），不再就地硬编码色值 ——
+        # 改造前同一系统存在 4 套互不相同的日志配色。
         self.text_widget.tag_configure("time", foreground=MONITOR_THEME["muted"])
-        self.text_widget.tag_configure("info", foreground=MONITOR_THEME["text"])
-        self.text_widget.tag_configure("success", foreground=MONITOR_THEME["success"])
-        self.text_widget.tag_configure("error", foreground=MONITOR_THEME["danger"])
-        self.text_widget.tag_configure("warning", foreground=MONITOR_THEME["warning"])
+        for _tag, _color in wt_logging.tag_colors_for_widget(
+            dark=False, tags=("debug", "info", "success", "error", "warning")
+        ):
+            self.text_widget.tag_configure(_tag, foreground=_color)
 
         self.scrollbar = tk.Scrollbar(
             self.text_widget, relief=tk.FLAT, bd=0,
@@ -410,7 +412,9 @@ class MonitorWindow:
             pass
 
     def log(self, message, kind="info"):
-        if kind not in ("info", "success", "error", "warning"):
+        # debug 也是合法级别（由 wt_logging.tag_for_level 产出）；
+        # 改造前白名单缺 debug，DEBUG 行会被强制降级为 info 色。
+        if kind not in ("debug", "info", "success", "error", "warning"):
             kind = "info"
         self.text_widget.config(state=tk.NORMAL)
         if message.startswith("[") and "] " in message:

@@ -267,6 +267,81 @@ class ColorPaletteTests(unittest.TestCase):
         self.assertNotIn("time", tags, "调色板未定义的标签应被跳过")
 
 
+class TagForLineTests(unittest.TestCase):
+    """UI 侧着色入口：优先读写入方显式级别，缺失时才关键字兜底。"""
+
+    def test_explicit_level_token_wins_over_keywords(self):
+        """行内含显式 [INFO ] 时，即使正文含"错误"也应按写入方级别着色。"""
+        line = wt_logging.format_line(
+            wt_logging.INFO, "下拉选项枚举进度: 已剔除错误项=0", timestamp=1758000000.0
+        )
+        self.assertEqual(wt_logging.tag_for_line(line), "info")
+
+    def test_explicit_error_level_is_honoured(self):
+        line = wt_logging.format_line(
+            wt_logging.ERROR, "定位失败：控件未找到", timestamp=1758000000.0
+        )
+        self.assertEqual(wt_logging.tag_for_line(line), "error")
+
+    def test_explicit_debug_level_maps_to_debug_tag(self):
+        line = wt_logging.format_line(
+            wt_logging.DEBUG, "[DEBUG] click_flow_control 判定", timestamp=1758000000.0
+        )
+        self.assertEqual(wt_logging.tag_for_line(line), "debug")
+
+    def test_falls_back_to_keywords_without_level_token(self):
+        """历史遗留的纯文本行（改造前落盘的日志）仍能正确着色。"""
+        legacy = "[2026-09-15 14:08:51] 步骤结束: step=x, status=failed, error=控件未找到"
+        self.assertEqual(wt_logging.tag_for_line(legacy), "error")
+        self.assertEqual(
+            wt_logging.tag_for_line("[2026-09-15 14:08:51] 已通过流程链路匹配点击控件"),
+            "success",
+        )
+
+    def test_level_from_line_returns_none_without_token(self):
+        self.assertIsNone(wt_logging.level_from_line("没有级别标记的一行"))
+        self.assertIsNone(wt_logging.level_from_line(""))
+        self.assertIsNone(wt_logging.level_from_line(None))
+
+    def test_level_from_line_reads_each_level(self):
+        for level in wt_logging.LEVELS:
+            with self.subTest(level=level):
+                line = wt_logging.format_line(level, "m", timestamp=1758000000.0)
+                self.assertEqual(wt_logging.level_from_line(line), level)
+
+
+class ClassifierConsolidationTests(unittest.TestCase):
+    """改造前存在 4 个各不相同的分类器，现已全部委托 wt_logging。"""
+
+    def test_launcher_classifiers_delegate(self):
+        import WT_Launcher
+
+        sample = wt_logging.format_line(
+            wt_logging.WARN, "流程控件定位耗时较长", timestamp=1758000000.0
+        )
+        self.assertEqual(WT_Launcher.ServerMonitorWindow._classify_line(sample), "warning")
+
+        app = WT_Launcher.LauncherApp.__new__(WT_Launcher.LauncherApp)
+        self.assertEqual(app._tag_for_line(sample), "warning")
+
+    def test_queue_window_classifier_delegates(self):
+        import wt_task_queue_window
+
+        sample = wt_logging.format_line(
+            wt_logging.ERROR, "定位失败", timestamp=1758000000.0
+        )
+        self.assertEqual(
+            wt_task_queue_window.TaskQueueWindow._classify_line(sample), "error"
+        )
+
+    def test_widget_tag_sets_cover_debug(self):
+        """监视器窗口原先白名单缺 debug，DEBUG 行会被强制降级为 info 色。"""
+        for dark in (False, True):
+            tags = dict(wt_logging.tag_colors_for_widget(dark=dark))
+            self.assertIn("debug", tags)
+            self.assertIn("system", tags)
+
+
 class DependencyConstraintTests(unittest.TestCase):
     """wt_logging 会被 headless 流程/CLI 导入，不得引入 tkinter 依赖。"""
 
