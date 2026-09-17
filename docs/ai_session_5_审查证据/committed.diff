@@ -1,0 +1,660 @@
+diff --git a/tests/test_wt_logging.py b/tests/test_wt_logging.py
+new file mode 100644
+index 0000000..182d894
+--- /dev/null
++++ b/tests/test_wt_logging.py
+@@ -0,0 +1,288 @@
++# encoding: utf-8
++"""wt_logging 统一日志基础设施测试（P0 立规）。
++
++覆盖：
++- 五级枚举、级别别名归一化、级别标签定宽对齐
++- 统一行格式：字段省略规则、runId 截断、毫秒精度
++- classify() 关键字兜底：修复 `已剔除错误项=0` 被误判为 error 的缺陷
++- 级别开关：WT_LOG_LEVEL / WT_DEBUG_EVENTS
++- 配色收口：来自 wt_theme，浅底与深底两组
++- 依赖约束：本模块不得 import tkinter
++"""
++import os
++import re
++import subprocess
++import sys
++import unittest
++from unittest.mock import patch
++
++TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
++PROJECT_DIR = os.path.dirname(TESTS_DIR)
++if PROJECT_DIR not in sys.path:
++    sys.path.insert(0, PROJECT_DIR)
++
++import wt_logging
++
++
++class LevelNormalizationTests(unittest.TestCase):
++    """级别枚举与别名归一化。"""
++
++    def test_levels_are_five_and_ordered(self):
++        self.assertEqual(
++            list(wt_logging.LEVELS),
++            ["DEBUG", "INFO", "WARN", "ERROR", "CRIT"],
++        )
++        ranks = [wt_logging.level_rank(lv) for lv in wt_logging.LEVELS]
++        self.assertEqual(ranks, sorted(ranks))
++        self.assertEqual(len(set(ranks)), 5)
++
++    def test_common_aliases_normalize(self):
++        cases = {
++            "warning": wt_logging.WARN,
++            "WARNING": wt_logging.WARN,
++            "critical": wt_logging.CRIT,
++            "fatal": wt_logging.CRIT,
++            "trace": wt_logging.DEBUG,
++            "err": wt_logging.ERROR,
++            "notice": wt_logging.INFO,
++        }
++        for raw, expected in cases.items():
++            with self.subTest(raw=raw):
++                self.assertEqual(wt_logging.normalize_level(raw), expected)
++
++    def test_unknown_level_falls_back_to_default(self):
++        self.assertEqual(wt_logging.normalize_level("bogus"), wt_logging.INFO)
++        self.assertIsNone(wt_logging.normalize_level("bogus", default=None))
++        self.assertEqual(wt_logging.normalize_level(None), wt_logging.INFO)
++
++    def test_level_label_width_is_five(self):
++        """级别标签必须定宽 5 字符，否则日志列会错位。"""
++        for level in wt_logging.LEVELS:
++            with self.subTest(level=level):
++                line = wt_logging.format_line(level, "m", timestamp=1758000000.0)
++                label = line.split("] [", 1)[1].split("]", 1)[0]
++                self.assertEqual(len(label), 5, "级别标签应定宽 5 字符: %r" % label)
++
++    def test_tag_mapping(self):
++        self.assertEqual(wt_logging.tag_for_level(wt_logging.DEBUG), "debug")
++        self.assertEqual(wt_logging.tag_for_level(wt_logging.INFO), "info")
++        self.assertEqual(wt_logging.tag_for_level(wt_logging.WARN), "warning")
++        self.assertEqual(wt_logging.tag_for_level(wt_logging.ERROR), "error")
++        self.assertEqual(wt_logging.tag_for_level(wt_logging.CRIT), "error")
++
++
++class FormatLineTests(unittest.TestCase):
++    """统一行格式。"""
++
++    def test_basic_shape_with_millis(self):
++        line = wt_logging.format_line(
++            wt_logging.INFO, "已通过流程链路匹配点击控件", timestamp=1758000000.123
++        )
++        self.assertRegex(line, r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] \[INFO \] ")
++        self.assertTrue(line.endswith("已通过流程链路匹配点击控件"))
++
++    def test_optional_fields_omitted_when_empty(self):
++        line = wt_logging.format_line(wt_logging.INFO, "msg", timestamp=1758000000.0)
++        self.assertNotIn("[]", line, "空 module/run_id 不应产生空方括号")
++
++    def test_run_id_truncated_to_eight(self):
++        line = wt_logging.format_line(
++            wt_logging.INFO, "msg", run_id="a1b2c3d4e5f6", timestamp=1758000000.0
++        )
++        self.assertIn("[a1b2c3d4]", line)
++        self.assertNotIn("e5f6", line)
++
++    def test_field_order_is_time_level_runid_module_message(self):
++        line = wt_logging.format_line(
++            wt_logging.WARN,
++            "流程控件定位耗时较长",
++            module="wt_flow_locator",
++            run_id="deadbeefcafe",
++            timestamp=1758000000.0,
++        )
++        fields = re.findall(r"\[[^\]]*\]", line)
++        self.assertEqual(len(fields), 4, "应恰有 4 个方括号字段: %r" % line)
++        self.assertTrue(fields[0].startswith("[2025-09-16"))
++        self.assertEqual(fields[1], "[WARN ]")
++        self.assertEqual(fields[2], "[deadbeef]")
++        self.assertEqual(fields[3], "[wt_flow_locator]")
++        self.assertTrue(line.endswith("流程控件定位耗时较长"))
++
++
++class ClassifyTests(unittest.TestCase):
++    """关键字兜底分类（改造前 4 个独立分类器的统一替代）。"""
++
++    def test_benign_error_wording_is_not_classified_as_error(self):
++        """回归：`已剔除错误项=0` 含「错误」二字，改造前被误判为 error（红字）。"""
++        lines = [
++            "下拉选项枚举进度: step=step_10, 已剔除错误项=0",
++            "下拉选项枚举进度: step=x, elapsed=19.5s, 已剔除错误项=0",
++        ]
++        for line in lines:
++            with self.subTest(line=line):
++                self.assertEqual(wt_logging.classify(line), "info")
++
++    def test_real_errors_are_detected(self):
++        lines = [
++            "步骤结束: step=x, status=failed, error=控件未找到",
++            "步骤结束: step=x, status=failure",
++            "定位失败: 未找到匹配控件",
++            "Traceback (most recent call last):",
++            "致命错误：进程崩溃",
++        ]
++        for line in lines:
++            with self.subTest(line=line):
++                self.assertEqual(wt_logging.classify(line), "error")
++
++    def test_warning_success_system_and_info(self):
++        cases = [
++            ("流程控件定位耗时较长: step=x, seconds=8.2", "warning"),
++            ("前置[wait_visible] 等待超时", "warning"),
++            ("Fallback 链执行成功: step=x", "success"),
++            ("已通过流程链路匹配点击控件: step=x", "success"),
++            ("开始执行步骤: step=x", "system"),
++            ("已通过流程链路匹配输入文本: step=x", "success"),
++        ]
++        for line, expected in cases:
++            with self.subTest(line=line):
++                self.assertEqual(wt_logging.classify(line), expected)
++
++    def test_plain_line_is_info(self):
++        line = "[FlowLocator] 窗口过滤严格无命中，采用运行时主窗口候选 1 个"
++        self.assertEqual(wt_logging.classify(line), "info")
++
++    def test_empty_input_is_info(self):
++        self.assertEqual(wt_logging.classify(""), "info")
++        self.assertEqual(wt_logging.classify(None), "info")
++
++    def test_detect_level_maps_tags_back_to_levels(self):
++        self.assertEqual(wt_logging.detect_level("定位失败"), wt_logging.ERROR)
++        self.assertEqual(wt_logging.detect_level("致命错误"), wt_logging.CRIT)
++        self.assertEqual(wt_logging.detect_level("警告：超时"), wt_logging.WARN)
++        self.assertEqual(wt_logging.detect_level("开始执行步骤"), wt_logging.INFO)
++
++
++class MinLevelGateTests(unittest.TestCase):
++    """级别开关：默认 INFO；WT_LOG_LEVEL / WT_DEBUG_EVENTS 可放开 DEBUG。"""
++
++    def setUp(self):
++        wt_logging.reset_min_level()
++        self.addCleanup(wt_logging.reset_min_level)
++
++    def _env(self, **values):
++        clean = {k: v for k, v in os.environ.items() if k not in ("WT_LOG_LEVEL", "WT_DEBUG_EVENTS")}
++        clean.update(values)
++        return patch.dict(os.environ, clean, clear=True)
++
++    def test_default_is_info_and_debug_gated(self):
++        with self._env():
++            self.assertEqual(wt_logging.resolve_min_level(), wt_logging.INFO)
++            self.assertFalse(wt_logging.is_debug_enabled())
++            self.assertTrue(wt_logging.is_enabled(wt_logging.INFO))
++            self.assertFalse(wt_logging.is_enabled(wt_logging.DEBUG))
++
++    def test_explicit_log_level_opens_debug(self):
++        with self._env(WT_LOG_LEVEL="DEBUG"):
++            self.assertTrue(wt_logging.is_debug_enabled())
++
++    def test_debug_events_env_also_opens_debug(self):
++        """与既有 ndjson 调试事件开关保持一致，避免出现两个互不相干的开关。"""
++        with self._env(WT_DEBUG_EVENTS="1"):
++            self.assertTrue(wt_logging.is_debug_enabled())
++
++    def test_explicit_log_level_wins_over_debug_events(self):
++        with self._env(WT_LOG_LEVEL="ERROR", WT_DEBUG_EVENTS="1"):
++            self.assertEqual(wt_logging.resolve_min_level(), wt_logging.ERROR)
++            self.assertFalse(wt_logging.is_enabled(wt_logging.WARN))
++            self.assertTrue(wt_logging.is_enabled(wt_logging.ERROR))
++
++    def test_set_and_reset_min_level(self):
++        with self._env():
++            wt_logging.set_min_level(wt_logging.ERROR)
++            self.assertFalse(wt_logging.is_enabled(wt_logging.WARN))
++            wt_logging.reset_min_level()
++            self.assertTrue(wt_logging.is_enabled(wt_logging.WARN))
++
++
++class ColorPaletteTests(unittest.TestCase):
++    """配色收口：唯一来源为 wt_theme，浅底/深底两组。"""
++
++    REQUIRED_KEYS = ("debug", "info", "warning", "error", "success", "system")
++    REQUIRED_LEVELS = ("DEBUG", "INFO", "WARN", "ERROR", "CRIT")
++
++    def test_palette_comes_from_wt_theme(self):
++        import wt_theme
++
++        for dark in (False, True):
++            with self.subTest(dark=dark):
++                self.assertEqual(
++                    wt_logging.level_colors(dark=dark),
++                    wt_theme.get_log_level_colors(dark=dark),
++                )
++
++    def test_both_variants_cover_all_tags_and_levels(self):
++        for dark in (False, True):
++            colors = wt_logging.level_colors(dark=dark)
++            for key in self.REQUIRED_KEYS + self.REQUIRED_LEVELS:
++                with self.subTest(dark=dark, key=key):
++                    self.assertIn(key, colors)
++                    self.assertRegex(colors[key], r"^#[0-9a-fA-F]{6}$")
++
++    def test_light_and_dark_use_different_luminance(self):
++        light = wt_logging.level_colors(dark=False)
++        dark = wt_logging.level_colors(dark=True)
++        self.assertNotEqual(light["info"], dark["info"])
++        self.assertNotEqual(light["error"], dark["error"])
++
++    def test_semantic_hues_follow_convention(self):
++        """INFO 为正文色（浅底深、深底浅）；ERROR 偏红、WARN 偏琥珀。"""
++        light = wt_logging.level_colors(dark=False)
++        dark = wt_logging.level_colors(dark=True)
++
++        def rgb(hex_color):
++            h = hex_color.lstrip("#")
++            return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
++
++        light_info = rgb(light["info"])
++        dark_info = rgb(dark["info"])
++        self.assertLess(sum(light_info), 200, "浅底 INFO 应为深色文字")
++        self.assertGreater(sum(dark_info), 500, "深底 INFO 应为浅色文字")
++
++        for colors in (light, dark):
++            r, g, b = rgb(colors["error"])
++            self.assertGreater(r, g, "ERROR 应偏红: %s" % colors["error"])
++            self.assertGreater(r, b, "ERROR 应偏红: %s" % colors["error"])
++            wr, wg, wb = rgb(colors["warning"])
++            self.assertGreater(wr, wb, "WARN 应偏暖琥珀: %s" % colors["warning"])
++            self.assertGreater(wg, wb, "WARN 应偏暖琥珀: %s" % colors["warning"])
++
++    def test_tag_colors_for_widget_respects_requested_subset(self):
++        subset = wt_logging.tag_colors_for_widget(
++            dark=False, tags=("time", "debug", "info", "error")
++        )
++        tags = [tag for tag, _ in subset]
++        self.assertIn("debug", tags)
++        self.assertIn("info", tags)
++        self.assertNotIn("system", tags, "未请求的标签不应出现")
++        self.assertNotIn("time", tags, "调色板未定义的标签应被跳过")
++
++
++class DependencyConstraintTests(unittest.TestCase):
++    """wt_logging 会被 headless 流程/CLI 导入，不得引入 tkinter 依赖。"""
++
++    def test_module_does_not_import_tkinter(self):
++        code = (
++            "import sys; sys.path.insert(0, %r); "
++            "import wt_logging; "
++            "print('tkinter' in sys.modules)"
++        ) % PROJECT_DIR
++        out = subprocess.check_output(
++            [sys.executable, "-c", code],
++            cwd=PROJECT_DIR,
++            stderr=subprocess.STDOUT,
++        ).decode("utf-8", "replace").strip().splitlines()[-1]
++        self.assertEqual(out, "False", "wt_logging 不应 import tkinter")
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/wt_logging.py b/wt_logging.py
+new file mode 100644
+index 0000000..c5cdd92
+--- /dev/null
++++ b/wt_logging.py
+@@ -0,0 +1,297 @@
++# encoding: utf-8
++"""WT Automation 统一日志基础设施（P0 立规）。
++
++背景
++----
++改造前主链路（``wt_flow_locator`` / ``wt_flow_executor`` / ``WT_AUT_recorded``）没有日志级别
++概念，所有行都是 ``[时间] 自由文本``；级别由 4 个各自独立的关键字分类器在 UI 侧猜测，
++规则互不一致 —— 且 ``已剔除错误项=0`` 因含「错误」二字被误判为 error（红字）。
++
++本模块是日志级别、行格式与配色语义的**单一事实来源**：
++
++1. 五级枚举：``DEBUG / INFO / WARN / ERROR / CRIT``，定宽 5 字符，便于列对齐与 grep。
++2. 统一行格式：``[YYYY-MM-DD HH:MM:SS.mmm] [LEVEL] [module] 消息``。
++3. 单点分类 ``classify()``：写入方应显式传级别；对历史遗留纯文本行提供关键字兜底。
++4. 级别开关：环境变量 ``WT_LOG_LEVEL``（默认 INFO）；``WT_DEBUG_EVENTS=1`` 亦视为 DEBUG，
++   与既有的 ndjson 调试事件开关保持一致。
++5. 色板：从 ``wt_theme`` 取（浅底/深底两组，语义色相一致、仅调亮度）。
++
++设计约束
++--------
++- **不 import tkinter**：本模块会被 headless 流程、CLI 与队列服务导入。
++- 颜色延迟查询，避免 import 期副作用。
++- 仅依赖标准库，可在无第三方包环境下导入。
++"""
++
++import os
++import time
++
++# ── 级别枚举 ────────────────────────────────────────────────────────────────
++DEBUG = "DEBUG"
++INFO = "INFO"
++WARN = "WARN"
++ERROR = "ERROR"
++CRIT = "CRIT"
++
++LEVELS = (DEBUG, INFO, WARN, ERROR, CRIT)
++
++# 级别权重（用于阈值比较）
++_LEVEL_RANK = {DEBUG: 10, INFO: 20, WARN: 30, ERROR: 40, CRIT: 50}
++
++# 输入别名 → 规范级别（兼容 WARNING / FATAL / CRITICAL 等常见写法）
++_LEVEL_ALIASES = {
++    "DEBUG": DEBUG,
++    "TRACE": DEBUG,
++    "INFO": INFO,
++    "NOTICE": INFO,
++    "WARN": WARN,
++    "WARNING": WARN,
++    "ERROR": ERROR,
++    "ERR": ERROR,
++    "CRIT": CRIT,
++    "CRITICAL": CRIT,
++    "FATAL": CRIT,
++}
++
++# 定宽 5 字符的级别标签（CRIT 取 syslog 惯例缩写，保证列对齐）
++_LEVEL_LABELS = {
++    DEBUG: "DEBUG",
++    INFO: "INFO ",
++    WARN: "WARN ",
++    ERROR: "ERROR",
++    CRIT: "CRIT ",
++}
++
++# 级别 → UI 标签（沿用既有分类器的标签集，替换后渲染行为不变）
++_TAG_BY_LEVEL = {
++    DEBUG: "debug",
++    INFO: "info",
++    WARN: "warning",
++    ERROR: "error",
++    CRIT: "error",
++}
++
++_ENV_LEVEL = "WT_LOG_LEVEL"
++_ENV_DEBUG_EVENTS = "WT_DEBUG_EVENTS"
++
++_min_level_cache = None
++
++
++def normalize_level(level, default=INFO):
++    """把任意写法规范成五级之一；无法识别时返回 ``default``。"""
++    if level is None:
++        return default
++    token = str(level).strip().upper()
++    if not token:
++        return default
++    return _LEVEL_ALIASES.get(token, default)
++
++
++def level_rank(level):
++    """返回级别权重，未知级别按 INFO 处理。"""
++    return _LEVEL_RANK[normalize_level(level, default=INFO)]
++
++
++def tag_for_level(level):
++    """级别 → UI 标签（info / success / warning / error / debug / system）。"""
++    return _TAG_BY_LEVEL.get(normalize_level(level, default=INFO), "info")
++
++
++# ── 级别开关 ────────────────────────────────────────────────────────────────
++def resolve_min_level():
++    """解析当前生效的最低输出级别。
++
++    优先级：``WT_LOG_LEVEL`` 显式指定 > ``WT_DEBUG_EVENTS=1`` 视为 DEBUG > 默认 INFO。
++    结果会缓存，测试或运行时改环境后请调用 :func:`reset_min_level`。
++    """
++    global _min_level_cache
++    if _min_level_cache is not None:
++        return _min_level_cache
++    raw = (os.environ.get(_ENV_LEVEL) or "").strip()
++    resolved = normalize_level(raw, default=None) if raw else None
++    if resolved is None:
++        resolved = DEBUG if os.environ.get(_ENV_DEBUG_EVENTS) == "1" else INFO
++    _min_level_cache = resolved
++    return resolved
++
++
++def set_min_level(level):
++    """显式设置最低输出级别（供运行时/测试使用）。"""
++    global _min_level_cache
++    _min_level_cache = normalize_level(level, default=INFO)
++    return _min_level_cache
++
++
++def reset_min_level():
++    """清除缓存，下次 :func:`resolve_min_level` 重新读环境变量。"""
++    global _min_level_cache
++    _min_level_cache = None
++
++
++def is_enabled(level):
++    """判断该级别在当前阈值下是否应输出。"""
++    return level_rank(level) >= level_rank(resolve_min_level())
++
++
++def is_debug_enabled():
++    """DEBUG 是否开启（供高频诊断转储做门控）。"""
++    return is_enabled(DEBUG)
++
++
++# ── 行格式 ──────────────────────────────────────────────────────────────────
++def format_line(level, message, module=None, run_id=None, timestamp=None):
++    """按统一格式组装一行日志。
++
++    输出形如::
++
++        [2026-09-17 09:30:12.345] [INFO ] [wt_flow_locator] 已通过流程链路匹配点击控件: ...
++
++    ``module`` / ``run_id`` 为空时对应字段整段省略，避免出现空 ``[]``。
++    ``run_id`` 只取前 8 位，保证列宽稳定。
++    """
++    now = time.time() if timestamp is None else float(timestamp)
++    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
++    millis = int((now - int(now)) * 1000)
++    if millis < 0:
++        millis = 0
++    label = _LEVEL_LABELS.get(normalize_level(level, default=INFO), "INFO ")
++
++    parts = ["[%s.%03d]" % (stamp, millis), "[%s]" % label]
++    if run_id:
++        parts.append("[%s]" % str(run_id)[:8])
++    if module:
++        parts.append("[%s]" % str(module))
++    parts.append(str(message))
++    return " ".join(parts)
++
++
++# ── 关键字兜底分类 ──────────────────────────────────────────────────────────
++# 说明：新代码应显式传级别；本函数只用于「已经落盘的纯文本行」在 UI 侧着色，
++# 以及尚未改造的旧调用点过渡期使用。
++_CRIT_TOKENS = ("致命",)
++_ERROR_TOKENS = ("失败", "错误", "异常", "Failed")
++_WARN_TOKENS = ("警告", "超时", "耗时较长")
++_SUCCESS_TOKENS = ("成功", "完成", "已通过")
++_SYSTEM_TOKENS = ("启动", "开始", "状态", "队列")
++
++# 已知「含错误关键字但语义无害」的上下文：命中则不作 error 判定。
++# 典型来源：`下拉选项枚举进度: ... 已剔除错误项=0`（改造前被误判为 error）。
++_BENIGN_ERROR_CONTEXT = (
++    "错误项",
++    "无错误",
++    "零错误",
++    "0 个错误",
++    "no error",
++    "0 error",
++)
++
++# 英文错误词（小写匹配，覆盖 status=failed / Failure / Exception 等）
++_ERROR_TOKENS_EN = ("error", "traceback", "exception", "failed", "failure", "fatal")
++
++
++def classify(line):
++    """把一行纯文本归入 UI 标签（error / warning / success / system / info）。
++
++    作为改造前 4 个独立分类器的统一替代实现，规则：
++    1. 先判 error（含 CRITICAL/Traceback/Exception），但命中无害上下文时跳过；
++    2. 再判 warning、success、system；
++    3. 其余归 info。
++    """
++    text = str(line or "")
++    lowered = text.lower()
++
++    if "critical" in lowered or any(tok in text for tok in _CRIT_TOKENS):
++        return "error"
++
++    benign = any(ctx in text for ctx in _BENIGN_ERROR_CONTEXT)
++    if not benign and (
++        any(tok in text for tok in _ERROR_TOKENS)
++        or any(tok in lowered for tok in _ERROR_TOKENS_EN)
++    ):
++        return "error"
++
++    if any(tok in text for tok in _WARN_TOKENS) or "warn" in lowered:
++        return "warning"
++
++    if any(tok in text for tok in _SUCCESS_TOKENS) or "success" in lowered:
++        return "success"
++
++    if any(tok in text for tok in _SYSTEM_TOKENS):
++        return "system"
++
++    return "info"
++
++
++def detect_level(line):
++    """把一行纯文本推断成级别（供 UI 按新色板渲染历史日志）。"""
++    tag = classify(line)
++    if tag == "error":
++        lowered = str(line or "").lower()
++        if "critical" in lowered or "致命" in str(line or ""):
++            return CRIT
++        return ERROR
++    if tag == "warning":
++        return WARN
++    if tag in ("success", "system"):
++        return INFO
++    return INFO
++
++
++# ── 配色（延迟从 wt_theme 取） ──────────────────────────────────────────────
++# 兜底色值：仅当 wt_theme 不可用时使用，与 wt_theme.LOG_LEVEL_COLORS 保持一致。
++_FALLBACK_COLORS = {
++    "light": {
++        "DEBUG": "#94a3b8",
++        "INFO": "#0f172a",
++        "WARN": "#b45309",
++        "ERROR": "#dc2626",
++        "CRIT": "#991b1b",
++        "debug": "#94a3b8",
++        "info": "#0f172a",
++        "warning": "#b45309",
++        "error": "#dc2626",
++        "success": "#047857",
++        "system": "#0369a1",
++        "muted": "#64748b",
++    },
++    "dark": {
++        "DEBUG": "#64748b",
++        "INFO": "#e2e8f0",
++        "WARN": "#fbbf24",
++        "ERROR": "#f87171",
++        "CRIT": "#fca5a5",
++        "debug": "#64748b",
++        "info": "#e2e8f0",
++        "warning": "#fbbf24",
++        "error": "#f87171",
++        "success": "#34d399",
++        "system": "#60a5fa",
++        "muted": "#94a3b8",
++    },
++}
++
++
++def level_colors(dark=False):
++    """返回 ``{级别或标签: 颜色}``。优先取 ``wt_theme.LOG_LEVEL_COLORS``。"""
++    key = "dark" if dark else "light"
++    try:
++        import wt_theme
++
++        getter = getattr(wt_theme, "get_log_level_colors", None)
++        if callable(getter):
++            colors = getter(dark=dark)
++            if colors:
++                return dict(colors)
++    except Exception:
++        pass
++    return dict(_FALLBACK_COLORS[key])
++
++
++def tag_colors_for_widget(dark=False, tags=None):
++    """按给定标签集返回 ``(tag, color)`` 序列，供 ``Text.tag_configure`` 直接迭代。
++
++    传入 ``tags`` 可只取该控件实际使用的标签（如监视器窗口没有 system）。
++    """
++    colors = level_colors(dark=dark)
++    ordered = tags if tags else ("debug", "info", "warning", "error", "success", "system")
++    return [(tag, colors[tag]) for tag in ordered if tag in colors]
+diff --git a/wt_theme.py b/wt_theme.py
+index 413b5db..b8a2e84 100644
+--- a/wt_theme.py
++++ b/wt_theme.py
+@@ -94,6 +94,42 @@ PALETTE = {
+ }
+ 
+ 
++# ── 日志级别配色（唯一权威定义，供 wt_logging 与各日志控件引用） ──────────────
++# 约定：遵循通用日志级别语义 —— DEBUG 弱化灰 / INFO 正文 / WARN 琥珀 / ERROR 赤红 /
++# CRIT 深红。浅底与深底保持同一色相，只调整明度以适配背景。
++# 说明：浅底 WARN 取 Amber-700 而非 Amber-600，是为满足 9~10px 小字在浅底上的对比度。
++LOG_LEVEL_COLORS = {
++    "light": {
++        "DEBUG": "#94a3b8",     # Slate-400 弱化
++        "INFO": "#0f172a",      # Slate-900 正文
++        "WARN": "#b45309",      # Amber-700
++        "ERROR": "#dc2626",     # Red-600
++        "CRIT": "#991b1b",      # Red-800
++        "debug": "#94a3b8",
++        "info": "#0f172a",
++        "warning": "#b45309",
++        "error": "#dc2626",
++        "success": "#047857",   # Emerald-700
++        "system": "#0369a1",    # Sky-700
++        "muted": "#64748b",
++    },
++    "dark": {
++        "DEBUG": "#64748b",     # Slate-500
++        "INFO": "#e2e8f0",      # Slate-200
++        "WARN": "#fbbf24",      # Amber-400
++        "ERROR": "#f87171",     # Red-400
++        "CRIT": "#fca5a5",      # Red-300
++        "debug": "#64748b",
++        "info": "#e2e8f0",
++        "warning": "#fbbf24",
++        "error": "#f87171",
++        "success": "#34d399",   # Emerald-400
++        "system": "#60a5fa",    # Blue-400
++        "muted": "#94a3b8",
++    },
++}
++
++
+ def has_ttkbootstrap():
+     """返回当前环境是否启用了 ttkbootstrap。"""
+     return _HAS_TTKBOOTSTRAP
+@@ -245,6 +281,15 @@ def get_palette():
+     return _theme_manager.palette
+ 
+ 
++def get_log_level_colors(dark=False):
++    """返回日志级别配色映射（``dark=False`` 为浅底，``True`` 为深底）。
++
++    供 wt_logging.level_colors() 与各日志 Text 控件的 tag_configure 使用，
++    避免各处再硬编码色值导致同一系统出现多套配色。
++    """
++    return dict(LOG_LEVEL_COLORS["dark" if dark else "light"])
++
++
+ # ── 现代扁平 UI 控件构造辅助器 ────────────────────────────────────────────────
+ 
+ def create_flat_button(

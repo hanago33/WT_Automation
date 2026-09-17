@@ -1,0 +1,67 @@
+diff --git a/tests/test_log_lifecycle.py b/tests/test_log_lifecycle.py
+index e8f77be..3f3d920 100644
+--- a/tests/test_log_lifecycle.py
++++ b/tests/test_log_lifecycle.py
+@@ -17,6 +17,26 @@ if PROJECT_DIR not in sys.path:
+ import wt_logging
+ 
+ 
++def _make_hidden_tk_root():
++    """创建隐藏的 Tk 根窗口；不可用时抛 SkipTest（**附具体原因**，便于排查）。
++
++    skip 理由里带上底层异常，避免"无显示环境"这种笼统说法掩盖真实原因。
++    """
++    try:
++        import tkinter as tk
++    except Exception as exc:
++        raise unittest.SkipTest("无 tkinter 可用：%r" % (exc,))
++    try:
++        root = tk.Tk()
++    except Exception as exc:
++        raise unittest.SkipTest("无法创建 Tk 根窗口：%r" % (exc,))
++    try:
++        root.withdraw()
++    except Exception:
++        pass
++    return tk, root
++
++
+ class LogRotationTests(unittest.TestCase):
+     """按大小轮转：path -> path.1 -> path.2 …，超出份数的最旧备份被覆盖。"""
+ 
+@@ -98,16 +118,7 @@ class MonitorWindowLineCapTests(unittest.TestCase):
+ 
+     @classmethod
+     def setUpClass(cls):
+-        try:
+-            import tkinter as tk
+-        except Exception:
+-            raise unittest.SkipTest("无 tkinter 可用")
+-        cls.tk = tk
+-        try:
+-            cls.root = tk.Tk()
+-        except Exception:
+-            raise unittest.SkipTest("无法创建 Tk 根窗口（无显示环境）")
+-        cls.root.withdraw()
++        cls.tk, cls.root = _make_hidden_tk_root()
+ 
+     @classmethod
+     def tearDownClass(cls):
+@@ -169,16 +180,7 @@ class LogTagStyleTests(unittest.TestCase):
+ 
+     @classmethod
+     def setUpClass(cls):
+-        try:
+-            import tkinter as tk
+-        except Exception:
+-            raise unittest.SkipTest("无 tkinter 可用")
+-        cls.tk = tk
+-        try:
+-            cls.root = tk.Tk()
+-        except Exception:
+-            raise unittest.SkipTest("无法创建 Tk 根窗口（无显示环境）")
+-        cls.root.withdraw()
++        cls.tk, cls.root = _make_hidden_tk_root()
+ 
+     @classmethod
+     def tearDownClass(cls):
