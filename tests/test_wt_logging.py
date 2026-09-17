@@ -9,6 +9,7 @@
 - 配色收口：来自 wt_theme，浅底与深底两组
 - 依赖约束：本模块不得 import tkinter
 """
+import json
 import os
 import re
 import subprocess
@@ -389,6 +390,122 @@ class RunBannerTests(unittest.TestCase):
         for kind, marker in (("start", "运行开始"), ("end", "运行结束")):
             with self.subTest(kind=kind):
                 self.assertIn(marker, wt_logging.format_run_banner(kind))
+
+
+class JsonlSidecarTests(unittest.TestCase):
+    """JSONL 旁路：文本日志的机读镜像。
+
+    测试自身不删文件（截断代替删除），避免触发环境的批量删除守卫。
+    """
+
+    PROBE_DIR = os.path.join(TESTS_DIR, ".tmp_jsonl")
+    PROBE_PATH = os.path.join(PROBE_DIR, "probe.jsonl")
+
+    def setUp(self):
+        wt_logging.stop_jsonl()
+        wt_logging.clear_run_id()
+        self.addCleanup(wt_logging.stop_jsonl)
+        self.addCleanup(wt_logging.clear_run_id)
+        os.makedirs(self.PROBE_DIR, exist_ok=True)
+        with open(self.PROBE_PATH, "w", encoding="utf-8"):
+            pass  # 截断而非删除
+
+    def _records(self):
+        with open(self.PROBE_PATH, "r", encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def test_no_session_is_a_silent_noop(self):
+        """未开启旁路时不应写盘、不应抛错。"""
+        self.assertEqual(wt_logging.jsonl_path(), "")
+        self.assertIsNone(wt_logging.log_event(wt_logging.INFO, "x"))
+        self.assertEqual(self._records(), [])
+
+    def test_start_and_stop_session(self):
+        self.assertEqual(wt_logging.start_jsonl(self.PROBE_PATH), self.PROBE_PATH)
+        self.assertEqual(wt_logging.jsonl_path(), self.PROBE_PATH)
+        wt_logging.stop_jsonl()
+        self.assertEqual(wt_logging.jsonl_path(), "")
+
+    def test_one_line_per_event(self):
+        wt_logging.start_jsonl(self.PROBE_PATH)
+        for i in range(3):
+            wt_logging.log_event(wt_logging.INFO, "第 %d 条" % i)
+        self.assertEqual(len(self._records()), 3)
+
+    def test_chinese_is_not_escaped(self):
+        """人读友好：中文原样写入，不转成 \\uXXXX。"""
+        wt_logging.start_jsonl(self.PROBE_PATH)
+        wt_logging.log_event(wt_logging.INFO, "已通过流程链路匹配点击控件")
+        with open(self.PROBE_PATH, "r", encoding="utf-8") as f:
+            raw = f.read()
+        self.assertIn("已通过流程链路匹配点击控件", raw)
+        self.assertNotIn("\\u", raw)
+
+    def test_empty_optional_fields_are_omitted(self):
+        """空字段整字段省略，让常见行保持简短。"""
+        wt_logging.start_jsonl(self.PROBE_PATH)
+        wt_logging.log_event(wt_logging.INFO, "无步骤上下文的一行")
+        record = self._records()[0]
+        for key in ("stepId", "controlId", "event", "elapsedMs", "detail", "module"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, record)
+        self.assertIn("ts", record)
+        self.assertIn("level", record)
+        self.assertIn("message", record)
+
+    def test_run_id_is_attached(self):
+        wt_logging.set_run_id("wt_run_20260917_102341_123_001")
+        wt_logging.start_jsonl(self.PROBE_PATH)
+        wt_logging.log_event(wt_logging.INFO, "x")
+        self.assertEqual(
+            self._records()[0]["runId"], "wt_run_20260917_102341_123_001"
+        )
+
+    def test_step_fields_extracted_from_message(self):
+        wt_logging.start_jsonl(self.PROBE_PATH)
+        wt_logging.log_event(
+            wt_logging.INFO,
+            "已通过流程链路匹配点击控件: step=step_1_scan2_1, control=control_map_439",
+        )
+        record = self._records()[0]
+        self.assertEqual(record["stepId"], "step_1_scan2_1")
+        self.assertEqual(record["controlId"], "control_map_439")
+
+    def test_ctrl_alias_is_recognised(self):
+        wt_logging.start_jsonl(self.PROBE_PATH)
+        wt_logging.log_event(wt_logging.INFO, "定位失败: step=step_12_scan2_12, ctrl=ctrl_refpoint")
+        self.assertEqual(self._records()[0]["controlId"], "ctrl_refpoint")
+
+    def test_explicit_step_fields_win_over_extraction(self):
+        wt_logging.start_jsonl(self.PROBE_PATH)
+        wt_logging.log_event(
+            wt_logging.INFO, "step=auto, control=auto_ctrl", step_id="explicit", control_id="exp_ctrl"
+        )
+        record = self._records()[0]
+        self.assertEqual(record["stepId"], "explicit")
+        self.assertEqual(record["controlId"], "exp_ctrl")
+
+    def test_message_is_last_field_for_readability(self):
+        """message 长度最不可控，置末以保持前面标识字段列对齐。"""
+        wt_logging.set_run_id("wt_run_probe")
+        wt_logging.start_jsonl(self.PROBE_PATH)
+        wt_logging.log_event(
+            wt_logging.ERROR, "定位失败", step_id="s1", control_id="c1",
+            event="locate_fail", elapsed_ms=1234.5,
+        )
+        keys = list(self._records()[0].keys())
+        self.assertEqual(keys[-1], "message")
+        self.assertEqual(keys[:3], ["ts", "level", "runId"])
+
+    def test_elapsed_ms_is_rounded(self):
+        wt_logging.start_jsonl(self.PROBE_PATH)
+        wt_logging.log_event(wt_logging.INFO, "x", elapsed_ms=8200.123456)
+        self.assertEqual(self._records()[0]["elapsedMs"], 8200.12)
+
+    def test_extract_step_fields_handles_missing(self):
+        self.assertEqual(wt_logging.extract_step_fields(""), ("", ""))
+        self.assertEqual(wt_logging.extract_step_fields(None), ("", ""))
+        self.assertEqual(wt_logging.extract_step_fields("没有字段"), ("", ""))
 
 
 class DependencyConstraintTests(unittest.TestCase):

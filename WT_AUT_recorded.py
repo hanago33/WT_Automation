@@ -514,6 +514,8 @@ def log_step(step_name, level=None):
     print(log_line, end="\n")
 
     _append_log_file(log_line)
+    # JSONL 旁路：与文本日志同源同时写（未开启旁路时是 no-op）。
+    wt_logging.log_event(resolved, step_name)
     try:
         wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
     except Exception:
@@ -2623,6 +2625,16 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 		# 登记 runId：供 JSONL 旁路与运行边界标记使用（人读日志里也能看到 runId，
 		# 便于与 logs/run_reports/*.json 互相对照）。
 		wt_logging.set_run_id(context.get("runId", ""))
+		# 开启 JSONL 旁路：每次运行一个文件，机读用（jq 可按级别/步骤筛选）。
+		# 与文本日志同源同时写 —— 文本为人读而精简，JSONL 保留全量结构化字段。
+		wt_logging.start_jsonl(
+			os.path.join(
+				BASE_DIR,
+				"logs",
+				"run_logs",
+				"{}.jsonl".format(context.get("runId") or "run"),
+			)
+		)
 		log_step(
 			wt_logging.format_run_banner(
 				"start", run_id=context.get("runId", ""), step_count=len(steps_to_run)
@@ -2764,6 +2776,7 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 		_attach_mup_data_diff(context.get("run_report"), context)
 		_get_wt_run_reporting().finalize_run_report(context.get("run_report"), "success")
 		_log_run_end_banner(context.get("run_report"), "成功")
+		wt_logging.stop_jsonl()
 		wt_run_status.publish(
 			status="success",
 			activity="WT自动化流程完成",
@@ -2793,6 +2806,7 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 			_log_run_end_banner(
 				context.get("run_report") if "context" in locals() else None, "失败"
 			)
+			wt_logging.stop_jsonl()
 		except Exception:
 			pass
 		wt_run_status.publish(

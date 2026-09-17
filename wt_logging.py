@@ -23,6 +23,7 @@
 - 仅依赖标准库，可在无第三方包环境下导入。
 """
 
+import json
 import os
 import re
 import threading
@@ -192,6 +193,129 @@ def format_run_banner(kind, run_id=None, step_count=None, status=None, elapsed_s
     if extra:
         parts.append(str(extra))
     return "========== {} ==========".format(" · ".join(parts))
+
+
+# ── JSONL 旁路（机读镜像） ──────────────────────────────────────────────────
+# 设计：文本日志为人读而精简，JSONL 为机读而完整。两者同源同时写，
+# 因此「精简文本」与「保留全量调试数据」不再互相冲突。
+# 每次运行一个文件（logs/run_logs/<runId>.jsonl），天然按运行分片、无需轮转。
+_jsonl_path = ""
+_jsonl_lock = threading.Lock()
+
+# 文本 → 结构化 的桥接：项目日志的消息格式统一为 `step=<id>, control=<id>`。
+# 解析失败只是缺字段，不影响其它字段；需要可靠字段的新调用点应直接传
+# step_id / control_id 给 log_event。
+_STEP_FIELD_RE = re.compile(r"\bstep=([^,\s]+)")
+_CONTROL_FIELD_RE = re.compile(r"\b(?:control|ctrl|anchor)=([^,\s]+)")
+
+
+def start_jsonl(path):
+    """开启 JSONL 旁路；返回实际生效的路径（不可用时为空串）。"""
+    global _jsonl_path
+    candidate = str(path or "")
+    if candidate:
+        try:
+            parent = os.path.dirname(candidate)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+        except Exception:
+            candidate = ""
+    _jsonl_path = candidate
+    return _jsonl_path
+
+
+def stop_jsonl():
+    global _jsonl_path
+    _jsonl_path = ""
+
+
+def jsonl_path():
+    return _jsonl_path
+
+
+def extract_step_fields(message):
+    """从文本日志行里提取 ``(stepId, controlId)``；缺失返回空串。"""
+    text = str(message or "")
+    step_match = _STEP_FIELD_RE.search(text)
+    control_match = _CONTROL_FIELD_RE.search(text)
+    return (
+        step_match.group(1) if step_match else "",
+        control_match.group(1) if control_match else "",
+    )
+
+
+def _iso_millis(timestamp):
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(timestamp))
+    millis = int((timestamp - int(timestamp)) * 1000)
+    if millis < 0:
+        millis = 0
+    return "%s.%03d" % (stamp, millis)
+
+
+def log_event(
+    level,
+    message,
+    event=None,
+    step_id=None,
+    control_id=None,
+    elapsed_ms=None,
+    detail=None,
+    module=None,
+    run_id=None,
+    timestamp=None,
+):
+    """向 JSONL 旁路追加一条结构化记录；未开启旁路时返回 None。
+
+    字段契约（与既有规划中的 ``logs/locator_events.jsonl`` 保持命名一致，
+    便于将来两者互相 join）：
+
+    ``ts`` / ``runId`` / ``level`` / ``stepId`` / ``controlId`` /
+    ``event`` / ``elapsedMs`` / ``message`` / ``detail``
+
+    为保持文件可读，``stepId`` / ``controlId`` / ``event`` / ``elapsedMs`` /
+    ``detail`` 为空时**整字段省略**（而非写 null），使常见行保持简短。
+
+    字段顺序刻意把 ``message`` 放在最后：它是长度最不可控的字段，
+    置末可让前面的标识类字段在纯文本浏览时保持列对齐、便于扫读。
+    """
+    path = _jsonl_path
+    if not path:
+        return None
+
+    now = time.time() if timestamp is None else float(timestamp)
+    if step_id is None or control_id is None:
+        auto_step, auto_control = extract_step_fields(message)
+        if step_id is None:
+            step_id = auto_step
+        if control_id is None:
+            control_id = auto_control
+
+    record = {"ts": _iso_millis(now), "level": normalize_level(level, default=INFO)}
+    rid = run_id if run_id is not None else _run_id
+    if rid:
+        record["runId"] = str(rid)
+    if step_id:
+        record["stepId"] = str(step_id)
+    if control_id:
+        record["controlId"] = str(control_id)
+    if event:
+        record["event"] = str(event)
+    if elapsed_ms is not None:
+        record["elapsedMs"] = round(float(elapsed_ms), 2)
+    if module:
+        record["module"] = str(module)
+    if detail:
+        record["detail"] = detail
+    record["message"] = str(message)
+
+    line = json.dumps(record, ensure_ascii=False)
+    with _jsonl_lock:
+        try:
+            with open(path, "a", encoding="utf-8") as file_obj:
+                file_obj.write(line + "\n")
+        except Exception:
+            return None
+    return record
 
 
 # ── 行格式 ──────────────────────────────────────────────────────────────────
