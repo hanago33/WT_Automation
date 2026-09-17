@@ -15,6 +15,7 @@ import urllib.request
 from tkinter import filedialog, messagebox, ttk
 
 import wt_theme
+import wt_logging
 
 
 DEFAULT_URL = "http://127.0.0.1:8768"
@@ -695,14 +696,10 @@ class TaskQueueWindow:
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        for tag, color in (
-            ("info", "#e2e8f0"),
-            ("error", "#f87171"),
-            ("warning", "#fbbf24"),
-            ("success", "#34d399"),
-            ("system", "#60a5fa"),
-        ):
-            self.log_text.tag_configure(tag, foreground=color)
+        # 日志配色统一从 wt_theme 取（深底变体），不再就地硬编码。
+        wt_logging.configure_log_tags(
+            self.log_text, dark=True, font_family="Consolas", font_size=9
+        )
 
         main_paned.add(right_frame, minsize=420, width=580)
 
@@ -864,14 +861,10 @@ class TaskQueueWindow:
         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.monitor_log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        for tag, color in (
-            ("info", "#e2e8f0"),
-            ("error", "#f87171"),
-            ("warning", "#fbbf24"),
-            ("success", "#34d399"),
-            ("system", "#60a5fa"),
-        ):
-            self.monitor_log_text.tag_configure(tag, foreground=color)
+        # 同 log_text：配色统一由 wt_logging 从 wt_theme 取。
+        wt_logging.configure_log_tags(
+            self.monitor_log_text, dark=True, font_family="Consolas", font_size=9
+        )
 
     def _build_flows_tab(self, parent):
         """流程仓库页签：服务器 flow_packages 的版本台账 + 提交人/时间 + 关联任务与项目参数。
@@ -2013,15 +2006,8 @@ class TaskQueueWindow:
 
     @staticmethod
     def _classify_line(line):
-        if any(key in line for key in ("错误", "失败", "ERROR", "Traceback", "Exception")):
-            return "error"
-        if any(key in line for key in ("警告", "WARN", "Warning")):
-            return "warning"
-        if any(key in line for key in ("完成", "成功", "SUCCESS")):
-            return "success"
-        if any(key in line for key in ("queue", "启动", "开始")):
-            return "system"
-        return "info"
+        # 统一委托 wt_logging：优先读写入方显式级别，缺失时关键字兜底。
+        return wt_logging.tag_for_line(line)
 
     @staticmethod
     def _friendly_error(raw):

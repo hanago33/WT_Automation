@@ -10,6 +10,7 @@ import pyautogui
 from pywinauto_recorder.player import send_keys
 
 from wt_action_schema import step_policy_on_fail_to_legacy
+import wt_logging
 
 try:
     import image_template_index
@@ -22,6 +23,28 @@ _GET_FLOW_PACKAGE = lambda package_id: {}
 _GET_STEP_PARAMS = lambda step_id: {}
 _RESOLVE_DYNAMIC_VALUE = lambda value, step_id, context: value
 _LOG_STEP = lambda message: None
+# 可选的级别感知记录器 (level, message) -> None；未注入时 _log_at() 按
+# wt_logging 阈值门控后退回 _LOG_STEP，保持既有单参数契约不变。
+_LOG_AT = None
+
+
+def _log_at(level, message):
+    """按级别输出日志（级别感知）。"""
+    if _LOG_AT is not None:
+        try:
+            _LOG_AT(level, message)
+            return
+        except Exception:
+            pass
+    if wt_logging.is_enabled(level):
+        _LOG_STEP(message)
+
+
+def _log_debug(message):
+    """DEBUG 级日志：默认不输出，需 WT_LOG_LEVEL=DEBUG 或 WT_DEBUG_EVENTS=1。"""
+    _log_at(wt_logging.DEBUG, message)
+
+
 _CLICK_FLOW_CONTROL = lambda *args, **kwargs: False
 _CLICK_RELATIVE_REGION = lambda *args, **kwargs: (False, {})
 _CLICK_RELATIVE_ANCHOR = lambda *args, **kwargs: (False, {})
@@ -147,6 +170,7 @@ def configure_flow_executor(
     get_step_params=None,
     resolve_dynamic_value=None,
     log_step=None,
+    log_at=None,
     click_flow_control=None,
     click_relative_region=None,
     click_relative_anchor=None,
@@ -170,6 +194,7 @@ def configure_flow_executor(
 ):
     global _GET_STEP_DEFINITION, _GET_FLOW_PACKAGE, _GET_STEP_PARAMS
     global _RESOLVE_DYNAMIC_VALUE, _LOG_STEP, _CLICK_FLOW_CONTROL, _CLICK_RELATIVE_REGION
+    global _LOG_AT
     global _CLICK_RELATIVE_ANCHOR, _CHECK_ALL_TOGGLES, _SELECT_LIST_ITEMS
     global _FOCUS_FLOW_CONTROL, _TYPE_TEXT_INTO_FLOW_CONTROL, _TYPE_TEXT_INTO_RELATIVE_REGION
     global _SELECT_DROPDOWN_ITEM_RUNTIME
@@ -189,6 +214,8 @@ def configure_flow_executor(
         _RESOLVE_DYNAMIC_VALUE = resolve_dynamic_value
     if callable(log_step):
         _LOG_STEP = log_step
+    if callable(log_at):
+        _LOG_AT = log_at
     if callable(click_flow_control):
         _CLICK_FLOW_CONTROL = click_flow_control
     if callable(click_relative_region):

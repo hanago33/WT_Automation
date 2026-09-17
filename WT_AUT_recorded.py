@@ -44,6 +44,7 @@ import wt_window_helpers
 import wt_dpi
 import wt_flow_executor
 import wt_flow_locator
+import wt_logging
 import wt_projection_helpers
 import wt_run_reporting
 import wt_run_status
@@ -316,6 +317,10 @@ MONITOR_THEME = {
 
 
 class MonitorWindow:
+    # 日志 Text 行数上限：长流程（100+ 步 × 每步数行）下防止 Text 无限增长。
+    # 与 wt_task_queue_window._LOG_MAX_LINES 取值一致，保持各日志区行为统一。
+    LOG_MAX_LINES = 400
+
     def __init__(self):
         wt_dpi.enable_process_dpi_awareness()
         self.root = tk.Tk()
@@ -351,11 +356,16 @@ class MonitorWindow:
             padx=8, pady=6,
         )
         self.text_widget.pack(expand=True, fill=tk.BOTH, padx=6, pady=(6, 0))
+        # 日志配色统一从 wt_theme 取（浅底变体），不再就地硬编码色值 ——
+        # 改造前同一系统存在 4 套互不相同的日志配色。
         self.text_widget.tag_configure("time", foreground=MONITOR_THEME["muted"])
-        self.text_widget.tag_configure("info", foreground=MONITOR_THEME["text"])
-        self.text_widget.tag_configure("success", foreground=MONITOR_THEME["success"])
-        self.text_widget.tag_configure("error", foreground=MONITOR_THEME["danger"])
-        self.text_widget.tag_configure("warning", foreground=MONITOR_THEME["warning"])
+        wt_logging.configure_log_tags(
+            self.text_widget,
+            dark=False,
+            tags=("debug", "info", "success", "error", "warning"),
+            font_family="Microsoft YaHei UI",
+            font_size=9,
+        )
 
         self.scrollbar = tk.Scrollbar(
             self.text_widget, relief=tk.FLAT, bd=0,
@@ -409,7 +419,9 @@ class MonitorWindow:
             pass
 
     def log(self, message, kind="info"):
-        if kind not in ("info", "success", "error", "warning"):
+        # debug 也是合法级别（由 wt_logging.tag_for_level 产出）；
+        # 改造前白名单缺 debug，DEBUG 行会被强制降级为 info 色。
+        if kind not in ("debug", "info", "success", "error", "warning"):
             kind = "info"
         self.text_widget.config(state=tk.NORMAL)
         if message.startswith("[") and "] " in message:
@@ -419,11 +431,27 @@ class MonitorWindow:
         else:
             self.text_widget.insert(tk.END, message, kind)
         self.text_widget.insert(tk.END, "\n")
+        self._trim_to_max_lines()
         self.text_widget.see(tk.END)
         self.text_widget.config(state=tk.DISABLED)
         # 注意：不再调用 self.root.update()。本方法可能被后台自动化线程调用，
         # 跨线程进入 Tcl 事件循环会导致解释器重入崩溃（access violation）。
         # Tk 会在下一个 idle 周期自动刷新，无需手动 pump。
+
+    def _trim_to_max_lines(self):
+        """头部裁剪：超过 LOG_MAX_LINES 时删除最早的多余行。
+
+        与 wt_task_queue_window 同款算法：Tk 行号从 1 计，
+        delete("1.0", "N.0") 删的是第 1..N-1 行，故要删到 (多余行数+1).0
+        才能恰好剩 LOG_MAX_LINES 行。
+        """
+        try:
+            row = int(self.text_widget.index("end-1c").split(".")[0] or 0)
+            excess = max(0, row - 1) - self.LOG_MAX_LINES
+            if excess > 0:
+                self.text_widget.delete("1.0", "%d.0" % (excess + 1))
+        except Exception:
+            pass
 
     def update_status(self, status):
         text = "状态：{}".format(status)
@@ -481,32 +509,106 @@ def _ui_safe_call(callback):
     return False
 
 
-def log_step(step_name):
+def _append_log_file(line):
+    """把一行日志追加到 LOG_FILE（必要时先按大小轮转）。
+
+    单独成函数：便于测试替换（避免测试真的落盘/删文件）。
+    每次追加前做一次体积检查，而不是持有常驻句柄 —— 后者会让外部删除日志
+    （WT_Launcher 的"清屏"）在 Windows 上失败并留下失效句柄。
+    """
+    try:
+        wt_logging.rotate_log(LOG_FILE)
+    except Exception:
+        pass
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def log_step(step_name, level=None):
+    """写一条运行日志（主链路唯一日志出口）。
+
+    ``level`` 省略时按内容自动判定，兼容既有单参数调用；显式传入级别时以传入值为准。
+    级别低于当前阈值（默认 INFO，见 wt_logging）的行直接丢弃，因此高频 DEBUG 诊断
+    转储在正常运行时不产生任何输出。
+    """
     global monitor_window
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_line = f"[{timestamp}] {step_name}"
+    resolved = wt_logging.normalize_level(level, default=None) if level is not None else None
+    if resolved is None:
+        resolved = wt_logging.detect_level(step_name)
+
+    # JSONL 旁路**不受级别门控**：它的价值就是「文本精简、机读完整」——
+    # 被降噪砍掉的 DEBUG 诊断（分段计时 / 判定转储 / 剪枝计数）只在这里留存。
+    # 若放到门控之后，JSONL 就退化成文本日志的重复副本，不再提供增量价值。
+    wt_logging.log_event(resolved, step_name)
+
+    if not wt_logging.is_enabled(resolved):
+        return
+
+    log_line = wt_logging.format_line(resolved, step_name)
     print(log_line, end="\n")
 
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(log_line + "\n")
-        try:
-            wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
-        except Exception:
-            pass
+    _append_log_file(log_line)
+    try:
+        wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
+    except Exception:
+        pass
 
     if monitor_window:
-        if any(k in step_name for k in ("失败", "错误")):
-            kind = "error"
-        elif any(k in step_name for k in ("完成", "成功")):
-            kind = "success"
-        elif any(k in step_name for k in ("警告", "跳过")):
-            kind = "warning"
-        else:
-            kind = "info"
+        # 着色标签：级别定基调，INFO/DEBUG 档再按内容细分 success/system
+        # （「完成」「开始」是内容类别而非级别，只按级别取色会让它们永久丢失颜色）。
+        kind = wt_logging.tag_for_message(resolved, step_name)
         # log/update_status 可能在后台自动化线程被调用，须调度到主线程执行，
         # 避免跨线程 Tcl 重入崩溃。
         _ui_safe_call(lambda: monitor_window.log(log_line, kind=kind))
         _ui_safe_call(lambda: monitor_window.update_status(step_name))
+
+
+def log_at(level, message):
+    """级别感知记录器，经 configure_* 注入给 wt_flow_locator / wt_flow_executor。
+
+    与 log_step 的差别仅在于级别由调用方显式给出（用于定位耗时、回退来源等
+    需要按档位分级的场景）。
+    """
+    log_step(message, level=level)
+
+
+def _log_run_end_banner(run_report, status, level=None):
+    """运行结束边界标记（人读友好，便于在长日志里定位一次运行的收尾）。
+
+    取运行报告 summary 里的耗时与计数；任何缺失都不影响标记本身。
+
+    **级别必须由调用方显式给出**（成功路径 INFO / 失败路径 ERROR）：
+    本函数的 extra 恒含「失败 0」（`failedCount` 初值就是 0），若交给
+    `log_step` 靠文本推断，成功运行会被判成 ERROR 红字 —— 正是 P0 修过的
+    「假红字」同类问题。
+    """
+    summary = {}
+    if isinstance(run_report, dict):
+        summary = run_report.get("summary") or {}
+    extra = ""
+    if summary:
+        success = summary.get("successCount")
+        failed = summary.get("failedCount")
+        skipped = summary.get("skippedCount")
+        bits = []
+        if success is not None:
+            bits.append("成功 {}".format(success))
+        if failed is not None:
+            bits.append("失败 {}".format(failed))
+        if skipped:
+            bits.append("跳过 {}".format(skipped))
+        if bits:
+            extra = " / ".join(bits)
+    log_step(
+        wt_logging.format_run_banner(
+            "end",
+            status=status,
+            elapsed_seconds=summary.get("totalElapsedSeconds"),
+            step_count=summary.get("executedCount"),
+            extra=extra,
+        ),
+        level=level,
+    )
 
 
 
@@ -1133,6 +1235,7 @@ def _get_flow_locator():
 			get_step_definition=_get_flow_step_resolved,
 			log_step=log_step,
 			get_main_window_candidates=_get_main_window_candidates,
+			log_at=log_at,
 		)
 		_FLOW_LOCATOR_CONFIGURED = True
 	return wt_flow_locator
@@ -1266,6 +1369,7 @@ def _get_flow_executor():
 			get_step_params=_get_step_params,
 			resolve_dynamic_value=_resolve_dynamic_value,
 			log_step=log_step,
+			log_at=log_at,
 			click_flow_control=_click_flow_control,
 			click_relative_region=_click_relative_region,
 		click_relative_anchor=_click_relative_anchor,
@@ -1361,7 +1465,7 @@ def _get_wt_window_helpers():
 def _get_wt_run_reporting():
 	global _WT_RUN_REPORTING_CONFIGURED
 	if not _WT_RUN_REPORTING_CONFIGURED:
-		wt_run_reporting.configure_run_reporting(base_dir=BASE_DIR, log_step=log_step)
+		wt_run_reporting.configure_run_reporting(base_dir=BASE_DIR, log_step=log_step, log_at=log_at)
 		_WT_RUN_REPORTING_CONFIGURED = True
 	return wt_run_reporting
 
@@ -2523,7 +2627,16 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 				"（或 --steps/--from-step/--to-step 参数未匹配到步骤）；"
 				"若该路径不存在，说明流程文件未上传/未部署到本机".format(FLOW_DEFINITION_FILE)
 			)
-		log_step(f"执行步骤列表: {steps_to_run}")
+		# 步骤清单改为摘要：改造前把全部 stepId 单行倾倒（实测 111 步 = 2665 字符，
+		# 占整份日志 14% 字符量）。完整清单在 DEBUG 档输出。
+		# 措辞点明「运行结束后」——运行报告要到 finalize_run_report 才落盘，
+		# 运行进行中该文件尚不存在，原先的「见运行报告」会指向不存在的文件。
+		log_step(
+			"已解析待执行步骤 {} 个（{} … {}）；完整清单见运行结束后的运行报告".format(
+				len(steps_to_run), steps_to_run[0], steps_to_run[-1]
+			)
+		)
+		log_step(f"执行步骤列表: {steps_to_run}", level=wt_logging.DEBUG)
 		log_step(
 			f"当前运行参数: gmExe={GM_EXE}, sourceFilePath={SOURCE_FILE_PATH}, outputDir={OUTPUT_DIR}, projectionFilePath={PROJECTION_FILE_PATH}"
 		)
@@ -2549,6 +2662,24 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 			context.get("runtime_config", {}),
 		)
 		context["runId"] = context["run_report"].get("runId", "") if isinstance(context.get("run_report"), dict) else ""
+		# 登记 runId：供 JSONL 旁路与运行边界标记使用（人读日志里也能看到 runId，
+		# 便于与 logs/run_reports/*.json 互相对照）。
+		wt_logging.set_run_id(context.get("runId", ""))
+		# 开启 JSONL 旁路：每次运行一个文件，机读用（jq 可按级别/步骤筛选）。
+		# 与文本日志同源同时写 —— 文本为人读而精简，JSONL 保留全量结构化字段。
+		wt_logging.start_jsonl(
+			os.path.join(
+				BASE_DIR,
+				"logs",
+				"run_logs",
+				"{}.jsonl".format(context.get("runId") or "run"),
+			)
+		)
+		log_step(
+			wt_logging.format_run_banner(
+				"start", run_id=context.get("runId", ""), step_count=len(steps_to_run)
+			)
+		)
 		if task_id:
 			wt_task_queue.mark_started(task_id, run_id=context.get("runId", ""), db_path=queue_db)
 		wt_run_status.publish(
@@ -2684,6 +2815,8 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 		log_step("WT自动化流程完成")
 		_attach_mup_data_diff(context.get("run_report"), context)
 		_get_wt_run_reporting().finalize_run_report(context.get("run_report"), "success")
+		_log_run_end_banner(context.get("run_report"), "成功", level=wt_logging.INFO)
+		wt_logging.stop_jsonl()
 		wt_run_status.publish(
 			status="success",
 			activity="WT自动化流程完成",
@@ -2710,6 +2843,12 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 				"failed",
 				error=str(e),
 			)
+			_log_run_end_banner(
+				context.get("run_report") if "context" in locals() else None,
+				"失败",
+				level=wt_logging.ERROR,
+			)
+			wt_logging.stop_jsonl()
 		except Exception:
 			pass
 		wt_run_status.publish(

@@ -5,19 +5,36 @@ import os
 import tempfile
 from datetime import datetime
 
+import wt_logging
+
 
 _BASE_DIR = os.path.dirname(__file__)
 _LOG_STEP = lambda message: None
+# 级别感知记录器 (level, message) -> None；未注入时回退 _LOG_STEP（保持单参数契约）。
+_LOG_AT = None
 # 进程内运行序号：与毫秒组合保证同一 tick 内多次运行 runId 仍唯一（Windows 时钟粒度粗）
 _RUN_SEQUENCE = [0]
 
 
-def configure_run_reporting(base_dir=None, log_step=None):
-    global _BASE_DIR, _LOG_STEP
+def configure_run_reporting(base_dir=None, log_step=None, log_at=None):
+    global _BASE_DIR, _LOG_STEP, _LOG_AT
     if base_dir:
         _BASE_DIR = base_dir
     if callable(log_step):
         _LOG_STEP = log_step
+    if callable(log_at):
+        _LOG_AT = log_at
+
+
+def _log_at(level, message):
+    """按级别输出；未注入级别记录器时退回 _LOG_STEP（由它自行推断级别）。"""
+    if _LOG_AT is not None:
+        try:
+            _LOG_AT(level, message)
+            return
+        except Exception:
+            pass
+    _LOG_STEP(message)
 
 
 def _ensure_report_dir():
@@ -152,7 +169,12 @@ def finalize_run_report(run_report, status, error=""):
     _summary = run_report.get("summary", {})
     if not isinstance(_summary, dict):
         _summary = {}
-    _LOG_STEP(
+    # 级别由运行状态显式给出：本行恒含 `failed=0`（failedCount 初值为 0），
+    # 若靠文本推断会把成功运行判成 ERROR 红字。
+    _status = str(run_report.get("status", "") or "")
+    _level = wt_logging.ERROR if _status == "failed" else wt_logging.INFO
+    _log_at(
+        _level,
         "运行结果摘要已写入: "
         f"status={run_report.get('status', '')}, "
         f"executed={_summary.get('executedCount', 0)}, "
@@ -160,6 +182,6 @@ def finalize_run_report(run_report, status, error=""):
         f"failed={_summary.get('failedCount', 0)}, "
         f"skipped={_summary.get('skippedCount', 0)}, "
         f"fallback={_summary.get('fallbackCount', 0)}, "
-        f"report={report_path}"
+        f"report={report_path}",
     )
     return report_path

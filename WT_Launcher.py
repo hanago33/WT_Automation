@@ -21,6 +21,8 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import wt_dpi
 import wt_theme
+import wt_logging
+import wt_log_query
 import wt_wheel_router
 from flow_excel_io import (
     DEFAULT_FLOW_XLSX,
@@ -52,6 +54,10 @@ FLOW_PACKAGE_REGISTRY_FILE = os.path.join(FLOW_PACKAGE_STORE_DIR, "flow_package_
 FLOW_EDITOR_STARTUP_SIGNAL = os.path.join(BASE_DIR, "flow_editor_startup.signal")
 PROJECT_CONFIG_RESOURCE = os.path.join(BASE_DIR, "resources", "project_config.resource")
 LOG_FILE = os.path.join(BASE_DIR, "wt_automation.log")
+# 「运行日志」页保留的行数上限。比监视器窗口（400 行）大得多 ——
+# 监视器是小号常驻窗（只看最近动态），总控台是主窗口，用户需要一次运行的完整上下文
+# 才能用过滤条筛出某个步骤/某个错误，故取 2000 行（111 步运行约 350 行，含 DEBUG 也够用）。
+LOG_VIEW_MAX_LINES = 2000
 TEMPLATE_ROOT_DIR = os.path.join(BASE_DIR, "image_templates")
 CONTROL_MAP_DIR = os.path.join(BASE_DIR, "control_maps")
 TEMPLATE_INDEX_FILE = os.path.join(TEMPLATE_ROOT_DIR, "templates_index.json")
@@ -1714,14 +1720,11 @@ class ServerMonitorWindow:
         # 滚动条先 pack（防止内容长行挤压滚动条，与队列窗口日志区修复保持一致）
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        for tag, color in (
-            ("info", "#e6edf3"),
-            ("error", "#ff7b72"),
-            ("warning", "#e3b341"),
-            ("success", "#7ee787"),
-            ("system", "#79c0ff"),
-        ):
-            self.log_text.tag_configure(tag, foreground=color)
+        # 日志配色统一从 wt_theme 取（深底变体），不再就地硬编码 ——
+        # 改造前同一系统存在 4 套互不相同的日志配色。
+        wt_logging.configure_log_tags(
+            self.log_text, dark=True, font_family="Consolas", font_size=9
+        )
 
         self._after_id = self.window.after(2000, self._poll_loop)
 
@@ -1788,13 +1791,9 @@ class ServerMonitorWindow:
 
     @staticmethod
     def _classify_line(line):
-        if any(key in line for key in ("错误", "失败", "ERROR", "Traceback", "Exception")):
-            return "error"
-        if any(key in line for key in ("警告", "WARN", "Warning")):
-            return "warning"
-        if any(key in line for key in ("完成", "成功", "SUCCESS")):
-            return "success"
-        return "info"
+        # 统一委托给 wt_logging：优先读写入方显式级别，缺失时关键字兜底。
+        # 改造前此处与 _tag_for_line / 队列窗口各有一套规则，互不一致。
+        return wt_logging.tag_for_line(line)
 
     def _mark_offline(self, error_text):
         self.conn_var.set(f"未连接：{error_text}")
@@ -1855,6 +1854,10 @@ class LauncherApp:
         self.template_category_var = tk.StringVar(value="")
         self.run_report_summary_var = tk.StringVar(value="运行报告：尚未生成")
         self.run_report_meta_var = tk.StringVar(value="最近一次流程执行后，会在这里展示结构化运行结果。")
+        # 「运行日志」页的完整行缓冲与过滤条件。缓冲独立于 Text 控件保存 ——
+        # 切换过滤条件时要能重新筛选全量行，而不只是当前可见的那部分。
+        self._log_all_lines = []
+        self._log_filter = wt_log_query.LogFilter()
         self.skip_setup_var = tk.BooleanVar(value=False)
         self.pre_raise_var = tk.BooleanVar(value=True)
         self.show_monitor_var = tk.BooleanVar(value=True)
@@ -5684,6 +5687,11 @@ class LauncherApp:
         report_tab = tk.Frame(notebook, bg=self.theme["card"])
         notebook.add(log_tab, text="运行日志")
         notebook.add(report_tab, text="运行报告")
+        # 保存引用：报告页点某步骤时要联动切到日志页并筛出该步日志。
+        self.report_notebook = notebook
+        self.log_tab = log_tab
+
+        self._build_log_filter_bar(log_tab)
 
         text_frame = tk.Frame(log_tab, bg=self.theme["card"])
         text_frame.pack(fill=tk.BOTH, expand=True)
@@ -5706,11 +5714,10 @@ class LauncherApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=scrollbar.set)
 
-        self.log_text.tag_configure("info", foreground="#f8fafc")
-        self.log_text.tag_configure("error", foreground="#f87171")
-        self.log_text.tag_configure("success", foreground="#4ade80")
-        self.log_text.tag_configure("system", foreground="#60a5fa")
-        self.log_text.tag_configure("warning", foreground="#fbbf24")
+        # 同「运行日志」页：统一由 wt_logging 从 wt_theme 取色（深底变体）。
+        wt_logging.configure_log_tags(
+            self.log_text, dark=True, font_family="Consolas", font_size=10
+        )
 
         summary_frame = tk.LabelFrame(
             report_tab,
@@ -5796,6 +5803,12 @@ class LauncherApp:
         self.run_report_tree.column("strategy", width=260, minwidth=160, stretch=False, anchor="w")
         self.run_report_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.run_report_tree.bind("<<TreeviewSelect>>", self._on_run_report_step_select)
+        # 日志联动绑定在「用户点击」上，而不是 <<TreeviewSelect>>：
+        # 实测 selection_set() 同样会触发该虚拟事件，且是**异步**到达的
+        # （调用后要跑一次事件循环才到）。而 _refresh_run_report_view 每次刷新都会
+        # selection_set("0") 定位首行 —— 若绑在选中事件上，每次刷新都会把用户正在看
+        # 的页签切走、并把日志筛到第 1 步。绑 ButtonRelease-1 与事件时序无关。
+        self.run_report_tree.bind("<ButtonRelease-1>", self._on_run_report_tree_click)
         self.run_report_tree.tag_configure("success", foreground="#059669")
         self.run_report_tree.tag_configure("failed", foreground="#dc2626")
         self.run_report_tree.tag_configure("skipped", foreground="#d97706")
@@ -5823,11 +5836,192 @@ class LauncherApp:
     def _refresh_api_entry_mode(self):
         self.api_key_entry.config(show="" if self.show_api_key_var.get() else "*")
 
+    # ── 运行日志页：过滤条与渲染 ─────────────────────────────────────────────
+    def _build_log_filter_bar(self, parent):
+        """构建日志过滤条（级别 / 关键字 / 步骤）。
+
+        动机：一次运行上百步、近百行日志，若只能看尾部且无法按级别或步骤筛选，
+        定位「第一个出问题的步骤」就只能靠肉眼滚屏；而「运行报告」页虽然列出每步
+        结果，却与日志视图互不相通。过滤条把两者接上。
+        """
+        row = tk.Frame(parent, bg=self.theme["card"])
+        row.pack(fill=tk.X, pady=(0, 8))
+
+        label_font = ("Microsoft YaHei UI", 9)
+        entry_font = ("Consolas", 10)
+
+        def _label(text):
+            tk.Label(
+                row, text=text, bg=self.theme["card"], fg=self.theme["muted"], font=label_font
+            ).pack(side=tk.LEFT)
+
+        def _entry(variable, width):
+            widget = tk.Entry(
+                row,
+                textvariable=variable,
+                width=width,
+                font=entry_font,
+                relief=tk.FLAT,
+                bg=self.theme["panel_soft"],
+                fg=self.theme["text"],
+                insertbackground=self.theme["text"],
+            )
+            widget.pack(side=tk.LEFT, padx=(4, 12), ipady=3)
+            widget.bind("<Return>", lambda _event: self._apply_log_filter())
+            return widget
+
+        _label("级别")
+        self.log_level_var = tk.StringVar(value=wt_log_query.LEVEL_CHOICES[0][0])
+        self.log_level_combo = ttk.Combobox(
+            row,
+            textvariable=self.log_level_var,
+            values=[label for label, _value in wt_log_query.LEVEL_CHOICES],
+            state="readonly",
+            width=12,
+            font=label_font,
+        )
+        self.log_level_combo.pack(side=tk.LEFT, padx=(4, 12))
+        self.log_level_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self._apply_log_filter()
+        )
+
+        _label("关键字")
+        self.log_keyword_var = tk.StringVar(value="")
+        _entry(self.log_keyword_var, 16)
+
+        _label("步骤")
+        self.log_step_var = tk.StringVar(value="")
+        _entry(self.log_step_var, 22)
+
+        self._create_secondary_button(row, "应用筛选", self._apply_log_filter).pack(side=tk.LEFT)
+        self._create_secondary_button(row, "清除", self._clear_log_filter).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+
+        self.log_filter_status_var = tk.StringVar(value="未过滤 · 共 0 行")
+        tk.Label(
+            row,
+            textvariable=self.log_filter_status_var,
+            bg=self.theme["card"],
+            fg=self.theme["muted"],
+            font=label_font,
+        ).pack(side=tk.RIGHT)
+
+    def _build_log_filter(self):
+        """从界面控件读出当前过滤条件。"""
+        selected_label = self.log_level_var.get()
+        min_level = ""
+        for label, value in wt_log_query.LEVEL_CHOICES:
+            if label == selected_label:
+                min_level = value
+                break
+        return wt_log_query.LogFilter(
+            min_level=min_level or None,
+            keyword=self.log_keyword_var.get(),
+            step_id=self.log_step_var.get(),
+        )
+
+    def _apply_log_filter(self):
+        self._log_filter = self._build_log_filter()
+        self._render_log_view()
+
+    def _clear_log_filter(self):
+        self.log_level_var.set(wt_log_query.LEVEL_CHOICES[0][0])
+        self.log_keyword_var.set("")
+        self.log_step_var.set("")
+        self._log_filter = wt_log_query.LogFilter()
+        self._render_log_view()
+
+    def _filter_log_by_step(self, step_id):
+        """筛出指定步骤的日志，并切到「运行日志」页。
+
+        由 `_on_run_report_tree_click` 在**用户点击报告表格行**时调用；
+        程序化选中（刷新后定位首行）不会走到这里，以免把用户正在看的页签切走。
+        """
+        if not step_id:
+            return
+        self.log_step_var.set(str(step_id))
+        self._log_filter = self._build_log_filter()
+        self._render_log_view()
+        try:
+            self.report_notebook.select(self.log_tab)
+        except Exception:
+            pass
+
+    def _render_log_view(self):
+        """按当前过滤条件重渲染整个日志视图（切换筛选条件时调用）。"""
+        widget = getattr(self, "log_text", None)
+        if widget is None:
+            return
+        visible = [
+            (text, tag)
+            for text, tag in self._log_all_lines
+            if self._log_filter.matches(text)
+        ]
+        widget.config(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        for text, tag in visible:
+            widget.insert(tk.END, text + "\n", tag)
+        widget.config(state=tk.DISABLED)
+        widget.see(tk.END)
+        self._update_log_filter_status()
+
+    def _count_visible_log_lines(self):
+        widget = getattr(self, "log_text", None)
+        if widget is None:
+            return 0
+        try:
+            return max(0, int(widget.index("end-1c").split(".")[0]) - 1)
+        except Exception:
+            return 0
+
+    def _update_log_filter_status(self):
+        if not hasattr(self, "log_filter_status_var"):
+            return
+        self.log_filter_status_var.set(
+            self._log_filter.describe(
+                len(self._log_all_lines), self._count_visible_log_lines()
+            )
+        )
+
+    def _trim_log_view(self):
+        """头部裁剪：日志视图行数不超过 LOG_VIEW_MAX_LINES。"""
+        widget = getattr(self, "log_text", None)
+        if widget is None:
+            return
+        try:
+            row = int(widget.index("end-1c").split(".")[0] or 0)
+            excess = max(0, row - 1) - LOG_VIEW_MAX_LINES
+            if excess > 0:
+                widget.delete("1.0", "%d.0" % (excess + 1))
+        except Exception:
+            pass
+
     def _append_log(self, message, tag="info"):
-        self.log_text.config(state=tk.NORMAL)
-        self.log_text.insert(tk.END, message.rstrip() + "\n", tag)
-        self.log_text.see(tk.END)
-        self.log_text.config(state=tk.DISABLED)
+        """追加一行日志：先入缓冲，再按当前过滤条件决定是否上屏。
+
+        缓冲独立于 Text 控件 —— 切换过滤条件时要能重新筛选**全量**行，
+        而不只是当前可见的那部分。
+        """
+        text = str(message).rstrip()
+        if not text:
+            return
+
+        buffer = self._log_all_lines
+        buffer.append((text, tag))
+        if len(buffer) > LOG_VIEW_MAX_LINES:
+            del buffer[: len(buffer) - LOG_VIEW_MAX_LINES]
+
+        widget = getattr(self, "log_text", None)
+        if widget is None:
+            return
+        if self._log_filter.matches(text):
+            widget.config(state=tk.NORMAL)
+            widget.insert(tk.END, text + "\n", tag)
+            self._trim_log_view()
+            widget.see(tk.END)
+            widget.config(state=tk.DISABLED)
+        self._update_log_filter_status()
 
     def _log_block(self, title, lines):
         self._append_log(f"========== {title} ==========", tag="system")
@@ -5835,32 +6029,22 @@ class LauncherApp:
             self._append_log(line, tag=tag)
 
     def _tag_for_line(self, line):
-        text = line.lower()
-        if "错误" in line or "failed" in text or "traceback" in text:
-            return "error"
-        if "警告" in line or "warning" in text:
-            return "warning"
-        if "完成" in line or "成功" in line:
-            return "success"
-        if "启动" in line or "开始" in line or "状态" in line:
-            return "system"
-        return "info"
+        # 同 _classify_line：统一委托 wt_logging，消除同系统内多套分类规则。
+        return wt_logging.tag_for_line(line)
 
-    def _load_recent_log(self, max_lines=15):
+    def _load_recent_log(self, max_lines=300):
+        # 重新载入前清空缓冲，避免重复调用时旧行累积。
+        self._log_all_lines = []
         if not os.path.exists(LOG_FILE):
             self._append_log("尚未检测到历史运行日志。", tag="system")
             return
 
-        try:
-            with open(LOG_FILE, "r", encoding="utf-8", errors="ignore") as file_obj:
-                lines = file_obj.readlines()
-        except OSError as exc:
-            self._append_log(f"读取历史日志失败：{exc}", tag="error")
-            return
-
+        # 载入行数由 15 提到 300：过滤条要能筛「一次运行的完整上下文」才有意义，
+        # 15 行连一个步骤都装不下。
+        lines = wt_log_query.read_log_lines(LOG_FILE, tail=max_lines)
         self._append_log("已载入最近一次流程日志片段：", tag="system")
-        for line in lines[-max_lines:]:
-            self._append_log(line.rstrip(), tag=self._tag_for_line(line))
+        for line in lines:
+            self._append_log(line, tag=self._tag_for_line(line))
 
     def _set_run_report_detail_text(self, text):
         if not hasattr(self, "run_report_detail_text"):
@@ -5975,6 +6159,38 @@ class LauncherApp:
             "extra": item.get("extra", {}),
         }
         self._set_run_report_detail_text(json.dumps(detail_payload, ensure_ascii=False, indent=2))
+
+    def _run_report_item_by_iid(self, iid):
+        """按 Treeview iid 取回步骤结果条目（插入时 iid = 列表下标）。"""
+        try:
+            index = int(iid)
+        except (TypeError, ValueError):
+            return None
+        if 0 <= index < len(self.run_report_step_items):
+            return self.run_report_step_items[index]
+        return None
+
+    def _on_run_report_tree_click(self, event=None):
+        """用户点击报告表格某行 → 把「运行日志」页筛到该步骤并切过去。
+
+        这正是「回溯到 UI 首次未按预期变化的那一步」的操作路径 ——
+        改造前两个页签互不相通，只能靠肉眼在几百行日志里找。
+        """
+        if not hasattr(self, "run_report_tree"):
+            return
+        if event is not None:
+            try:
+                if not self.run_report_tree.identify_row(event.y):
+                    return  # 点在空白区：不改动筛选，避免误触发
+            except Exception:
+                return
+        selected = self.run_report_tree.selection()
+        if not selected:
+            return
+        item = self._run_report_item_by_iid(selected[-1])
+        if not item:
+            return
+        self._filter_log_by_step(item.get("stepId", ""))
 
     def open_last_run_report(self):
         if not os.path.exists(LAST_RUN_REPORT_FILE):
