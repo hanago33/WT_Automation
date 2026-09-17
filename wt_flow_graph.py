@@ -83,8 +83,16 @@ def load_flow_definition(base_dir, section_key):
     path = os.path.join(base_dir, "flow_packages", "flow_definition_%s.json" % name)
     if not os.path.exists(path):
         return None
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        # 文件损坏/半写时返回 None，由调用方走已有的「无法加载板块流程」分支；
+        # 原先 json.load 无保护，异常会直冒到 <<ComboboxSelected>> 回调被 Tk 吞掉，
+        # 表现为「切换下拉框没反应、标题和步数还停在旧值」。
+        return None
+    if not isinstance(data, dict):
+        return None
     packages = data.get("flowPackages") or []
     if not packages:
         return None
@@ -193,8 +201,22 @@ class FlowGraphWindow(tk.Toplevel):
 
         self.nodes = []
         self.reload()
-        # 延迟重绘，确保窗口完成布局后 canvas 拥有正确宽度
-        self.after(120, self._draw)
+        # 延迟重绘，确保窗口完成布局后 canvas 拥有正确宽度。
+        # 必须记住 after id 并在关窗时取消：否则窗口在 120ms 内被关掉时，
+        # 回调会打到已销毁的 canvas 上抛 TclError。
+        self._redraw_after_id = self.after(120, self._draw)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        """关窗：先取消待执行的延迟重绘，再销毁窗口。"""
+        after_id = getattr(self, "_redraw_after_id", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+            self._redraw_after_id = None
+        self.destroy()
 
     # ---------- 数据 ----------
     def reload(self):
