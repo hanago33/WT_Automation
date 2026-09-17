@@ -84,13 +84,14 @@ else:
     #    locator 而忘带 executor，导致内网执行器停在旧版（内网日志 step_11
     #    假失败正是此因）。增量包无论 git 是否检测到改动，都确保带上。
     # 每次强制打包的核心运行时文件。wt_logging 是 wt_flow_locator / wt_flow_executor
-    # 的硬依赖，wt_log_query 被 WT_Launcher 直接 import —— 三者都不应依赖
-    # 「本次恰好被改动所以 git 能检测到」这个巧合，必须显式列入。
+    # 的硬依赖，wt_log_query / wt_simple_options 被 WT_Launcher 直接 import ——
+    # 都不应依赖「本次恰好被改动所以 git 能检测到」这个巧合，必须显式列入。
     CORE_RUNTIME_FILES = {
         "wt_flow_executor.py",
         "wt_flow_locator.py",
         "wt_logging.py",
         "wt_log_query.py",
+        "wt_simple_options.py",
     }
     for core in CORE_RUNTIME_FILES:
         if os.path.exists(os.path.join(REPO, core)):
