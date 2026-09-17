@@ -25,6 +25,7 @@
 
 import os
 import re
+import threading
 import time
 
 # ── 级别枚举 ────────────────────────────────────────────────────────────────
@@ -137,6 +138,60 @@ def is_enabled(level):
 def is_debug_enabled():
     """DEBUG 是否开启（供高频诊断转储做门控）。"""
     return is_enabled(DEBUG)
+
+
+# ── 运行标识（runId） ──────────────────────────────────────────────────────
+# runId 由 wt_run_reporting.start_run_report() 生成（形如
+# `wt_run_20260917_102341_123_001`），此处只做进程内登记，不重复生成。
+_run_id = ""
+
+
+def set_run_id(run_id):
+    """登记本次运行的 runId（供 JSONL 记录与运行边界标记使用）。"""
+    global _run_id
+    _run_id = str(run_id or "")
+    return _run_id
+
+
+def get_run_id():
+    """返回当前登记的 runId；未登记时为空串。"""
+    return _run_id
+
+
+def clear_run_id():
+    global _run_id
+    _run_id = ""
+
+
+def format_run_banner(kind, run_id=None, step_count=None, status=None, elapsed_seconds=None, extra=None):
+    """生成人读友好的运行边界标记。
+
+    作用：`wt_automation.log` 是跨多次运行追加的单一文件，长跑后难以一眼分辨
+    运行边界。边界标记给出可 grep 的分隔行（`运行开始` / `运行结束`），
+    并把 runId 落在人读日志里，便于与运行报告、JSONL 旁路互相对照。
+
+    刻意不重复时间戳（行首已有），避免视觉冗余。
+    ``extra`` 供调用方补充一句摘要（如「成功 111 / 失败 0」）。
+    """
+    parts = []
+    if kind == "start":
+        parts.append("运行开始")
+        rid = run_id if run_id is not None else _run_id
+        if rid:
+            parts.append("runId={}".format(rid))
+        if step_count is not None:
+            parts.append("待执行 {} 步".format(step_count))
+    else:
+        parts.append("运行结束")
+        if status:
+            parts.append("状态={}".format(status))
+        if elapsed_seconds is not None:
+            parts.append("用时 {:.1f}s".format(float(elapsed_seconds)))
+        if step_count is not None:
+            parts.append("步骤 {} 步".format(step_count))
+    if extra:
+        parts.append(str(extra))
+    return "========== {} ==========".format(" · ".join(parts))
 
 
 # ── 行格式 ──────────────────────────────────────────────────────────────────

@@ -538,6 +538,39 @@ def log_at(level, message):
     log_step(message, level=level)
 
 
+def _log_run_end_banner(run_report, status):
+    """运行结束边界标记（人读友好，便于在长日志里定位一次运行的收尾）。
+
+    取运行报告 summary 里的耗时与计数；任何缺失都不影响标记本身。
+    """
+    summary = {}
+    if isinstance(run_report, dict):
+        summary = run_report.get("summary") or {}
+    extra = ""
+    if summary:
+        success = summary.get("successCount")
+        failed = summary.get("failedCount")
+        skipped = summary.get("skippedCount")
+        bits = []
+        if success is not None:
+            bits.append("成功 {}".format(success))
+        if failed is not None:
+            bits.append("失败 {}".format(failed))
+        if skipped:
+            bits.append("跳过 {}".format(skipped))
+        if bits:
+            extra = " / ".join(bits)
+    log_step(
+        wt_logging.format_run_banner(
+            "end",
+            status=status,
+            elapsed_seconds=summary.get("totalElapsedSeconds"),
+            step_count=summary.get("executedCount"),
+            extra=extra,
+        )
+    )
+
+
 
 
 # ctypes 窗口检测（来自 combine_test_packaged\wait_global_mapper_ready.py）
@@ -2587,6 +2620,14 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 			context.get("runtime_config", {}),
 		)
 		context["runId"] = context["run_report"].get("runId", "") if isinstance(context.get("run_report"), dict) else ""
+		# 登记 runId：供 JSONL 旁路与运行边界标记使用（人读日志里也能看到 runId，
+		# 便于与 logs/run_reports/*.json 互相对照）。
+		wt_logging.set_run_id(context.get("runId", ""))
+		log_step(
+			wt_logging.format_run_banner(
+				"start", run_id=context.get("runId", ""), step_count=len(steps_to_run)
+			)
+		)
 		if task_id:
 			wt_task_queue.mark_started(task_id, run_id=context.get("runId", ""), db_path=queue_db)
 		wt_run_status.publish(
@@ -2722,6 +2763,7 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 		log_step("WT自动化流程完成")
 		_attach_mup_data_diff(context.get("run_report"), context)
 		_get_wt_run_reporting().finalize_run_report(context.get("run_report"), "success")
+		_log_run_end_banner(context.get("run_report"), "成功")
 		wt_run_status.publish(
 			status="success",
 			activity="WT自动化流程完成",
@@ -2747,6 +2789,9 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 				context.get("run_report") if "context" in locals() else None,
 				"failed",
 				error=str(e),
+			)
+			_log_run_end_banner(
+				context.get("run_report") if "context" in locals() else None, "失败"
 			)
 		except Exception:
 			pass

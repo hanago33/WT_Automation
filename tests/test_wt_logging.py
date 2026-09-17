@@ -342,6 +342,55 @@ class ClassifierConsolidationTests(unittest.TestCase):
             self.assertIn("system", tags)
 
 
+class RunBannerTests(unittest.TestCase):
+    """运行标识与运行边界标记（人读日志里定位一次运行的起止）。"""
+
+    def setUp(self):
+        wt_logging.clear_run_id()
+        self.addCleanup(wt_logging.clear_run_id)
+
+    def test_run_id_roundtrip(self):
+        self.assertEqual(wt_logging.get_run_id(), "")
+        wt_logging.set_run_id("wt_run_20260917_102341_123_001")
+        self.assertEqual(wt_logging.get_run_id(), "wt_run_20260917_102341_123_001")
+        wt_logging.clear_run_id()
+        self.assertEqual(wt_logging.get_run_id(), "")
+
+    def test_start_banner_contains_run_id_and_step_count(self):
+        wt_logging.set_run_id("wt_run_20260917_102341_123_001")
+        banner = wt_logging.format_run_banner("start", step_count=111)
+        self.assertIn("运行开始", banner)
+        self.assertIn("wt_run_20260917_102341_123_001", banner)
+        self.assertIn("待执行 111 步", banner)
+        self.assertTrue(banner.startswith("======") and banner.endswith("======"))
+
+    def test_end_banner_contains_status_elapsed_and_counts(self):
+        banner = wt_logging.format_run_banner(
+            "end", status="成功", elapsed_seconds=123.44, step_count=111,
+            extra="成功 111 / 失败 0",
+        )
+        self.assertIn("运行结束", banner)
+        self.assertIn("状态=成功", banner)
+        self.assertIn("用时 123.4s", banner)
+        self.assertIn("成功 111 / 失败 0", banner)
+
+    def test_banner_omits_run_id_when_absent(self):
+        """未登记 runId 时不应出现空字段。"""
+        banner = wt_logging.format_run_banner("start", step_count=5)
+        self.assertNotIn("runId=", banner)
+        self.assertNotIn("·  ·", banner)
+
+    def test_banner_does_not_duplicate_timestamp(self):
+        """行首已有时间戳，标记本身不再重复，避免视觉冗余。"""
+        banner = wt_logging.format_run_banner("start", run_id="wt_run_x", step_count=1)
+        self.assertNotRegex(banner, r"\d{4}-\d{2}-\d{2}")
+
+    def test_banner_is_greppable_by_kind(self):
+        for kind, marker in (("start", "运行开始"), ("end", "运行结束")):
+            with self.subTest(kind=kind):
+                self.assertIn(marker, wt_logging.format_run_banner(kind))
+
+
 class DependencyConstraintTests(unittest.TestCase):
     """wt_logging 会被 headless 流程/CLI 导入，不得引入 tkinter 依赖。"""
 
