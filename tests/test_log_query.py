@@ -43,6 +43,35 @@ class LevelOfTests(unittest.TestCase):
         line = "[2026-09-15 14:08:51] 已通过流程链路匹配点击控件"
         self.assertEqual(wt_log_query.level_of(line), wt_logging.INFO)
 
+    # 以下两行是 WT_AUT_recorded._log_run_end_banner 与
+    # wt_run_reporting.finalize_run_report 实际写出的**真实文本**。
+    # 早期测试用的是一行普通步骤日志，恰好绕开了「计数型零值被判 error」的场景。
+    REAL_SUCCESS_BANNER = (
+        "[2026-09-17 11:37:26.129] ========== 运行结束 · 状态=成功 · 用时 123.4s · "
+        "步骤 16 步 · 成功 16 / 失败 0 =========="
+    )
+    REAL_SUCCESS_SUMMARY = (
+        "[2026-09-17 11:37:26.129] 运行结果摘要已写入: status=success, executed=16, "
+        "success=16, failed=0, skipped=0, fallback=0, report=x.json"
+    )
+
+    def test_real_success_banner_is_not_error(self):
+        """成功运行的收尾标记恒含「失败 0」，不得判为 ERROR。"""
+        self.assertEqual(wt_log_query.level_of(self.REAL_SUCCESS_BANNER), wt_logging.INFO)
+
+    def test_real_success_summary_is_not_error(self):
+        self.assertEqual(wt_log_query.level_of(self.REAL_SUCCESS_SUMMARY), wt_logging.INFO)
+
+    def test_error_filter_does_not_match_successful_run(self):
+        """P3 的功能性误导回归：选「ERROR 及以上」不应筛出成功运行的行。"""
+        log_filter = wt_log_query.LogFilter(min_level=wt_logging.ERROR)
+        self.assertFalse(log_filter.matches(self.REAL_SUCCESS_BANNER))
+        self.assertFalse(log_filter.matches(self.REAL_SUCCESS_SUMMARY))
+        self.assertEqual(
+            wt_log_query.summarize([self.REAL_SUCCESS_BANNER, self.REAL_SUCCESS_SUMMARY]),
+            "共 2 行 · INFO 2",
+        )
+
     def test_blank_line_is_info(self):
         self.assertEqual(wt_log_query.level_of(""), wt_logging.INFO)
 

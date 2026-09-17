@@ -127,9 +127,21 @@ def _log_window_fallback_source(source, count):
 
     改造前同一路径连发两行（「采用运行时主窗口候选 N 个」+「回退候选窗口 N 个」），
     且因 MUP 主窗标题为空而每步必触发。
-    级别约定：主窗候选 / win32 枚举属正常降级 → DEBUG；
-    前置窗口回退可能命中错误窗口（调试知识库模式 C）→ INFO。
+
+    三种来源的级别约定：
+    - ``main_window_candidates`` / ``win32_enumeration``：正常降级 → DEBUG
+    - ``foreground_window``：可能命中错误窗口（调试知识库模式 C）→ INFO
+    - ``blocked_by_self_window``：前台是自动化自身的进度/监视窗，**无法回退** →
+      INFO。这是「窗口错位」类 bug 的关键指纹，必须显式留下 ——
+      早期版本把它合并进本函数后，因该分支的候选恒为空而再未走到这里，
+      导致这行诊断信息被静默丢弃。
     """
+    if source == "blocked_by_self_window":
+        _LOG_STEP(
+            "[FlowLocator] 窗口过滤严格：前台为自动化自身窗口，"
+            "放弃本次窗口回退（不把自身进度窗当目标）"
+        )
+        return
     message = "[FlowLocator] 窗口严格过滤无命中，回退来源={}，候选 {} 个".format(source, count)
     if source == "foreground_window":
         _LOG_STEP(message)
@@ -6123,12 +6135,11 @@ def iter_flow_search_windows(step_definition, window_title_hint="", control_defi
                     source = "foreground_window"
                 else:
                     source = "blocked_by_self_window"
-            if result:
-                # 收敛为一行：改造前「采用主窗候选」与「回退候选窗口」在同一路径上
-                # 各发一行，实测 16 步产生 16 行重复噪音（占样本 11.9%）。
-                # 正常降级路径（主窗候选 / win32 枚举）降为 DEBUG；仅前置窗口回退
-                # 保留 INFO —— 那是可能命中错误窗口的降级信号（见调试知识库模式 C）。
+            if source:
+                # 无论是否拿到候选都要记来源：blocked_by_self_window 时候选恒为空，
+                # 早期把它放在 `if result:` 内导致该分支的诊断行永不输出。
                 _log_window_fallback_source(source, len(result))
+            if result:
                 if use_window_cache:
                     cache_flow_windows(cache_key, result)
                 return result

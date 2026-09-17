@@ -17,8 +17,11 @@ import unittest
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(TESTS_DIR)
-if PROJECT_DIR not in sys.path:
-    sys.path.insert(0, PROJECT_DIR)
+for _path in (PROJECT_DIR, TESTS_DIR):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
+from _tk_support import shared_tk_root
 
 import wt_log_query
 import wt_logging
@@ -363,23 +366,8 @@ class LogFilterBarSmokeTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        try:
-            import tkinter as tk
-        except Exception as exc:
-            raise unittest.SkipTest("无 tkinter 可用：%r" % (exc,))
-        cls.tk = tk
-        try:
-            cls.root = tk.Tk()
-        except Exception as exc:
-            raise unittest.SkipTest("无法创建 Tk 根窗口：%r" % (exc,))
-        cls.root.withdraw()
-
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            cls.root.destroy()
-        except Exception:
-            pass
+        # 共享根窗口：本类**不得 destroy**（见 tests/_tk_support.py 的说明）。
+        cls.tk, cls.root = shared_tk_root()
 
     def _build(self):
         import wt_theme
