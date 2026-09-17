@@ -94,6 +94,42 @@ PALETTE = {
 }
 
 
+# ── 日志级别配色（唯一权威定义，供 wt_logging 与各日志控件引用） ──────────────
+# 约定：遵循通用日志级别语义 —— DEBUG 弱化灰 / INFO 正文 / WARN 琥珀 / ERROR 赤红 /
+# CRIT 深红。浅底与深底保持同一色相，只调整明度以适配背景。
+# 说明：浅底 WARN 取 Amber-700 而非 Amber-600，是为满足 9~10px 小字在浅底上的对比度。
+LOG_LEVEL_COLORS = {
+    "light": {
+        "DEBUG": "#94a3b8",     # Slate-400 弱化
+        "INFO": "#0f172a",      # Slate-900 正文
+        "WARN": "#b45309",      # Amber-700
+        "ERROR": "#dc2626",     # Red-600
+        "CRIT": "#991b1b",      # Red-800
+        "debug": "#94a3b8",
+        "info": "#0f172a",
+        "warning": "#b45309",
+        "error": "#dc2626",
+        "success": "#047857",   # Emerald-700
+        "system": "#0369a1",    # Sky-700
+        "muted": "#64748b",
+    },
+    "dark": {
+        "DEBUG": "#64748b",     # Slate-500
+        "INFO": "#e2e8f0",      # Slate-200
+        "WARN": "#fbbf24",      # Amber-400
+        "ERROR": "#f87171",     # Red-400
+        "CRIT": "#fca5a5",      # Red-300
+        "debug": "#64748b",
+        "info": "#e2e8f0",
+        "warning": "#fbbf24",
+        "error": "#f87171",
+        "success": "#34d399",   # Emerald-400
+        "system": "#60a5fa",    # Blue-400
+        "muted": "#94a3b8",
+    },
+}
+
+
 def has_ttkbootstrap():
     """返回当前环境是否启用了 ttkbootstrap。"""
     return _HAS_TTKBOOTSTRAP
@@ -243,6 +279,15 @@ def get_theme_manager():
 
 def get_palette():
     return _theme_manager.palette
+
+
+def get_log_level_colors(dark=False):
+    """返回日志级别配色映射（``dark=False`` 为浅底，``True`` 为深底）。
+
+    供 wt_logging.level_colors() 与各日志 Text 控件的 tag_configure 使用，
+    避免各处再硬编码色值导致同一系统出现多套配色。
+    """
+    return dict(LOG_LEVEL_COLORS["dark" if dark else "light"])
 
 
 # ── 现代扁平 UI 控件构造辅助器 ────────────────────────────────────────────────
