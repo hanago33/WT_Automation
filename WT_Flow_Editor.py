@@ -3574,15 +3574,15 @@ class ControlMapImportDialog:
                 from tools import merge_standard_control_library as msl
 
                 def _progress(pct, msg):
-                    self.root.after(0, lambda p=pct, m=msg: self.var_status.set(
+                    self.window.after(0, lambda p=pct, m=msg: self.var_status.set(
                         f"正在合并控件库 ({p}%): {m}"))
 
                 stats = msl.run_merge(CONTROL_MAP_DIR, catalog_path, report_path,
                                       MASTER_CONTROL_FILE, progress_callback=_progress)
             except Exception as exc:  # noqa: BLE001 - 合并失败需完整反馈到状态栏
-                self.root.after(0, lambda: self._on_merge_done(None, exc))
+                self.window.after(0, lambda: self._on_merge_done(None, exc))
             else:
-                self.root.after(0, lambda: self._on_merge_done(stats, None))
+                self.window.after(0, lambda: self._on_merge_done(stats, None))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -4638,17 +4638,43 @@ class ControlMapImportDialog:
 
         return None
 
-    def _get_selected_indexes(self):
-        """获取选中的控件索引"""
-        selection = self.control_tree.selection()
-        indexes = []
-        for item in selection:
+    @staticmethod
+    def _resolve_control_source_indexes(selected_iids, control_lookup):
+        """把 Treeview 选中项的 iid 解析为控件在原始数组中的真实下标。
+
+        三种视图的 iid 语义不同，必须经 `control_lookup` 统一解析成控件字典：
+          - 列表视图：iid 是「排序 + 筛选后的 0-based 显示位置」；
+          - 树形视图：iid 是 uiPath 字符串；
+          - 分组视图：iid 是 `hierarchy:N`。
+        而 `_get_filtered_controls()` 三个分支都会排序、默认排序就是「质量优先」，
+        所以列表视图的显示位置与原始下标通常**不相同**。真实下标由
+        `_build_controls_from_payload` 写在每个控件的 `_sourceIndex` 上。
+
+        删除/编辑等回写操作必须用真实下标，且 `flatControls` 与 `controlDefinitions`
+        是按同一原始下标平行的数组（见 `_build_controls_from_payload` 的配对构造与
+        `edit_selected_control` 的同一 source_index 回写），因此**两个数组必须共用
+        同一组下标**，否则删除后两数组错位、后续控件元数据全部错配并写回文件。
+
+        :param selected_iids: `control_tree.selection()` 的原始 iid 列表
+        :param control_lookup: iid -> 控件字典 的解析函数（生产传
+                               `_get_control_for_locator_test`，与编辑路径同一套解析）
+        :return: 去重后的真实下标列表；无法解析的项被跳过（宁可不删，不可删错）
+        """
+        resolved = []
+        for iid in selected_iids or []:
             try:
-                index = int(item)
-                indexes.append(index)
+                control = control_lookup(iid)
             except Exception:
+                control = None
+            if not isinstance(control, dict):
                 continue
-        return indexes
+            source_index = control.get("_sourceIndex")
+            if not isinstance(source_index, int) or source_index < 0:
+                # 缺少 _sourceIndex 标注时无法定位，跳过而不是猜一个下标
+                continue
+            if source_index not in resolved:
+                resolved.append(source_index)
+        return resolved
 
     def edit_selected_control(self):
         """编辑选中的控件"""
@@ -5088,103 +5114,72 @@ class ControlMapImportDialog:
         if not selection:
             messagebox.showinfo("提示", "请先选择要删除的控件。", parent=self.window)
             return
-        selected_indexes = self._get_selected_indexes()
-        if not selected_indexes:
-            messagebox.showinfo("提示", "当前选择无有效控件。", parent=self.window)
-            return
-        
         payload = self.current_payload
         if not isinstance(payload, dict):
             messagebox.showerror("错误", "无法获取控件库文件内容。", parent=self.window)
             return
         
-        # 获取控件名称用于确认提示
-        control_names = []
+        # 统一解析真实下标，后续四处（确认框控件名 / deleted_keys / flatControls 删除 /
+        # controlDefinitions 删除）全部共用这一组下标。
+        # 只改其中一处会让两个平行数组错位 —— 详见 _resolve_control_source_indexes 的说明。
+        # 解析经 _get_control_for_locator_test，与编辑路径同一套逻辑，因此列表 / 树形 /
+        # 分组三种视图的 iid 都能正确解析（旧实现用 int(iid) 会把后两种视图的选中项全丢掉）。
         flat_controls = payload.get("flatControls", [])
         control_defs = payload.get("controlDefinitions", [])
-        
-        for idx in selected_indexes:
-            # 尝试从 flatControls 获取
-            if idx < len(flat_controls):
-                name = flat_controls[idx].get("displayName", "") or flat_controls[idx].get("name", "")
-                if name:
-                    control_names.append(name)
-                    continue
-            # 尝试从 controlDefinitions 获取
-            try:
-                int_idx = int(idx) if isinstance(idx, str) else idx
-                if int_idx < len(control_defs):
-                    name = control_defs[int_idx].get("name", "")
-                    if name:
-                        control_names.append(name)
-            except (ValueError, TypeError):
-                pass
+        resolved_indexes = self._resolve_control_source_indexes(
+            selection, self._get_control_for_locator_test)
+        if not resolved_indexes:
+            messagebox.showerror(
+                "错误", "无法定位所选控件在文件中的位置，未删除。", parent=self.window)
+            return
+
+        # 获取控件名称用于确认提示（用真实下标，保证提示与实际被删的控件一致）
+        control_names = []
+        for _src in resolved_indexes:
+            name = ""
+            if 0 <= _src < len(flat_controls) and isinstance(flat_controls[_src], dict):
+                name = (flat_controls[_src].get("displayName", "")
+                        or flat_controls[_src].get("name", ""))
+            if not name and 0 <= _src < len(control_defs) and isinstance(control_defs[_src], dict):
+                name = control_defs[_src].get("name", "")
+            if name:
+                control_names.append(name)
         
         names_str = ", ".join(control_names[:3])
         if len(control_names) > 3:
             names_str += f" 等{len(control_names)}个"
         
         if not control_names:
-            names_str = f"{len(selected_indexes)} 个控件"
+            names_str = f"{len(resolved_indexes)} 个控件"
         
         if not messagebox.askyesno("确认删除", f"确定从控件库中删除以下控件？\n{names_str}", parent=self.window):
             return
 
         # 收集被删控件的标识（id / automationId / name），删除后用于流程来源联动标记
         deleted_keys = set()
-        for idx in selected_indexes:
-            try:
-                int_idx = int(idx)
-            except (ValueError, TypeError):
-                int_idx = -1
-            if 0 <= int_idx < len(flat_controls):
-                _item = flat_controls[int_idx]
-                if isinstance(_item, dict):
+        for _src in resolved_indexes:
+            for _container in (flat_controls, control_defs):
+                if 0 <= _src < len(_container) and isinstance(_container[_src], dict):
                     for _k in ("id", "automationId", "displayName", "name"):
-                        _v = str(_item.get(_k, "")).strip()
-                        if _v:
-                            deleted_keys.add(_v)
-            if 0 <= int_idx < len(control_defs):
-                _item = control_defs[int_idx]
-                if isinstance(_item, dict):
-                    for _k in ("id", "automationId", "displayName", "name"):
-                        _v = str(_item.get(_k, "")).strip()
+                        _v = str(_container[_src].get(_k, "")).strip()
                         if _v:
                             deleted_keys.add(_v)
 
-        # 从 flatControls 删除
+        # 从 flatControls / controlDefinitions 删除。
+        # 两个数组按同一原始下标平行，必须共用同一组下标、且都从后往前删，
+        # 否则删除后数组错位，后续控件元数据会全部错配并写回文件。
         try:
-            flat_controls = payload.get("flatControls", [])
             if flat_controls:
-                # 需要将 uiPath 转为索引
-                indices_to_delete = set()
-                for idx in selected_indexes:
-                    # 如果 idx 是 uiPath 字符串
-                    if idx in self._tree_node_index:
-                        indices_to_delete.add(self._tree_node_index[idx])
-                    else:
-                        try:
-                            indices_to_delete.add(int(idx))
-                        except (ValueError, TypeError):
-                            pass
-                for i in sorted(indices_to_delete, reverse=True):
+                for i in sorted(resolved_indexes, reverse=True):
                     if 0 <= i < len(flat_controls):
                         del flat_controls[i]
                 payload["flatControls"] = flat_controls
         except (ValueError, TypeError):
             pass
         
-        # 从 controlDefinitions 删除
         try:
-            control_defs = payload.get("controlDefinitions", [])
             if control_defs:
-                indices_to_delete = set()
-                for idx in selected_indexes:
-                    try:
-                        indices_to_delete.add(int(idx))
-                    except (ValueError, TypeError):
-                        pass
-                for i in sorted(indices_to_delete, reverse=True):
+                for i in sorted(resolved_indexes, reverse=True):
                     if 0 <= i < len(control_defs):
                         del control_defs[i]
                 payload["controlDefinitions"] = control_defs
@@ -5207,9 +5202,9 @@ class ControlMapImportDialog:
         # 源库删除联动：扫描流程定义，标记引用被删控件的控件 sourceDeleted=True
         marked_flows = self._mark_flow_controls_source_deleted(deleted_keys)
         if marked_flows:
-            self.var_status.set(f"已删除 {len(selected_indexes)} 个控件，并在 {marked_flows} 个流程中标记来源失效。")
+            self.var_status.set(f"已删除 {len(resolved_indexes)} 个控件，并在 {marked_flows} 个流程中标记来源失效。")
         else:
-            self.var_status.set(f"已删除 {len(selected_indexes)} 个控件。")
+            self.var_status.set(f"已删除 {len(resolved_indexes)} 个控件。")
 
     def on_cancel(self):
         self.result = None

@@ -1907,13 +1907,35 @@ class TaskQueueWindow:
             self.monitor_log_text, lines, "_monitor_log_rendered_lines"
         )
 
+    @staticmethod
+    def _detect_log_shift(rendered_lines, incoming_lines):
+        """判断等长滚动窗口相对已渲染内容「整体前移」了多少行。
+
+        服务器返回固定长度快照（`/api/logs?tail=300`）时，日志持续推进但行数始终
+        等于 tail 上限：内容整体前移若干行、行数却不变。只比行数会永久零绘制，
+        只比末行则在末行内容重复时漏检（重复的进度/步骤提示很常见）。
+
+        :return: 0 = 内容完全一致（无需绘制）；k>0 = 应丢弃首部 k 行并追加尾部 k 行
+                 （k 等于行数时等价于整体替换）；None = 行数不同，无法用前移解释
+        """
+        size = len(rendered_lines)
+        if size != len(incoming_lines):
+            return None
+        for shift in range(0, size + 1):
+            if rendered_lines[shift:] == incoming_lines[:size - shift]:
+                return shift
+        return None
+
     def _append_lines_incremental(self, widget, lines, state_attr):
         """把服务器 tail 返回的日志行增量应用到 Text 控件。
 
-        服务器每轮返回"最后 N 行"快照。与上轮已渲染的行数对比：
-          - 行数不变且前段一致（常见稳态）：完全跳过，本轮零绘制；
+        服务器每轮返回"最后 N 行"快照。与上轮已渲染内容对比：
+          - 完全一致（常见稳态）：完全跳过，本轮零绘制；
           - 行数增加（追加型）：只 insert 末尾新增行；
-          - 行数变少或前段变化（轮转/换任务）：全量重绘兜底。
+          - 行数相同但内容整体前移（tail 饱和后的滚动窗口）：只丢弃首部若干行、
+            追加尾部同样多行 —— 保持增量、不再全量重绘（全量重绘会让日志区在
+            用户拖动/选择时闪一整帧）；
+          - 行数变少（轮转/换任务）：全量重绘兜底。
         行数超过 _LOG_MAX_LINES 时从头 trim，保证 Text 不无限增长。
         """
         text_lines = [str(l) for l in lines]
@@ -1924,10 +1946,25 @@ class TaskQueueWindow:
             row = int(widget.index("end-1c").split(".")[0] or 0)
             return max(0, row - 1)
 
+        def normalized(values):
+            # 逐行比较时忽略行尾 CR/LF 差异（服务器返回可能带 \r）
+            return [str(v).rstrip("\r\n") for v in values]
+
         need_full = getattr(self, state_attr, None) is None
+        shift = 0
         if not need_full and rendered_count() > len(text_lines):
             # 快照比已渲染行数还短：服务器日志轮转/换任务，全量重绘兜底
             need_full = True
+        if not need_full and text_lines:
+            current = rendered_count()
+            if current > 0 and len(text_lines) == current:
+                rendered_lines = widget.get("1.0", "end-1c").split("\n")
+                detected = self._detect_log_shift(
+                    normalized(rendered_lines), normalized(text_lines))
+                if detected is None:
+                    need_full = True
+                else:
+                    shift = detected
         widget.config(state=tk.NORMAL)
         if need_full:
             widget.delete("1.0", tk.END)
@@ -1937,6 +1974,11 @@ class TaskQueueWindow:
             current = rendered_count()
             if len(text_lines) > current:
                 for line in text_lines[current:]:
+                    widget.insert(tk.END, line + "\n", self._classify_line(line))
+            elif shift > 0:
+                # 等长滚动：丢首部 shift 行 + 追加尾部 shift 行（O(shift)，避免全量重绘）
+                widget.delete("1.0", "%d.0" % (shift + 1))
+                for line in text_lines[len(text_lines) - shift:]:
                     widget.insert(tk.END, line + "\n", self._classify_line(line))
         # 头部 trim：超过上限时删除最早的 (total-上限) 行；
         # Tk 行号从 1 计，delete("1.0", "N.0") 删的是第 1..N-1 行，

@@ -89,6 +89,24 @@ class FakeText:
         self.lines.append((text.rstrip("\n"), tag))
         self.log.append(("insert", text, tag))
 
+    def get(self, start, end):
+        """模拟 tk.Text.get(start, end)。
+
+        支持生产代码用到的两种读取：
+          - "1.0" -> "end-1c"：全文内容（不含末尾换行）；
+          - "N.0" -> "N.end"：第 N 行内容。
+        """
+        if end == "end-1c":
+            return "\n".join(text for text, _tag in self.lines)
+        s_row = int(start.split(".")[0])
+        e_row = int(end.split(".")[0])
+        if s_row == e_row and end.endswith(".end"):
+            line_idx = s_row - 1  # Tk 行号从 1 计，转为 0-based
+            if 0 <= line_idx < len(self.lines):
+                return self.lines[line_idx][0]
+            return ""
+        raise AssertionError("FakeText.get() 不支持的范围: %r -> %r" % (start, end))
+
     def see(self, where):
         self.log.append(("see", where))
 
@@ -205,6 +223,77 @@ def test_log_shrunk_snapshot_falls_back_to_full_redraw():
     window._render_logs(["x", "y"])
     lines = [l for l, _ in window.log_text.lines]
     assert lines == ["x", "y"]
+
+
+def _ops(text):
+    inserts = [op for op in text.log if op[0] == "insert"]
+    deletes = [op for op in text.log if op[0] == "delete"]
+    return inserts, deletes
+
+
+_DETECT_SHIFT = wt_task_queue_window.TaskQueueWindow._detect_log_shift
+
+
+class TestDetectLogShift:
+    """_detect_log_shift 纯逻辑。"""
+
+    def test_identical_returns_zero(self):
+        assert _DETECT_SHIFT(["a", "b"], ["a", "b"]) == 0
+
+    def test_rolling_window_shift(self):
+        assert _DETECT_SHIFT(["a", "b", "c"], ["b", "c", "d"]) == 1
+        assert _DETECT_SHIFT(["a", "b", "c"], ["c", "d", "e"]) == 2
+
+    def test_repeated_lines_are_detected(self):
+        # 末行内容重复时也必须识别出前移（只比末行会漏检）
+        assert _DETECT_SHIFT(["x", "y", "same"], ["y", "same", "same"]) == 1
+
+    def test_no_common_prefix_degrades_to_full_replace(self):
+        # 完全不同的等长内容：shift == 行数，等价于整体替换
+        assert _DETECT_SHIFT(["a", "b"], ["x", "y"]) == 2
+
+    def test_length_mismatch_returns_none(self):
+        assert _DETECT_SHIFT(["a"], ["a", "b"]) is None
+
+    def test_empty(self):
+        assert _DETECT_SHIFT([], []) == 0
+
+
+def test_log_equal_length_shift_is_incremental():
+    """tail 饱和后日志滚动推进：内容必须跟上，且保持增量绘制（不全量重绘）。"""
+    window = make_window()
+    window._render_logs(["a", "b", "c"])
+    text = window.log_text
+    text.log.clear()
+    window._render_logs(["b", "c", "d"])
+    assert [l for l, _ in text.lines] == ["b", "c", "d"]
+    inserts, deletes = _ops(text)
+    assert len(deletes) == 1, "应只丢弃首部 1 行，而不是全量重绘"
+    assert len(inserts) == 1 and inserts[0][1].rstrip("\n") == "d"
+
+
+def test_log_equal_length_repeated_tail_still_refreshes():
+    """末行内容重复时也要刷新（只比末行的实现会漏检）。"""
+    window = make_window()
+    window._render_logs(["x", "y", "same"])
+    window.log_text.log.clear()
+    window._render_logs(["y", "same", "same"])
+    assert [l for l, _ in window.log_text.lines] == ["y", "same", "same"]
+
+
+def test_log_tail_saturated_rolling_window_keeps_up():
+    """模拟 /api/logs?tail=300 的真实场景：行数恒为 300，内容持续推进。"""
+    size = 300
+    window = make_window()
+    window._render_logs(["line-%03d" % i for i in range(size)])
+    text = window.log_text
+    text.log.clear()
+    window._render_logs(["line-%03d" % i for i in range(1, size + 1)])
+    rendered = [l for l, _ in text.lines]
+    assert rendered[-1] == "line-300"
+    assert rendered[0] == "line-001"
+    inserts, deletes = _ops(text)
+    assert len(deletes) == 1 and len(inserts) == 1, "应增量推进，而不是全量重绘 300 行"
 
 
 def test_log_head_trim_over_limit():
