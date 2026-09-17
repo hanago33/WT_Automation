@@ -4639,7 +4639,7 @@ class ControlMapImportDialog:
         return None
 
     def _get_selected_indexes(self):
-        """获取选中的控件索引"""
+        """获取选中的控件索引（Treeview iid → 整数显示位置）"""
         selection = self.control_tree.selection()
         indexes = []
         for item in selection:
@@ -4649,6 +4649,47 @@ class ControlMapImportDialog:
             except Exception:
                 continue
         return indexes
+
+    @staticmethod
+    def _resolve_control_source_indexes(selected_indexes, filtered_controls):
+        """把选中项的显示位置解析为控件在原始数组中的真实下标。
+
+        列表视图的 Treeview iid 是「排序 + 筛选后的 0-based 显示位置」，而
+        `_get_filtered_controls()` 三个分支都会排序、且默认排序就是「质量优先」，
+        所以显示位置与原始下标通常**不相同**；真实下标由
+        `_build_controls_from_payload` 写在每个控件的 `_sourceIndex` 上。
+
+        删除/编辑等回写操作必须用真实下标，且 `flatControls` 与 `controlDefinitions`
+        是按同一原始下标平行的数组（见 `_build_controls_from_payload` 的配对构造与
+        `edit_selected_control` 的同一 source_index 回写），因此**两个数组必须共用
+        同一组下标**，否则删除后两数组错位、后续控件元数据全部错配并写回文件。
+
+        :param selected_indexes: 选中项的整数显示位置列表
+        :param filtered_controls: `_get_filtered_controls()` 的结果
+                                  （调用时机需与渲染时一致，否则下标会漂移）
+        :return: 去重后的真实下标列表；无法解析的项被跳过（宁可不删，不可删错）
+        """
+        resolved = []
+        filtered_controls = filtered_controls or []
+        for index in selected_indexes or []:
+            try:
+                display_index = int(index)
+            except (ValueError, TypeError):
+                continue
+            # 越界说明它不是一个有效的显示位置（树形/分组视图的 iid 也不是数字），
+            # 宁可跳过不删，也不能拿它当原始下标去删别的控件。
+            if not 0 <= display_index < len(filtered_controls):
+                continue
+            candidate = filtered_controls[display_index]
+            source_index = None
+            if isinstance(candidate, dict) and isinstance(candidate.get("_sourceIndex"), int):
+                source_index = candidate.get("_sourceIndex")
+            if source_index is None or source_index < 0:
+                # 缺少 _sourceIndex 标注时退回显示位置（与旧行为一致，兜底不崩）
+                source_index = display_index
+            if source_index not in resolved:
+                resolved.append(source_index)
+        return resolved
 
     def edit_selected_control(self):
         """编辑选中的控件"""
@@ -5098,106 +5139,65 @@ class ControlMapImportDialog:
             messagebox.showerror("错误", "无法获取控件库文件内容。", parent=self.window)
             return
         
-        # 获取控件名称用于确认提示
-        control_names = []
+        # 统一解析真实下标，后续四处（确认框控件名 / deleted_keys / flatControls 删除 /
+        # controlDefinitions 删除）全部共用这一组下标。
+        # 只改其中一处会让两个平行数组错位 —— 详见 _resolve_control_source_indexes 的说明。
         flat_controls = payload.get("flatControls", [])
         control_defs = payload.get("controlDefinitions", [])
-        
-        for idx in selected_indexes:
-            # 尝试从 flatControls 获取
-            if idx < len(flat_controls):
-                name = flat_controls[idx].get("displayName", "") or flat_controls[idx].get("name", "")
-                if name:
-                    control_names.append(name)
-                    continue
-            # 尝试从 controlDefinitions 获取
-            try:
-                int_idx = int(idx) if isinstance(idx, str) else idx
-                if int_idx < len(control_defs):
-                    name = control_defs[int_idx].get("name", "")
-                    if name:
-                        control_names.append(name)
-            except (ValueError, TypeError):
-                pass
+        resolved_indexes = self._resolve_control_source_indexes(
+            selected_indexes, self._get_filtered_controls())
+        if not resolved_indexes:
+            messagebox.showerror(
+                "错误", "无法定位所选控件在文件中的位置，未删除。", parent=self.window)
+            return
+
+        # 获取控件名称用于确认提示（用真实下标，保证提示与实际被删的控件一致）
+        control_names = []
+        for _src in resolved_indexes:
+            name = ""
+            if 0 <= _src < len(flat_controls) and isinstance(flat_controls[_src], dict):
+                name = (flat_controls[_src].get("displayName", "")
+                        or flat_controls[_src].get("name", ""))
+            if not name and 0 <= _src < len(control_defs) and isinstance(control_defs[_src], dict):
+                name = control_defs[_src].get("name", "")
+            if name:
+                control_names.append(name)
         
         names_str = ", ".join(control_names[:3])
         if len(control_names) > 3:
             names_str += f" 等{len(control_names)}个"
         
         if not control_names:
-            names_str = f"{len(selected_indexes)} 个控件"
+            names_str = f"{len(resolved_indexes)} 个控件"
         
         if not messagebox.askyesno("确认删除", f"确定从控件库中删除以下控件？\n{names_str}", parent=self.window):
             return
 
         # 收集被删控件的标识（id / automationId / name），删除后用于流程来源联动标记
         deleted_keys = set()
-        for idx in selected_indexes:
-            try:
-                int_idx = int(idx)
-            except (ValueError, TypeError):
-                int_idx = -1
-            if 0 <= int_idx < len(flat_controls):
-                _item = flat_controls[int_idx]
-                if isinstance(_item, dict):
+        for _src in resolved_indexes:
+            for _container in (flat_controls, control_defs):
+                if 0 <= _src < len(_container) and isinstance(_container[_src], dict):
                     for _k in ("id", "automationId", "displayName", "name"):
-                        _v = str(_item.get(_k, "")).strip()
-                        if _v:
-                            deleted_keys.add(_v)
-            if 0 <= int_idx < len(control_defs):
-                _item = control_defs[int_idx]
-                if isinstance(_item, dict):
-                    for _k in ("id", "automationId", "displayName", "name"):
-                        _v = str(_item.get(_k, "")).strip()
+                        _v = str(_container[_src].get(_k, "")).strip()
                         if _v:
                             deleted_keys.add(_v)
 
-        # 从 flatControls 删除
+        # 从 flatControls / controlDefinitions 删除。
+        # 两个数组按同一原始下标平行，必须共用同一组下标、且都从后往前删，
+        # 否则删除后数组错位，后续控件元数据会全部错配并写回文件。
         try:
-            flat_controls = payload.get("flatControls", [])
             if flat_controls:
-                # 优先通过 _sourceIndex 定位真实下标，避免排序/筛选后显示位置与原始数组错位。
-                # 与编辑路径（edit_selected_control L4682）保持一致的查找顺序：
-                # 1. 列表视图：iid 是筛选后的 0-based 显示位置，从 _get_filtered_controls()[idx]
-                #    取 _sourceIndex（原始数组真实下标），不受排序影响。
-                # 2. 树形视图：iid 是 uiPath 字符串，查 _tree_node_index（字符串键）。
-                # 3. fallback：直接用 int(idx)（理论上不应走到，保留以防遗漏场景）。
-                filtered_for_delete = self._get_filtered_controls()
-                indices_to_delete = set()
-                for idx in selected_indexes:
-                    # 列表视图路径：idx 是 0-based 显示位置
-                    if 0 <= idx < len(filtered_for_delete):
-                        src = filtered_for_delete[idx].get("_sourceIndex")
-                        if isinstance(src, int):
-                            indices_to_delete.add(src)
-                            continue
-                    # 树形视图路径：iid 是 uiPath 字符串存入 _tree_node_index
-                    str_idx = str(idx)
-                    if str_idx in self._tree_node_index:
-                        indices_to_delete.add(self._tree_node_index[str_idx])
-                    else:
-                        try:
-                            indices_to_delete.add(int(idx))
-                        except (ValueError, TypeError):
-                            pass
-                for i in sorted(indices_to_delete, reverse=True):
+                for i in sorted(resolved_indexes, reverse=True):
                     if 0 <= i < len(flat_controls):
                         del flat_controls[i]
                 payload["flatControls"] = flat_controls
         except (ValueError, TypeError):
             pass
         
-        # 从 controlDefinitions 删除
         try:
-            control_defs = payload.get("controlDefinitions", [])
             if control_defs:
-                indices_to_delete = set()
-                for idx in selected_indexes:
-                    try:
-                        indices_to_delete.add(int(idx))
-                    except (ValueError, TypeError):
-                        pass
-                for i in sorted(indices_to_delete, reverse=True):
+                for i in sorted(resolved_indexes, reverse=True):
                     if 0 <= i < len(control_defs):
                         del control_defs[i]
                 payload["controlDefinitions"] = control_defs
