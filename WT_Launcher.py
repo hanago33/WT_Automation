@@ -35,6 +35,7 @@ from wt_flow_validation import validate_flow_definition
 from wt_flow_editor_utils import normalize_control_window_title
 import wt_task_queue_window
 import wt_project_workdir_parser
+import wt_simple_options
 import wt_mast_config_xml
 from wt_flow_graph import FlowGraphWindow
 
@@ -1895,23 +1896,18 @@ class LauncherApp:
         self.project_params = launcher_state.get("projectParams") or {}
         if not isinstance(self.project_params, dict):
             self.project_params = {}
-        # Cp 版本下拉选项（固定几个 + 用户自行添加，持久化）
-        raw_cp_options = launcher_state.get("cpVersionOptions")
-        if isinstance(raw_cp_options, list):
-            self.cp_version_options = [str(item).strip() for item in raw_cp_options if str(item).strip()]
-        else:
-            self.cp_version_options = []
-        if not self.cp_version_options:
-            self.cp_version_options = [str(DEFAULT_PROJECT_PARAMS.get("cpVersion", "Cp0.429"))]
-        # 风机型号下拉选项（固定几个 + 用户自行添加，持久化）
-        raw_tt_options = launcher_state.get("turbineTypeOptions")
-        if isinstance(raw_tt_options, list):
-            self.turbine_type_options = [str(item).strip() for item in raw_tt_options if str(item).strip()]
-        else:
-            self.turbine_type_options = []
-        default_tt = str(DEFAULT_PROJECT_PARAMS.get("turbineType", "")).strip()
-        if default_tt and default_tt not in self.turbine_type_options:
-            self.turbine_type_options.append(default_tt)
+        # 下拉选项列表（Cp 版本 / 风机类型型号）：固定种子 + 用户自行新建/删除，持久化到 launcher_state。
+        # 加载语义见 wt_simple_options.load_options：仅「键缺失」时播种默认项；
+        # 已存在显式列表（含用户主动删空后的空列表）即完全尊重，避免删掉又被默认值复活。
+        for _opt_kind, _opt_meta in wt_simple_options.OPTION_KINDS.items():
+            setattr(
+                self,
+                _opt_meta["attr"],
+                wt_simple_options.load_options(
+                    launcher_state.get(_opt_meta["state_key"]),
+                    _opt_meta["defaults"],
+                ),
+            )
         # 当前项目识别出的测风塔编号（供「测风塔对象编号」下拉选项）
         self.project_mast_ids = []
         # 加载项目文件夹时解析出的「解析参数」摘要（供「项目计算参数」对话框的「解析参数」标签页查看）
@@ -3043,10 +3039,10 @@ class LauncherApp:
                 tk.Label(row, text=label_text, width=18, anchor="w",
                          bg=self.theme["bg"], fg=self.theme["text"]).pack(side=tk.LEFT)
                 var = tk.StringVar(value=str(current.get(key, DEFAULT_PROJECT_PARAMS.get(key, ""))))
-                if key == "cpVersion":
-                    # Cp 版本：固定几个 + 可添加，下拉选择
+                if key in wt_simple_options.OPTION_KIND_KEYS:
+                    # Cp 版本 / 风机类型型号：下拉选择 + 新建（＋）+ 删除当前（－）+ 管理列表
                     combo = ttk.Combobox(
-                        row, textvariable=var, values=list(self.cp_version_options),
+                        row, textvariable=var, values=self._simple_option_values(key),
                         state="normal", font=("Microsoft YaHei UI", 10),
                     )
                     combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -3054,29 +3050,22 @@ class LauncherApp:
                         combo.configure(style="Modern.TCombobox")
                     except tk.TclError:
                         pass
-                    tk.Button(
-                        row, text="＋", width=3, cursor="hand2",
-                        command=lambda v=var: self._simple_add_cp_version(v),
-                        bg=self.theme["secondary"], fg=self.theme["text"], relief=tk.FLAT,
-                    ).pack(side=tk.LEFT, padx=(4, 0))
                     combo_widgets[key] = combo
-                elif key == "turbineType":
-                    # 风机类型/型号：固定几个 + 可添加，下拉选择（与 Cp 版本一致）
-                    combo = ttk.Combobox(
-                        row, textvariable=var, values=list(self.turbine_type_options),
-                        state="normal", font=("Microsoft YaHei UI", 10),
-                    )
-                    combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-                    try:
-                        combo.configure(style="Modern.TCombobox")
-                    except tk.TclError:
-                        pass
-                    tk.Button(
-                        row, text="＋", width=3, cursor="hand2",
-                        command=lambda v=var: self._simple_add_turbine_type(v),
-                        bg=self.theme["secondary"], fg=self.theme["text"], relief=tk.FLAT,
-                    ).pack(side=tk.LEFT, padx=(4, 0))
-                    combo_widgets[key] = combo
+                    # 三个按钮依次为「新建 / 删除当前 / 管理列表」，
+                    # 各自捕获本行的 var/combo，点击时即时生效并刷新下拉列表
+                    for _btn_text, _btn_width, _btn_cmd in (
+                        ("＋", 3,
+                         lambda k=key, v=var, c=combo: self._simple_add_option(k, v, c)),
+                        ("－", 3,
+                         lambda k=key, v=var, c=combo: self._simple_remove_current_option(k, v, c)),
+                        ("管理", 5,
+                         lambda k=key, v=var, c=combo: self._simple_manage_options(k, v, c)),
+                    ):
+                        tk.Button(
+                            row, text=_btn_text, width=_btn_width, cursor="hand2",
+                            command=_btn_cmd,
+                            bg=self.theme["secondary"], fg=self.theme["text"], relief=tk.FLAT,
+                        ).pack(side=tk.LEFT, padx=(4, 0))
                 elif key == "mastId":
                     # 测风塔对象编号：下拉选择（选项=项目识别出的测风塔数量）
                     combo = ttk.Combobox(
@@ -3104,7 +3093,26 @@ class LauncherApp:
             self.project_params = new_params
             self._simple_save_state()
             dialog.destroy()
-            self._simple_set_status("项目计算参数已保存（{} 项）".format(len(new_params)), "idle")
+            # 手输了下拉列表里没有的值时给个提示，引导用「＋」把它固化成选项
+            pending_new = []
+            for key in wt_simple_options.OPTION_KIND_KEYS:
+                var = entries.get(key)
+                if var is None:
+                    continue
+                value = var.get().strip()
+                if value and value not in self._simple_option_values(key):
+                    pending_new.append((key, value))
+            if pending_new:
+                self._simple_set_status(
+                    "项目计算参数已保存（{} 项）；{} 不在下拉列表中，可点该行「＋」加入".format(
+                        len(new_params),
+                        "、".join("{}={}".format(wt_simple_options.OPTION_KINDS[k]["title"], v)
+                                  for k, v in pending_new),
+                    ),
+                    "warning",
+                )
+            else:
+                self._simple_set_status("项目计算参数已保存（{} 项）".format(len(new_params)), "idle")
 
         def _recalculate_spatial():
             work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
@@ -3436,41 +3444,336 @@ class LauncherApp:
         else:
             _info_row(sp_frame, "状态", "未解析到机位点或测风塔坐标")
 
-    def _simple_add_cp_version(self, target_var=None):
-        """添加新的 Cp 版本到下拉选项列表（持久化到 launcher_state）。"""
-        value = simpledialog.askstring("添加 Cp 版本", "输入新的 Cp 版本号：", parent=self.root)
-        if not value:
-            return
-        value = value.strip()
-        if not value:
-            return
-        if value not in self.cp_version_options:
-            self.cp_version_options.append(value)
-        if target_var is not None:
-            target_var.set(value)
-        try:
-            self._simple_save_state()
-        except Exception:
-            pass
-        self._simple_set_status("已添加 Cp 版本：{}".format(value), "idle")
+    # ── 下拉选项（Cp 版本 / 风机类型型号）的新建、删除与管理 ────────────────
+    # 规则本体在 wt_simple_options（纯函数、可单测）；这里只做「取列表 → 调规则 →
+    # 写回并持久化 → 同步界面」的接线，避免把业务判断散落在 GUI 代码里。
 
-    def _simple_add_turbine_type(self, target_var=None):
-        """添加新的风机型号到下拉选项列表（持久化到 launcher_state）。"""
-        value = simpledialog.askstring("添加风机型号", "输入新的风机型号：", parent=self.root)
-        if not value:
+    def _simple_option_values(self, kind):
+        """取指定字段当前的下拉选项列表（返回副本，避免调用方误改内部状态）。"""
+        meta = wt_simple_options.OPTION_KINDS.get(kind) or {}
+        return list(getattr(self, meta.get("attr", ""), []) or [])
+
+    def _simple_set_option_values(self, kind, options):
+        """写回选项列表（规范化去重）并持久化到 launcher_state。"""
+        meta = wt_simple_options.OPTION_KINDS.get(kind) or {}
+        attr = meta.get("attr")
+        if not attr:
             return
-        value = value.strip()
-        if not value:
-            return
-        if value not in self.turbine_type_options:
-            self.turbine_type_options.append(value)
-        if target_var is not None:
-            target_var.set(value)
+        setattr(self, attr, wt_simple_options.normalize_options(options))
         try:
             self._simple_save_state()
         except Exception:
             pass
-        self._simple_set_status("已添加风机型号：{}".format(value), "idle")
+
+    def _simple_refresh_option_combo(self, kind, combo):
+        """把最新选项同步进 Combobox。
+
+        原实现只在构建时把 values 传一次快照，新增/删除后下拉列表不会变，
+        必须关掉弹窗重开才生效；这里改为每次变更后立即刷新。
+        """
+        options = self._simple_option_values(kind)
+        if combo is not None:
+            try:
+                combo.configure(values=options)
+            except Exception:
+                pass
+        return options
+
+    def _simple_report_option_result(self, kind, status, value="", count=1):
+        """把结果码写到 Simple 状态栏（文案与配色都取自 wt_simple_options）。"""
+        self._simple_set_status(
+            wt_simple_options.describe_result(kind, status, value, count),
+            wt_simple_options.status_kind_for(status),
+        )
+
+    def _simple_confirm_remove_options(self, kind, values, target_var=None):
+        """删除前二次确认：列出待删项、说明是否清空当前字段、说明影响范围。"""
+        meta = wt_simple_options.OPTION_KINDS.get(kind) or {}
+        current = str(target_var.get() or "").strip() if target_var is not None else ""
+        lines = ["确定从「{}」下拉选项中删除以下 {} 项吗？".format(
+            meta.get("title", "下拉选项"), len(values))]
+        lines.append("")
+        lines.extend("  · {}".format(value) for value in values)
+        lines.append("")
+        if current and current in values:
+            lines.append("注意：当前字段正在使用该值，删除后字段将被清空。")
+        lines.append("（下拉选项列表为全局配置，对本机所有项目生效）")
+        return bool(messagebox.askyesno("删除下拉选项", "\n".join(lines)))
+
+    def _simple_remove_options(self, kind, values, target_var=None, combo=None, confirm=True):
+        """从下拉选项中删除若干项。
+
+        :return: 是否真的发生了删除（调用方据此决定后续动作）。
+        """
+        if not wt_simple_options.OPTION_KINDS.get(kind):
+            return False
+        cleaned_values = []
+        for item in values or ():
+            cleaned = wt_simple_options.clean_value(item)
+            if cleaned and cleaned not in cleaned_values:
+                cleaned_values.append(cleaned)
+        if not cleaned_values:
+            messagebox.showinfo("提示", "请先选择要删除的选项。")
+            return False
+        options, status = wt_simple_options.remove_options(
+            self._simple_option_values(kind), cleaned_values)
+        if status != wt_simple_options.RESULT_REMOVED:
+            messagebox.showinfo(
+                "提示", wt_simple_options.describe_result(kind, status, cleaned_values[0]))
+            return False
+        if confirm and not self._simple_confirm_remove_options(kind, cleaned_values, target_var):
+            return False
+        self._simple_set_option_values(kind, options)
+        self._simple_refresh_option_combo(kind, combo)
+        # 被删掉的选项若正是当前字段的值，字段一并清空（确认框里已提示）
+        current = str(target_var.get() or "").strip() if target_var is not None else ""
+        if current and current in cleaned_values:
+            target_var.set("")
+        self._simple_report_option_result(
+            kind, wt_simple_options.RESULT_REMOVED, cleaned_values[0], len(cleaned_values))
+        return True
+
+    def _simple_add_option(self, kind, target_var=None, combo=None):
+        """新建一个下拉选项：输入 → 校验 → 入库 → 同步下拉框 → 持久化。"""
+        meta = wt_simple_options.OPTION_KINDS.get(kind)
+        if not meta:
+            return
+        # 预填当前字段值：多数场景是「微调已有取值后固化成新选项」
+        initial = str(target_var.get() or "").strip() if target_var is not None else ""
+        value = simpledialog.askstring(
+            "新建{}".format(meta["title"]), meta["prompt"],
+            initialvalue=initial, parent=self.root,
+        )
+        if value is None:  # 用户取消
+            return
+        options, status = wt_simple_options.add_option(self._simple_option_values(kind), value)
+        if status in (wt_simple_options.RESULT_EMPTY, wt_simple_options.RESULT_TOO_LONG):
+            messagebox.showinfo("提示", wt_simple_options.describe_result(kind, status))
+            return
+        cleaned = wt_simple_options.clean_value(value)
+        if status == wt_simple_options.RESULT_ADDED:
+            self._simple_set_option_values(kind, options)
+        self._simple_refresh_option_combo(kind, combo)
+        if target_var is not None and cleaned:
+            target_var.set(cleaned)
+        self._simple_report_option_result(kind, status, cleaned)
+
+    def _simple_remove_current_option(self, kind, target_var=None, combo=None):
+        """删除下拉框中当前选中的选项（－ 按钮）。"""
+        meta = wt_simple_options.OPTION_KINDS.get(kind)
+        if not meta:
+            return False
+        value = str(target_var.get() or "").strip() if target_var is not None else ""
+        if not value:
+            messagebox.showinfo("提示", "请先在下拉框中选择要删除的{}。".format(meta["title"]))
+            return False
+        return self._simple_remove_options(kind, [value], target_var, combo)
+
+    def _simple_manage_options(self, kind, target_var=None, combo=None):
+        """下拉选项管理对话框：新建 / 重命名 / 删除（支持多选）/ 上移下移 / 恢复默认。
+
+        所有编辑即时写回 LauncherApp 的选项列表与 launcher_state，并同步主对话框的
+        Combobox，避免「改完还要重开弹窗才生效」。
+        """
+        meta = wt_simple_options.OPTION_KINDS.get(kind)
+        if not meta:
+            return
+        theme = self.theme
+        dialog = tk.Toplevel(self.root)
+        dialog.title("管理下拉选项 — {}".format(meta["title"]))
+        dialog.transient(self.root)
+        dialog.grab_set()
+        wt_dpi.geometry(dialog, 560, 540)
+        dialog.minsize(wt_dpi.scale(500), wt_dpi.scale(440))
+        dialog.configure(bg=theme["bg"])
+
+        tk.Label(
+            dialog, text="{} 下拉选项".format(meta["title"]),
+            font=("Microsoft YaHei UI", 12, "bold"), bg=theme["bg"], fg=theme["text"],
+        ).pack(anchor="w", padx=14, pady=(12, 2))
+        hint_var = tk.StringVar(value="")
+        tk.Label(
+            dialog, textvariable=hint_var, font=("Microsoft YaHei UI", 9),
+            bg=theme["bg"], fg=theme["muted"], justify=tk.LEFT, anchor="w",
+        ).pack(anchor="w", fill=tk.X, padx=14, pady=(0, 6))
+
+        list_wrap = tk.Frame(dialog, bg=theme["bg"])
+        list_wrap.pack(fill=tk.BOTH, expand=True, padx=14)
+        listbox = tk.Listbox(
+            list_wrap, selectmode=tk.EXTENDED, activestyle="none", exportselection=False,
+            font=("Microsoft YaHei UI", 10), relief=tk.FLAT, bd=0,
+            highlightthickness=1, highlightbackground=theme.get("border", "#e2e8f0"),
+            bg=theme["card"], fg=theme["text"],
+            selectbackground=theme["primary"], selectforeground="#ffffff",
+        )
+        scroll = tk.Scrollbar(list_wrap, orient=tk.VERTICAL, command=listbox.yview, relief=tk.FLAT)
+        listbox.configure(yscrollcommand=scroll.set)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        status_var = tk.StringVar(value="")
+        status_label = tk.Label(
+            dialog, textvariable=status_var, font=("Microsoft YaHei UI", 9),
+            bg=theme["bg"], fg=theme["muted"], justify=tk.LEFT, anchor="w", wraplength=520,
+        )
+        status_label.pack(anchor="w", fill=tk.X, padx=14, pady=(6, 0))
+
+        def _current_options():
+            return self._simple_option_values(kind)
+
+        def _selected():
+            return [listbox.get(i) for i in listbox.curselection()]
+
+        def _refresh():
+            listbox.delete(0, tk.END)
+            options = _current_options()
+            for item in options:
+                listbox.insert(tk.END, item)
+            if options:
+                hint_var.set("共 {} 项；列表顺序即下拉框显示顺序。双击可重命名，Delete 键删除选中项。".format(len(options)))
+            else:
+                hint_var.set("当前没有任何选项；可点「新建」添加，或点「恢复默认」还原内置选项。")
+
+        def _set_local_status(text, kind_name="idle"):
+            colors = {
+                "idle": theme["muted"], "success": theme.get("success", "#059669"),
+                "warning": theme.get("warning", "#b45309"), "error": theme["danger"],
+            }
+            status_var.set(text)
+            status_label.config(fg=colors.get(kind_name, theme["muted"]))
+
+        def _apply(status, value="", count=1, report=True):
+            """规则执行后统一收口：刷新列表 + 同步主对话框 + 本地提示。
+
+            ``report=False`` 用于调用方（如 _simple_remove_options）已经向主状态栏
+            上报过的场景，避免同一条消息写两遍。
+            """
+            self._simple_refresh_option_combo(kind, combo)
+            _refresh()
+            text = wt_simple_options.describe_result(kind, status, value, count)
+            _set_local_status(text, wt_simple_options.status_kind_for(status))
+            if report:
+                self._simple_report_option_result(kind, status, value, count)
+
+        def _on_add():
+            value = simpledialog.askstring(
+                "新建{}".format(meta["title"]), meta["prompt"], parent=dialog)
+            if value is None:
+                return
+            options, status = wt_simple_options.add_option(_current_options(), value)
+            cleaned = wt_simple_options.clean_value(value)
+            if status == wt_simple_options.RESULT_ADDED:
+                self._simple_set_option_values(kind, options)
+            elif status in (wt_simple_options.RESULT_EMPTY, wt_simple_options.RESULT_TOO_LONG):
+                _set_local_status(
+                    wt_simple_options.describe_result(kind, status),
+                    wt_simple_options.status_kind_for(status))
+                return
+            _apply(status, cleaned)
+            if target_var is not None and cleaned and status == wt_simple_options.RESULT_ADDED:
+                target_var.set(cleaned)
+
+        def _on_rename():
+            selected = _selected()
+            if len(selected) != 1:
+                _set_local_status("请先选中恰好一项再重命名。", "warning")
+                return
+            old_value = selected[0]
+            new_value = simpledialog.askstring(
+                "重命名{}".format(meta["title"]), "输入新的名称：",
+                initialvalue=old_value, parent=dialog)
+            if new_value is None:
+                return
+            options, status = wt_simple_options.rename_option(
+                _current_options(), old_value, new_value)
+            if status == wt_simple_options.RESULT_RENAMED:
+                self._simple_set_option_values(kind, options)
+                # 当前字段用的就是被重命名项时，跟着改成新名，避免字段与列表脱节
+                if target_var is not None and str(target_var.get() or "").strip() == old_value:
+                    target_var.set(wt_simple_options.clean_value(new_value))
+                _apply(status, new_value)
+            else:
+                _set_local_status(
+                    wt_simple_options.describe_result(kind, status, new_value),
+                    wt_simple_options.status_kind_for(status))
+
+        def _on_delete():
+            selected = _selected()
+            if not selected:
+                _set_local_status("请先选中要删除的选项（可按住 Ctrl / Shift 多选）。", "warning")
+                return
+            if self._simple_remove_options(kind, selected, target_var, combo, confirm=True):
+                # _simple_remove_options 已上报主状态栏，这里只刷新本地列表与提示
+                _apply(wt_simple_options.RESULT_REMOVED, selected[0], len(selected), report=False)
+
+        def _on_move(delta):
+            selected = _selected()
+            if len(selected) != 1:
+                _set_local_status("请先选中恰好一项再调整顺序。", "warning")
+                return
+            value = selected[0]
+            options, status = wt_simple_options.move_option(_current_options(), value, delta)
+            if status == wt_simple_options.RESULT_MOVED:
+                self._simple_set_option_values(kind, options)
+                _apply(status)
+                # 移动后保持选中，便于连续调整
+                try:
+                    index = _current_options().index(value)
+                    listbox.selection_clear(0, tk.END)
+                    listbox.selection_set(index)
+                    listbox.see(index)
+                except ValueError:
+                    pass
+            else:
+                _set_local_status(
+                    wt_simple_options.describe_result(kind, status, value),
+                    wt_simple_options.status_kind_for(status))
+
+        def _on_reset():
+            defaults = list(meta["defaults"])
+            if not messagebox.askyesno(
+                "恢复默认选项",
+                "将「{}」下拉选项恢复为内置默认 {} 项：\n\n{}\n\n"
+                "当前自定义选项（含新增与排序）会被替换，是否继续？".format(
+                    meta["title"], len(defaults), "、".join(defaults)),
+            ):
+                return
+            self._simple_set_option_values(kind, wt_simple_options.reset_options(defaults))
+            _apply(wt_simple_options.RESULT_RESET, "、".join(defaults), len(defaults))
+
+        def _on_close():
+            # 每次编辑都已即时落盘并上报，关闭时无需再提示
+            dialog.destroy()
+
+        # ── 操作按钮区 ──
+        btns = tk.Frame(dialog, bg=theme["bg"])
+        btns.pack(fill=tk.X, padx=14, pady=(10, 4))
+
+        def _mk_button(parent, text, command, primary=False):
+            return tk.Button(
+                parent, text=text, command=command, cursor="hand2", relief=tk.FLAT,
+                padx=12, pady=5,
+                bg=theme["primary"] if primary else theme["secondary"],
+                fg="#ffffff" if primary else theme["text"],
+            )
+
+        row1 = tk.Frame(btns, bg=theme["bg"])
+        row1.pack(fill=tk.X)
+        _mk_button(row1, "新建", _on_add, primary=True).pack(side=tk.LEFT)
+        _mk_button(row1, "重命名", _on_rename).pack(side=tk.LEFT, padx=(6, 0))
+        _mk_button(row1, "删除", _on_delete).pack(side=tk.LEFT, padx=(6, 0))
+        row2 = tk.Frame(btns, bg=theme["bg"])
+        row2.pack(fill=tk.X, pady=(6, 0))
+        _mk_button(row2, "上移", lambda: _on_move(-1)).pack(side=tk.LEFT)
+        _mk_button(row2, "下移", lambda: _on_move(1)).pack(side=tk.LEFT, padx=(6, 0))
+        _mk_button(row2, "恢复默认", _on_reset).pack(side=tk.LEFT, padx=(6, 0))
+        _mk_button(row2, "关闭", _on_close).pack(side=tk.RIGHT)
+
+        listbox.bind("<Double-Button-1>", lambda _e: _on_rename())
+        listbox.bind("<Delete>", lambda _e: _on_delete())
+        listbox.bind("<Return>", lambda _e: _on_rename())
+        dialog.protocol("WM_DELETE_WINDOW", _on_close)
+        _refresh()
 
     def _on_simple_remote_mode_changed(self, *args):
         """当「远程模式」状态变化时，动态更新 Simple 远程切换按钮、主运行按钮文案与主题，并消除冗余按钮。"""
