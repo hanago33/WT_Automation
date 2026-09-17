@@ -697,8 +697,9 @@ class TaskQueueWindow:
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # 日志配色统一从 wt_theme 取（深底变体），不再就地硬编码。
-        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
-            self.log_text.tag_configure(tag, foreground=color)
+        wt_logging.configure_log_tags(
+            self.log_text, dark=True, font_family="Consolas", font_size=9
+        )
 
         main_paned.add(right_frame, minsize=420, width=580)
 
@@ -861,8 +862,9 @@ class TaskQueueWindow:
         self.monitor_log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # 同 log_text：配色统一由 wt_logging 从 wt_theme 取。
-        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
-            self.monitor_log_text.tag_configure(tag, foreground=color)
+        wt_logging.configure_log_tags(
+            self.monitor_log_text, dark=True, font_family="Consolas", font_size=9
+        )
 
     def _build_flows_tab(self, parent):
         """流程仓库页签：服务器 flow_packages 的版本台账 + 提交人/时间 + 关联任务与项目参数。

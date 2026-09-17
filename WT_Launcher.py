@@ -1715,8 +1715,9 @@ class ServerMonitorWindow:
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         # 日志配色统一从 wt_theme 取（深底变体），不再就地硬编码 ——
         # 改造前同一系统存在 4 套互不相同的日志配色。
-        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
-            self.log_text.tag_configure(tag, foreground=color)
+        wt_logging.configure_log_tags(
+            self.log_text, dark=True, font_family="Consolas", font_size=9
+        )
 
         self._after_id = self.window.after(2000, self._poll_loop)
 
@@ -5395,8 +5396,10 @@ class LauncherApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.config(yscrollcommand=scrollbar.set)
 
-        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
-            self.log_text.tag_configure(tag, foreground=color)
+        # 同「运行日志」页：统一由 wt_logging 从 wt_theme 取色（深底变体）。
+        wt_logging.configure_log_tags(
+            self.log_text, dark=True, font_family="Consolas", font_size=10
+        )
 
         summary_frame = tk.LabelFrame(
             report_tab,

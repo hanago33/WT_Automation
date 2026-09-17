@@ -359,10 +359,13 @@ class MonitorWindow:
         # 日志配色统一从 wt_theme 取（浅底变体），不再就地硬编码色值 ——
         # 改造前同一系统存在 4 套互不相同的日志配色。
         self.text_widget.tag_configure("time", foreground=MONITOR_THEME["muted"])
-        for _tag, _color in wt_logging.tag_colors_for_widget(
-            dark=False, tags=("debug", "info", "success", "error", "warning")
-        ):
-            self.text_widget.tag_configure(_tag, foreground=_color)
+        wt_logging.configure_log_tags(
+            self.text_widget,
+            dark=False,
+            tags=("debug", "info", "success", "error", "warning"),
+            font_family="Microsoft YaHei UI",
+            font_size=9,
+        )
 
         self.scrollbar = tk.Scrollbar(
             self.text_widget, relief=tk.FLAT, bd=0,

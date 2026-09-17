@@ -544,3 +544,31 @@ def tag_colors_for_widget(dark=False, tags=None):
     colors = level_colors(dark=dark)
     ordered = tags if tags else ("debug", "info", "warning", "error", "success", "system")
     return [(tag, colors[tag]) for tag in ordered if tag in colors]
+
+
+# 需要加粗强调的标签：错误必须在一屏几十行的密集日志里一眼可见。
+EMPHASIS_TAGS = ("error",)
+
+
+def configure_log_tags(widget, dark=False, tags=None, font_family=None, font_size=None):
+    """为日志 Text 控件统一配置级别标签（颜色 + 错误加粗）。
+
+    把「取色 + 遍历 tag_configure + 强调样式」收成一个调用，替代改造前
+    每个日志区各写一遍的重复循环，保证四处日志区的级别呈现完全一致。
+
+    **不 import tkinter**：只调用传入控件的 ``tag_configure``，
+    因此本函数在 headless 侧（CLI / 队列服务）也能安全存在。
+
+    ``font_family`` / ``font_size`` 用于生成加粗变体；缺省时只设颜色。
+    """
+    ordered = tags if tags else ("debug", "info", "warning", "error", "success", "system")
+    colors = level_colors(dark=dark)
+    for tag in ordered:
+        color = colors.get(tag)
+        if not color:
+            continue
+        options = {"foreground": color}
+        if font_family and font_size and tag in EMPHASIS_TAGS:
+            options["font"] = (font_family, font_size, "bold")
+        widget.tag_configure(tag, **options)
+    return list(ordered)

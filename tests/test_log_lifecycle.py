@@ -164,5 +164,121 @@ class MonitorWindowLineCapTests(unittest.TestCase):
         )
 
 
+class LogTagStyleTests(unittest.TestCase):
+    """日志标签统一样式：颜色取自 wt_theme，错误加粗以便一眼可见。"""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import tkinter as tk
+        except Exception:
+            raise unittest.SkipTest("无 tkinter 可用")
+        cls.tk = tk
+        try:
+            cls.root = tk.Tk()
+        except Exception:
+            raise unittest.SkipTest("无法创建 Tk 根窗口（无显示环境）")
+        cls.root.withdraw()
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls.root.destroy()
+        except Exception:
+            pass
+
+    def _text(self):
+        return self.tk.Text(self.root, font=("Consolas", 9))
+
+    def test_all_level_tags_get_palette_colors(self):
+        widget = self._text()
+        wt_logging.configure_log_tags(
+            widget, dark=True, font_family="Consolas", font_size=9
+        )
+        colors = wt_logging.level_colors(dark=True)
+        for tag in ("debug", "info", "warning", "error", "success", "system"):
+            with self.subTest(tag=tag):
+                self.assertEqual(widget.tag_cget(tag, "foreground"), colors[tag])
+
+    def test_error_is_bold(self):
+        widget = self._text()
+        wt_logging.configure_log_tags(
+            widget, dark=True, font_family="Consolas", font_size=9
+        )
+        self.assertIn("bold", str(widget.tag_cget("error", "font")))
+
+    def test_warning_is_not_bold(self):
+        """只有错误加粗，避免警告与错误抢注意力。"""
+        widget = self._text()
+        wt_logging.configure_log_tags(
+            widget, dark=True, font_family="Consolas", font_size=9
+        )
+        self.assertNotIn("bold", str(widget.tag_cget("warning", "font") or ""))
+
+    def test_without_font_only_color_is_set(self):
+        widget = self._text()
+        wt_logging.configure_log_tags(widget, dark=False)
+        self.assertEqual(widget.tag_cget("error", "foreground"), wt_logging.level_colors(False)["error"])
+        self.assertEqual(str(widget.tag_cget("error", "font") or ""), "")
+
+    def test_requested_tag_subset_is_respected(self):
+        widget = self._text()
+        configured = wt_logging.configure_log_tags(
+            widget, dark=False, tags=("info", "error")
+        )
+        self.assertEqual(configured, ["info", "error"])
+
+    def test_light_and_dark_variants_differ(self):
+        light, dark = self._text(), self._text()
+        wt_logging.configure_log_tags(light, dark=False)
+        wt_logging.configure_log_tags(dark, dark=True)
+        self.assertNotEqual(
+            light.tag_cget("info", "foreground"), dark.tag_cget("info", "foreground")
+        )
+
+    def test_emphasis_tags_only_contain_error(self):
+        self.assertEqual(tuple(wt_logging.EMPHASIS_TAGS), ("error",))
+
+
+class TagStyleConsistencyGuardTests(unittest.TestCase):
+    """四处日志区必须走同一个标签配置入口，避免配色再次分叉。"""
+
+    def _code_only(self, name):
+        with open(os.path.join(PROJECT_DIR, name), "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        return "\n".join(l for l in lines if not l.strip().startswith("#"))
+
+    def test_all_log_widgets_use_shared_helper(self):
+        expectations = {
+            "WT_AUT_recorded.py": 1,
+            "WT_Launcher.py": 2,
+            "wt_task_queue_window.py": 2,
+        }
+        for name, expected in expectations.items():
+            with self.subTest(file=name):
+                code = self._code_only(name)
+                self.assertEqual(
+                    code.count("wt_logging.configure_log_tags("),
+                    expected,
+                    "%s 应恰好有 %d 处调用统一入口" % (name, expected),
+                )
+
+    # 只检查日志 Text 控件；运行报告 Treeview 的状态列色是另一回事，不在此列。
+    LOG_WIDGET_ATTRS = ("self.log_text", "self.monitor_log_text", "self.text_widget")
+
+    def test_no_log_widget_configures_colors_inline(self):
+        """日志控件不得再就地硬编码级别色值。"""
+        for name in ("WT_AUT_recorded.py", "WT_Launcher.py", "wt_task_queue_window.py"):
+            code = self._code_only(name)
+            for attr in self.LOG_WIDGET_ATTRS:
+                for tag in ("info", "warning", "error", "success", "system", "debug"):
+                    with self.subTest(file=name, widget=attr, tag=tag):
+                        self.assertNotIn(
+                            '%s.tag_configure("%s"' % (attr, tag),
+                            code,
+                            "%s 的 %s 仍硬编码 %s 色值" % (name, attr, tag),
+                        )
+
+
 if __name__ == "__main__":
     unittest.main()
