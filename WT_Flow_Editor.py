@@ -8754,10 +8754,12 @@ class FlowEditorApp:
                 self.status_var.set(f"已选择 {len(selection)} 个步骤，当前编辑第一个选中步骤。")
             return
         target_index = int(selection[0])
-        # 用户点击切换步骤：先处理当前表单里「未应用到步骤」的修改，避免无声丢弃
-        if not self._confirm_discard_form_changes():
-            self._restore_step_selection()
-            return
+        # 用户点击切换步骤：先处理当前表单里「未应用到步骤」的修改，避免无声丢弃。
+        # 拖拽排序（_dragging_step_iid 非空）时不弹确认：模态框会打断拖拽手势。
+        if not getattr(self, "_dragging_step_iid", ""):
+            if not self._confirm_discard_form_changes():
+                self._restore_step_selection()
+                return
         self._select_step(target_index)
 
     def _restore_step_selection(self):

@@ -151,6 +151,48 @@ class FormDirtyGuardTests(unittest.TestCase):
         app._form_baseline = None
         self.assertTrue(app._confirm_discard_form_changes())
 
+    def test_switch_without_drag_asks_and_blocks_on_cancel(self):
+        app = self._make_app()
+        app.var_name.set("步骤一（改）")
+        app._dragging_step_iid = ""
+
+        class _Tree:
+            def selection(self):
+                return ("1",)
+
+            def selection_set(self, value):
+                pass
+
+        app.step_tree = _Tree()
+        switched = []
+        app._select_step = lambda index, preserve_selection=False: switched.append(index)
+        # askyesnocancel 返回 None 表示点了「取消」→ 留在当前步骤
+        with patch.object(E.messagebox, "askyesnocancel", return_value=None) as ask:
+            app._on_tree_select()
+        ask.assert_called_once()
+        self.assertEqual(switched, [])  # 用户取消 → 不切步骤
+
+    def test_drag_in_progress_skips_confirm(self):
+        """拖拽排序时按行会先触发行选择，模态确认框会打断拖拽手势 —— 须跳过。"""
+        app = self._make_app()
+        app.var_name.set("步骤一（改）")
+        app._dragging_step_iid = "0"
+
+        class _Tree:
+            def selection(self):
+                return ("1",)
+
+            def selection_set(self, value):
+                pass
+
+        app.step_tree = _Tree()
+        switched = []
+        app._select_step = lambda index, preserve_selection=False: switched.append(index)
+        with patch.object(E.messagebox, "askyesnocancel") as ask:
+            app._on_tree_select()
+        ask.assert_not_called()
+        self.assertEqual(switched, [1])
+
     def test_restore_step_selection_keeps_form(self):
         app = self._make_app()
         app.selected_index = 2
