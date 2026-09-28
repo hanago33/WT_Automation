@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
+r"""
 内网机一键部署（解压 + 应用）增强版。融合原 deploy_release 与发布包批量更新能力。
 
 用法：
@@ -31,12 +31,167 @@ try:
 except Exception:
     _HAS_TK = False
 
+# 尝试引入工程基础设施模块（高 DPI 与统一设计系统）
+try:
+    import wt_dpi
+    _HAS_WT_DPI = True
+except Exception:
+    wt_dpi = None
+    _HAS_WT_DPI = False
+
+try:
+    import wt_theme
+    _HAS_WT_THEME = True
+except Exception:
+    wt_theme = None
+    _HAS_WT_THEME = False
+
+
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".wt_deploy_release.json")
 BACKUP_DIR_NAME = ".update_backup"
 
 # 与旧版保持一致的跳过列表（工具自身/清单文件不覆盖）。
 SKIP = {"清单.txt", "deleted.txt", "apply_release.py", "apply_release.exe",
         "make_release.py", "make_release.exe", "deploy_release.py"}
+
+
+# ── 本地降级调色板与设计令牌（确保脱离主工程时独立可用） ─────────────────────────
+DEFAULT_PALETTE = {
+    "bg": "#f8fafc",            # 窗口底色 Slate-50
+    "surface": "#ffffff",       # 卡片底色
+    "card": "#ffffff",
+    "toolbar": "#f1f5f9",       # 浅灰条 Slate-100
+    "border": "#e2e8f0",        # 分割线 Slate-200
+    "border_dark": "#cbd5e1",   # 边框深色 Slate-300
+    "primary": "#2563eb",       # 科技蓝 Blue-600
+    "primary_hover": "#1d4ed8",
+    "primary_active": "#1e40af",
+    "primary_soft": "#dbeafe",  # Blue-100
+    "primary_text": "#1e40af",
+    "success": "#059669",       # 翡翠绿 Emerald-600
+    "success_hover": "#047857",
+    "success_active": "#065f46",
+    "success_soft": "#d1fae5",
+    "success_text": "#065f46",
+    "danger": "#dc2626",        # 赤红 Red-600
+    "danger_hover": "#b91c1c",
+    "warning": "#d97706",       # 琥珀黄
+    "warning_soft": "#fef3c7",
+    "warning_text": "#92400e",
+    "secondary": "#ffffff",
+    "secondary_hover": "#f1f5f9",
+    "secondary_active": "#e2e8f0",
+    "text": "#0f172a",          # 正文 Slate-900
+    "text_secondary": "#334155",
+    "muted": "#64748b",         # 辅助文字 Slate-500
+}
+
+
+def _get_palette():
+    if _HAS_WT_THEME and hasattr(wt_theme, "get_palette"):
+        try:
+            return wt_theme.get_palette()
+        except Exception:
+            pass
+    return DEFAULT_PALETTE
+
+
+def _scale_val(val):
+    if _HAS_WT_DPI and hasattr(wt_dpi, "scale"):
+        try:
+            return wt_dpi.scale(val)
+        except Exception:
+            pass
+    return int(val)
+
+
+def _create_flat_button(parent, text, command=None, tone="secondary", font=None, padx=10, pady=5, width=None, state=tk.NORMAL):
+    if _HAS_WT_THEME and hasattr(wt_theme, "create_flat_button"):
+        try:
+            return wt_theme.create_flat_button(
+                parent, text=text, command=command, tone=tone, font=font,
+                padx=padx, pady=pady, width=width, state=state,
+            )
+        except Exception:
+            pass
+
+    pal = _get_palette()
+    fnt = font or ("Microsoft YaHei UI", 9)
+    tones = {
+        "primary": {"bg": pal["primary"], "fg": "#ffffff", "hover": pal["primary_hover"], "active": pal["primary_active"], "bd": 0},
+        "success": {"bg": pal["success"], "fg": "#ffffff", "hover": pal["success_hover"], "active": pal["success_active"], "bd": 0},
+        "danger": {"bg": pal["danger"], "fg": "#ffffff", "hover": pal["danger_hover"], "active": pal["danger_active"], "bd": 0},
+        "secondary": {"bg": pal["secondary"], "fg": pal["text"], "hover": pal["secondary_hover"], "active": pal["secondary_active"], "bd": 1},
+        "subtle": {"bg": pal["bg"], "fg": pal["muted"], "hover": pal["toolbar"], "active": pal["border"], "bd": 0},
+    }
+    t = tones.get(tone, tones["secondary"])
+    btn = tk.Button(
+        parent, text=text, command=command, bg=t["bg"], fg=t["fg"],
+        activebackground=t["active"], activeforeground=t["fg"],
+        relief=tk.FLAT, bd=0, padx=padx, pady=pady, font=fnt, state=state,
+        cursor="hand2" if state != tk.DISABLED else "arrow",
+    )
+    if width:
+        btn.configure(width=width)
+    if t["bd"] > 0:
+        btn.configure(highlightthickness=1, highlightbackground=pal["border"])
+
+    def on_enter(_e):
+        if btn["state"] != tk.DISABLED:
+            btn.configure(bg=t["hover"])
+
+    def on_leave(_e):
+        if btn["state"] != tk.DISABLED:
+            btn.configure(bg=t["bg"])
+
+    btn.bind("<Enter>", on_enter)
+    btn.bind("<Leave>", on_leave)
+    return btn
+
+
+def _create_badge(parent, text, tone="info", font=None):
+    if _HAS_WT_THEME and hasattr(wt_theme, "create_badge"):
+        try:
+            return wt_theme.create_badge(parent, text=text, tone=tone, font=font)
+        except Exception:
+            pass
+
+    pal = _get_palette()
+    fnt = font or ("Microsoft YaHei UI", 8, "bold")
+    tones = {
+        "primary": {"bg": pal["primary_soft"], "fg": pal["primary_text"]},
+        "success": {"bg": pal["success_soft"], "fg": pal["success_text"]},
+        "warning": {"bg": pal["warning_soft"], "fg": pal["warning_text"]},
+        "info": {"bg": pal["primary_soft"], "fg": pal["primary_text"]},
+        "muted": {"bg": pal["toolbar"], "fg": pal["muted"]},
+    }
+    t = tones.get(tone, tones["muted"])
+    badge = tk.Label(parent, text=text, bg=t["bg"], fg=t["fg"], font=fnt, padx=8, pady=2)
+
+    def set_badge(new_text, new_tone="muted"):
+        badge.configure(text=new_text)
+        nt = tones.get(new_tone, tones["muted"])
+        badge.configure(bg=nt["bg"], fg=nt["fg"])
+
+    badge.set_badge = set_badge
+    return badge
+
+
+def _create_card_frame(parent, padx=12, pady=12, border=True, **kwargs):
+    if _HAS_WT_THEME and hasattr(wt_theme, "create_card_frame"):
+        try:
+            return wt_theme.create_card_frame(parent, padx=padx, pady=pady, border=border, **kwargs)
+        except Exception:
+            pass
+
+    pal = _get_palette()
+    frame = tk.Frame(
+        parent, bg=pal["card"], padx=padx, pady=pady,
+        highlightthickness=1 if border else 0,
+        highlightbackground=pal["border"] if border else pal["card"],
+        **kwargs
+    )
+    return frame
 
 
 # --------------------------------------------------------------------------
@@ -190,67 +345,211 @@ def plan_apply(zips, target, mode="all", dry_run=False, backup=True, log=print):
 
 
 # --------------------------------------------------------------------------
-# 图形界面
+# 图形界面（现代化交互与视觉重塑）
 # --------------------------------------------------------------------------
 class DeployApp(object):
     def __init__(self, root):
         self.root = root
+        self.pal = _get_palette()
         self.cfg = load_config()
-        root.title("WT Automation - 发布包一键部署")
-        root.geometry("880x620")
-        try:
-            import wt_dpi
-            wt_dpi.enable_process_dpi_awareness()
-            wt_dpi.compute_scale(root)
-        except Exception:
-            pass
+
+        root.title("WT Automation - 发布包一键部署控制台")
+        root.configure(bg=self.pal["bg"])
+
+        # 初始化 DPI 缩放与初始窗口几何
+        if _HAS_WT_DPI and hasattr(wt_dpi, "enable_process_dpi_awareness"):
+            try:
+                wt_dpi.enable_process_dpi_awareness()
+                wt_dpi.compute_scale(root)
+            except Exception:
+                pass
+
+        if _HAS_WT_DPI and hasattr(wt_dpi, "geometry"):
+            wt_dpi.geometry(root, 920, 720)
+            root.minsize(_scale_val(800), _scale_val(620))
+        else:
+            root.geometry("920x720")
+            root.minsize(800, 620)
+
         self._build_ui()
         self._load_cfg_into_ui()
 
     def _build_ui(self):
-        pad = {"padx": 8, "pady": 4}
-        frm = ttk.Frame(self.root, padding=10)
-        frm.pack(fill="both", expand=True)
+        pal = self.pal
+        pad_x = _scale_val(14)
+        pad_y = _scale_val(8)
 
-        row = ttk.Frame(frm)
-        row.pack(fill="x", **pad)
-        ttk.Label(row, text="内网仓库根目录:").pack(side="left")
+        # ── 1. 顶部 Header 引导卡片 ──
+        top_card = _create_card_frame(self.root, padx=_scale_val(14), pady=_scale_val(10), border=False)
+        top_card.pack(fill="x", padx=pad_x, pady=(pad_y, _scale_val(4)))
+
+        top_left = tk.Frame(top_card, bg=pal["card"])
+        top_left.pack(side="left", fill="both", expand=True)
+
+        title_lbl = tk.Label(
+            top_left,
+            text="WT Automation - 发布包一键部署控制台",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            bg=pal["card"],
+            fg=pal["text"],
+            anchor="w",
+        )
+        title_lbl.pack(anchor="w")
+
+        sub_lbl = tk.Label(
+            top_left,
+            text="解压覆盖与发布包批量部署，支持安全自动备份、差异预览与按序全量覆盖。",
+            font=("Microsoft YaHei UI", 9),
+            bg=pal["card"],
+            fg=pal["muted"],
+            anchor="w",
+        )
+        sub_lbl.pack(anchor="w", pady=(2, 0))
+
+        self.badge_status = _create_badge(top_card, "部署环境就绪", tone="info")
+        self.badge_status.pack(side="right", anchor="center")
+
+        # ── 2. 仓库与发布源配置卡片 ──
+        cfg_card = _create_card_frame(self.root, padx=_scale_val(14), pady=_scale_val(10))
+        cfg_card.pack(fill="x", padx=pad_x, pady=(0, _scale_val(6)))
+
+        # 仓库根目录行
+        r1 = tk.Frame(cfg_card, bg=pal["card"])
+        r1.pack(fill="x", pady=(0, _scale_val(6)))
+        tk.Label(r1, text="内网仓库根目录：", font=("Microsoft YaHei UI", 9, "bold"), bg=pal["card"], fg=pal["text"], width=15, anchor="w").pack(side="left")
         self.var_root = tk.StringVar()
-        ttk.Entry(row, textvariable=self.var_root).pack(side="left", fill="x", expand=True, padx=4)
-        ttk.Button(row, text="浏览…", command=self._browse_root).pack(side="right")
+        e_root = tk.Entry(r1, textvariable=self.var_root, font=("Microsoft YaHei UI", 9), highlightthickness=1, highlightbackground=pal["border"], bd=0)
+        e_root.pack(side="left", fill="x", expand=True, padx=(0, _scale_val(8)), ipady=3)
+        _create_flat_button(r1, "浏览…", command=self._browse_root, tone="secondary", width=8).pack(side="left")
 
-        row = ttk.Frame(frm)
-        row.pack(fill="x", **pad)
-        ttk.Label(row, text="发布包文件夹:").pack(side="left")
+        # 发布包存档路径行
+        r2 = tk.Frame(cfg_card, bg=pal["card"])
+        r2.pack(fill="x")
+        tk.Label(r2, text="发布包文件夹：", font=("Microsoft YaHei UI", 9, "bold"), bg=pal["card"], fg=pal["text"], width=15, anchor="w").pack(side="left")
         self.var_release = tk.StringVar()
-        ttk.Entry(row, textvariable=self.var_release).pack(side="left", fill="x", expand=True, padx=4)
-        ttk.Button(row, text="浏览…", command=self._browse_release).pack(side="right")
-        ttk.Button(row, text="刷新列表", command=self._refresh_list).pack(side="right", padx=2)
+        e_rel = tk.Entry(r2, textvariable=self.var_release, font=("Microsoft YaHei UI", 9), highlightthickness=1, highlightbackground=pal["border"], bd=0)
+        e_rel.pack(side="left", fill="x", expand=True, padx=(0, _scale_val(8)), ipady=3)
+        _create_flat_button(r2, "浏览…", command=self._browse_release, tone="secondary", width=8).pack(side="left")
 
-        row = ttk.Frame(frm)
-        row.pack(fill="x", **pad)
-        ttk.Label(row, text="覆盖模式:").pack(side="left")
+        # ── 3. 部署模式与安全配置卡片 ──
+        mode_card = _create_card_frame(self.root, padx=_scale_val(14), pady=_scale_val(8))
+        mode_card.pack(fill="x", padx=pad_x, pady=(0, _scale_val(6)))
+
+        r_mode = tk.Frame(mode_card, bg=pal["card"])
+        r_mode.pack(fill="x")
+        tk.Label(r_mode, text="覆盖策略：", font=("Microsoft YaHei UI", 9, "bold"), bg=pal["card"], fg=pal["text"]).pack(side="left")
         self.var_mode = tk.StringVar(value="all")
-        ttk.Radiobutton(row, text="从旧到新依次覆盖（全部）", value="all", variable=self.var_mode).pack(side="left")
-        ttk.Radiobutton(row, text="仅覆盖最新一个", value="latest", variable=self.var_mode).pack(side="left", padx=6)
+        tk.Radiobutton(r_mode, text="从旧到新依次覆盖全部增量包 (推荐)", value="all", variable=self.var_mode, bg=pal["card"], fg=pal["text"], activebackground=pal["card"]).pack(side="left", padx=_scale_val(4))
+        tk.Radiobutton(r_mode, text="仅覆盖选中的最新增量包", value="latest", variable=self.var_mode, bg=pal["card"], fg=pal["text"], activebackground=pal["card"]).pack(side="left", padx=_scale_val(8))
+
+        # 安全备份
         self.var_backup = tk.BooleanVar(value=True)
-        ttk.Checkbutton(row, text="覆盖前备份", variable=self.var_backup).pack(side="left", padx=10)
+        tk.Checkbutton(r_mode, text="覆盖前自动备份受影响文件至 .update_backup 目录", variable=self.var_backup, bg=pal["card"], fg=pal["text"], activebackground=pal["card"]).pack(side="right")
 
-        ttk.Label(frm, text="发布包列表（按时间倒序，默认选中最新的）:").pack(anchor="w", **pad)
-        self.listbox = tk.Listbox(frm, selectmode="extended", height=8)
-        self.listbox.pack(fill="x", padx=8)
+        # ── 4. 待处理发布包列表卡片 ──
+        list_card = _create_card_frame(self.root, padx=_scale_val(14), pady=_scale_val(8))
+        list_card.pack(fill="x", padx=pad_x, pady=(0, _scale_val(6)))
 
-        row = ttk.Frame(frm)
-        row.pack(fill="x", **pad)
-        ttk.Button(row, text="预览覆盖", command=self._preview).pack(side="left")
-        ttk.Button(row, text="执行覆盖", command=self._apply).pack(side="left", padx=6)
-        ttk.Label(row, text="（路径/模式自动记忆）", foreground="#666").pack(side="left", padx=8)
+        lh = tk.Frame(list_card, bg=pal["card"])
+        lh.pack(fill="x", pady=(0, _scale_val(4)))
+        tk.Label(lh, text="待处理发布包列表（按时间倒序排列）", font=("Microsoft YaHei UI", 9, "bold"), bg=pal["card"], fg=pal["text"]).pack(side="left")
+        _create_flat_button(lh, "↻ 刷新列表", command=self._refresh_list, tone="subtle", font=("Microsoft YaHei UI", 8)).pack(side="right")
 
-        ttk.Label(frm, text="日志:").pack(anchor="w", **pad)
-        self.log = tk.Text(frm, height=14, state="disabled")
-        self.log.pack(fill="both", expand=True, padx=8, pady=(0, 4))
-        self.log.tag_configure("err", foreground="#c00")
-        self.log.tag_configure("ok", foreground="#060")
+        lb_wrap = tk.Frame(list_card, bg=pal["card"])
+        lb_wrap.pack(fill="x")
+
+        sb_list = tk.Scrollbar(lb_wrap, orient="vertical", relief=tk.FLAT, bd=0, bg=pal["toolbar"], troughcolor=pal["bg"])
+        sb_list.pack(side="right", fill="y")
+
+        self.listbox = tk.Listbox(
+            lb_wrap,
+            selectmode="extended",
+            height=5,
+            activestyle="none",
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            highlightcolor=pal["primary"],
+            bg="#ffffff",
+            fg=pal["text"],
+            selectbackground=pal["primary_soft"],
+            selectforeground=pal["primary_text"],
+            font=("Consolas", 9),
+            yscrollcommand=sb_list.set,
+        )
+        self.listbox.pack(side="left", fill="x", expand=True)
+        sb_list.config(command=self.listbox.yview)
+
+        # ── 5. 部署终端日志卡片 ──
+        log_card = _create_card_frame(self.root, padx=_scale_val(12), pady=_scale_val(8))
+        log_card.pack(fill="both", expand=True, padx=pad_x, pady=(0, _scale_val(6)))
+
+        log_head = tk.Frame(log_card, bg=pal["card"])
+        log_head.pack(fill="x", pady=(0, 4))
+        tk.Label(log_head, text="部署终端日志", font=("Microsoft YaHei UI", 9, "bold"), bg=pal["card"], fg=pal["text"]).pack(side="left")
+        _create_flat_button(log_head, "清空日志", command=self._clear_log, tone="subtle", font=("Microsoft YaHei UI", 8)).pack(side="right")
+
+        log_wrap = tk.Frame(log_card, bg=pal["card"])
+        log_wrap.pack(fill="both", expand=True)
+
+        sb_log = tk.Scrollbar(log_wrap, orient="vertical", relief=tk.FLAT, bd=0, bg=pal["toolbar"], troughcolor=pal["bg"])
+        sb_log.pack(side="right", fill="y")
+
+        self.log = tk.Text(
+            log_wrap,
+            height=10,
+            state="disabled",
+            wrap="word",
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            bg="#ffffff",
+            fg=pal["text"],
+            yscrollcommand=sb_log.set,
+        )
+        self.log.pack(side="left", fill="both", expand=True)
+        sb_log.config(command=self.log.yview)
+
+        self.log.tag_configure("err", foreground=pal["danger"])
+        self.log.tag_configure("ok", foreground=pal["success"])
+        self.log.tag_configure("warn", foreground=pal["warning"])
+        self.log.tag_configure("info", foreground=pal["text"])
+
+        # ── 6. 底部操作条 ──
+        footer = tk.Frame(self.root, bg=pal["bg"])
+        footer.pack(fill="x", padx=pad_x, pady=(0, pad_y))
+
+        self.status = tk.Label(footer, text="路径与模式已自动保存至 ~/.wt_deploy_release.json", anchor="w", bg=pal["bg"], fg=pal["muted"], font=("Microsoft YaHei UI", 8))
+        self.status.pack(side="left", fill="x", expand=True)
+
+        self.btn_preview = _create_flat_button(
+            footer,
+            text="🔍 预览覆盖差异",
+            command=self._preview,
+            tone="secondary",
+            padx=_scale_val(14),
+            pady=_scale_val(6),
+        )
+        self.btn_preview.pack(side="left", padx=(0, _scale_val(8)))
+
+        self.btn_apply = _create_flat_button(
+            footer,
+            text="★ 执行升级部署",
+            command=self._apply,
+            tone="primary",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            padx=_scale_val(20),
+            pady=_scale_val(6),
+        )
+        self.btn_apply.pack(side="right")
+
+    def _clear_log(self):
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.configure(state="disabled")
 
     def _log(self, msg, tag=None):
         self.log.configure(state="normal")
@@ -299,15 +598,18 @@ class DeployApp(object):
         self.listbox.delete(0, "end")
         self._zips = list_release_zips(self.var_release.get().strip())
         if not self._zips:
-            # 兼容旧行为：脚本所在目录找
             here = os.path.dirname(os.path.abspath(__file__))
             self._zips = list_release_zips(here)
         for i, item in enumerate(self._zips):
             dt = datetime.datetime.fromtimestamp(item["mtime"]).strftime("%m-%d %H:%M")
-            self.listbox.insert("end", "[%s] %s" % (dt, item["name"]))
+            tag_latest = "★ [最新] " if i == 0 else "   "
+            self.listbox.insert("end", "%s[%s]  %s" % (tag_latest, dt, item["name"]))
         if self._zips:
             self.listbox.selection_set(0)
             self.listbox.activate(0)
+            self.badge_status.set_badge("发现 %d 个发布包" % len(self._zips), "info")
+        else:
+            self.badge_status.set_badge("未找到发布包", "muted")
 
     def _selected_zips(self):
         sel = self.listbox.curselection()
@@ -332,11 +634,15 @@ class DeployApp(object):
             return
         self._save_cfg()
         zips = self._selected_zips() if self.var_mode.get() == "latest" else self._zips
-        self.log.configure(state="normal")
-        self.log.delete("1.0", "end")
-        self.log.configure(state="disabled")
-        plan_apply(zips, root_path, mode=self.var_mode.get(), dry_run=True, log=lambda m: self._log(m))
-        self._log("--- 预览结束 ---", "ok")
+        self._clear_log()
+        self.btn_preview.configure(state=tk.DISABLED)
+        self.btn_apply.configure(state=tk.DISABLED)
+        try:
+            plan_apply(zips, root_path, mode=self.var_mode.get(), dry_run=True, log=lambda m: self._log(m))
+            self._log("--- 预览结束 ---", "ok")
+        finally:
+            self.btn_preview.configure(state=tk.NORMAL)
+            self.btn_apply.configure(state=tk.NORMAL)
 
     def _apply(self):
         root_path, _ = self._validate()
@@ -344,19 +650,43 @@ class DeployApp(object):
             return
         self._save_cfg()
         zips = self._selected_zips() if self.var_mode.get() == "latest" else self._zips
-        self.log.configure(state="normal")
-        self.log.delete("1.0", "end")
-        self.log.configure(state="disabled")
-        if not messagebox.askyesno("确认", "将覆盖 %d 个发布包到:\n%s\n\n是否继续？" % (len(zips), root_path)):
+        self._clear_log()
+
+        if not messagebox.askyesno(
+            "确认部署覆盖",
+            f"将覆盖 {len(zips)} 个发布包到仓库根目录：\n{root_path}\n\n"
+            f"安全备份：{'已启用（自动留存至 .update_backup）' if self.var_backup.get() else '已禁用'}\n\n"
+            f"是否继续执行？",
+        ):
             return
+
+        self.btn_preview.configure(state=tk.DISABLED)
+        self.btn_apply.configure(state=tk.DISABLED)
+        self.badge_status.set_badge("正在部署覆盖...", "warning")
+        self.root.update_idletasks()
+
         try:
-            plan_apply(zips, root_path, mode=self.var_mode.get(),
-                       dry_run=False, backup=self.var_backup.get(), log=lambda m: self._log(m))
+            n_ok, n_files, backup_dir = plan_apply(
+                zips, root_path, mode=self.var_mode.get(),
+                dry_run=False, backup=self.var_backup.get(), log=lambda m: self._log(m)
+            )
             self._log("--- 覆盖完成 ---", "ok")
-            messagebox.showinfo("完成", "发布包覆盖完成。若改了服务端脚本，请重启队列服务使其生效。")
+            self.badge_status.set_badge("部署完成", "success")
+            messagebox.showinfo(
+                "部署成功",
+                f"发布包覆盖完成！\n\n"
+                f"• 成功应用: {n_ok} 个包\n"
+                f"• 覆盖文件: {n_files} 个\n"
+                f"• 备份位置: {backup_dir or '未备份'}\n\n"
+                f"若修改了服务端核心脚本，请重启后台队列服务使其生效。"
+            )
         except Exception as exc:
             self._log("执行失败: %s" % exc, "err")
-            messagebox.showerror("失败", "覆盖失败:\n%s" % exc)
+            self.badge_status.set_badge("部署失败", "danger")
+            messagebox.showerror("失败", f"覆盖失败:\n{exc}")
+        finally:
+            self.btn_preview.configure(state=tk.NORMAL)
+            self.btn_apply.configure(state=tk.NORMAL)
 
 
 # --------------------------------------------------------------------------
