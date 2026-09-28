@@ -1842,8 +1842,10 @@ class ControlEditorDialog:
         )
 
     def on_confirm(self):
-        self.apply_changes(close_after=False)
-        self.window.destroy()
+        # 只有保存成功才关窗：校验失败时 apply_changes 会提示并返回 False，
+        # 原先无条件 destroy 会让用户「填错就丢输入」。
+        if self.apply_changes(close_after=False):
+            self.window.destroy()
 
     def _mark_dirty(self, message):
         if self._loading:
@@ -1853,13 +1855,24 @@ class ControlEditorDialog:
         self.status_var.set(message)
 
     def apply_changes(self, close_after=False):
-        self.result = self.build_control()
+        """保存当前控件。校验失败时提示用户并返回 False（不再静默无反应）。
+
+        `build_control()` 对空 target_method / target_value 会抛 ValueError；
+        原先没有 try，异常直冒到 Tk 按钮回调被吞掉 —— 用户看到的是
+        「点了保存当前控件 / 保存并关闭完全没反应」，也不知道哪里填错了。
+        """
+        try:
+            self.result = self.build_control()
+        except ValueError as exc:
+            messagebox.showerror("保存失败", str(exc), parent=self.window)
+            return False
         self.control = self.result
         self.dirty = False
         self.applied = True
         self.status_var.set("已保存当前控件修改。")
         if close_after:
             self.window.destroy()
+        return True
 
     def on_cancel(self):
         if self.dirty:
@@ -2677,7 +2690,9 @@ class ControlEditDialog:
         flat_item["uiPath"] = self.var_ui_path.get().strip()
         flat_item["qualityTier"] = self.var_quality.get().strip()
         flat_item["qualityReason"] = self.var_quality_reason.get().strip()
-        if "inspectData" not in flat_item:
+        # 兼容 inspectData 缺失与显式为 null 两种脏数据：
+        # 只判 "not in" 时，JSON 里写成 "inspectData": null 会走到 None["name"] 抛 TypeError。
+        if not isinstance(flat_item.get("inspectData"), dict):
             flat_item["inspectData"] = {}
         flat_item["inspectData"]["name"] = name
         self.result = flat_item

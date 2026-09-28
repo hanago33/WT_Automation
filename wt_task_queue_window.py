@@ -32,6 +32,15 @@ STATUS_LABELS = {
     "terminated": "已终止",
 }
 
+
+def build_status_filter_options():
+    """状态筛选下拉的选项：由 STATUS_LABELS 派生，避免与状态模型不同步。
+
+    原先是在 _build_ui 里手工列举 6 项，漏了「已取消 / 已终止」——
+    这两种状态的任务只能靠「全部」查看，无法筛选。
+    """
+    return [("全部", "全部")] + [(label, label) for label in STATUS_LABELS.values()]
+
 MONITOR_STATUS_LABELS = {
     "idle": "空闲",
     "running": "运行中",
@@ -366,14 +375,7 @@ class TaskQueueWindow:
         ).pack(side=tk.LEFT, padx=(0, 4))
 
         self.status_filter_var = tk.StringVar(value="全部")
-        status_options = [
-            ("全部", "全部"),
-            ("排队中", "排队中"),
-            ("运行中", "运行中"),
-            ("已暂停", "已暂停"),
-            ("成功", "成功"),
-            ("失败", "失败"),
-        ]
+        status_options = build_status_filter_options()
         pill_selector = wt_theme.create_pill_selector(
             filter_frame,
             options=status_options,
@@ -2148,6 +2150,13 @@ class TaskQueueWindow:
         if not callback:
             messagebox.showinfo(label, "请从总控台的“检查与日志”中停止{}。".format(label))
             return
+        # 停止服务会中断其上正在运行的任务，属不可逆操作，原先无任何确认、误点即生效。
+        if not messagebox.askyesno(
+            stop_text,
+            "确定停止{}吗？\n其上正在运行的任务可能被中断。".format(label),
+            parent=self.window,
+        ):
+            return
         try:
             callback(service)
         except Exception as exc:
@@ -2767,7 +2776,11 @@ class TaskQueueWindow:
             )
             self._post_ui(self.refresh)
             return True
-        except Exception:
+        except Exception as exc:
+            # 保持 bool 返回（调用方按真值判断），但把失败原因写进日志面板：
+            # 原先静默 return False，用户与调用方都只看到「点了没反应」。
+            reason = self._friendly_error(exc)
+            self._post_ui(lambda: self._append_log_text("任务操作失败：{}".format(reason)))
             return False
 
     def _append_log_text(self, line):
@@ -2812,6 +2825,19 @@ class TaskQueueWindow:
                 "删除任务",
                 "确定删除该任务记录吗？此操作不可恢复，且不会终止正在运行的 worker。\n"
                 "如需停止运行中的任务，请先用「终止」。",
+                parent=self.window,
+            ):
+                return
+        elif action in ("terminate", "cancel"):
+            # 「终止」会强制结束运行中的 worker，「取消」会让排队任务不再执行，
+            # 都属不可逆操作，原先却只有「删除」有确认，误点即生效。
+            if action == "terminate":
+                title, detail = "终止任务", "正在运行的 worker 会被强制结束，当前进度将丢失。"
+            else:
+                title, detail = "取消任务", "排队中的任务将不再执行。"
+            if not messagebox.askyesno(
+                title,
+                "确定{}所选任务吗？\n{}".format("终止" if action == "terminate" else "取消", detail),
                 parent=self.window,
             ):
                 return
