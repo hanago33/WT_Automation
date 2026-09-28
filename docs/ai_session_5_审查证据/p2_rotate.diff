@@ -1,0 +1,293 @@
+diff --git a/WT_AUT_recorded.py b/WT_AUT_recorded.py
+index f7adebd..4bfcaee 100644
+--- a/WT_AUT_recorded.py
++++ b/WT_AUT_recorded.py
+@@ -317,6 +317,10 @@ MONITOR_THEME = {
+ 
+ 
+ class MonitorWindow:
++    # 日志 Text 行数上限：长流程（100+ 步 × 每步数行）下防止 Text 无限增长。
++    # 与 wt_task_queue_window._LOG_MAX_LINES 取值一致，保持各日志区行为统一。
++    LOG_MAX_LINES = 400
++
+     def __init__(self):
+         wt_dpi.enable_process_dpi_awareness()
+         self.root = tk.Tk()
+@@ -424,12 +428,28 @@ class MonitorWindow:
+         else:
+             self.text_widget.insert(tk.END, message, kind)
+         self.text_widget.insert(tk.END, "\n")
++        self._trim_to_max_lines()
+         self.text_widget.see(tk.END)
+         self.text_widget.config(state=tk.DISABLED)
+         # 注意：不再调用 self.root.update()。本方法可能被后台自动化线程调用，
+         # 跨线程进入 Tcl 事件循环会导致解释器重入崩溃（access violation）。
+         # Tk 会在下一个 idle 周期自动刷新，无需手动 pump。
+ 
++    def _trim_to_max_lines(self):
++        """头部裁剪：超过 LOG_MAX_LINES 时删除最早的多余行。
++
++        与 wt_task_queue_window 同款算法：Tk 行号从 1 计，
++        delete("1.0", "N.0") 删的是第 1..N-1 行，故要删到 (多余行数+1).0
++        才能恰好剩 LOG_MAX_LINES 行。
++        """
++        try:
++            row = int(self.text_widget.index("end-1c").split(".")[0] or 0)
++            excess = max(0, row - 1) - self.LOG_MAX_LINES
++            if excess > 0:
++                self.text_widget.delete("1.0", "%d.0" % (excess + 1))
++        except Exception:
++            pass
++
+     def update_status(self, status):
+         text = "状态：{}".format(status)
+         fg = MONITOR_THEME["muted"]
+@@ -487,11 +507,16 @@ def _ui_safe_call(callback):
+ 
+ 
+ def _append_log_file(line):
+-    """把一行日志追加到 LOG_FILE。
++    """把一行日志追加到 LOG_FILE（必要时先按大小轮转）。
+ 
+-    单独成函数：便于测试替换（避免测试真的落盘/删文件），也是后续改为
+-    进程内持有句柄 + 按大小轮转的收口点。
++    单独成函数：便于测试替换（避免测试真的落盘/删文件）。
++    每次追加前做一次体积检查，而不是持有常驻句柄 —— 后者会让外部删除日志
++    （WT_Launcher 的"清屏"）在 Windows 上失败并留下失效句柄。
+     """
++    try:
++        wt_logging.rotate_log(LOG_FILE)
++    except Exception:
++        pass
+     with open(LOG_FILE, "a", encoding="utf-8") as f:
+         f.write(line + "\n")
+ 
+diff --git a/tests/test_log_lifecycle.py b/tests/test_log_lifecycle.py
+new file mode 100644
+index 0000000..aede747
+--- /dev/null
++++ b/tests/test_log_lifecycle.py
+@@ -0,0 +1,168 @@
++# encoding: utf-8
++"""日志生命周期测试（P2）：文件按大小轮转、UI 日志区行数上限。
++
++设计约束：测试自身不删除文件（环境的批量删除守卫会拦截），
++改用 ``tempfile.mkdtemp`` 每次创建独立目录，互不干扰。
++"""
++import os
++import sys
++import tempfile
++import unittest
++
++TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
++PROJECT_DIR = os.path.dirname(TESTS_DIR)
++if PROJECT_DIR not in sys.path:
++    sys.path.insert(0, PROJECT_DIR)
++
++import wt_logging
++
++
++class LogRotationTests(unittest.TestCase):
++    """按大小轮转：path -> path.1 -> path.2 …，超出份数的最旧备份被覆盖。"""
++
++    def setUp(self):
++        base = os.path.join(TESTS_DIR, ".tmp_rotate")
++        os.makedirs(base, exist_ok=True)
++        self.dir = tempfile.mkdtemp(prefix="rot_", dir=base)
++        self.path = os.path.join(self.dir, "wt_automation.log")
++
++    def _write(self, text):
++        with open(self.path, "a", encoding="utf-8") as f:
++            f.write(text)
++
++    def _read(self, suffix=""):
++        with open(self.path + suffix, "r", encoding="utf-8") as f:
++            return f.read()
++
++    def test_should_rotate_handles_missing_file(self):
++        """文件不存在时不应抛错（首次运行场景）。"""
++        self.assertFalse(wt_logging.should_rotate(os.path.join(self.dir, "不存在.log")))
++
++    def test_should_rotate_by_threshold(self):
++        self._write("x" * 50)
++        self.assertFalse(wt_logging.should_rotate(self.path, max_bytes=100))
++        self.assertTrue(wt_logging.should_rotate(self.path, max_bytes=50))
++        self.assertTrue(wt_logging.should_rotate(self.path, max_bytes=10))
++
++    def test_rotate_moves_main_to_backup_one(self):
++        payload = "内容" * 40
++        self._write(payload)
++        self.assertTrue(wt_logging.rotate_log(self.path, max_bytes=10, backup_count=3))
++        self.assertFalse(os.path.exists(self.path), "轮转后主文件应被移走")
++        self.assertEqual(self._read(".1"), payload)
++
++    def test_rotate_is_noop_below_threshold(self):
++        payload = "短"
++        self._write(payload)
++        self.assertFalse(
++            wt_logging.rotate_log(self.path, max_bytes=1024 * 1024, backup_count=3)
++        )
++        self.assertEqual(self._read(), payload)
++        self.assertFalse(os.path.exists(self.path + ".1"))
++
++    def test_rotate_is_noop_for_missing_file(self):
++        self.assertFalse(wt_logging.rotate_log(self.path, max_bytes=1, backup_count=3))
++
++    def test_backups_never_exceed_backup_count(self):
++        """连续轮转后，备份份数必须封顶在 backup_count。"""
++        backup_count = 2
++        for _ in range(backup_count + 4):
++            self._write("y" * 64)
++            wt_logging.rotate_log(self.path, max_bytes=32, backup_count=backup_count)
++        for index in range(1, backup_count + 1):
++            with self.subTest(index=index):
++                self.assertTrue(
++                    os.path.exists("%s.%d" % (self.path, index)),
++                    "第 %d 份备份应存在" % index,
++                )
++        self.assertFalse(
++            os.path.exists("%s.%d" % (self.path, backup_count + 1)),
++            "超出 backup_count 的备份不应存在",
++        )
++
++    def test_newest_backup_holds_most_recent_content(self):
++        self._write("第一次" * 20)
++        wt_logging.rotate_log(self.path, max_bytes=10, backup_count=3)
++        self._write("第二次" * 20)
++        wt_logging.rotate_log(self.path, max_bytes=10, backup_count=3)
++        self.assertIn("第二次", self._read(".1"))
++        self.assertIn("第一次", self._read(".2"))
++
++    def test_defaults_are_sane(self):
++        self.assertEqual(wt_logging.LOG_MAX_BYTES, 5 * 1024 * 1024)
++        self.assertGreaterEqual(wt_logging.LOG_BACKUP_COUNT, 1)
++
++
++class MonitorWindowLineCapTests(unittest.TestCase):
++    """监视器窗口日志区行数上限：长流程下 Text 不得无限增长。"""
++
++    @classmethod
++    def setUpClass(cls):
++        try:
++            import tkinter as tk
++        except Exception:
++            raise unittest.SkipTest("无 tkinter 可用")
++        cls.tk = tk
++        try:
++            cls.root = tk.Tk()
++        except Exception:
++            raise unittest.SkipTest("无法创建 Tk 根窗口（无显示环境）")
++        cls.root.withdraw()
++
++    @classmethod
++    def tearDownClass(cls):
++        try:
++            cls.root.destroy()
++        except Exception:
++            pass
++
++    def _make_window(self):
++        """绕过 __init__ 直接构造，避免创建可见窗口。"""
++        import WT_AUT_recorded
++
++        window = WT_AUT_recorded.MonitorWindow.__new__(WT_AUT_recorded.MonitorWindow)
++        window.text_widget = self.tk.Text(self.root, wrap=self.tk.WORD)
++        return window
++
++    def test_trim_keeps_line_count_at_cap(self):
++        window = self._make_window()
++        window.LOG_MAX_LINES = 10
++        for i in range(35):
++            window.text_widget.insert(self.tk.END, "第 %d 行\n" % i)
++            window._trim_to_max_lines()
++        total = int(window.text_widget.index("end-1c").split(".")[0])
++        self.assertLessEqual(total, 11, "行数应被裁剪到上限附近，实际 %d" % total)
++
++    def test_trim_drops_oldest_lines_first(self):
++        window = self._make_window()
++        window.LOG_MAX_LINES = 5
++        for i in range(20):
++            window.text_widget.insert(self.tk.END, "第 %d 行\n" % i)
++            window._trim_to_max_lines()
++        content = window.text_widget.get("1.0", self.tk.END)
++        self.assertIn("第 19 行", content, "最新行必须保留")
++        self.assertNotIn("第 0 行", content, "最旧行应被裁掉")
++
++    def test_trim_is_noop_below_cap(self):
++        window = self._make_window()
++        window.LOG_MAX_LINES = 100
++        for i in range(5):
++            window.text_widget.insert(self.tk.END, "第 %d 行\n" % i)
++            window._trim_to_max_lines()
++        content = window.text_widget.get("1.0", self.tk.END)
++        self.assertIn("第 0 行", content)
++        self.assertIn("第 4 行", content)
++
++    def test_cap_matches_queue_window_for_consistency(self):
++        import WT_AUT_recorded
++        import wt_task_queue_window
++
++        self.assertEqual(
++            WT_AUT_recorded.MonitorWindow.LOG_MAX_LINES,
++            wt_task_queue_window.TaskQueueWindow._LOG_MAX_LINES,
++            "各日志区的行数上限应保持一致",
++        )
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/wt_logging.py b/wt_logging.py
+index 2a9fe42..df057a0 100644
+--- a/wt_logging.py
++++ b/wt_logging.py
+@@ -318,6 +318,50 @@ def log_event(
+     return record
+ 
+ 
++# ── 日志文件轮转 ────────────────────────────────────────────────────────────
++# wt_automation.log 是跨运行追加的单一文件，改造前没有任何轮转，会无限增长。
++# 轮转策略：按大小切分为 path.1（最近）… path.N（最旧），超出份数的最旧备份
++# 被覆盖丢弃 —— 标准 numbered rotation，不额外引入归档目录（那只是多一层
++# 间接，收益不足以抵消复杂度）。
++LOG_MAX_BYTES = 5 * 1024 * 1024
++LOG_BACKUP_COUNT = 5
++_rotate_lock = threading.Lock()
++
++
++def should_rotate(path, max_bytes=None):
++    """判断日志文件是否达到轮转阈值。"""
++    limit = LOG_MAX_BYTES if max_bytes is None else int(max_bytes)
++    try:
++        return os.path.getsize(path) >= limit
++    except OSError:
++        return False
++
++
++def rotate_log(path, max_bytes=None, backup_count=None):
++    """按大小轮转日志文件；返回 True 表示本次发生了轮转。
++
++    调用方在每次追加前调用即可：体积未达阈值时只是一次 ``getsize``（微秒级），
++    远低于持有常驻文件句柄的代价 —— 后者在 Windows 上会导致外部删除/清屏
++    （``WT_Launcher`` 的"清屏"会 ``os.remove(LOG_FILE)``）失败并留下失效句柄。
++    """
++    if not should_rotate(path, max_bytes):
++        return False
++    backups = LOG_BACKUP_COUNT if backup_count is None else int(backup_count)
++    with _rotate_lock:
++        # 双重检查：并发写入方可能已被前一个持锁者轮转过
++        if not should_rotate(path, max_bytes):
++            return False
++        try:
++            for index in range(backups - 1, 0, -1):
++                src = "%s.%d" % (path, index)
++                if os.path.exists(src):
++                    os.replace(src, "%s.%d" % (path, index + 1))
++            os.replace(path, "%s.1" % path)
++        except OSError:
++            return False
++    return True
++
++
+ # ── 行格式 ──────────────────────────────────────────────────────────────────
+ def format_line(level, message, module=None, run_id=None, timestamp=None):
+     """按统一格式组装一行日志。

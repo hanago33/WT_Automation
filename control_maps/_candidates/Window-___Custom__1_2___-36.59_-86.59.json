@@ -1,0 +1,39 @@
+{
+  "_candidateMeta": {
+    "sourceScript": "D:/My_RF_Project/WT_Automation/samples/recorder_scripts/recorded Wed Jul 22 20_10_01 2026.py",
+    "sourceLine": 9,
+    "discoveredAt": "2026-07-22T20:18:31",
+    "status": "pending_review",
+    "uipath": "||Window->||Custom#[1,2]%(-36.59,-86.59)",
+    "windowTitle": "",
+    "leafName": "",
+    "leafControlType": "Custom#[1,2]"
+  },
+  "controlDefinition": {
+    "id": "Custom_1_2",
+    "name": "Custom#[1,2]",
+    "role": "来自 recorder 自动转换的目标控件",
+    "targetMethod": "control_type",
+    "targetValue": "Custom#[1,2]",
+    "windowTitle": "",
+    "uiPath": "||Window->||Custom#[1,2]%(-36.59,-86.59)",
+    "templateKey": "",
+    "notes": "由 pywinauto_recorder 录制脚本自动转换生成（含 a11y 富化）；若控件库未命中，可继续补充 Inspect/Accessibility 信息。 点击偏移=@(-36.59,-86.59)。",
+    "inspectData": {
+      "name": "",
+      "controlType": "Custom#[1,2]",
+      "localizedControlType": "",
+      "automationId": "",
+      "className": "",
+      "frameworkId": "",
+      "ancestors": [
+        "Window"
+      ],
+      "recommendedTargetMethod": "ui_path",
+      "recommendedTargetValue": "||Window->||Custom#[1,2]%(-36.59,-86.59)",
+      "foundIndex": 2
+    },
+    "auxChecks": [],
+    "source": "recorder"
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "????????",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "WPF"
+  },
+  "scanMeta": {
+    "scanTime": "2026-07-01T11:48:47",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "????????",
+    "categoryFrameworkId": "WPF",
+    "totalControls": 1,
+    "rawTotalControls": 1
+  },
+  "controlDefinitions": [
+    {
+      "id": "dropdown_item",
+      "name": "风向",
+      "role": "点击下拉项",
+      "enabled": true,
+      "windowTitle": "????????",
+      "targetMethod": "name",
+      "targetValue": "ListBoxItem",
+      "templateKey": "",
+      "uiPath": "Direction",
+      "notes": "已自动收录到控件库分类：???????? / WPF",
+      "rawInspectText": "How found:\tSelected from tree...\nChildId:\t0\nInterfaces:\tIEnumVARIANT IOleWindow\nImpl:\tRemote native IAccessible (UIA-to-MSAA bridge)\nName:\t\"Direction\"\nValue:\t[Error: hr=0x80020003 - 找不到成员。]\nRole:\t列表项目 (0x22)\nState:\t不可见,屏幕外 (0x18000)\nLocation:\t[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]\nSelection:\t[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]\nDescription:\t[Error: hr=0x80020003 - 找不到成员。]\nKbshortcut:\t\"\"\nDefAction:\t\"双击\"\nHelp:\t\"\"\nHelpTopic:\t\"\"\nChildCount:\t1\nWindow:\t0x191324\nFirstChild:\t[null]\nLastChild:\t[null]\nNext:\t[null]\nPrevious:\t[null]\nLeft:\t[null]\nUp:\t[null]\nRight:\t[null]\nDown:\t[null]\nControlType:\t50007\nLocalizedControlType:\t\"list item\"\nName:\t\"Direction\"\nAcceleratorKey:\t\"\"\nAccessKey:\t\"\"\nHasKeyboardFocus:\tfalse\nIsKeyboardFocusable:\tfalse\nIsEnabled:\ttrue\nAutomationId:\t\"\"\nClassName:\t\"ListBoxItem\"\nHelpText:\t\"\"\nIsControlElement:\ttrue\nIsContentElement:\ttrue\nIsPassword:\tfalse\nItemType:\t\"\"\nIsOffscreen:\ttrue\nOrientation:\t0\nFrameworkId:\t\"WPF\"\nIsRequiredForForm:\tfalse\nItemStatus:\t\"\"\nOther Props:\tObject has no additional properties\nChildren:\tContainer has no children\nAncestors:\t[Error: GetParent: hr=0x80004005 - 未指定的错误]",
+      "auxChecks": [
+        "IsEnabled=true",
+        "IsOffscreen=true",
+        "IsKeyboardFocusable=false",
+        "HasKeyboardFocus=false",
+        "FrameworkId=WPF",
+        "ClassName=ListBoxItem"
+      ],
+      "inspectData": {
+        "howFound": "Selected from tree...",
+        "name": "Direction",
+        "controlType": "50007",
+        "localizedControlType": "list item",
+        "boundingRectangle": "",
+        "isEnabled": "true",
+        "isOffscreen": "true",
+        "isKeyboardFocusable": "false",
+        "hasKeyboardFocus": "false",
+        "processId": "",
+        "runtimeId": "",
+        "frameworkId": "WPF",
+        "className": "ListBoxItem",
+        "automationId": "",
+        "nativeWindowHandle": "",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [
+          "Container has no children"
+        ],
+        "ancestors": [
+          "[Error: GetParent: hr=0x80004005 - 未指定的错误]"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "name",
+        "recommendedTargetValue": "Direction"
+      }
+    }
+  ],
+  "lastUpdated": "2026-07-01T11:48:47"
+}

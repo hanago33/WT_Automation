@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "日期时间",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "WPF"
+  },
+  "scanMeta": {
+    "scanTime": "2026-06-30T19:53:04",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "日期时间",
+    "categoryFrameworkId": "WPF",
+    "totalControls": 1,
+    "rawTotalControls": 1
+  },
+  "controlDefinitions": [
+    {
+      "id": "step_18_control_1",
+      "name": "日期时间",
+      "role": "",
+      "enabled": true,
+      "windowTitle": "日期时间",
+      "targetMethod": "name",
+      "targetValue": "日期时间",
+      "templateKey": "",
+      "uiPath": "日期时间",
+      "notes": "已自动收录到控件库分类：日期时间 / WPF",
+      "rawInspectText": "LogicalSize\t[w=89,h=18]\nAcceleratorKey\tProperty does not exist\nAccessKey\tProperty does not exist\nAnnotationPattern.AnnotationTypeId\tProperty does not exist\nAnnotationPattern.AnnotationTypeName\tProperty does not exist\nAnnotationPattern.Author\tProperty does not exist\nAnnotationPattern.DateTime\tProperty does not exist\nAnnotationPattern.Objects\tProperty does not exist\nAnnotationPattern.Target\tProperty does not exist\nAnnotationPattern.Types\tProperty does not exist\nAriaProperties\tProperty does not exist\nAriaRole\tProperty does not exist\nAutomationId\tProperty does not exist\nBoundingRectangle\t[l=840,t=381,r=997,b=413]\nCenterPoint\tProperty does not exist\nClassName\tTextBlock\nClickablePoint\t{X=918,Y=397}\nControllerFor\tProperty does not exist\nControlType\tText(50020)\nCulture\t0\nDescribedBy\tProperty does not exist\nDockDockPosition\tProperty does not exist\nDragGrabbedItems\tProperty does not exist\nDragPattern.DropEffect\tProperty does not exist\nDragPattern.DropEffects\tProperty does not exist\nDragPattern.IsGrabbed\tProperty does not exist\nDropTargetPattern.DropTargetEffect\tProperty does not exist\nDropTargetPattern.DropTargetEffects\tProperty does not exist\nExpandCollapseExpandCollapseState\tProperty does not exist\nFillColor\tProperty does not exist\nFillType\t0\nFlowsFrom\tProperty does not exist\nFlowsTo\tProperty does not exist\nFrameworkId\tWPF\nFullDescription\tProperty does not exist\nGridItemPattern.Column\tProperty does not exist\nGridItemPattern.ColumnSpan\tProperty does not exist\nGridItemPattern.ContainingGrid\tProperty does not exist\nGridItemPattern.Row\tProperty does not exist\nGridItemPattern.RowSpan\tProperty does not exist\nGridPattern.ColumnCount\tProperty does not exist\nGridPattern.RowCount\tProperty does not exist\nHasKeyboardFocus\tFalse\nHeadingLevel\tHeadingLevel_None (80050)\nHelpText\tProperty does not exist\nIsContentElement\tTrue\nIsControlElement\tTrue\nIsDataValidForForm\tFalse\nIsDialog\tFalse\nIsEnabled\tTrue\nIsKeyboardFocusable\tFalse\nIsOffscreen\tFalse\nIsPassword\tFalse\nIsPeripheral\tFalse\nIsRequiredForForm\tFalse\nItemStatus\tProperty does not exist\nItemType\tProperty does not exist\nLabeledBy\tProperty does not exist\nLandmarkType\tProperty does not exist\nLegacyIAccessiblePattern.ChildId\tProperty does not exist\nLegacyIAccessiblePattern.DefaultAction\tProperty does not exist\nLegacyIAccessiblePattern.Description\tProperty does not exist\nLegacyIAccessiblePattern.Help\tProperty does not exist\nLegacyIAccessiblePattern.KeyboardShortcut\tProperty does not exist\nLegacyIAccessiblePattern.Name\tProperty does not exist\nLegacyIAccessiblePattern.Role\tProperty does not exist\nLegacyIAccessiblePattern.Selection\tProperty does not exist\nLegacyIAccessiblePattern.State\tProperty does not exist\nLegacyIAccessiblePattern.Value\tProperty does not exist\nLevel\tProperty does not exist\nLiveSetting\t0\nLocalizedControlType\ttext\nLocalizedLandmarkType\tProperty does not exist\nMultipleViewPattern.CurrentView\tProperty does not exist\nMultipleViewPattern.SupportedViews\tProperty does not exist\nName\t日期时间\nNativeWindowHandle\t0\nOptimizeForVisualContent\tFalse\nOrientation\tNone(0)\nOutlineColor\tProperty does not exist\nOutlineThickness\tProperty does not exist\nPositionInSet\tProperty does not exist\nProcessId\t60856\nProviderDescription\t[pid:60856,providerId:0x0 Main(parent link):Unidentified Provider (managed:MS.Internal.Automation.ElementProxy, PresentationCore, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35)]\nRangeValuePattern.IsReadOnly\tProperty does not exist\nRangeValuePattern.LargeChange\tProperty does not exist\nRangeValuePattern.Maximum\tProperty does not exist\nRangeValuePattern.Minimum\tProperty does not exist\nRangeValuePattern.SmallChange\tProperty does not exist\nRangeValuePattern.Value\tProperty does not exist\nRotation\tProperty does not exist\nRuntimeId\t[7,EDB8,3CD694C]\nScrollPattern.HorizontallyScrollable\tProperty does not exist\nScrollPattern.HorizontalScrollPercent\tProperty does not exist\nScrollPattern.HorizontalViewSize\tProperty does not exist\nScrollPattern.VerticallyScrollable\tProperty does not exist\nScrollPattern.VerticalScrollPercent\tProperty does not exist\nScrollPattern.VerticalViewSize\tProperty does not exist\nSelectionItemPattern.IsSelected\tProperty does not exist\nSelectionItemPattern.SelectionContainer\tProperty does not exist\nSelectionPattern.CanSelectMultiple\tProperty does not exist\nSelectionPattern.IsSelectionRequired\tProperty does not exist\nSelectionPattern.Selection\tProperty does not exist\nSize\tProperty does not exist\nSizeOfSet\tProperty does not exist\nSpreadsheetItemPattern.AnnotationObjects\tProperty does not exist\nSpreadsheetItemPattern.AnnotationTypes\tProperty does not exist\nSpreadsheetItemPatternFormula\tProperty does not exist\nStylesPattern.ExtendedProperties\tProperty does not exist\nStylesPattern.FillColor\tProperty does not exist\nStylesPattern.FillPatternColor\tProperty does not exist\nStylesPattern.FillPatternStyle\tProperty does not exist\nStylesPattern.Shape\tProperty does not exist\nStylesPattern.StyleId\tProperty does not exist\nStylesPattern.StyleName\tProperty does not exist\nTableItemPattern.ColumnHeaderItems\tProperty does not exist\nTableItemPattern.RowHeaderItems\tProperty does not exist\nTablePattern.ColumnHeaders\tProperty does not exist\nTablePattern.RowHeaders\tProperty does not exist\nTablePattern.RowOrColumnMajor\tProperty does not exist\nTogglePattern.ToggleState\tProperty does not exist\nTransform2Pattern.CanZoom\tProperty does not exist\nTransform2Pattern.ZoomLevel\tProperty does not exist\nTransform2Pattern.ZoomMaximum\tProperty does not exist\nTransform2Pattern.ZoomMinimum\tProperty does not exist\nTransformPattern.CanMove\tProperty does not exist\nTransformPattern.CanResize\tProperty does not exist\nTransformPattern.CanRotate\tProperty does not exist\nValuePattern.IsReadOnly\tProperty does not exist\nValuePattern.Value\tProperty does not exist\nVisualEffects\t0\nWindowPattern.CanMaximize\tProperty does not exist\nWindowPattern.CanMinimize\tProperty does not exist\nWindowPattern.IsModal\tProperty does not exist\nWindowPattern.IsTopmost\tProperty does not exist\nWindowPattern.WindowInteractionState\tProperty does not exist\nWindowPattern.WindowVisualState\tProperty does not exist",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "IsKeyboardFocusable=False",
+        "HasKeyboardFocus=False",
+        "FrameworkId=WPF",
+        "ClassName=TextBlock"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "日期时间",
+        "controlType": "Text(50020)",
+        "localizedControlType": "text",
+        "boundingRectangle": "[l=840,t=381,r=997,b=413]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "False",
+        "hasKeyboardFocus": "False",
+        "processId": "60856",
+        "runtimeId": "[7,EDB8,3CD694C]",
+        "frameworkId": "WPF",
+        "className": "TextBlock",
+        "automationId": "",
+        "nativeWindowHandle": "0",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [],
+        "ancestors": [],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "name",
+        "recommendedTargetValue": "日期时间"
+      }
+    }
+  ],
+  "lastUpdated": "2026-06-30T19:53:04"
+}

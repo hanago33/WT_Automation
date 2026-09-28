@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "请补充窗口标题",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "unknown"
+  },
+  "scanMeta": {
+    "scanTime": "2026-06-30T19:30:06",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "请补充窗口标题",
+    "categoryFrameworkId": "unknown",
+    "totalControls": 1,
+    "rawTotalControls": 1
+  },
+  "controlDefinitions": [
+    {
+      "id": "target_input",
+      "name": "输入框",
+      "role": "输入文本",
+      "enabled": true,
+      "windowTitle": "请补充窗口标题",
+      "targetMethod": "name,class_name",
+      "targetValue": "请补充标签名称,Edit",
+      "templateKey": "",
+      "uiPath": "文件名(N):",
+      "notes": "已自动收录到控件库分类：请补充窗口标题 / unknown",
+      "rawInspectText": "How found:\tMouse move (1843,1053)\n\thwnd=0x002C0C18 64bit class=\"Edit\" style=0x54000080 ex=0x0\nChildId:\t0\nInterfaces:\tIEnumVARIANT IOleWindow IAccIdentity\nImpl:\tRemote native IAccessible\nAnnotationID:\t01000080180C2C00FCFFFFFF00000000\nName:\t\"文件名(N):\"\nValue:\t\"\"\nRole:\t可编辑文本 (0x2A)\nState:\t可设定焦点 (0x100000)\nLocation:\t{l:1623, t:1044, w:486, h:28}\nSelection:\t\nDescription:\t[null]\nKbshortcut:\t\"Alt+n\"\nDefAction:\t[null]\nHelp:\t[null]\nHelpTopic:\t\"\"\nChildCount:\t0\nWindow:\t0x2C0C18\nFirstChild:\t[null]\nLastChild:\t[null]\nNext:\t[null]\nPrevious:\t[null]\nLeft:\t[null]\nUp:\t[null]\nRight:\t[null]\nDown:\t[null]\nName:\t\"文件名(N):\"\nDockPattern:\t[Error: hr=0x80004001 - 尚未实现]\nExpandCollapsePattern:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemPattern:\t[Error: hr=0x80004001 - 尚未实现]\nGridPattern:\t[Error: hr=0x80004001 - 尚未实现]\nInvokePattern:\t[Error: hr=0x80004001 - 尚未实现]\nMultipleViewPattern:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValuePattern:\t[Error: hr=0x80004001 - 尚未实现]\nScrollPattern:\t[Error: hr=0x80004001 - 尚未实现]\nScrollItemPattern:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionItemPattern:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionPattern:\t[Error: hr=0x80004001 - 尚未实现]\nTablePattern:\t[Error: hr=0x80004001 - 尚未实现]\nTableItemPattern:\t[Error: hr=0x80004001 - 尚未实现]\nTextPattern:\t[Error: hr=0x80004001 - 尚未实现]\nTogglePattern:\t[Error: hr=0x80004001 - 尚未实现]\nTransformPattern:\t[Error: hr=0x80004001 - 尚未实现]\nValuePattern:\t[Error: hr=0x80004001 - 尚未实现]\nWindowPattern:\t[Error: hr=0x80004001 - 尚未实现]\nValueValue:\t[Error: hr=0x80004001 - 尚未实现]\nValueIsReadOnly:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueValue:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueIsReadOnly:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueMinimum:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueMaximum:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueLargeChange:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueSmallChange:\t[Error: hr=0x80004001 - 尚未实现]\nScrollHorizontalScrollPercent:\t[Error: hr=0x80004001 - 尚未实现]\nScrollHorizontalViewSize:\t[Error: hr=0x80004001 - 尚未实现]\nScrollVerticalScrollPercent:\t[Error: hr=0x80004001 - 尚未实现]\nScrollVerticalViewSize:\t[Error: hr=0x80004001 - 尚未实现]\nScrollHorizontallyScrollable:\t[Error: hr=0x80004001 - 尚未实现]\nScrollVerticallyScrollable:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionSelection:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionCanSelectMultiple:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionIsSelectionRequired:\t[Error: hr=0x80004001 - 尚未实现]\nGridRowCount:\t[Error: hr=0x80004001 - 尚未实现]\nGridColumnCount:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemRow:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemColumn:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemRowSpan:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemColumnSpan:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemContainingGrid:\t[Error: hr=0x80004001 - 尚未实现]\nDockDockPosition:\t[Error: hr=0x80004001 - 尚未实现]\nExpandCollapseExpandCollapseState:\t[Error: hr=0x80004001 - 尚未实现]\nMultipleViewCurrentView:\t[Error: hr=0x80004001 - 尚未实现]\nMultipleViewSupportedViews:\t[Error: hr=0x80004001 - 尚未实现]\nWindowCanMaximize:\t[Error: hr=0x80004001 - 尚未实现]\nWindowCanMinimize:\t[Error: hr=0x80004001 - 尚未实现]\nWindowWindowVisualState:\t[Error: hr=0x80004001 - 尚未实现]\nWindowWindowInteractionState:\t[Error: hr=0x80004001 - 尚未实现]\nWindowIsModal:\t[Error: hr=0x80004001 - 尚未实现]\nWindowIsTopmost:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionItemIsSelected:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionItemSelectionContainer:\t[Error: hr=0x80004001 - 尚未实现]\nTableRowHeaders:\t[Error: hr=0x80004001 - 尚未实现]\nTableColumnHeaders:\t[Error: hr=0x80004001 - 尚未实现]\nTableRowOrColumnMajor:\t[Error: hr=0x80004001 - 尚未实现]\nTableItemRowHeaderItems:\t[Error: hr=0x80004001 - 尚未实现]\nTableItemColumnHeaderItems:\t[Error: hr=0x80004001 - 尚未实现]\nToggleToggleState:\t[Error: hr=0x80004001 - 尚未实现]\nTransformCanMove:\t[Error: hr=0x80004001 - 尚未实现]\nTransformCanResize:\t[Error: hr=0x80004001 - 尚未实现]\nTransformCanRotate:\t[Error: hr=0x80004001 - 尚未实现]\nOther Props:\tObject has no additional properties\nChildren:\tContainer has no children\nAncestors:\t\"文件名(N):\" : 窗口 : 可设定焦点\n\t\"文件名(N):\" : 组合框 : 已折叠,可设定焦点\n\t\"文件名(N):\" : 窗口 : 可设定焦点\n\t\"文件名(N):\" : 客户端 : 可设定焦点\n\t\"文件名(N):\" : 窗口 : 可设定焦点\n\t\"打开\" : 对话框 : 可设定焦点\n\t\"打开\" : 窗口 : 可调大小,可移动,可设定焦点\n\t\"桌面 1\" : 客户端 : 可设定焦点\n\t\"桌面 1\" : 窗口 : 可设定焦点\n\t[ No Parent ]",
+      "auxChecks": [],
+      "inspectData": {
+        "howFound": "Mouse move (1843,1053)",
+        "name": "文件名(N):",
+        "controlType": "",
+        "localizedControlType": "",
+        "boundingRectangle": "",
+        "isEnabled": "",
+        "isOffscreen": "",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "",
+        "runtimeId": "",
+        "frameworkId": "",
+        "className": "",
+        "automationId": "",
+        "nativeWindowHandle": "",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [
+          "Container has no children"
+        ],
+        "ancestors": [
+          "\"文件名(N):\" : 窗口 : 可设定焦点"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "name",
+        "recommendedTargetValue": "文件名(N):"
+      }
+    }
+  ],
+  "lastUpdated": "2026-06-30T19:30:06"
+}

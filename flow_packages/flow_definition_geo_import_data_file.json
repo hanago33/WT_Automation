@@ -1,0 +1,398 @@
+{
+  "version": "1.0",
+  "project": "WT_Automation",
+  "description": "自动生成流程包（来自蓝图 geo_import_data_file）。进入地理信息数据管理窗口，浏览并选中本地文件，指定文件类型，点击应用完成导入。",
+  "lastUpdated": "2026-07-16T21:47:29",
+  "runtimeConfig": {
+    "gmExe": "",
+    "sourceFilePath": "",
+    "outputDir": "",
+    "projectionFilePath": ""
+  },
+  "flowPackages": [
+    {
+      "id": "geo_import_data_file",
+      "name": "地理信息数据-导入地形/粗糙度文件",
+      "description": "进入地理信息数据管理窗口，浏览并选中本地文件，指定文件类型，点击应用完成导入。",
+      "sourceManual": "MUP_UserManual_GeographicalData_zh.pdf",
+      "sourceSections": "1.1.1 地理信息数据窗口 / 1.1.2 添加地理信息数据文件",
+      "reconstructedNote": "",
+      "preconditions": [
+        "已连接许可证",
+        "粗糙度和地形由独立模块导入（区别于 WT5）"
+      ],
+      "stepIds": [
+        "step_1",
+        "step_2",
+        "step_3",
+        "step_4",
+        "step_5"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "step_1",
+      "name": "点击-进入管理工具图标",
+      "stage": "converted",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "进入地理信息数据管理工具窗口",
+      "successLog": "",
+      "windowTitle": "地理信息数据",
+      "inspectHints": {
+        "controlName": "Geographical Data 按钮",
+        "className": "Button",
+        "automationId": "MUPMicroscaleInformationViewModel_Button_GeographicalData",
+        "controlType": "Button",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "MUPMicroscaleInformationViewModel_Button_GeographicalData_Geographical_Data_按钮_Button",
+          "name": "Geographical Data 按钮",
+          "role": "来自标准控件库：",
+          "enabled": true,
+          "windowTitle": "地理信息数据",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MUPMicroscaleInformationViewModel_Button_GeographicalData,Button",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "由标准控件库合并生成，定位权威度高，可直接用于结构化定位；运行前请验证。",
+          "rawInspectText": "",
+          "auxChecks": [
+            "FrameworkId=WPF",
+            "ClassName=Button",
+            "ControlType=Button"
+          ],
+          "inspectData": {
+            "howFound": "standard_catalog",
+            "name": "",
+            "controlType": "Button",
+            "localizedControlType": "",
+            "boundingRectangle": "",
+            "isEnabled": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "",
+            "runtimeId": "",
+            "frameworkId": "WPF",
+            "className": "Button",
+            "automationId": "MUPMicroscaleInformationViewModel_Button_GeographicalData",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [],
+            "ancestors": [],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "automation_id",
+            "recommendedTargetValue": "MUPMicroscaleInformationViewModel_Button_GeographicalData"
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click",
+        "controlId": "MUPMicroscaleInformationViewModel_Button_GeographicalData_Geographical_Data_按钮_Button",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.3,
+        "waitAfter": 0.3,
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "已用标准库 automation_id 匹配: MUPMicroscaleInformationViewModel_Button_GeographicalData。候选匹配为地理信息数据入口按钮，需确认是否为管理工具窗口入口。"
+    },
+    {
+      "id": "step_2",
+      "name": "点击-搜索图标",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "浏览本地计算机文件",
+      "successLog": "点击 搜索图标",
+      "windowTitle": "地理信息数据",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_2_control_pending",
+          "name": "搜索图标",
+          "role": "占位(待实时抓取)",
+          "enabled": true,
+          "windowTitle": "地理信息数据",
+          "targetMethod": "",
+          "targetValue": "PENDING_CAPTURE",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "PENDING_CAPTURE: 标准库无匹配标识，需在软件中实时抓取 automation_id/相对区域/模板。",
+          "rawInspectText": "",
+          "auxChecks": [],
+          "inspectData": {
+            "howFound": "pending",
+            "name": "",
+            "controlType": "Button",
+            "automationId": "",
+            "frameworkId": "WPF",
+            "recommendedTargetMethod": "",
+            "recommendedTargetValue": ""
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click_relative_region",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.0,
+        "waitAfter": 0.3,
+        "parentWindow": {
+          "title": "地理信息数据",
+          "className": "Window",
+          "frameworkId": "WPF"
+        },
+        "relativeRegion": {
+          "x": 0.5,
+          "y": 0.5,
+          "width": 0.1,
+          "height": 0.1,
+          "anchor": "center"
+        },
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "PENDING_CAPTURE: 控件『搜索图标』在标准库无匹配，需软件实时抓取后回填 automation_id / 相对区域 / 模板。"
+    },
+    {
+      "id": "step_3",
+      "name": "选择-选中导入文件",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "选中需导入的文件",
+      "successLog": "选择 选中导入文件",
+      "windowTitle": "文件选择对话框",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_3_control_pending",
+          "name": "选中导入文件",
+          "role": "占位(待实时抓取)",
+          "enabled": true,
+          "windowTitle": "文件选择对话框",
+          "targetMethod": "",
+          "targetValue": "PENDING_CAPTURE",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "PENDING_CAPTURE: 标准库无匹配标识，需在软件中实时抓取 automation_id/相对区域/模板。",
+          "rawInspectText": "",
+          "auxChecks": [],
+          "inspectData": {
+            "howFound": "pending",
+            "name": "",
+            "controlType": "ComboBox",
+            "automationId": "",
+            "frameworkId": "WPF",
+            "recommendedTargetMethod": "",
+            "recommendedTargetValue": ""
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "select_dropdown_item_runtime",
+        "controlId": "step_3_control_pending",
+        "value": "<地形/粗糙度文件>",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 1.0,
+        "waitAfter": 1.0,
+        "retryCount": 1,
+        "retryInterval": 1.0,
+        "onError": "fallback",
+        "fallbackMode": "template_match",
+        "fallbackTemplate": "PENDING_CAPTURE"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "PENDING_CAPTURE: 控件『选中导入文件』在标准库无匹配，需软件实时抓取后回填 automation_id / 相对区域 / 模板。"
+    },
+    {
+      "id": "step_4",
+      "name": "选择-文件类型指定图标",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "指定导入文件的类型",
+      "successLog": "选择 文件类型指定图标",
+      "windowTitle": "地理信息数据",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_4_control_pending",
+          "name": "文件类型指定图标",
+          "role": "占位(待实时抓取)",
+          "enabled": true,
+          "windowTitle": "地理信息数据",
+          "targetMethod": "",
+          "targetValue": "PENDING_CAPTURE",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "PENDING_CAPTURE: 标准库无匹配标识，需在软件中实时抓取 automation_id/相对区域/模板。",
+          "rawInspectText": "",
+          "auxChecks": [],
+          "inspectData": {
+            "howFound": "pending",
+            "name": "",
+            "controlType": "ComboBox",
+            "automationId": "",
+            "frameworkId": "WPF",
+            "recommendedTargetMethod": "",
+            "recommendedTargetValue": ""
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "select_dropdown_item_runtime",
+        "controlId": "step_4_control_pending",
+        "value": "地形|粗糙度",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 1.0,
+        "waitAfter": 1.0,
+        "retryCount": 1,
+        "retryInterval": 1.0,
+        "onError": "fallback",
+        "fallbackMode": "template_match",
+        "fallbackTemplate": "PENDING_CAPTURE"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "PENDING_CAPTURE: 控件『文件类型指定图标』在标准库无匹配，需软件实时抓取后回填 automation_id / 相对区域 / 模板。"
+    },
+    {
+      "id": "step_5",
+      "name": "点击-应用按钮",
+      "stage": "",
+      "strategy": "action",
+      "actionType": "action",
+      "topLevel": true,
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "packageRef": "",
+      "description": "点击应用完成文件添加",
+      "successLog": "点击 应用按钮",
+      "windowTitle": "地理信息数据",
+      "inspectHints": {
+        "controlName": "",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_5_control_pending",
+          "name": "应用按钮",
+          "role": "占位(待实时抓取)",
+          "enabled": true,
+          "windowTitle": "地理信息数据",
+          "targetMethod": "",
+          "targetValue": "PENDING_CAPTURE",
+          "templateKey": "",
+          "uiPath": "",
+          "notes": "PENDING_CAPTURE: 标准库无匹配标识，需在软件中实时抓取 automation_id/相对区域/模板。",
+          "rawInspectText": "",
+          "auxChecks": [],
+          "inspectData": {
+            "howFound": "pending",
+            "name": "",
+            "controlType": "Button",
+            "automationId": "",
+            "frameworkId": "WPF",
+            "recommendedTargetMethod": "",
+            "recommendedTargetValue": ""
+          }
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "action": "click_relative_region",
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.0,
+        "waitAfter": 0.3,
+        "parentWindow": {
+          "title": "地理信息数据",
+          "className": "Window",
+          "frameworkId": "WPF"
+        },
+        "relativeRegion": {
+          "x": 0.5,
+          "y": 0.5,
+          "width": 0.1,
+          "height": 0.1,
+          "anchor": "center"
+        },
+        "retryCount": 0,
+        "retryInterval": 1.0,
+        "onError": "continue"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "PENDING_CAPTURE: 控件『应用按钮』在标准库无匹配，需软件实时抓取后回填 automation_id / 相对区域 / 模板。"
+    }
+  ]
+}

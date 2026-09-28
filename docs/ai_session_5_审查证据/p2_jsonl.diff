@@ -1,0 +1,323 @@
+diff --git a/WT_AUT_recorded.py b/WT_AUT_recorded.py
+index 8771f66..f7adebd 100644
+--- a/WT_AUT_recorded.py
++++ b/WT_AUT_recorded.py
+@@ -514,6 +514,8 @@ def log_step(step_name, level=None):
+     print(log_line, end="\n")
+ 
+     _append_log_file(log_line)
++    # JSONL 旁路：与文本日志同源同时写（未开启旁路时是 no-op）。
++    wt_logging.log_event(resolved, step_name)
+     try:
+         wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
+     except Exception:
+@@ -2623,6 +2625,16 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
+ 		# 登记 runId：供 JSONL 旁路与运行边界标记使用（人读日志里也能看到 runId，
+ 		# 便于与 logs/run_reports/*.json 互相对照）。
+ 		wt_logging.set_run_id(context.get("runId", ""))
++		# 开启 JSONL 旁路：每次运行一个文件，机读用（jq 可按级别/步骤筛选）。
++		# 与文本日志同源同时写 —— 文本为人读而精简，JSONL 保留全量结构化字段。
++		wt_logging.start_jsonl(
++			os.path.join(
++				BASE_DIR,
++				"logs",
++				"run_logs",
++				"{}.jsonl".format(context.get("runId") or "run"),
++			)
++		)
+ 		log_step(
+ 			wt_logging.format_run_banner(
+ 				"start", run_id=context.get("runId", ""), step_count=len(steps_to_run)
+@@ -2764,6 +2776,7 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
+ 		_attach_mup_data_diff(context.get("run_report"), context)
+ 		_get_wt_run_reporting().finalize_run_report(context.get("run_report"), "success")
+ 		_log_run_end_banner(context.get("run_report"), "成功")
++		wt_logging.stop_jsonl()
+ 		wt_run_status.publish(
+ 			status="success",
+ 			activity="WT自动化流程完成",
+@@ -2793,6 +2806,7 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
+ 			_log_run_end_banner(
+ 				context.get("run_report") if "context" in locals() else None, "失败"
+ 			)
++			wt_logging.stop_jsonl()
+ 		except Exception:
+ 			pass
+ 		wt_run_status.publish(
+diff --git a/tests/test_wt_logging.py b/tests/test_wt_logging.py
+index 18ab6a0..5305871 100644
+--- a/tests/test_wt_logging.py
++++ b/tests/test_wt_logging.py
+@@ -9,6 +9,7 @@
+ - 配色收口：来自 wt_theme，浅底与深底两组
+ - 依赖约束：本模块不得 import tkinter
+ """
++import json
+ import os
+ import re
+ import subprocess
+@@ -391,6 +392,122 @@ class RunBannerTests(unittest.TestCase):
+                 self.assertIn(marker, wt_logging.format_run_banner(kind))
+ 
+ 
++class JsonlSidecarTests(unittest.TestCase):
++    """JSONL 旁路：文本日志的机读镜像。
++
++    测试自身不删文件（截断代替删除），避免触发环境的批量删除守卫。
++    """
++
++    PROBE_DIR = os.path.join(TESTS_DIR, ".tmp_jsonl")
++    PROBE_PATH = os.path.join(PROBE_DIR, "probe.jsonl")
++
++    def setUp(self):
++        wt_logging.stop_jsonl()
++        wt_logging.clear_run_id()
++        self.addCleanup(wt_logging.stop_jsonl)
++        self.addCleanup(wt_logging.clear_run_id)
++        os.makedirs(self.PROBE_DIR, exist_ok=True)
++        with open(self.PROBE_PATH, "w", encoding="utf-8"):
++            pass  # 截断而非删除
++
++    def _records(self):
++        with open(self.PROBE_PATH, "r", encoding="utf-8") as f:
++            return [json.loads(line) for line in f if line.strip()]
++
++    def test_no_session_is_a_silent_noop(self):
++        """未开启旁路时不应写盘、不应抛错。"""
++        self.assertEqual(wt_logging.jsonl_path(), "")
++        self.assertIsNone(wt_logging.log_event(wt_logging.INFO, "x"))
++        self.assertEqual(self._records(), [])
++
++    def test_start_and_stop_session(self):
++        self.assertEqual(wt_logging.start_jsonl(self.PROBE_PATH), self.PROBE_PATH)
++        self.assertEqual(wt_logging.jsonl_path(), self.PROBE_PATH)
++        wt_logging.stop_jsonl()
++        self.assertEqual(wt_logging.jsonl_path(), "")
++
++    def test_one_line_per_event(self):
++        wt_logging.start_jsonl(self.PROBE_PATH)
++        for i in range(3):
++            wt_logging.log_event(wt_logging.INFO, "第 %d 条" % i)
++        self.assertEqual(len(self._records()), 3)
++
++    def test_chinese_is_not_escaped(self):
++        """人读友好：中文原样写入，不转成 \\uXXXX。"""
++        wt_logging.start_jsonl(self.PROBE_PATH)
++        wt_logging.log_event(wt_logging.INFO, "已通过流程链路匹配点击控件")
++        with open(self.PROBE_PATH, "r", encoding="utf-8") as f:
++            raw = f.read()
++        self.assertIn("已通过流程链路匹配点击控件", raw)
++        self.assertNotIn("\\u", raw)
++
++    def test_empty_optional_fields_are_omitted(self):
++        """空字段整字段省略，让常见行保持简短。"""
++        wt_logging.start_jsonl(self.PROBE_PATH)
++        wt_logging.log_event(wt_logging.INFO, "无步骤上下文的一行")
++        record = self._records()[0]
++        for key in ("stepId", "controlId", "event", "elapsedMs", "detail", "module"):
++            with self.subTest(key=key):
++                self.assertNotIn(key, record)
++        self.assertIn("ts", record)
++        self.assertIn("level", record)
++        self.assertIn("message", record)
++
++    def test_run_id_is_attached(self):
++        wt_logging.set_run_id("wt_run_20260917_102341_123_001")
++        wt_logging.start_jsonl(self.PROBE_PATH)
++        wt_logging.log_event(wt_logging.INFO, "x")
++        self.assertEqual(
++            self._records()[0]["runId"], "wt_run_20260917_102341_123_001"
++        )
++
++    def test_step_fields_extracted_from_message(self):
++        wt_logging.start_jsonl(self.PROBE_PATH)
++        wt_logging.log_event(
++            wt_logging.INFO,
++            "已通过流程链路匹配点击控件: step=step_1_scan2_1, control=control_map_439",
++        )
++        record = self._records()[0]
++        self.assertEqual(record["stepId"], "step_1_scan2_1")
++        self.assertEqual(record["controlId"], "control_map_439")
++
++    def test_ctrl_alias_is_recognised(self):
++        wt_logging.start_jsonl(self.PROBE_PATH)
++        wt_logging.log_event(wt_logging.INFO, "定位失败: step=step_12_scan2_12, ctrl=ctrl_refpoint")
++        self.assertEqual(self._records()[0]["controlId"], "ctrl_refpoint")
++
++    def test_explicit_step_fields_win_over_extraction(self):
++        wt_logging.start_jsonl(self.PROBE_PATH)
++        wt_logging.log_event(
++            wt_logging.INFO, "step=auto, control=auto_ctrl", step_id="explicit", control_id="exp_ctrl"
++        )
++        record = self._records()[0]
++        self.assertEqual(record["stepId"], "explicit")
++        self.assertEqual(record["controlId"], "exp_ctrl")
++
++    def test_message_is_last_field_for_readability(self):
++        """message 长度最不可控，置末以保持前面标识字段列对齐。"""
++        wt_logging.set_run_id("wt_run_probe")
++        wt_logging.start_jsonl(self.PROBE_PATH)
++        wt_logging.log_event(
++            wt_logging.ERROR, "定位失败", step_id="s1", control_id="c1",
++            event="locate_fail", elapsed_ms=1234.5,
++        )
++        keys = list(self._records()[0].keys())
++        self.assertEqual(keys[-1], "message")
++        self.assertEqual(keys[:3], ["ts", "level", "runId"])
++
++    def test_elapsed_ms_is_rounded(self):
++        wt_logging.start_jsonl(self.PROBE_PATH)
++        wt_logging.log_event(wt_logging.INFO, "x", elapsed_ms=8200.123456)
++        self.assertEqual(self._records()[0]["elapsedMs"], 8200.12)
++
++    def test_extract_step_fields_handles_missing(self):
++        self.assertEqual(wt_logging.extract_step_fields(""), ("", ""))
++        self.assertEqual(wt_logging.extract_step_fields(None), ("", ""))
++        self.assertEqual(wt_logging.extract_step_fields("没有字段"), ("", ""))
++
++
+ class DependencyConstraintTests(unittest.TestCase):
+     """wt_logging 会被 headless 流程/CLI 导入，不得引入 tkinter 依赖。"""
+ 
+diff --git a/wt_logging.py b/wt_logging.py
+index 65eb7ab..2a9fe42 100644
+--- a/wt_logging.py
++++ b/wt_logging.py
+@@ -23,6 +23,7 @@
+ - 仅依赖标准库，可在无第三方包环境下导入。
+ """
+ 
++import json
+ import os
+ import re
+ import threading
+@@ -194,6 +195,129 @@ def format_run_banner(kind, run_id=None, step_count=None, status=None, elapsed_s
+     return "========== {} ==========".format(" · ".join(parts))
+ 
+ 
++# ── JSONL 旁路（机读镜像） ──────────────────────────────────────────────────
++# 设计：文本日志为人读而精简，JSONL 为机读而完整。两者同源同时写，
++# 因此「精简文本」与「保留全量调试数据」不再互相冲突。
++# 每次运行一个文件（logs/run_logs/<runId>.jsonl），天然按运行分片、无需轮转。
++_jsonl_path = ""
++_jsonl_lock = threading.Lock()
++
++# 文本 → 结构化 的桥接：项目日志的消息格式统一为 `step=<id>, control=<id>`。
++# 解析失败只是缺字段，不影响其它字段；需要可靠字段的新调用点应直接传
++# step_id / control_id 给 log_event。
++_STEP_FIELD_RE = re.compile(r"\bstep=([^,\s]+)")
++_CONTROL_FIELD_RE = re.compile(r"\b(?:control|ctrl|anchor)=([^,\s]+)")
++
++
++def start_jsonl(path):
++    """开启 JSONL 旁路；返回实际生效的路径（不可用时为空串）。"""
++    global _jsonl_path
++    candidate = str(path or "")
++    if candidate:
++        try:
++            parent = os.path.dirname(candidate)
++            if parent:
++                os.makedirs(parent, exist_ok=True)
++        except Exception:
++            candidate = ""
++    _jsonl_path = candidate
++    return _jsonl_path
++
++
++def stop_jsonl():
++    global _jsonl_path
++    _jsonl_path = ""
++
++
++def jsonl_path():
++    return _jsonl_path
++
++
++def extract_step_fields(message):
++    """从文本日志行里提取 ``(stepId, controlId)``；缺失返回空串。"""
++    text = str(message or "")
++    step_match = _STEP_FIELD_RE.search(text)
++    control_match = _CONTROL_FIELD_RE.search(text)
++    return (
++        step_match.group(1) if step_match else "",
++        control_match.group(1) if control_match else "",
++    )
++
++
++def _iso_millis(timestamp):
++    stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(timestamp))
++    millis = int((timestamp - int(timestamp)) * 1000)
++    if millis < 0:
++        millis = 0
++    return "%s.%03d" % (stamp, millis)
++
++
++def log_event(
++    level,
++    message,
++    event=None,
++    step_id=None,
++    control_id=None,
++    elapsed_ms=None,
++    detail=None,
++    module=None,
++    run_id=None,
++    timestamp=None,
++):
++    """向 JSONL 旁路追加一条结构化记录；未开启旁路时返回 None。
++
++    字段契约（与既有规划中的 ``logs/locator_events.jsonl`` 保持命名一致，
++    便于将来两者互相 join）：
++
++    ``ts`` / ``runId`` / ``level`` / ``stepId`` / ``controlId`` /
++    ``event`` / ``elapsedMs`` / ``message`` / ``detail``
++
++    为保持文件可读，``stepId`` / ``controlId`` / ``event`` / ``elapsedMs`` /
++    ``detail`` 为空时**整字段省略**（而非写 null），使常见行保持简短。
++
++    字段顺序刻意把 ``message`` 放在最后：它是长度最不可控的字段，
++    置末可让前面的标识类字段在纯文本浏览时保持列对齐、便于扫读。
++    """
++    path = _jsonl_path
++    if not path:
++        return None
++
++    now = time.time() if timestamp is None else float(timestamp)
++    if step_id is None or control_id is None:
++        auto_step, auto_control = extract_step_fields(message)
++        if step_id is None:
++            step_id = auto_step
++        if control_id is None:
++            control_id = auto_control
++
++    record = {"ts": _iso_millis(now), "level": normalize_level(level, default=INFO)}
++    rid = run_id if run_id is not None else _run_id
++    if rid:
++        record["runId"] = str(rid)
++    if step_id:
++        record["stepId"] = str(step_id)
++    if control_id:
++        record["controlId"] = str(control_id)
++    if event:
++        record["event"] = str(event)
++    if elapsed_ms is not None:
++        record["elapsedMs"] = round(float(elapsed_ms), 2)
++    if module:
++        record["module"] = str(module)
++    if detail:
++        record["detail"] = detail
++    record["message"] = str(message)
++
++    line = json.dumps(record, ensure_ascii=False)
++    with _jsonl_lock:
++        try:
++            with open(path, "a", encoding="utf-8") as file_obj:
++                file_obj.write(line + "\n")
++        except Exception:
++            return None
++    return record
++
++
+ # ── 行格式 ──────────────────────────────────────────────────────────────────
+ def format_line(level, message, module=None, run_id=None, timestamp=None):
+     """按统一格式组装一行日志。

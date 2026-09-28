@@ -1,0 +1,131 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "创建一个新建模",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "WPF"
+  },
+  "scanMeta": {
+    "scanTime": "2026-07-16T16:28:27",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "创建一个新建模",
+    "categoryFrameworkId": "WPF",
+    "totalControls": 2,
+    "rawTotalControls": 2
+  },
+  "controlDefinitions": [
+    {
+      "id": "MUPMicroscaleInformationViewModel_Button_WindTurbineType",
+      "name": "Wind Turbine Type 按钮",
+      "role": "来自控件库扫描：",
+      "enabled": true,
+      "windowTitle": "创建一个新建模",
+      "targetMethod": "automation_id",
+      "targetValue": "MUPMicroscaleInformationViewModel_Button_WindTurbineType",
+      "templateKey": "",
+      "uiPath": "私有",
+      "notes": "由控件库扫描生成，运行日志显示该按钮会因错误窗口标题约束退化到模板兜底；此处改为仅使用稳定的 automation_id，避免顶层无关标题拦截结构化定位。 | 已自动收录到控件库分类：创建一个新建模 / WPF",
+      "rawInspectText": "How found:\tMouse move (1804,791)\n\thwnd=0x0011111E 64bit class=\"HwndWrapper[MUPSmartClient.exe;;03239e65-46f9-4f56-9565-f065a9f36de7]\" style=0x96000000 ex=0x80800ChildId:\t0\nInterfaces:\tIEnumVARIANT IOleWindow\nImpl:\tRemote native IAccessible (UIA-to-MSAA bridge)\nName:\t\"私有\"\nValue:\t[Error: hr=0x80020003 - 找不到成员。]\nRole:\t文字 (0x29)\nState:\t常规 (0x0)\nLocation:\t{l:1760, t:769, w:555, h:33}\nSelection:\t[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]\nDescription:\t[Error: hr=0x80020003 - 找不到成员。]\nKbshortcut:\t\"\"\nDefAction:\t[Error: hr=0x80020003 - 找不到成员。]\nHelp:\t\"\"\nHelpTopic:\t\"\"\nChildCount:\t0\nWindow:\t0x11111E\nFirstChild:\t[null]\nLastChild:\t[null]\nNext:\t[null]\nPrevious:\t[null]\nLeft:\t[null]\nUp:\t[null]\nRight:\t[null]\nDown:\t[null]\nControlType:\t50020\nLocalizedControlType:\t\"text\"\nName:\t\"私有\"\nAcceleratorKey:\t\"\"\nAccessKey:\t\"\"\nHasKeyboardFocus:\tfalse\nIsKeyboardFocusable:\tfalse\nIsEnabled:\ttrue\nAutomationId:\t\"\"\nClassName:\t\"TextBlock\"\nHelpText:\t\"\"\nIsControlElement:\ttrue\nIsContentElement:\ttrue\nIsPassword:\tfalse\nItemType:\t\"\"\nIsOffscreen:\tfalse\nOrientation:\t0\nFrameworkId:\t\"WPF\"\nIsRequiredForForm:\tfalse\nItemStatus:\t\"\"\nOther Props:\tObject has no additional properties\nChildren:\tContainer has no children\nAncestors:\t\"MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue\" : 列表项目 : 已设定焦点,可设定焦点\n\t\"\" : 窗口 : 可设定焦点\n\t\"\" : 窗口 : 可设定焦点\n\t\"桌面 1\" : 客户端 : 可设定焦点\n\t\"桌面 1\" : 窗口 : 可设定焦点\n\t[ No Parent ]",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "FrameworkId=WPF",
+        "ClassName=Button"
+      ],
+      "inspectData": {
+        "howFound": "Mouse move (1804,791)",
+        "name": "私有",
+        "controlType": "50020",
+        "localizedControlType": "text",
+        "boundingRectangle": "",
+        "isEnabled": "true",
+        "isOffscreen": "false",
+        "isKeyboardFocusable": "false",
+        "hasKeyboardFocus": "false",
+        "processId": "",
+        "runtimeId": "",
+        "frameworkId": "WPF",
+        "className": "TextBlock",
+        "automationId": "",
+        "nativeWindowHandle": "",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [
+          "Container has no children"
+        ],
+        "ancestors": [
+          "\"MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue\" : 列表项目 : 已设定焦点,可设定焦点"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "name",
+        "recommendedTargetValue": "私有"
+      }
+    },
+    {
+      "id": "step_6_control_1",
+      "name": "私有",
+      "role": "",
+      "enabled": true,
+      "windowTitle": "创建一个新建模",
+      "targetMethod": "name",
+      "targetValue": "私有",
+      "templateKey": "",
+      "uiPath": "私有",
+      "notes": "已自动收录到控件库分类：创建一个新建模 / WPF",
+      "rawInspectText": "How found:\tMouse move (1804,791)\n\thwnd=0x0011111E 64bit class=\"HwndWrapper[MUPSmartClient.exe;;03239e65-46f9-4f56-9565-f065a9f36de7]\" style=0x96000000 ex=0x80800ChildId:\t0\nInterfaces:\tIEnumVARIANT IOleWindow\nImpl:\tRemote native IAccessible (UIA-to-MSAA bridge)\nName:\t\"私有\"\nValue:\t[Error: hr=0x80020003 - 找不到成员。]\nRole:\t文字 (0x29)\nState:\t常规 (0x0)\nLocation:\t{l:1760, t:769, w:555, h:33}\nSelection:\t[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]\nDescription:\t[Error: hr=0x80020003 - 找不到成员。]\nKbshortcut:\t\"\"\nDefAction:\t[Error: hr=0x80020003 - 找不到成员。]\nHelp:\t\"\"\nHelpTopic:\t\"\"\nChildCount:\t0\nWindow:\t0x11111E\nFirstChild:\t[null]\nLastChild:\t[null]\nNext:\t[null]\nPrevious:\t[null]\nLeft:\t[null]\nUp:\t[null]\nRight:\t[null]\nDown:\t[null]\nControlType:\t50020\nLocalizedControlType:\t\"text\"\nName:\t\"私有\"\nAcceleratorKey:\t\"\"\nAccessKey:\t\"\"\nHasKeyboardFocus:\tfalse\nIsKeyboardFocusable:\tfalse\nIsEnabled:\ttrue\nAutomationId:\t\"\"\nClassName:\t\"TextBlock\"\nHelpText:\t\"\"\nIsControlElement:\ttrue\nIsContentElement:\ttrue\nIsPassword:\tfalse\nItemType:\t\"\"\nIsOffscreen:\tfalse\nOrientation:\t0\nFrameworkId:\t\"WPF\"\nIsRequiredForForm:\tfalse\nItemStatus:\t\"\"\nOther Props:\tObject has no additional properties\nChildren:\tContainer has no children\nAncestors:\t\"MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue\" : 列表项目 : 已设定焦点,可设定焦点\n\t\"\" : 窗口 : 可设定焦点\n\t\"\" : 窗口 : 可设定焦点\n\t\"桌面 1\" : 客户端 : 可设定焦点\n\t\"桌面 1\" : 窗口 : 可设定焦点\n\t[ No Parent ]",
+      "auxChecks": [
+        "IsEnabled=true",
+        "IsOffscreen=false",
+        "IsKeyboardFocusable=false",
+        "HasKeyboardFocus=false",
+        "FrameworkId=WPF",
+        "ClassName=TextBlock"
+      ],
+      "inspectData": {
+        "howFound": "Mouse move (1804,791)",
+        "name": "私有",
+        "controlType": "50020",
+        "localizedControlType": "text",
+        "boundingRectangle": "",
+        "isEnabled": "true",
+        "isOffscreen": "false",
+        "isKeyboardFocusable": "false",
+        "hasKeyboardFocus": "false",
+        "processId": "",
+        "runtimeId": "",
+        "frameworkId": "WPF",
+        "className": "TextBlock",
+        "automationId": "",
+        "nativeWindowHandle": "",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [
+          "Container has no children"
+        ],
+        "ancestors": [
+          "\"MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue\" : 列表项目 : 已设定焦点,可设定焦点"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "name",
+        "recommendedTargetValue": "私有"
+      }
+    }
+  ],
+  "lastUpdated": "2026-07-16T16:28:27"
+}

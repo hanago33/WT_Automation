@@ -1,0 +1,201 @@
+{
+  "meta": {
+    "templateCount": 13,
+    "categoryCount": 2,
+    "lastUpdated": "2026-06-26T15:04:24"
+  },
+  "categories": [
+    {
+      "id": "Icons",
+      "count": 4
+    },
+    {
+      "id": "projection",
+      "count": 9
+    }
+  ],
+  "templates": [
+    {
+      "category": "Icons",
+      "file_name": "WT微尺度模拟",
+      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\Icons\\WT微尺度模拟.png",
+      "relative_image_path": "Icons\\WT微尺度模拟.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\screenshot_20260626_150211.png",
+      "region": {
+        "x": 110,
+        "y": 3,
+        "w": 49,
+        "h": 47
+      },
+      "updatedAt": "2026-06-26T15:03:53"
+    },
+    {
+      "category": "Icons",
+      "file_name": "地理信息数据",
+      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\Icons\\地理信息数据.png",
+      "relative_image_path": "Icons\\地理信息数据.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\screenshot_20260626_150211.png",
+      "region": {
+        "x": 148,
+        "y": 0,
+        "w": 62,
+        "h": 53
+      },
+      "updatedAt": "2026-06-26T15:04:15"
+    },
+    {
+      "category": "Icons",
+      "file_name": "雷达数据矫正",
+      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\Icons\\雷达数据矫正.png",
+      "relative_image_path": "Icons\\雷达数据矫正.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\screenshot_20260626_150211.png",
+      "region": {
+        "x": 316,
+        "y": 0,
+        "w": 50,
+        "h": 51
+      },
+      "updatedAt": "2026-06-26T15:04:24"
+    },
+    {
+      "category": "Icons",
+      "file_name": "风机类型-按钮",
+      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\Icons\\风机类型-按钮.png",
+      "relative_image_path": "Icons\\风机类型-按钮.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\screenshot_20260626_150211.png",
+      "region": {
+        "x": 265,
+        "y": 2,
+        "w": 45,
+        "h": 50
+      },
+      "updatedAt": "2026-06-26T15:03:12"
+    },
+    {
+      "category": "projection",
+      "file_name": "template_072",
+      "image_path": "image_templates\\projection\\template_072.png",
+      "relative_image_path": "projection\\template_072.png",
+      "source_screenshot": "D:/My_RF_Project/WT_Automation/image_templates/GM_software_Images/20260618151637_17_37.png",
+      "region": {
+        "x": 1615,
+        "y": 527,
+        "w": 114,
+        "h": 155
+      },
+      "updatedAt": "2026-06-25T21:20:36"
+    },
+    {
+      "category": "projection",
+      "file_name": "template_073",
+      "image_path": "image_templates\\projection\\template_073.png",
+      "relative_image_path": "projection\\template_073.png",
+      "source_screenshot": "D:/My_RF_Project/WT_Automation/image_templates/GM_software_Images/20260618151637_17_37.png",
+      "region": {
+        "x": 2179,
+        "y": 538,
+        "w": 110,
+        "h": 142
+      },
+      "updatedAt": "2026-06-25T21:20:36"
+    },
+    {
+      "category": "projection",
+      "file_name": "template_074",
+      "image_path": "image_templates\\projection\\template_074.png",
+      "relative_image_path": "projection\\template_074.png",
+      "source_screenshot": "D:/My_RF_Project/WT_Automation/image_templates/GM_software_Images/20260618151637_17_37.png",
+      "region": {
+        "x": 2281,
+        "y": 538,
+        "w": 76,
+        "h": 81
+      },
+      "updatedAt": "2026-06-25T21:20:36"
+    },
+    {
+      "category": "projection",
+      "file_name": "在线资源",
+      "image_path": "image_templates\\projection\\在线资源.png",
+      "relative_image_path": "projection\\在线资源.png",
+      "source_screenshot": "D:/My_RF_Project/WT_Automation/image_templates/GM_software_Images/20260618160434_21_37.png",
+      "region": {
+        "x": 93,
+        "y": 153,
+        "w": 392,
+        "h": 53
+      },
+      "updatedAt": "2026-06-25T21:20:36"
+    },
+    {
+      "category": "projection",
+      "file_name": "打开数据文件",
+      "image_path": "image_templates\\projection\\打开数据文件.png",
+      "relative_image_path": "projection\\打开数据文件.png",
+      "source_screenshot": "D:/My_RF_Project/WT_Automation/image_templates/GM_software_Images/20260618160434_21_37.png",
+      "region": {
+        "x": 99,
+        "y": 59,
+        "w": 386,
+        "h": 51
+      },
+      "updatedAt": "2026-06-25T21:20:36"
+    },
+    {
+      "category": "projection",
+      "file_name": "新建_按钮",
+      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\projection\\新建_按钮.png",
+      "relative_image_path": "projection\\新建_按钮.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\screenshot_20260625_212006.png",
+      "region": {
+        "x": 2279,
+        "y": 135,
+        "w": 41,
+        "h": 42
+      },
+      "updatedAt": "2026-06-25T21:21:09"
+    },
+    {
+      "category": "projection",
+      "file_name": "气象数据_按钮",
+      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\projection\\气象数据_按钮.png",
+      "relative_image_path": "projection\\气象数据_按钮.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\screenshot_20260625_212006.png",
+      "region": {
+        "x": 213,
+        "y": 2,
+        "w": 46,
+        "h": 48
+      },
+      "updatedAt": "2026-06-25T21:20:36"
+    },
+    {
+      "category": "projection",
+      "file_name": "系统设置",
+      "image_path": "image_templates\\projection\\系统设置.png",
+      "relative_image_path": "projection\\系统设置.png",
+      "source_screenshot": "D:/My_RF_Project/WT_Automation/image_templates/GM_software_Images/20260618160434_21_37.png",
+      "region": {
+        "x": 103,
+        "y": 249,
+        "w": 387,
+        "h": 50
+      },
+      "updatedAt": "2026-06-25T21:20:36"
+    },
+    {
+      "category": "projection",
+      "file_name": "风机类型-按钮",
+      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\projection\\风机类型-按钮.png",
+      "relative_image_path": "projection\\风机类型-按钮.png",
+      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\screenshot_20260626_150211.png",
+      "region": {
+        "x": 265,
+        "y": 2,
+        "w": 45,
+        "h": 50
+      },
+      "updatedAt": "2026-06-26T15:02:45"
+    }
+  ]
+}

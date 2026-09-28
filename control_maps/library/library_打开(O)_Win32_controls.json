@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "打开(O)",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "Win32"
+  },
+  "scanMeta": {
+    "scanTime": "2026-06-30T19:16:58",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "打开(O)",
+    "categoryFrameworkId": "Win32",
+    "totalControls": 1,
+    "rawTotalControls": 1
+  },
+  "controlDefinitions": [
+    {
+      "id": "step_15_control_1",
+      "name": "打开按钮",
+      "role": "",
+      "enabled": true,
+      "windowTitle": "打开(O)",
+      "targetMethod": "automation_id",
+      "targetValue": "1",
+      "templateKey": "",
+      "uiPath": "打开(O)",
+      "notes": "已自动收录到控件库分类：打开(O) / Win32",
+      "rawInspectText": "Transform2Pattern.ZoomMaximum\tProperty does not exist\nAcceleratorKey\tProperty does not exist\nAccessKey\tAlt+o\nAnnotationPattern.AnnotationTypeId\tProperty does not exist\nAnnotationPattern.AnnotationTypeName\tProperty does not exist\nAnnotationPattern.Author\tProperty does not exist\nAnnotationPattern.DateTime\tProperty does not exist\nAnnotationPattern.Objects\tProperty does not exist\nAnnotationPattern.Target\tProperty does not exist\nAnnotationPattern.Types\tProperty does not exist\nAriaProperties\tProperty does not exist\nAriaRole\tProperty does not exist\nAutomationId\t1\nBoundingRectangle\t[l=1962,t=1069,r=2116,b=1115]\nCenterPoint\tProperty does not exist\nClassName\tButton\nControllerFor\tProperty does not exist\nControlType\tSplitButton(50031)\nCulture\t0\nDescribedBy\tProperty does not exist\nDockDockPosition\tProperty does not exist\nDragGrabbedItems\tProperty does not exist\nDragPattern.DropEffect\tProperty does not exist\nDragPattern.DropEffects\tProperty does not exist\nDragPattern.IsGrabbed\tProperty does not exist\nDropTargetPattern.DropTargetEffect\tProperty does not exist\nDropTargetPattern.DropTargetEffects\tProperty does not exist\nExpandCollapsePattern.ExpandCollapseState\t0\nFillColor\tProperty does not exist\nFillType\t0\nFlowsFrom\tProperty does not exist\nFlowsTo\tProperty does not exist\nFrameworkId\tWin32\nFullDescription\tProperty does not exist\nGridItemPattern.Column\tProperty does not exist\nGridItemPattern.ColumnSpan\tProperty does not exist\nGridItemPattern.ContainingGrid\tProperty does not exist\nGridItemPattern.Row\tProperty does not exist\nGridItemPattern.RowSpan\tProperty does not exist\nGridPattern.ColumnCount\tProperty does not exist\nGridPattern.RowCount\tProperty does not exist\nHasKeyboardFocus\tFalse\nHeadingLevel\tHeadingLevel_None (80050)\nHelpText\tProperty does not exist\nIsContentElement\tTrue\nIsControlElement\tTrue\nIsDataValidForForm\tFalse\nIsDialog\tFalse\nIsEnabled\tTrue\nIsKeyboardFocusable\tTrue\nIsOffscreen\tFalse\nIsPassword\tFalse\nIsPeripheral\tFalse\nIsRequiredForForm\tFalse\nItemStatus\tProperty does not exist\nItemType\tProperty does not exist\nLabeledBy\tProperty does not exist\nLandmarkType\tProperty does not exist\nLegacyIAccessiblePattern.ChildId\t0\nLegacyIAccessiblePattern.DefaultAction\t按\nLegacyIAccessiblePattern.Description\tProperty does not exist\nLegacyIAccessiblePattern.Help\tProperty does not exist\nLegacyIAccessiblePattern.KeyboardShortcut\tAlt+o\nLegacyIAccessiblePattern.Name\t打开(O)\nLegacyIAccessiblePattern.Role\tROLE_SYSTEM_SPLITBUTTON(62)\nLegacyIAccessiblePattern.Selection\tProperty does not exist\nLegacyIAccessiblePattern.State\t1074790400\nLegacyIAccessiblePattern.Value\tProperty does not exist\nLevel\tProperty does not exist\nLiveSetting\t0\nLocalizedControlType\t拆分按钮\nLocalizedLandmarkType\tProperty does not exist\nLogicalSize\t[w=88,h=26]\nMultipleViewPattern.CurrentView\tProperty does not exist\nMultipleViewPattern.SupportedViews\tProperty does not exist\nName\t打开(O)\nNativeWindowHandle\t7346782\nOptimizeForVisualContent\tFalse\nOrientation\tNone(0)\nOutlineColor\tProperty does not exist\nOutlineThickness\tProperty does not exist\nPositionInSet\tProperty does not exist\nProcessId\t60856\nProviderDescription\t[pid:66416,providerId:0x701A5E Main:Nested [pid:60856,providerId:0x701A5E Annotation(parent link):Microsoft: Annotation Proxy (unmanaged:UIAutomationCore.dll); Main:Microsoft: MSAA Proxy (unmanaged:UIAutomationCore.dll)]; Hwnd(parent link):Microsoft: HWND Proxy (unmanaged:UIAutomationCore.dll)]\nRangeValuePattern.IsReadOnly\tProperty does not exist\nRangeValuePattern.LargeChange\tProperty does not exist\nRangeValuePattern.Maximum\tProperty does not exist\nRangeValuePattern.Minimum\tProperty does not exist\nRangeValuePattern.SmallChange\tProperty does not exist\nRangeValuePattern.Value\tProperty does not exist\nRotation\tProperty does not exist\nRuntimeId\t[2A,701A5E]\nScrollPattern.HorizontallyScrollable\tProperty does not exist\nScrollPattern.HorizontalScrollPercent\tProperty does not exist\nScrollPattern.HorizontalViewSize\tProperty does not exist\nScrollPattern.VerticallyScrollable\tProperty does not exist\nScrollPattern.VerticalScrollPercent\tProperty does not exist\nScrollPattern.VerticalViewSize\tProperty does not exist\nSelectionItemPattern.IsSelected\tProperty does not exist\nSelectionItemPattern.SelectionContainer\tProperty does not exist\nSelectionPattern.CanSelectMultiple\tProperty does not exist\nSelectionPattern.IsSelectionRequired\tProperty does not exist\nSelectionPattern.Selection\tProperty does not exist\nSize\tProperty does not exist\nSizeOfSet\tProperty does not exist\nSpreadsheetItemPattern.AnnotationObjects\tProperty does not exist\nSpreadsheetItemPattern.AnnotationTypes\tProperty does not exist\nSpreadsheetItemPatternFormula\tProperty does not exist\nStylesPattern.ExtendedProperties\tProperty does not exist\nStylesPattern.FillColor\tProperty does not exist\nStylesPattern.FillPatternColor\tProperty does not exist\nStylesPattern.FillPatternStyle\tProperty does not exist\nStylesPattern.Shape\tProperty does not exist\nStylesPattern.StyleId\tProperty does not exist\nStylesPattern.StyleName\tProperty does not exist\nTableItemPattern.ColumnHeaderItems\tProperty does not exist\nTableItemPattern.RowHeaderItems\tProperty does not exist\nTablePattern.ColumnHeaders\tProperty does not exist\nTablePattern.RowHeaders\tProperty does not exist\nTablePattern.RowOrColumnMajor\tProperty does not exist\nTogglePattern.ToggleState\tProperty does not exist\nTransform2Pattern.CanZoom\tProperty does not exist\nTransform2Pattern.ZoomLevel\tProperty does not exist\nTransform2Pattern.ZoomMinimum\tProperty does not exist\nTransformPattern.CanMove\tProperty does not exist\nTransformPattern.CanResize\tProperty does not exist\nTransformPattern.CanRotate\tProperty does not exist\nValuePattern.IsReadOnly\tProperty does not exist\nValuePattern.Value\tProperty does not exist\nVisualEffects\t0\nWindowPattern.CanMaximize\tProperty does not exist\nWindowPattern.CanMinimize\tProperty does not exist\nWindowPattern.IsModal\tProperty does not exist\nWindowPattern.IsTopmost\tProperty does not exist\nWindowPattern.WindowInteractionState\tProperty does not exist\nWindowPattern.WindowVisualState\tProperty does not exist",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "IsKeyboardFocusable=True",
+        "HasKeyboardFocus=False",
+        "FrameworkId=Win32",
+        "ClassName=Button"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "打开(O)",
+        "controlType": "SplitButton(50031)",
+        "localizedControlType": "拆分按钮",
+        "boundingRectangle": "[l=1962,t=1069,r=2116,b=1115]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "True",
+        "hasKeyboardFocus": "False",
+        "processId": "60856",
+        "runtimeId": "[2A,701A5E]",
+        "frameworkId": "Win32",
+        "className": "Button",
+        "automationId": "1",
+        "nativeWindowHandle": "7346782",
+        "providerDescription": "",
+        "legacyName": "打开(O)",
+        "legacyRole": "ROLE_SYSTEM_SPLITBUTTON(62)",
+        "legacyState": "1074790400",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [],
+        "ancestors": [],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "automation_id",
+        "recommendedTargetValue": "1"
+      }
+    }
+  ],
+  "lastUpdated": "2026-06-30T19:16:58"
+}

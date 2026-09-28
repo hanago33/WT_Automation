@@ -1,0 +1,79 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "保存",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "WPF"
+  },
+  "scanMeta": {
+    "scanTime": "2026-07-01T15:22:22",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "保存",
+    "categoryFrameworkId": "WPF",
+    "totalControls": 1,
+    "rawTotalControls": 1
+  },
+  "controlDefinitions": [
+    {
+      "id": "MeteoData_Button_Save_保存_Button",
+      "name": "保存",
+      "role": "来自控件库扫描：",
+      "enabled": true,
+      "windowTitle": "保存",
+      "targetMethod": "automation_id,control_type",
+      "targetValue": "MeteoData_Button_Save,Button",
+      "templateKey": "",
+      "uiPath": "Window > MUPClimatologyMainView > MUPClimatologyEditView > 保存",
+      "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | 已自动收录到控件库分类：保存 / WPF",
+      "rawInspectText": "Name: \t \"保存\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=249,t=1439,r=599,b=1490]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27920\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"MeteoData_Button_Save\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPClimatologyMainView\n\t MUPClimatologyEditView",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "FrameworkId=WPF",
+        "ClassName=Button"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "保存",
+        "controlType": "Button",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=249,t=1439,r=599,b=1490]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "27920",
+        "runtimeId": "[7,6D10,FA259C]",
+        "frameworkId": "WPF",
+        "className": "Button",
+        "automationId": "MeteoData_Button_Save",
+        "nativeWindowHandle": "",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [
+          "Image |  | Image",
+          "保存 | TextBlock | Text"
+        ],
+        "ancestors": [
+          "Window",
+          "MUPClimatologyMainView",
+          "MUPClimatologyEditView"
+        ],
+        "availablePatterns": [],
+        "recommendedTargetMethod": "automation_id,control_type",
+        "recommendedTargetValue": "MeteoData_Button_Save,Button"
+      }
+    }
+  ],
+  "lastUpdated": "2026-07-01T15:22:22"
+}

@@ -1,0 +1,1638 @@
+{
+  "version": "1.1",
+  "project": "recorded Wed Jul 22 20_10_01 2026",
+  "description": "由 pywinauto_recorder 录制脚本智能转换生成的 action 流程骨架（已语义分析 + a11y 富化优化）。",
+  "lastUpdated": "2026-07-22T20:21:37",
+  "feedbackHistory": [],
+  "runtimeConfig": {
+    "gmExe": "",
+    "sourceFilePath": "",
+    "outputDir": "",
+    "projectionFilePath": ""
+  },
+  "flowPackages": [],
+  "steps": [
+    {
+      "id": "window_mupwindturbinetypemainview_mupwindturbinetypeeditorview_mupversionsmanagereditcontrol_mtdtileview_button_togglestate_m3_17_25l3_21_6_75_21_17_81_9_94_14_06_6_19_3_17_25z_m20_71_7_04c21_1_6_65_21_1_6_02_20_71_5_63l18_37_3_29c17_98_2_9_17_35_2_9_16_96_3_29l15_13_5_12_18_88_8_87_20_71_7_04z",
+      "name": "双击 Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+      "stage": "converted",
+      "strategy": "recorder -> action -> control_map",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 7 行自动转换。",
+      "successLog": "点击 目标控件@(-48.00,-28.00)",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "className": "Button",
+        "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+        "controlType": "Button",
+        "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21",
+          "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "role": "来自控件库扫描：",
+          "enabled": true,
+          "windowTitle": "",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button",
+          "templateKey": "",
+          "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | recorder 自动匹配命中，评分=40，置信度=0.70，依据=祖先链匹配 2 层; 路径语义重合 3 项; 动作类型偏好匹配。",
+          "rawInspectText": "Name: \t \"M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=500,t=148,r=542,b=190]\nIsEnabled: \t False\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"WTTypePerformanceCurveVersionManagerEditView_Button_Modify\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPWindTurbineTypeMainView\n\t MUPWindTurbineTypeEditorView\n\t MUPVersionsManagerEditControl\n\t MTDTileView_Button_ToggleState",
+          "auxChecks": [
+            "IsEnabled=False",
+            "IsOffscreen=False",
+            "FrameworkId=WPF",
+            "ClassName=Button"
+          ],
+          "inspectData": {
+            "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "controlType": "Button",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=500,t=148,r=542,b=190]",
+            "isEnabled": "False",
+            "isVisible": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "27300",
+            "runtimeId": "[7,6AA4,2373DB5]",
+            "frameworkId": "WPF",
+            "className": "Button",
+            "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "helpText": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "ancestors": [
+              "Window",
+              "MUPWindTurbineTypeMainView",
+              "MUPWindTurbineTypeEditorView",
+              "MUPVersionsManagerEditControl",
+              "MTDTileView_Button_ToggleState"
+            ],
+            "children": [],
+            "recommendedTargetMethod": "automation_id,control_type",
+            "recommendedTargetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button"
+          },
+          "source": "control_map",
+          "sourceFile": "20260715_214310_功率曲线版本管理4window_control_map.json"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "double_click",
+        "sourceRecorderLine": 7,
+        "positionOffset": {
+          "x": -48.0,
+          "y": -28.0
+        },
+        "controlId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [第 7 行已自动匹配控件库，评分=40] [由连续两次点击自动合并为双击]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "custom_1_2",
+      "name": "点击 Custom#[1,2]",
+      "stage": "converted",
+      "strategy": "recorder -> action",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 9 行自动转换。",
+      "successLog": "点击 目标控件@(-36.59,-86.59)",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "Custom#[1,2]",
+        "className": "",
+        "automationId": "",
+        "controlType": "Custom#[1,2]",
+        "uiPath": "||Window->||Custom#[1,2]%(-36.59,-86.59)",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "Custom_1_2",
+          "name": "Custom#[1,2]",
+          "role": "来自 recorder 自动转换的目标控件",
+          "targetMethod": "control_type",
+          "targetValue": "Custom#[1,2]",
+          "windowTitle": "",
+          "uiPath": "||Window->||Custom#[1,2]%(-36.59,-86.59)",
+          "templateKey": "",
+          "notes": "由 pywinauto_recorder 录制脚本自动转换生成（含 a11y 富化）；若控件库未命中，可继续补充 Inspect/Accessibility 信息。 点击偏移=@(-36.59,-86.59)。",
+          "inspectData": {
+            "name": "",
+            "controlType": "Custom#[1,2]",
+            "localizedControlType": "",
+            "automationId": "",
+            "className": "",
+            "frameworkId": "",
+            "ancestors": [
+              "Window"
+            ],
+            "recommendedTargetMethod": "ui_path",
+            "recommendedTargetValue": "||Window->||Custom#[1,2]%(-36.59,-86.59)",
+            "foundIndex": 2
+          },
+          "auxChecks": [],
+          "source": "recorder"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "sourceRecorderLine": 9,
+        "positionOffset": {
+          "x": -36.59,
+          "y": -86.59
+        },
+        "controlId": "Custom_1_2"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [待确认: 未命中控件库，建议补充控件库或检查目标控件定位]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "||Window->||Custom#[1,2]%(-36.59,-86.59)",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        },
+        {
+          "method": "coordinate",
+          "value": {
+            "x": -36.59,
+            "y": -86.59
+          },
+          "confidence": 0.35,
+          "type": "coordinate",
+          "description": "使用录制时的屏幕绝对坐标（可能因窗口位置/DPI变化而偏移）"
+        }
+      ]
+    },
+    {
+      "id": "n",
+      "name": "点击 文件名(N):",
+      "stage": "converted",
+      "strategy": "recorder -> action -> control_map",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 11 行自动转换。",
+      "successLog": "点击 文件名(N):",
+      "windowTitle": "请补充窗口标题",
+      "inspectHints": {
+        "controlName": "输入框",
+        "className": "",
+        "automationId": "",
+        "controlType": "",
+        "uiPath": "文件名(N):",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "target_input",
+          "name": "输入框",
+          "role": "输入文本",
+          "enabled": true,
+          "windowTitle": "请补充窗口标题",
+          "targetMethod": "name,class_name",
+          "targetValue": "请补充标签名称,Edit",
+          "templateKey": "",
+          "uiPath": "文件名(N):",
+          "notes": "已自动收录到控件库分类：请补充窗口标题 / unknown | recorder 自动匹配命中，评分=125，置信度=0.85，依据=控件类型一致; UIPath 叶子名精确命中; 路径语义重合 3 项。",
+          "rawInspectText": "How found:\tMouse move (1843,1053)\n\thwnd=0x002C0C18 64bit class=\"Edit\" style=0x54000080 ex=0x0\nChildId:\t0\nInterfaces:\tIEnumVARIANT IOleWindow IAccIdentity\nImpl:\tRemote native IAccessible\nAnnotationID:\t01000080180C2C00FCFFFFFF00000000\nName:\t\"文件名(N):\"\nValue:\t\"\"\nRole:\t可编辑文本 (0x2A)\nState:\t可设定焦点 (0x100000)\nLocation:\t{l:1623, t:1044, w:486, h:28}\nSelection:\t\nDescription:\t[null]\nKbshortcut:\t\"Alt+n\"\nDefAction:\t[null]\nHelp:\t[null]\nHelpTopic:\t\"\"\nChildCount:\t0\nWindow:\t0x2C0C18\nFirstChild:\t[null]\nLastChild:\t[null]\nNext:\t[null]\nPrevious:\t[null]\nLeft:\t[null]\nUp:\t[null]\nRight:\t[null]\nDown:\t[null]\nName:\t\"文件名(N):\"\nDockPattern:\t[Error: hr=0x80004001 - 尚未实现]\nExpandCollapsePattern:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemPattern:\t[Error: hr=0x80004001 - 尚未实现]\nGridPattern:\t[Error: hr=0x80004001 - 尚未实现]\nInvokePattern:\t[Error: hr=0x80004001 - 尚未实现]\nMultipleViewPattern:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValuePattern:\t[Error: hr=0x80004001 - 尚未实现]\nScrollPattern:\t[Error: hr=0x80004001 - 尚未实现]\nScrollItemPattern:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionItemPattern:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionPattern:\t[Error: hr=0x80004001 - 尚未实现]\nTablePattern:\t[Error: hr=0x80004001 - 尚未实现]\nTableItemPattern:\t[Error: hr=0x80004001 - 尚未实现]\nTextPattern:\t[Error: hr=0x80004001 - 尚未实现]\nTogglePattern:\t[Error: hr=0x80004001 - 尚未实现]\nTransformPattern:\t[Error: hr=0x80004001 - 尚未实现]\nValuePattern:\t[Error: hr=0x80004001 - 尚未实现]\nWindowPattern:\t[Error: hr=0x80004001 - 尚未实现]\nValueValue:\t[Error: hr=0x80004001 - 尚未实现]\nValueIsReadOnly:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueValue:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueIsReadOnly:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueMinimum:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueMaximum:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueLargeChange:\t[Error: hr=0x80004001 - 尚未实现]\nRangeValueSmallChange:\t[Error: hr=0x80004001 - 尚未实现]\nScrollHorizontalScrollPercent:\t[Error: hr=0x80004001 - 尚未实现]\nScrollHorizontalViewSize:\t[Error: hr=0x80004001 - 尚未实现]\nScrollVerticalScrollPercent:\t[Error: hr=0x80004001 - 尚未实现]\nScrollVerticalViewSize:\t[Error: hr=0x80004001 - 尚未实现]\nScrollHorizontallyScrollable:\t[Error: hr=0x80004001 - 尚未实现]\nScrollVerticallyScrollable:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionSelection:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionCanSelectMultiple:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionIsSelectionRequired:\t[Error: hr=0x80004001 - 尚未实现]\nGridRowCount:\t[Error: hr=0x80004001 - 尚未实现]\nGridColumnCount:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemRow:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemColumn:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemRowSpan:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemColumnSpan:\t[Error: hr=0x80004001 - 尚未实现]\nGridItemContainingGrid:\t[Error: hr=0x80004001 - 尚未实现]\nDockDockPosition:\t[Error: hr=0x80004001 - 尚未实现]\nExpandCollapseExpandCollapseState:\t[Error: hr=0x80004001 - 尚未实现]\nMultipleViewCurrentView:\t[Error: hr=0x80004001 - 尚未实现]\nMultipleViewSupportedViews:\t[Error: hr=0x80004001 - 尚未实现]\nWindowCanMaximize:\t[Error: hr=0x80004001 - 尚未实现]\nWindowCanMinimize:\t[Error: hr=0x80004001 - 尚未实现]\nWindowWindowVisualState:\t[Error: hr=0x80004001 - 尚未实现]\nWindowWindowInteractionState:\t[Error: hr=0x80004001 - 尚未实现]\nWindowIsModal:\t[Error: hr=0x80004001 - 尚未实现]\nWindowIsTopmost:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionItemIsSelected:\t[Error: hr=0x80004001 - 尚未实现]\nSelectionItemSelectionContainer:\t[Error: hr=0x80004001 - 尚未实现]\nTableRowHeaders:\t[Error: hr=0x80004001 - 尚未实现]\nTableColumnHeaders:\t[Error: hr=0x80004001 - 尚未实现]\nTableRowOrColumnMajor:\t[Error: hr=0x80004001 - 尚未实现]\nTableItemRowHeaderItems:\t[Error: hr=0x80004001 - 尚未实现]\nTableItemColumnHeaderItems:\t[Error: hr=0x80004001 - 尚未实现]\nToggleToggleState:\t[Error: hr=0x80004001 - 尚未实现]\nTransformCanMove:\t[Error: hr=0x80004001 - 尚未实现]\nTransformCanResize:\t[Error: hr=0x80004001 - 尚未实现]\nTransformCanRotate:\t[Error: hr=0x80004001 - 尚未实现]\nOther Props:\tObject has no additional properties\nChildren:\tContainer has no children\nAncestors:\t\"文件名(N):\" : 窗口 : 可设定焦点\n\t\"文件名(N):\" : 组合框 : 已折叠,可设定焦点\n\t\"文件名(N):\" : 窗口 : 可设定焦点\n\t\"文件名(N):\" : 客户端 : 可设定焦点\n\t\"文件名(N):\" : 窗口 : 可设定焦点\n\t\"打开\" : 对话框 : 可设定焦点\n\t\"打开\" : 窗口 : 可调大小,可移动,可设定焦点\n\t\"桌面 1\" : 客户端 : 可设定焦点\n\t\"桌面 1\" : 窗口 : 可设定焦点\n\t[ No Parent ]",
+          "auxChecks": [],
+          "inspectData": {
+            "howFound": "Mouse move (1843,1053)",
+            "name": "文件名(N):",
+            "controlType": "",
+            "localizedControlType": "",
+            "boundingRectangle": "",
+            "isEnabled": "",
+            "isOffscreen": "",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "",
+            "runtimeId": "",
+            "frameworkId": "",
+            "className": "",
+            "automationId": "",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [
+              "Container has no children"
+            ],
+            "ancestors": [
+              "\"文件名(N):\" : 窗口 : 可设定焦点"
+            ],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "name",
+            "recommendedTargetValue": "文件名(N):"
+          },
+          "source": "control_map",
+          "sourceFile": "library_请补充窗口标题_unknown_controls.json"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "sourceRecorderLine": 11,
+        "positionOffset": {
+          "x": -78.1,
+          "y": -23.08
+        },
+        "controlId": "target_input"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [第 11 行已自动匹配控件库，评分=125]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "文件名(N):",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "window_custom_pane_combobox",
+      "name": "点击 Window > Custom > Pane > ComboBox > 全部选择",
+      "stage": "converted",
+      "strategy": "recorder -> action -> control_map",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 12 行自动转换。",
+      "successLog": "点击 TEST1_Project_43.tif",
+      "windowTitle": "AxeWindowsScan",
+      "inspectHints": {
+        "controlName": "全部选择",
+        "className": "RadComboBoxItem",
+        "automationId": "MTDGroupComboBoxMultiSelection_ComboBoxItem",
+        "controlType": "ListItem",
+        "uiPath": "Window > Custom > Pane > ComboBox > 全部选择",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "name": "全部选择",
+          "windowTitle": "AxeWindowsScan",
+          "frameworkId": "WPF",
+          "controlType": "ListItem",
+          "className": "RadComboBoxItem",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "MTDGroupComboBoxMultiSelection_ComboBoxItem,ListItem",
+          "locatorScore": 100,
+          "locatorReason": "automation_id + control_type",
+          "auxChecks": [
+            "ProcessId=15476",
+            "ClassName=RadComboBoxItem",
+            "FrameworkId=WPF"
+          ],
+          "inspectData": {
+            "name": "全部选择",
+            "controlType": "ListItem",
+            "localizedControlType": "",
+            "boundingRectangle": "",
+            "isEnabled": "False",
+            "isVisible": "",
+            "isOffscreen": "True",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "15476",
+            "runtimeId": "[7,3C74,14C67AD]",
+            "frameworkId": "WPF",
+            "className": "RadComboBoxItem",
+            "automationId": "MTDGroupComboBoxMultiSelection_ComboBoxItem",
+            "nativeWindowHandle": "0",
+            "helpText": "RadComboBoxItem",
+            "providerDescription": "",
+            "patterns": [
+              "ScrollItem",
+              "SelectionItem",
+              "VirtualizedItem"
+            ],
+            "source": "axe-windows",
+            "axeRule": "ControlShouldSupportSetInfoWPF"
+          },
+          "boundingBox": {},
+          "uiPath": "Window > Custom > Pane > ComboBox > 全部选择",
+          "parentPath": "Window > Custom > Pane > ComboBox",
+          "id": "MTDGroupComboBoxMultiSelection_ComboBoxItem",
+          "templateKey": "",
+          "notes": "recorder 自动匹配命中，评分=40，置信度=0.55，依据=控件类型一致; 路径语义重合 4 项; 动作类型偏好匹配。",
+          "source": "control_map",
+          "sourceFile": "20260720_152457_pid15476_axewindows_control_map.json"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 1.0,
+        "action": "click",
+        "sourceRecorderLine": 12,
+        "positionOffset": {
+          "x": -38.46,
+          "y": -1.72
+        },
+        "controlId": "MTDGroupComboBoxMultiSelection_ComboBoxItem"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [第 12 行已自动匹配控件库，评分=40] [可能需要等待窗口加载]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "Window > Custom > Pane > ComboBox > 全部选择",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "o",
+      "name": "点击 打开(O)",
+      "stage": "converted",
+      "strategy": "recorder -> action -> control_map",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 13 行自动转换。",
+      "successLog": "点击 打开(O)",
+      "windowTitle": "打开(O)",
+      "inspectHints": {
+        "controlName": "打开按钮",
+        "className": "Button",
+        "automationId": "1",
+        "controlType": "SplitButton(50031)",
+        "uiPath": "打开(O)",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_15_control_1",
+          "name": "打开按钮",
+          "role": "",
+          "enabled": true,
+          "windowTitle": "打开(O)",
+          "targetMethod": "automation_id",
+          "targetValue": "1",
+          "templateKey": "",
+          "uiPath": "打开(O)",
+          "notes": "已自动收录到控件库分类：打开(O) / Win32 | recorder 自动匹配命中，评分=117，置信度=0.85，依据=窗口标题相近; UIPath 叶子名精确命中; 路径语义重合 3 项。",
+          "rawInspectText": "Transform2Pattern.ZoomMaximum\tProperty does not exist\nAcceleratorKey\tProperty does not exist\nAccessKey\tAlt+o\nAnnotationPattern.AnnotationTypeId\tProperty does not exist\nAnnotationPattern.AnnotationTypeName\tProperty does not exist\nAnnotationPattern.Author\tProperty does not exist\nAnnotationPattern.DateTime\tProperty does not exist\nAnnotationPattern.Objects\tProperty does not exist\nAnnotationPattern.Target\tProperty does not exist\nAnnotationPattern.Types\tProperty does not exist\nAriaProperties\tProperty does not exist\nAriaRole\tProperty does not exist\nAutomationId\t1\nBoundingRectangle\t[l=1962,t=1069,r=2116,b=1115]\nCenterPoint\tProperty does not exist\nClassName\tButton\nControllerFor\tProperty does not exist\nControlType\tSplitButton(50031)\nCulture\t0\nDescribedBy\tProperty does not exist\nDockDockPosition\tProperty does not exist\nDragGrabbedItems\tProperty does not exist\nDragPattern.DropEffect\tProperty does not exist\nDragPattern.DropEffects\tProperty does not exist\nDragPattern.IsGrabbed\tProperty does not exist\nDropTargetPattern.DropTargetEffect\tProperty does not exist\nDropTargetPattern.DropTargetEffects\tProperty does not exist\nExpandCollapsePattern.ExpandCollapseState\t0\nFillColor\tProperty does not exist\nFillType\t0\nFlowsFrom\tProperty does not exist\nFlowsTo\tProperty does not exist\nFrameworkId\tWin32\nFullDescription\tProperty does not exist\nGridItemPattern.Column\tProperty does not exist\nGridItemPattern.ColumnSpan\tProperty does not exist\nGridItemPattern.ContainingGrid\tProperty does not exist\nGridItemPattern.Row\tProperty does not exist\nGridItemPattern.RowSpan\tProperty does not exist\nGridPattern.ColumnCount\tProperty does not exist\nGridPattern.RowCount\tProperty does not exist\nHasKeyboardFocus\tFalse\nHeadingLevel\tHeadingLevel_None (80050)\nHelpText\tProperty does not exist\nIsContentElement\tTrue\nIsControlElement\tTrue\nIsDataValidForForm\tFalse\nIsDialog\tFalse\nIsEnabled\tTrue\nIsKeyboardFocusable\tTrue\nIsOffscreen\tFalse\nIsPassword\tFalse\nIsPeripheral\tFalse\nIsRequiredForForm\tFalse\nItemStatus\tProperty does not exist\nItemType\tProperty does not exist\nLabeledBy\tProperty does not exist\nLandmarkType\tProperty does not exist\nLegacyIAccessiblePattern.ChildId\t0\nLegacyIAccessiblePattern.DefaultAction\t按\nLegacyIAccessiblePattern.Description\tProperty does not exist\nLegacyIAccessiblePattern.Help\tProperty does not exist\nLegacyIAccessiblePattern.KeyboardShortcut\tAlt+o\nLegacyIAccessiblePattern.Name\t打开(O)\nLegacyIAccessiblePattern.Role\tROLE_SYSTEM_SPLITBUTTON(62)\nLegacyIAccessiblePattern.Selection\tProperty does not exist\nLegacyIAccessiblePattern.State\t1074790400\nLegacyIAccessiblePattern.Value\tProperty does not exist\nLevel\tProperty does not exist\nLiveSetting\t0\nLocalizedControlType\t拆分按钮\nLocalizedLandmarkType\tProperty does not exist\nLogicalSize\t[w=88,h=26]\nMultipleViewPattern.CurrentView\tProperty does not exist\nMultipleViewPattern.SupportedViews\tProperty does not exist\nName\t打开(O)\nNativeWindowHandle\t7346782\nOptimizeForVisualContent\tFalse\nOrientation\tNone(0)\nOutlineColor\tProperty does not exist\nOutlineThickness\tProperty does not exist\nPositionInSet\tProperty does not exist\nProcessId\t60856\nProviderDescription\t[pid:66416,providerId:0x701A5E Main:Nested [pid:60856,providerId:0x701A5E Annotation(parent link):Microsoft: Annotation Proxy (unmanaged:UIAutomationCore.dll); Main:Microsoft: MSAA Proxy (unmanaged:UIAutomationCore.dll)]; Hwnd(parent link):Microsoft: HWND Proxy (unmanaged:UIAutomationCore.dll)]\nRangeValuePattern.IsReadOnly\tProperty does not exist\nRangeValuePattern.LargeChange\tProperty does not exist\nRangeValuePattern.Maximum\tProperty does not exist\nRangeValuePattern.Minimum\tProperty does not exist\nRangeValuePattern.SmallChange\tProperty does not exist\nRangeValuePattern.Value\tProperty does not exist\nRotation\tProperty does not exist\nRuntimeId\t[2A,701A5E]\nScrollPattern.HorizontallyScrollable\tProperty does not exist\nScrollPattern.HorizontalScrollPercent\tProperty does not exist\nScrollPattern.HorizontalViewSize\tProperty does not exist\nScrollPattern.VerticallyScrollable\tProperty does not exist\nScrollPattern.VerticalScrollPercent\tProperty does not exist\nScrollPattern.VerticalViewSize\tProperty does not exist\nSelectionItemPattern.IsSelected\tProperty does not exist\nSelectionItemPattern.SelectionContainer\tProperty does not exist\nSelectionPattern.CanSelectMultiple\tProperty does not exist\nSelectionPattern.IsSelectionRequired\tProperty does not exist\nSelectionPattern.Selection\tProperty does not exist\nSize\tProperty does not exist\nSizeOfSet\tProperty does not exist\nSpreadsheetItemPattern.AnnotationObjects\tProperty does not exist\nSpreadsheetItemPattern.AnnotationTypes\tProperty does not exist\nSpreadsheetItemPatternFormula\tProperty does not exist\nStylesPattern.ExtendedProperties\tProperty does not exist\nStylesPattern.FillColor\tProperty does not exist\nStylesPattern.FillPatternColor\tProperty does not exist\nStylesPattern.FillPatternStyle\tProperty does not exist\nStylesPattern.Shape\tProperty does not exist\nStylesPattern.StyleId\tProperty does not exist\nStylesPattern.StyleName\tProperty does not exist\nTableItemPattern.ColumnHeaderItems\tProperty does not exist\nTableItemPattern.RowHeaderItems\tProperty does not exist\nTablePattern.ColumnHeaders\tProperty does not exist\nTablePattern.RowHeaders\tProperty does not exist\nTablePattern.RowOrColumnMajor\tProperty does not exist\nTogglePattern.ToggleState\tProperty does not exist\nTransform2Pattern.CanZoom\tProperty does not exist\nTransform2Pattern.ZoomLevel\tProperty does not exist\nTransform2Pattern.ZoomMinimum\tProperty does not exist\nTransformPattern.CanMove\tProperty does not exist\nTransformPattern.CanResize\tProperty does not exist\nTransformPattern.CanRotate\tProperty does not exist\nValuePattern.IsReadOnly\tProperty does not exist\nValuePattern.Value\tProperty does not exist\nVisualEffects\t0\nWindowPattern.CanMaximize\tProperty does not exist\nWindowPattern.CanMinimize\tProperty does not exist\nWindowPattern.IsModal\tProperty does not exist\nWindowPattern.IsTopmost\tProperty does not exist\nWindowPattern.WindowInteractionState\tProperty does not exist\nWindowPattern.WindowVisualState\tProperty does not exist",
+          "auxChecks": [
+            "IsEnabled=True",
+            "IsOffscreen=False",
+            "IsKeyboardFocusable=True",
+            "HasKeyboardFocus=False",
+            "FrameworkId=Win32",
+            "ClassName=Button"
+          ],
+          "inspectData": {
+            "howFound": "",
+            "name": "打开(O)",
+            "controlType": "SplitButton(50031)",
+            "localizedControlType": "拆分按钮",
+            "boundingRectangle": "[l=1962,t=1069,r=2116,b=1115]",
+            "isEnabled": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "True",
+            "hasKeyboardFocus": "False",
+            "processId": "60856",
+            "runtimeId": "[2A,701A5E]",
+            "frameworkId": "Win32",
+            "className": "Button",
+            "automationId": "1",
+            "nativeWindowHandle": "7346782",
+            "providerDescription": "",
+            "legacyName": "打开(O)",
+            "legacyRole": "ROLE_SYSTEM_SPLITBUTTON(62)",
+            "legacyState": "1074790400",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [],
+            "ancestors": [],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "automation_id",
+            "recommendedTargetValue": "1"
+          },
+          "source": "control_map",
+          "sourceFile": "library_打开(O)_Win32_controls.json"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 1.0,
+        "action": "click",
+        "sourceRecorderLine": 13,
+        "positionOffset": {
+          "x": -31.58,
+          "y": 18.18
+        },
+        "controlId": "step_15_control_1"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [第 13 行已自动匹配控件库，评分=117] [可能需要等待窗口加载]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "打开(O)",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "window_mupwindturbinetypemainview_mupwindturbinetypeeditorview_mupversionsmanagereditcontrol_mtdtileview_button_togglestate_m3_17_25l3_21_6_75_21_17_81_9_94_14_06_6_19_3_17_25z_m20_71_7_04c21_1_6_65_21_1_6_02_20_71_5_63l18_37_3_29c17_98_2_9_17_35_2_9_16_96_3_29l15_13_5_12_18_88_8_87_20_71_7_04z_2",
+      "name": "点击 Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+      "stage": "converted",
+      "strategy": "recorder -> action -> control_map",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 14 行自动转换。",
+      "successLog": "点击 目标控件@(-37.14,-67.72)",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "className": "Button",
+        "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+        "controlType": "Button",
+        "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21",
+          "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "role": "来自控件库扫描：",
+          "enabled": true,
+          "windowTitle": "",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button",
+          "templateKey": "",
+          "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | recorder 自动匹配命中，评分=38，置信度=0.65，依据=祖先链匹配 1 层; 路径语义重合 5 项; 动作类型偏好匹配。",
+          "rawInspectText": "Name: \t \"M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=500,t=148,r=542,b=190]\nIsEnabled: \t False\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"WTTypePerformanceCurveVersionManagerEditView_Button_Modify\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPWindTurbineTypeMainView\n\t MUPWindTurbineTypeEditorView\n\t MUPVersionsManagerEditControl\n\t MTDTileView_Button_ToggleState",
+          "auxChecks": [
+            "IsEnabled=False",
+            "IsOffscreen=False",
+            "FrameworkId=WPF",
+            "ClassName=Button"
+          ],
+          "inspectData": {
+            "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "controlType": "Button",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=500,t=148,r=542,b=190]",
+            "isEnabled": "False",
+            "isVisible": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "27300",
+            "runtimeId": "[7,6AA4,2373DB5]",
+            "frameworkId": "WPF",
+            "className": "Button",
+            "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "helpText": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "ancestors": [
+              "Window",
+              "MUPWindTurbineTypeMainView",
+              "MUPWindTurbineTypeEditorView",
+              "MUPVersionsManagerEditControl",
+              "MTDTileView_Button_ToggleState"
+            ],
+            "children": [],
+            "recommendedTargetMethod": "automation_id,control_type",
+            "recommendedTargetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button"
+          },
+          "source": "control_map",
+          "sourceFile": "20260715_214310_功率曲线版本管理4window_control_map.json"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "sourceRecorderLine": 14,
+        "positionOffset": {
+          "x": -37.14,
+          "y": -67.72
+        },
+        "controlId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [第 14 行已自动匹配控件库，评分=38]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "step_7",
+      "name": "点击 私有",
+      "stage": "converted",
+      "strategy": "recorder -> action -> control_map",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 15 行自动转换。",
+      "successLog": "点击 私有",
+      "windowTitle": "私有",
+      "inspectHints": {
+        "controlName": "控件 1",
+        "className": "TextBlock",
+        "automationId": "",
+        "controlType": "50020",
+        "uiPath": "私有",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "step_8_control_1",
+          "name": "控件 1",
+          "role": "",
+          "enabled": true,
+          "windowTitle": "私有",
+          "targetMethod": "name",
+          "targetValue": "私有",
+          "templateKey": "",
+          "uiPath": "私有",
+          "notes": "已自动收录到控件库分类：私有 / WPF | recorder 自动匹配命中，评分=107，置信度=0.85，依据=UIPath 叶子名精确命中; 路径语义重合 3 项。",
+          "rawInspectText": "How found:\tSelected from tree...\nChildId:\t0\nInterfaces:\tIEnumVARIANT IOleWindow\nImpl:\tRemote native IAccessible (UIA-to-MSAA bridge)\nName:\t\"私有\"\nValue:\t[Error: hr=0x80020003 - 找不到成员。]\nRole:\t文字 (0x29)\nState:\t不可见,屏幕外 (0x18000)\nLocation:\t[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]\nSelection:\t[Error: calling getter for this property: hr=0x80020003 - 找不到成员。]\nDescription:\t[Error: hr=0x80020003 - 找不到成员。]\nKbshortcut:\t\"\"\nDefAction:\t[Error: hr=0x80020003 - 找不到成员。]\nHelp:\t\"\"\nHelpTopic:\t\"\"\nChildCount:\t0\nWindow:\t0xA1434\nFirstChild:\t[null]\nLastChild:\t[null]\nNext:\t[null]\nPrevious:\t[null]\nLeft:\t[null]\nUp:\t[null]\nRight:\t[null]\nDown:\t[null]\nControlType:\t50020\nLocalizedControlType:\t\"text\"\nName:\t\"私有\"\nAcceleratorKey:\t\"\"\nAccessKey:\t\"\"\nHasKeyboardFocus:\tfalse\nIsKeyboardFocusable:\tfalse\nIsEnabled:\ttrue\nAutomationId:\t\"\"\nClassName:\t\"TextBlock\"\nHelpText:\t\"\"\nIsControlElement:\ttrue\nIsContentElement:\ttrue\nIsPassword:\tfalse\nItemType:\t\"\"\nIsOffscreen:\ttrue\nOrientation:\t0\nFrameworkId:\t\"WPF\"\nIsRequiredForForm:\tfalse\nItemStatus:\t\"\"\nOther Props:\tObject has no additional properties\nChildren:\tContainer has no children\nAncestors:\t\"MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue\" : 列表项目 : 不可见,屏幕外\n\t[Error: GetParent: hr=0x80004005 - 未指定的错误]",
+          "auxChecks": [
+            "IsEnabled=true",
+            "IsOffscreen=true",
+            "IsKeyboardFocusable=false",
+            "HasKeyboardFocus=false",
+            "FrameworkId=WPF",
+            "ClassName=TextBlock"
+          ],
+          "inspectData": {
+            "howFound": "Selected from tree...",
+            "name": "私有",
+            "controlType": "50020",
+            "localizedControlType": "text",
+            "boundingRectangle": "",
+            "isEnabled": "true",
+            "isOffscreen": "true",
+            "isKeyboardFocusable": "false",
+            "hasKeyboardFocus": "false",
+            "processId": "",
+            "runtimeId": "",
+            "frameworkId": "WPF",
+            "className": "TextBlock",
+            "automationId": "",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "firstChild": "",
+            "lastChild": "",
+            "next": "",
+            "previous": "",
+            "children": [
+              "Container has no children"
+            ],
+            "ancestors": [
+              "\"MTD.Wpf.Controls.Enumerations.MTDLocalizedEnumValue\" : 列表项目 : 不可见,屏幕外"
+            ],
+            "availablePatterns": [],
+            "recommendedTargetMethod": "name",
+            "recommendedTargetValue": "私有"
+          },
+          "source": "control_map",
+          "sourceFile": "library_私有_WPF_controls.json"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "sourceRecorderLine": 15,
+        "positionOffset": {
+          "x": -32.75,
+          "y": 25.81
+        },
+        "controlId": "step_8_control_1"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [第 15 行已自动匹配控件库，评分=107]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "私有",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "custom_1_2_2",
+      "name": "点击 Custom#[1,2]",
+      "stage": "converted",
+      "strategy": "recorder -> action",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 16 行自动转换。",
+      "successLog": "点击 目标控件@(-48.08,-59.51)",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "Custom#[1,2]",
+        "className": "",
+        "automationId": "",
+        "controlType": "Custom#[1,2]",
+        "uiPath": "||Window->||Custom#[1,2]%(-48.08,-59.51)",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "Custom_1_2",
+          "name": "Custom#[1,2]",
+          "role": "来自 recorder 自动转换的目标控件",
+          "targetMethod": "control_type",
+          "targetValue": "Custom#[1,2]",
+          "windowTitle": "",
+          "uiPath": "||Window->||Custom#[1,2]%(-48.08,-59.51)",
+          "templateKey": "",
+          "notes": "由 pywinauto_recorder 录制脚本自动转换生成（含 a11y 富化）；若控件库未命中，可继续补充 Inspect/Accessibility 信息。 点击偏移=@(-48.08,-59.51)。",
+          "inspectData": {
+            "name": "",
+            "controlType": "Custom#[1,2]",
+            "localizedControlType": "",
+            "automationId": "",
+            "className": "",
+            "frameworkId": "",
+            "ancestors": [
+              "Window"
+            ],
+            "recommendedTargetMethod": "ui_path",
+            "recommendedTargetValue": "||Window->||Custom#[1,2]%(-48.08,-59.51)",
+            "foundIndex": 2
+          },
+          "auxChecks": [],
+          "source": "recorder"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "sourceRecorderLine": 16,
+        "positionOffset": {
+          "x": -48.08,
+          "y": -59.51
+        },
+        "controlId": "Custom_1_2"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [待确认: 未命中控件库，建议补充控件库或检查目标控件定位]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "||Window->||Custom#[1,2]%(-48.08,-59.51)",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        },
+        {
+          "method": "coordinate",
+          "value": {
+            "x": -48.08,
+            "y": -59.51
+          },
+          "confidence": 0.35,
+          "type": "coordinate",
+          "description": "使用录制时的屏幕绝对坐标（可能因窗口位置/DPI变化而偏移）"
+        }
+      ]
+    },
+    {
+      "id": "window_microscalemainview_view_main_microscale_tabcontrol_site_mup_msc_smartclient_base_viewmodel_mupsiteeditorviewmodel_mupmicroscaleview_mupmicroscalesidebarcontrol_microscale_tabcontrol_editingsite_mup_msc_smartclient_base_viewmodel_muploadabletabcontentviewmodel",
+      "name": "点击 Window > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel > MUPMicroScaleView > MUPMicroScaleSidebarControl > MicroScale_TabControl_EditingSite > MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel > 元素",
+      "stage": "converted",
+      "strategy": "recorder -> action -> control_map",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 17 行自动转换。",
+      "successLog": "点击 地形",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "元素",
+        "className": "TextBlock",
+        "automationId": "TabItem_Header_Label",
+        "controlType": "Text",
+        "uiPath": "Window > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel > MUPMicroScaleView > MUPMicroScaleSidebarControl > MicroScale_TabControl_EditingSite > MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel > 元素",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "TabItem_Header_Label___Text",
+          "name": "元素",
+          "role": "来自控件库扫描：",
+          "enabled": true,
+          "windowTitle": "",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "TabItem_Header_Label,Text",
+          "templateKey": "",
+          "uiPath": "Window > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel > MUPMicroScaleView > MUPMicroScaleSidebarControl > MicroScale_TabControl_EditingSite > MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel > 元素",
+          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位策略稳定 | recorder 自动匹配命中，评分=42，置信度=0.65，依据=控件类型一致; 祖先链匹配 1 层; 路径语义重合 3 项。",
+          "rawInspectText": "Name: \t \"元素\"\nControlType: \t Text\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=304,t=118,r=353,b=151]\nIsEnabled: \t True\nIsOffscreen: \t True\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 44668\nFrameworkId: \t \"WPF\"\nClassName: \t \"TextBlock\"\nAutomationId: \t \"TabItem_Header_Label\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MicroScaleMainView_View_Main\n\t MicroScale_TabControl_Site\n\t MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel\n\t MUPMicroScaleView\n\t MUPMicroScaleSidebarControl\n\t MicroScale_TabControl_EditingSite\n\t MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel",
+          "auxChecks": [
+            "IsEnabled=True",
+            "IsOffscreen=True",
+            "FrameworkId=WPF",
+            "ClassName=TextBlock"
+          ],
+          "inspectData": {
+            "name": "元素",
+            "value": "",
+            "toggleState": "",
+            "controlType": "Text",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=304,t=118,r=353,b=151]",
+            "isEnabled": "True",
+            "isVisible": "False",
+            "isOffscreen": "True",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "44668",
+            "runtimeId": "[7,AE7C,138A6F2]",
+            "frameworkId": "WPF",
+            "className": "TextBlock",
+            "automationId": "TabItem_Header_Label",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "helpText": "元素",
+            "ancestors": [
+              "Window",
+              "MicroScaleMainView_View_Main",
+              "MicroScale_TabControl_Site",
+              "MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel",
+              "MUPMicroScaleView",
+              "MUPMicroScaleSidebarControl",
+              "MicroScale_TabControl_EditingSite",
+              "MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel"
+            ],
+            "children": [],
+            "recommendedTargetMethod": "automation_id,control_type",
+            "recommendedTargetValue": "TabItem_Header_Label,Text"
+          },
+          "source": "control_map",
+          "sourceFile": "20260715_214310_导入地形图2_window_control_map.json"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "sourceRecorderLine": 17,
+        "positionOffset": {
+          "x": -69.01,
+          "y": 19.35
+        },
+        "controlId": "TabItem_Header_Label___Text"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [第 17 行已自动匹配控件库，评分=42]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "Window > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel > MUPMicroScaleView > MUPMicroScaleSidebarControl > MicroScale_TabControl_EditingSite > MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel > 元素",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "window_mupwindturbinetypemainview_mupwindturbinetypeeditorview_mupversionsmanagereditcontrol_mtdtileview_button_togglestate_m3_17_25l3_21_6_75_21_17_81_9_94_14_06_6_19_3_17_25z_m20_71_7_04c21_1_6_65_21_1_6_02_20_71_5_63l18_37_3_29c17_98_2_9_17_35_2_9_16_96_3_29l15_13_5_12_18_88_8_87_20_71_7_04z_3",
+      "name": "点击 Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+      "stage": "converted",
+      "strategy": "recorder -> action -> control_map",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 18 行自动转换。",
+      "successLog": "点击 目标控件@(-88.51,-40.49)",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "className": "Button",
+        "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+        "controlType": "Button",
+        "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21",
+          "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "role": "来自控件库扫描：",
+          "enabled": true,
+          "windowTitle": "",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button",
+          "templateKey": "",
+          "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | recorder 自动匹配命中，评分=34，置信度=0.65，依据=祖先链匹配 1 层; 路径语义重合 4 项; 动作类型偏好匹配。",
+          "rawInspectText": "Name: \t \"M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=500,t=148,r=542,b=190]\nIsEnabled: \t False\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"WTTypePerformanceCurveVersionManagerEditView_Button_Modify\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPWindTurbineTypeMainView\n\t MUPWindTurbineTypeEditorView\n\t MUPVersionsManagerEditControl\n\t MTDTileView_Button_ToggleState",
+          "auxChecks": [
+            "IsEnabled=False",
+            "IsOffscreen=False",
+            "FrameworkId=WPF",
+            "ClassName=Button"
+          ],
+          "inspectData": {
+            "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "controlType": "Button",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=500,t=148,r=542,b=190]",
+            "isEnabled": "False",
+            "isVisible": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "27300",
+            "runtimeId": "[7,6AA4,2373DB5]",
+            "frameworkId": "WPF",
+            "className": "Button",
+            "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "helpText": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "ancestors": [
+              "Window",
+              "MUPWindTurbineTypeMainView",
+              "MUPWindTurbineTypeEditorView",
+              "MUPVersionsManagerEditControl",
+              "MTDTileView_Button_ToggleState"
+            ],
+            "children": [],
+            "recommendedTargetMethod": "automation_id,control_type",
+            "recommendedTargetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button"
+          },
+          "source": "control_map",
+          "sourceFile": "20260715_214310_功率曲线版本管理4window_control_map.json"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "sourceRecorderLine": 18,
+        "positionOffset": {
+          "x": -88.51,
+          "y": -40.49
+        },
+        "controlId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [第 18 行已自动匹配控件库，评分=34] [激活输入框]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "window_cgcs_enter",
+      "name": "在 Window 输入: cgcs{ENTER}",
+      "stage": "converted",
+      "strategy": "recorder -> action",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 19 行自动转换。",
+      "successLog": "输入 cgcs{ENTER}",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "Window",
+        "className": "",
+        "automationId": "",
+        "controlType": "Window",
+        "uiPath": "||Window",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "Window",
+          "name": "Window",
+          "role": "来自 recorder 自动转换的目标控件",
+          "targetMethod": "control_type",
+          "targetValue": "Window",
+          "windowTitle": "",
+          "uiPath": "||Window",
+          "templateKey": "",
+          "notes": "由 pywinauto_recorder 录制脚本自动转换生成（含 a11y 富化）；若控件库未命中，可继续补充 Inspect/Accessibility 信息。",
+          "inspectData": {
+            "name": "",
+            "controlType": "Window",
+            "localizedControlType": "",
+            "automationId": "",
+            "className": "",
+            "frameworkId": "",
+            "ancestors": [],
+            "recommendedTargetMethod": "control_type",
+            "recommendedTargetValue": "Window"
+          },
+          "auxChecks": [],
+          "source": "recorder"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "send_keys",
+        "sourceRecorderLine": 19,
+        "text": "cgcs{ENTER}",
+        "controlId": "Window"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [待确认: 未命中控件库，建议补充控件库或检查目标控件定位] [输入内容]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "||Window",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "window_mupwindturbinetypemainview_mupwindturbinetypeeditorview_mupversionsmanagereditcontrol_mtdtileview_button_togglestate_m3_17_25l3_21_6_75_21_17_81_9_94_14_06_6_19_3_17_25z_m20_71_7_04c21_1_6_65_21_1_6_02_20_71_5_63l18_37_3_29c17_98_2_9_17_35_2_9_16_96_3_29l15_13_5_12_18_88_8_87_20_71_7_04z_4",
+      "name": "点击 Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+      "stage": "converted",
+      "strategy": "recorder -> action -> control_map",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 20 行自动转换。",
+      "successLog": "点击 目标控件@(-62.16,-18.19)",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "className": "Button",
+        "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+        "controlType": "Button",
+        "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21",
+          "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "role": "来自控件库扫描：",
+          "enabled": true,
+          "windowTitle": "",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button",
+          "templateKey": "",
+          "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | recorder 自动匹配命中，评分=42，置信度=0.65，依据=祖先链匹配 1 层; 路径语义重合 6 项; 动作类型偏好匹配。",
+          "rawInspectText": "Name: \t \"M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=500,t=148,r=542,b=190]\nIsEnabled: \t False\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"WTTypePerformanceCurveVersionManagerEditView_Button_Modify\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPWindTurbineTypeMainView\n\t MUPWindTurbineTypeEditorView\n\t MUPVersionsManagerEditControl\n\t MTDTileView_Button_ToggleState",
+          "auxChecks": [
+            "IsEnabled=False",
+            "IsOffscreen=False",
+            "FrameworkId=WPF",
+            "ClassName=Button"
+          ],
+          "inspectData": {
+            "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "controlType": "Button",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=500,t=148,r=542,b=190]",
+            "isEnabled": "False",
+            "isVisible": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "27300",
+            "runtimeId": "[7,6AA4,2373DB5]",
+            "frameworkId": "WPF",
+            "className": "Button",
+            "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "helpText": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "ancestors": [
+              "Window",
+              "MUPWindTurbineTypeMainView",
+              "MUPWindTurbineTypeEditorView",
+              "MUPVersionsManagerEditControl",
+              "MTDTileView_Button_ToggleState"
+            ],
+            "children": [],
+            "recommendedTargetMethod": "automation_id,control_type",
+            "recommendedTargetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button"
+          },
+          "source": "control_map",
+          "sourceFile": "20260715_214310_功率曲线版本管理4window_control_map.json"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "sourceRecorderLine": 20,
+        "positionOffset": {
+          "x": -62.16,
+          "y": -18.19
+        },
+        "controlId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [第 20 行已自动匹配控件库，评分=42]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "custom_1_2_3",
+      "name": "点击 Custom#[1,2]",
+      "stage": "converted",
+      "strategy": "recorder -> action",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 21 行自动转换。",
+      "successLog": "点击 目标控件@(-39.95,51.57)",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "Custom#[1,2]",
+        "className": "",
+        "automationId": "",
+        "controlType": "Custom#[1,2]",
+        "uiPath": "||Window->||Custom#[1,2]%(-39.95,51.57)",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "Custom_1_2",
+          "name": "Custom#[1,2]",
+          "role": "来自 recorder 自动转换的目标控件",
+          "targetMethod": "control_type",
+          "targetValue": "Custom#[1,2]",
+          "windowTitle": "",
+          "uiPath": "||Window->||Custom#[1,2]%(-39.95,51.57)",
+          "templateKey": "",
+          "notes": "由 pywinauto_recorder 录制脚本自动转换生成（含 a11y 富化）；若控件库未命中，可继续补充 Inspect/Accessibility 信息。 点击偏移=@(-39.95,51.57)。",
+          "inspectData": {
+            "name": "",
+            "controlType": "Custom#[1,2]",
+            "localizedControlType": "",
+            "automationId": "",
+            "className": "",
+            "frameworkId": "",
+            "ancestors": [
+              "Window"
+            ],
+            "recommendedTargetMethod": "ui_path",
+            "recommendedTargetValue": "||Window->||Custom#[1,2]%(-39.95,51.57)",
+            "foundIndex": 2
+          },
+          "auxChecks": [],
+          "source": "recorder"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "sourceRecorderLine": 21,
+        "positionOffset": {
+          "x": -39.95,
+          "y": 51.57
+        },
+        "controlId": "Custom_1_2"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [待确认: 未命中控件库，建议补充控件库或检查目标控件定位] [激活输入框]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "||Window->||Custom#[1,2]%(-39.95,51.57)",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        },
+        {
+          "method": "coordinate",
+          "value": {
+            "x": -39.95,
+            "y": 51.57
+          },
+          "confidence": 0.35,
+          "type": "coordinate",
+          "description": "使用录制时的屏幕绝对坐标（可能因窗口位置/DPI变化而偏移）"
+        }
+      ]
+    },
+    {
+      "id": "window_vk_control_down_vk_menu_down_r_down_vk_control_up_r_up_vk_menu_up_vk_control_down_vk_menu_down_r_down_vk_control_up_r_up_vk_menu_up",
+      "name": "在 Window 输入: {VK_CONTROL down}{VK_MENU down}{r down}{VK_CONTROL up}{r up}{VK_MENU up}{VK_CONTROL down}{VK_MENU down}{r down}{VK_CONTROL up}{r up}{VK_MENU up}",
+      "stage": "converted",
+      "strategy": "recorder -> action",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 22 行自动转换。",
+      "successLog": "输入 {VK_CONTROL down}{VK_MENU down}{r down}{VK_CONTROL up}{r up}{VK_MENU up}{VK_CONTROL down}{VK_MENU down}{r down}{VK_CONTROL up}{r up}{VK_MENU up}",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "Window",
+        "className": "",
+        "automationId": "",
+        "controlType": "Window",
+        "uiPath": "||Window",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "Window",
+          "name": "Window",
+          "role": "来自 recorder 自动转换的目标控件",
+          "targetMethod": "control_type",
+          "targetValue": "Window",
+          "windowTitle": "",
+          "uiPath": "||Window",
+          "templateKey": "",
+          "notes": "由 pywinauto_recorder 录制脚本自动转换生成（含 a11y 富化）；若控件库未命中，可继续补充 Inspect/Accessibility 信息。",
+          "inspectData": {
+            "name": "",
+            "controlType": "Window",
+            "localizedControlType": "",
+            "automationId": "",
+            "className": "",
+            "frameworkId": "",
+            "ancestors": [],
+            "recommendedTargetMethod": "control_type",
+            "recommendedTargetValue": "Window"
+          },
+          "auxChecks": [],
+          "source": "recorder"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "send_keys",
+        "sourceRecorderLine": 22,
+        "text": "{VK_CONTROL down}{VK_MENU down}{r down}{VK_CONTROL up}{r up}{VK_MENU up}{VK_CONTROL down}{VK_MENU down}{r down}{VK_CONTROL up}{r up}{VK_MENU up}",
+        "controlId": "Window"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [待确认: 未命中控件库，建议补充控件库或检查目标控件定位] [输入内容]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "||Window",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "window_mupwindturbinetypemainview_mupwindturbinetypeeditorview_mupversionsmanagereditcontrol_mtdtileview_button_togglestate_m3_17_25l3_21_6_75_21_17_81_9_94_14_06_6_19_3_17_25z_m20_71_7_04c21_1_6_65_21_1_6_02_20_71_5_63l18_37_3_29c17_98_2_9_17_35_2_9_16_96_3_29l15_13_5_12_18_88_8_87_20_71_7_04z_5",
+      "name": "点击 Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+      "stage": "converted",
+      "strategy": "recorder -> action -> control_map",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 26 行自动转换。",
+      "successLog": "点击 显示隐藏的图标",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "className": "Button",
+        "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+        "controlType": "Button",
+        "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21",
+          "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "role": "来自控件库扫描：",
+          "enabled": true,
+          "windowTitle": "",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button",
+          "templateKey": "",
+          "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | recorder 自动匹配命中，评分=40，置信度=0.55，依据=控件类型一致; 路径语义重合 4 项; 动作类型偏好匹配。",
+          "rawInspectText": "Name: \t \"M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=500,t=148,r=542,b=190]\nIsEnabled: \t False\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"WTTypePerformanceCurveVersionManagerEditView_Button_Modify\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPWindTurbineTypeMainView\n\t MUPWindTurbineTypeEditorView\n\t MUPVersionsManagerEditControl\n\t MTDTileView_Button_ToggleState",
+          "auxChecks": [
+            "IsEnabled=False",
+            "IsOffscreen=False",
+            "FrameworkId=WPF",
+            "ClassName=Button"
+          ],
+          "inspectData": {
+            "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "controlType": "Button",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=500,t=148,r=542,b=190]",
+            "isEnabled": "False",
+            "isVisible": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "27300",
+            "runtimeId": "[7,6AA4,2373DB5]",
+            "frameworkId": "WPF",
+            "className": "Button",
+            "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "helpText": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "ancestors": [
+              "Window",
+              "MUPWindTurbineTypeMainView",
+              "MUPWindTurbineTypeEditorView",
+              "MUPVersionsManagerEditControl",
+              "MTDTileView_Button_ToggleState"
+            ],
+            "children": [],
+            "recommendedTargetMethod": "automation_id,control_type",
+            "recommendedTargetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button"
+          },
+          "source": "control_map",
+          "sourceFile": "20260715_214310_功率曲线版本管理4window_control_map.json"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.12,
+        "action": "click",
+        "sourceRecorderLine": 26,
+        "positionOffset": {
+          "x": -25.93,
+          "y": -12.2
+        },
+        "controlId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [第 26 行已自动匹配控件库，评分=40]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "pywinauto_recorder",
+      "name": "右键 Pywinauto recorder",
+      "stage": "converted",
+      "strategy": "recorder -> action -> control_map",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 29 行自动转换。",
+      "successLog": "右键 Pywinauto recorder",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "className": "Button",
+        "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+        "controlType": "Button",
+        "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+        "templateKey": ""
+      },
+      "controls": [
+        {
+          "id": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21",
+          "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "role": "来自控件库扫描：",
+          "enabled": true,
+          "windowTitle": "",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button",
+          "templateKey": "",
+          "uiPath": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type，质量=推荐保留，说明=定位稳定且控件类型适合直接编排动作 | recorder 自动匹配命中，评分=36，置信度=0.55，依据=控件类型一致; 路径语义重合 3 项; 动作类型偏好匹配。",
+          "rawInspectText": "Name: \t \"M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z\"\nControlType: \t Button\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=500,t=148,r=542,b=190]\nIsEnabled: \t False\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 27300\nFrameworkId: \t \"WPF\"\nClassName: \t \"Button\"\nAutomationId: \t \"WTTypePerformanceCurveVersionManagerEditView_Button_Modify\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State: \t \nAncestors: \t Window\n\t MUPWindTurbineTypeMainView\n\t MUPWindTurbineTypeEditorView\n\t MUPVersionsManagerEditControl\n\t MTDTileView_Button_ToggleState",
+          "auxChecks": [
+            "IsEnabled=False",
+            "IsOffscreen=False",
+            "FrameworkId=WPF",
+            "ClassName=Button"
+          ],
+          "inspectData": {
+            "name": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "controlType": "Button",
+            "localizedControlType": "",
+            "boundingRectangle": "[l=500,t=148,r=542,b=190]",
+            "isEnabled": "False",
+            "isVisible": "True",
+            "isOffscreen": "False",
+            "isKeyboardFocusable": "",
+            "hasKeyboardFocus": "",
+            "processId": "27300",
+            "runtimeId": "[7,6AA4,2373DB5]",
+            "frameworkId": "WPF",
+            "className": "Button",
+            "automationId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify",
+            "nativeWindowHandle": "",
+            "providerDescription": "",
+            "legacyName": "",
+            "legacyRole": "",
+            "legacyState": "",
+            "helpText": "M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+            "ancestors": [
+              "Window",
+              "MUPWindTurbineTypeMainView",
+              "MUPWindTurbineTypeEditorView",
+              "MUPVersionsManagerEditControl",
+              "MTDTileView_Button_ToggleState"
+            ],
+            "children": [],
+            "recommendedTargetMethod": "automation_id,control_type",
+            "recommendedTargetValue": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify,Button"
+          },
+          "source": "control_map",
+          "sourceFile": "20260715_214310_功率曲线版本管理4window_control_map.json"
+        }
+      ],
+      "stepParams": {},
+      "actionConfig": {
+        "timeoutSeconds": 2.5,
+        "waitBefore": 0.0,
+        "waitAfter": 0.18,
+        "action": "right_click",
+        "sourceRecorderLine": 29,
+        "positionOffset": {
+          "x": -52.94,
+          "y": -32.35
+        },
+        "controlId": "WTTypePerformanceCurveVersionManagerEditView_Button_Modify_M3_17_25L3_21_6_75_21"
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "自动转换步骤，建议补充 controls.inspectData 和更稳的 targetMethod/targetValue。 [第 29 行已自动匹配控件库，评分=36]",
+      "fallbackChain": [
+        {
+          "method": "ui_path",
+          "value": "Window > MUPWindTurbineTypeMainView > MUPWindTurbineTypeEditorView > MUPVersionsManagerEditControl > MTDTileView_Button_ToggleState > M3,17.25L3,21 6.75,21 17.81,9.94 14.06,6.19 3,17.25z M20.71,7.04C21.1,6.65,21.1,6.02,20.71,5.63L18.37,3.29C17.98,2.9,17.35,2.9,16.96,3.29L15.13,5.12 18.88,8.87 20.71,7.04z",
+          "confidence": 0.65,
+          "type": "ui_path_search",
+          "description": "使用录制时的 UIPath 完整祖先路径在窗口树中搜索定位"
+        }
+      ]
+    },
+    {
+      "id": "stop_recording_ctrl_alt_r",
+      "name": "菜单 Stop recording\t\tCTRL+ALT+R",
+      "stage": "converted",
+      "strategy": "recorder -> action",
+      "actionType": "action",
+      "enabled": true,
+      "codeSymbol": "",
+      "codeReference": "",
+      "description": "由 recorder 第 32 行 menu_click 自动转换。",
+      "successLog": "菜单 Stop recording\t\tCTRL+ALT+R",
+      "windowTitle": "",
+      "inspectHints": {
+        "controlName": "Stop recording\t\tCTRL+ALT+R",
+        "className": "MenuItem",
+        "automationId": "",
+        "controlType": "MenuItem",
+        "uiPath": "Stop recording\t\tCTRL+ALT+R",
+        "templateKey": ""
+      },
+      "controls": [],
+      "stepParams": {
+        "menuSegments": [
+          "Stop recording\t\tCTRL+ALT+R"
+        ]
+      },
+      "actionConfig": {
+        "timeoutSeconds": 3.0,
+        "waitBefore": 0.1,
+        "waitAfter": 0.18,
+        "action": "menu_select",
+        "menuPath": "Stop recording\t\tCTRL+ALT+R",
+        "sourceRecorderLine": 32
+      },
+      "auxChecks": [],
+      "fallbacks": [],
+      "notes": "菜单路径: Stop recording\t\tCTRL+ALT+R。由 recorder menu_click 转换，执行时依次点击各级菜单项。"
+    }
+  ],
+  "conversionMeta": {
+    "sourceScript": "D:/My_RF_Project/WT_Automation/samples/recorder_scripts/recorded Wed Jul 22 20_10_01 2026.py",
+    "rawSteps": 18,
+    "totalSteps": 17,
+    "actionSteps": 17,
+    "placeholderSteps": 0,
+    "droppedNoOpDragCount": 0,
+    "droppedDuplicateCount": 1,
+    "waitInferred": 2,
+    "sequencesMerged": 3,
+    "noiseFiltered": 0,
+    "controlMapMatchedCount": 12,
+    "controlMapLoadedCount": 281,
+    "runtimeParamBindings": 0,
+    "uniquePathSelectors": 3,
+    "suspiciousStepCount": 5,
+    "findActionCount": 0,
+    "menuClickActionCount": 1,
+    "setTextActionCount": 0,
+    "setComboboxActionCount": 0,
+    "screenshotLinkedCount": 0,
+    "a11yEnrichedCount": 5,
+    "maxNestingDepth": 2,
+    "highConfidenceMatchedCount": 0,
+    "mediumConfidenceMatchedCount": 4,
+    "candidateCount": 0,
+    "candidateDir": "D:\\My_RF_Project\\WT_Automation\\control_maps\\_candidates",
+    "incrementalMerged": 0,
+    "incrementalNew": 0,
+    "incrementalRemoved": 0,
+    "qualityReportPath": "D:\\My_RF_Project\\WT_Automation\\flow_packages\\converted_recorder_flows\\recorded Wed Jul 22 20_10_01 2026_flow_report.html",
+    "confidenceThresholds": {
+      "high": 0.95,
+      "medium": 0.7,
+      "low": 0.6
+    },
+    "controlMapDir": "D:\\My_RF_Project\\WT_Automation\\control_maps",
+    "screenshotDir": "D:/My_RF_Project/WT_Automation/samples/recorder_scripts",
+    "droppedRecorderLines": [],
+    "reviewItems": [
+      {
+        "stepId": "",
+        "stepName": "点击 Custom#[1,2]",
+        "hints": [
+          "未命中控件库，建议补充控件库或检查目标控件定位"
+        ]
+      },
+      {
+        "stepId": "",
+        "stepName": "点击 Custom#[1,2]",
+        "hints": [
+          "未命中控件库，建议补充控件库或检查目标控件定位"
+        ]
+      },
+      {
+        "stepId": "",
+        "stepName": "在 Window 输入: cgcs{ENTER}",
+        "hints": [
+          "未命中控件库，建议补充控件库或检查目标控件定位"
+        ]
+      },
+      {
+        "stepId": "",
+        "stepName": "点击 Custom#[1,2]",
+        "hints": [
+          "未命中控件库，建议补充控件库或检查目标控件定位"
+        ]
+      },
+      {
+        "stepId": "",
+        "stepName": "在 Window 输入: {VK_CONTROL down}{VK_MENU down}{r down}{VK_CONTROL up}{r up}{VK_MENU up}{VK_CONTROL down}{VK_MENU down}{r down}{VK_CONTROL up}{r up}{VK_MENU up}",
+        "hints": [
+          "未命中控件库，建议补充控件库或检查目标控件定位"
+        ]
+      }
+    ]
+  }
+}

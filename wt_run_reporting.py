@@ -1,0 +1,187 @@
+# encoding: utf-8
+
+import json
+import os
+import tempfile
+from datetime import datetime
+
+import wt_logging
+
+
+_BASE_DIR = os.path.dirname(__file__)
+_LOG_STEP = lambda message: None
+# 级别感知记录器 (level, message) -> None；未注入时回退 _LOG_STEP（保持单参数契约）。
+_LOG_AT = None
+# 进程内运行序号：与毫秒组合保证同一 tick 内多次运行 runId 仍唯一（Windows 时钟粒度粗）
+_RUN_SEQUENCE = [0]
+
+
+def configure_run_reporting(base_dir=None, log_step=None, log_at=None):
+    global _BASE_DIR, _LOG_STEP, _LOG_AT
+    if base_dir:
+        _BASE_DIR = base_dir
+    if callable(log_step):
+        _LOG_STEP = log_step
+    if callable(log_at):
+        _LOG_AT = log_at
+
+
+def _log_at(level, message):
+    """按级别输出；未注入级别记录器时退回 _LOG_STEP（由它自行推断级别）。"""
+    if _LOG_AT is not None:
+        try:
+            _LOG_AT(level, message)
+            return
+        except Exception:
+            pass
+    _LOG_STEP(message)
+
+
+def _ensure_report_dir():
+    report_dir = os.path.join(_BASE_DIR, "logs", "run_reports")
+    os.makedirs(report_dir, exist_ok=True)
+    return report_dir
+
+
+def _atomic_write_json(path, data):
+    """原子写 JSON：先写临时文件再 os.replace，避免进程中断留下截断文件。"""
+    dir_path = os.path.dirname(path)
+    os.makedirs(dir_path, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp_report_", suffix=".json", dir=dir_path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file_obj:
+            json.dump(data, file_obj, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def start_run_report(steps_to_run, runtime_config):
+    started_at = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now()
+    # runId 追加毫秒+进程内序号：同一秒甚至同一 tick 内多次运行（快速重跑/双实例）
+    # 也不会互相覆盖报告文件
+    _RUN_SEQUENCE[0] += 1
+    run_id = now.strftime("wt_run_%Y%m%d_%H%M%S") + "_{:03d}_{:03d}".format(
+        now.microsecond // 1000, _RUN_SEQUENCE[0] % 1000
+    )
+    return {
+        "runId": run_id,
+        "startedAt": started_at,
+        "endedAt": "",
+        "status": "running",
+        "stepsRequested": list(steps_to_run or []),
+        "runtimeConfig": dict(runtime_config or {}),
+        "stepResults": [],
+        "summary": {
+            "requestedCount": len(list(steps_to_run or [])),
+            "executedCount": 0,
+            "successCount": 0,
+            "failedCount": 0,
+            "skippedCount": 0,
+            "fallbackCount": 0,
+            "totalElapsedSeconds": 0.0,
+        },
+        "error": "",
+        "reportPath": "",
+        "lastReportPath": "",
+    }
+
+
+def report_step_result(run_report, step_id, step_name, status, action_type="", strategy="", elapsed=0.0, error="", extra=None):
+    if not isinstance(run_report, dict):
+        return
+    extra = dict(extra or {})
+    elapsed_seconds = round(float(elapsed or 0.0), 3)
+    result = {
+        "stepId": str(step_id or "").strip(),
+        "stepName": str(step_name or "").strip(),
+        "status": str(status or "unknown").strip() or "unknown",
+        "actionType": str(action_type or "").strip(),
+        "strategy": str(strategy or "").strip(),
+        "elapsedSeconds": elapsed_seconds,
+        "error": str(error or "").strip(),
+        "extra": extra,
+    }
+    run_report.setdefault("stepResults", []).append(result)
+    summary = run_report.setdefault("summary", {})
+    summary["executedCount"] = len(run_report.get("stepResults", []))
+    summary["totalElapsedSeconds"] = round(float(summary.get("totalElapsedSeconds", 0.0)) + elapsed_seconds, 3)
+    if result["status"] == "success":
+        summary["successCount"] = int(summary.get("successCount", 0)) + 1
+    elif result["status"] == "failed":
+        summary["failedCount"] = int(summary.get("failedCount", 0)) + 1
+    else:
+        summary["skippedCount"] = int(summary.get("skippedCount", 0)) + 1
+    if extra.get("fallbackTemplateUsed") or extra.get("fallbackUsed"):
+        summary["fallbackCount"] = int(summary.get("fallbackCount", 0)) + 1
+        fb_level = extra.get("fallbackLevel")
+        if fb_level:
+            level_counts = summary.setdefault("fallbackLevelCounts", {})
+            level_key = str(fb_level)
+            level_counts[level_key] = int(level_counts.get(level_key, 0)) + 1
+
+
+def _resolve_final_status(run_report, requested_status):
+    normalized_status = str(requested_status or "unknown").strip() or "unknown"
+    if normalized_status != "success" or not isinstance(run_report, dict):
+        return normalized_status
+    summary = run_report.get("summary", {}) if isinstance(run_report.get("summary"), dict) else {}
+    failed_count = int(summary.get("failedCount", 0) or 0)
+    if failed_count > 0:
+        return "partial_success"
+    return normalized_status
+
+
+def finalize_run_report(run_report, status, error=""):
+    if not isinstance(run_report, dict):
+        return ""
+    run_report["status"] = _resolve_final_status(run_report, status)
+    run_report["endedAt"] = datetime.now().isoformat(timespec="seconds")
+    run_report["error"] = str(error or "").strip()
+
+    report_dir = _ensure_report_dir()
+    report_name = f"{run_report.get('runId', 'wt_run')}.json"
+    report_path = os.path.join(report_dir, report_name)
+    last_report_path = os.path.join(_BASE_DIR, "logs", "last_run_report.json")
+    os.makedirs(os.path.dirname(last_report_path), exist_ok=True)
+    run_report["reportPath"] = report_path
+    run_report["lastReportPath"] = last_report_path
+
+    for target_path in [report_path, last_report_path]:
+        _atomic_write_json(target_path, run_report)
+
+    # 多塔串行场景：runtimeConfig.mastName 存在时按塔名额外落盘一份，
+    # 避免 last_run_report.json 只保留最后一塔的报告；同塔多次运行保留最新一份。
+    _mast_rc = run_report.get("runtimeConfig", {})
+    if isinstance(_mast_rc, dict):
+        _mast_name = str(_mast_rc.get("mastName", "") or "").strip()
+        if _mast_name:
+            _safe = "".join(c if c.isalnum() else "_" for c in _mast_name) or "mast"
+            _mast_path = os.path.join(report_dir, f"run_report_{_safe}.json")
+            _atomic_write_json(_mast_path, run_report)
+            run_report["mastReportPath"] = _mast_path
+
+    _summary = run_report.get("summary", {})
+    if not isinstance(_summary, dict):
+        _summary = {}
+    # 级别由运行状态显式给出：本行恒含 `failed=0`（failedCount 初值为 0），
+    # 若靠文本推断会把成功运行判成 ERROR 红字。
+    _status = str(run_report.get("status", "") or "")
+    _level = wt_logging.ERROR if _status == "failed" else wt_logging.INFO
+    _log_at(
+        _level,
+        "运行结果摘要已写入: "
+        f"status={run_report.get('status', '')}, "
+        f"executed={_summary.get('executedCount', 0)}, "
+        f"success={_summary.get('successCount', 0)}, "
+        f"failed={_summary.get('failedCount', 0)}, "
+        f"skipped={_summary.get('skippedCount', 0)}, "
+        f"fallback={_summary.get('fallbackCount', 0)}, "
+        f"report={report_path}",
+    )
+    return report_path

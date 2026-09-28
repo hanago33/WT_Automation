@@ -1,0 +1,694 @@
+# hello，你是什么模型
+
+> hello，你是什么模型
+
+> go on
+
+> 你好
+
+你好！我是 Codex，基于 GPT-5 的编程智能助手。我可以帮你阅读和修改这个项目、排查问题、运行测试，也可以直接用中文交流。
+
+> 请你帮我阅读当前文件下下的项目内容，我是做一个软件流程操作的自动化，目前在步骤编辑方便可能还存在问题，请你看看有什么能够改进的地方
+
+<details><summary>5 previous messages</summary>
+
+> 我先快速梳理项目结构、步骤编辑相关模块和现有测试，再基于实际代码指出流程编辑中可能的缺陷与改进优先级。暂时只做审查和建议，不直接改动文件。
+>
+> 首次读取被 Windows 沙箱的登录权限拦截了，我会改用非登录式 PowerShell 继续只读检查，不会影响项目文件。
+>
+> 项目核心是一个大型单文件 Tkinter 流程编辑器，配合动作 schema、校验、Excel/JSON 导入导出和执行器。接下来我会重点核对“编辑器状态 ↔ 持久化格式 ↔ 执行器”的一致性，这类自动化编辑器最容易在字段丢失、校验时机和步骤重排上出问题。
+>
+> 目前已看到一个重要风险：界面存在大量“表单中的未应用修改”，而步骤切换、拖动、删除、打开文件等操作是否会先提醒保存，需要逐项确认。另一个风险是动作切换时，编辑器会主动删除旧动作字段，这可能导致高级 JSON 配置被静默丢弃。
+>
+> 代码层面的主要问题已经比较集中：编辑器没有对表单字段建立变更跟踪，且选择步骤时直接覆盖表单；控件 ID 修改/删除也没有同步所有引用。最后我会跑现有测试并检查是否有针对这些交互的回归测试，然后给出按优先级排序的改进清单。
+</details>
+
+我阅读了当前项目，重点检查了 `WT_Flow_Editor.py`、动作 schema、流程校验、Excel/JSON 链路和现有测试。整体架构已经比较完整，但步骤编辑目前有几个会直接影响使用可靠性的地方。
+
+**高优先级问题**
+
+1. **步骤切换会静默丢失未应用的表单修改**
+
+   在 [WT_Flow_Editor.py:5085](/D:/My_RF_Project/WT_Automation/WT_Flow_Editor.py:5085) 的 `_on_tree_select()` 和 [WT_Flow_Editor.py:5115](/D:/My_RF_Project/WT_Automation/WT_Flow_Editor.py:5115) 的 `_select_step()` 中，选择新步骤时会直接调用 `_load_step_into_form()`。
+
+   但普通输入框、文本框、下拉框没有统一的修改跟踪，`dirty` 主要只在“应用步骤”“新增步骤”等命令中设置。典型场景：
+
+   1. 修改步骤名称或 Action 参数；
+   2. 不点击“应用修改”；
+   3. 点击另一个步骤；
+   4. 原来的修改直接被覆盖。
+
+   保存时 [WT_Flow_Editor.py:5964](/D:/My_RF_Project/WT_Automation/WT_Flow_Editor.py:5964) 只会尝试保存当前选中的表单，因此之前步骤的修改无法恢复。
+
+   建议：
+
+   - 增加独立的 `form_dirty` 状态；
+   - 给 `StringVar`、`BooleanVar` 和文本框统一绑定变更事件；
+   - 切换步骤、删除步骤、拖动排序、打开文件、关闭窗口时，统一弹出“应用 / 放弃 / 取消”；
+   - 或者在切换步骤前自动提交当前表单，但仍建议保留显式“放弃修改”。
+
+2. **控件 ID 修改后，所有引用没有完整同步**
+
+   [WT_Flow_Editor.py:5382](/D:/My_RF_Project/WT_Automation/WT_Flow_Editor.py:5382) 的 `cmd_edit_control()` 只在当前目标控件正好等于旧 ID 时更新目标控件：
+
+   ```python
+   if self._get_target_control_id() == old_id:
+       self._set_target_control_value(new_id)
+   ```
+
+   但没有同步：
+
+   - `actionConfig.continueWhen.controlId`
+   - 其他可能引用该控件的步骤字段
+   - 当前表单中的 `action_config_text`
+   - 其他运行时配置或辅助引用
+
+   结果是：控件看起来已经改名，但保存时校验可能提示旧 ID 不存在，或者运行时仍然使用旧 ID。
+
+   建议建立统一的 `rename_control_id(step, old_id, new_id)`，一次性更新本步骤所有引用，并在修改控件 ID 时显示引用数量。
+
+3. **删除控件后不会自动处理动作引用**
+
+   [WT_Flow_Editor.py:5403](/D:/My_RF_Project/WT_Automation/WT_Flow_Editor.py:5403) 的 `cmd_delete_control()` 直接删除控件，没有检查：
+
+   - 当前 Action 的 `controlId`
+   - `continueWhen.controlId`
+   - 高级 JSON 中的相关引用
+
+   校验逻辑会在 [wt_flow_validation.py:50](/D:/My_RF_Project/WT_Automation/wt_flow_validation.py:50) 及 [wt_flow_validation.py:140](/D:/My_RF_Project/WT_Automation/wt_flow_validation.py:140) 处发现问题，但用户通常要到保存时才看到错误。
+
+   建议删除前提示：
+
+   > 此控件被当前动作/继续条件引用，删除后这些引用将被清空。是否继续？
+
+   同时提供“清空引用并删除”或“取消”。
+
+4. **Action 类型切换可能造成配置字段丢失**
+
+   [WT_Flow_Editor.py:4827](/D:/My_RF_Project/WT_Automation/WT_Flow_Editor.py:4827) 的 `_build_action_config_from_editor()` 会主动删除旧字段，例如：
+
+   ```python
+   for key in ("text", "value", "seconds", "delta"):
+       action_config.pop(key, None)
+   ```
+
+   对相对区域动作切换到普通动作时，还会删除：
+
+   ```python
+   action_config.pop("parentWindow", None)
+   action_config.pop("relativeRegion", None)
+   ```
+
+   这对简化配置是合理的，但目前没有撤销机制，也没有提示用户哪些字段会被删除。用户尝试切换 Action 类型时，可能误丢高级配置。
+
+   建议：
+
+   - 切换 Action 前检测旧配置中的非空字段；
+   - 显示将被清除的字段；
+   - 增加撤销操作；
+   - 至少保留原始配置快照，方便恢复。
+
+**中优先级改进**
+
+5. **缺少撤销 / 重做**
+
+   当前支持拖动排序、批量删除、复制、套用模板、控件增删、Action 参数修改，但没有 undo/redo。步骤编辑器属于高频试错界面，建议至少为以下操作建立历史栈：
+
+   - 步骤字段修改；
+   - 步骤新增、删除、复制；
+   - 步骤排序；
+   - 控件增删改；
+   - 模板套用；
+   - 流程包引用变更。
+
+6. **控件库会在流程保存前被立即写入**
+
+   例如 [WT_Flow_Editor.py:5465](/D:/My_RF_Project/WT_Automation/WT_Flow_Editor.py:5465) 会将控件同步写入 `control_maps`。如果用户新增控件后关闭编辑器并放弃流程保存，控件库仍可能留下孤立记录。
+
+   建议：
+
+   - 将控件库同步延迟到流程保存成功之后；
+   - 或记录待提交变更，在保存成功后统一写入；
+   - 保存失败时不要更新外部索引。
+
+7. **步骤编辑器的校验粒度仍偏晚**
+
+   目前主要在“应用步骤”和“保存流程”时校验。可以在编辑过程中增加轻量即时检查：
+
+   - Action 需要控件但未选择；
+   - 控件 ID 不存在；
+   - 相对区域坐标不在 `0~1`；
+   - `continueWhen` 引用不存在；
+   - flow package 引用不存在。
+
+   UI 上可以在字段旁显示错误，而不是只弹出一个总错误框。
+
+8. **批量操作缺少依赖影响预览**
+
+   批量删除步骤目前会同步移除流程包中的步骤 ID，这个行为在 [WT_Flow_Editor.py:5747](/D:/My_RF_Project/WT_Automation/WT_Flow_Editor.py:5747) 中是自动执行的。建议删除确认框中显示：
+
+   - 将删除的步骤数量；
+   - 受影响的流程包；
+   - 将被清理的引用数量。
+
+**测试方面**
+
+当前 `tests` 目录测试结果是：
+
+```text
+36 passed
+```
+
+但直接运行整个项目的 `pytest -q` 会在收集阶段失败，因为 [tools/dev_utils/test_api.py:8](/D:/My_RF_Project/WT_Automation/tools/dev_utils/test_api.py:8) 在模块导入时直接执行 `SystemExit`，要求设置 API Key。
+
+建议：
+
+- 将 `test_api.py` 移出 pytest 默认收集范围；
+- 或改为函数内部检查 API Key；
+- 增加编辑器交互回归测试，当前测试基本覆盖工具函数、校验、Excel 和执行器，没有覆盖 Tkinter 步骤切换、未保存修改、控件 ID 重命名和删除引用。
+
+**建议优先顺序**
+
+1. 先修复“未应用修改丢失”；
+2. 再处理控件 ID 重命名、删除引用；
+3. 增加 Action 切换前的字段保护；
+4. 增加编辑器交互测试；
+5. 最后补 undo/redo 和控件库事务化保存。
+
+这些问题中，第 1 项是最紧急的，因为它会让用户在正常编辑步骤时直接丢数据。
+
+> 先解决另外一个问题，这个是由于父窗口没有命中导致点击偏移，主要出错在没有准确识别“导入时间序列文件”窗口的矩形边界。我运行日志里有成功的记录，之前也修复过这个问题。你看看怎么回事
+>
+> User context
+>
+> Attachments:
+> - [2026-07-15 14:23:39] WT自动化流程开始 [2026-07-15 14:23:39] 执行步骤列表: ['step_1', 'step_…: `C:/Users/14830/.codex/attachments/2f23dc40-d84f-4076-9d88-3d1afc0711fa/pasted-text.txt`
+
+<details><summary>1 previous message</summary>
+
+> 我先把这次运行日志和之前的“相对区域偏移”修复记录对齐，再追踪父窗口查找、矩形计算和点击坐标转换的实际代码路径。重点会比较成功与失败日志中窗口句柄、标题、边界和回退策略的差异，定位回归点后直接修复并补测试。
+</details>
+
+这次日志里父窗口标题确实“命中”了，但后续三个下拉点击全部没有展开，说明问题不是简单的找不到窗口，而是命中了同名窗口包装对象，却用了错误的矩形基准。之前修复过“外框与内容区混用”，我正在确认当前 `GetWindowRect` 是否拿到了子窗口/宿主句柄，而不是目标顶层 WPF 弹窗句柄。
+
+Model changed
+
+gpt-5.6-sol -> gpt-5.5
+
+> 你觉得要怎么修复
+
+<details><summary>7 previous messages</summary>
+
+> Context compaction
+>
+> Source: automatic
+> Status: completed
+>
+> 我会先把现有诊断证据补齐，重点看相对区域解析时为什么没有从内容区升级到外层窗口边界；然后给出修复判断并直接落代码。先确认当前工作树和相关 trace。
+>
+> <details><summary>Ran 3 commands</summary>
+>
+> - Ran `git status --short`
+> - Ran `rg -n "def _resolve_wrapper_rectangle|def _describe_frame_upgrade|def resolve_relative_region_absolute_rect|rectangle_trace|selectedSource|frame" wt_flow_locator.py tests`
+> - Ran `Get-ChildItem .dbg -Filter *.ndjson | Sort-Object LastWriteTime -Descending | Select-Object -First 8 Name,LastWriteTime,Length`
+>
+> </details>
+>
+> 工作树目前是干净的。下一步我会从 `.dbg` 里抽取 `rectangle_trace` 的候选与 `selectedSource`，确认是“候选没进来”还是“候选进来了但筛选没选”。
+>
+> <details><summary>Ran 3 commands</summary>
+>
+> - Ran `Get-Content wt_flow_locator.py | Select-Object -Skip 1950 -First 450`
+> - Ran `Get-Content tests\test_wt_flow_locator_relative_window.py`
+> - Ran `@'
+> $files = @(
+>   '.dbg/trae-debug-log-default-height-relative-input.ndjson',
+>   '.dbg/trae-debug-log-start-validation-regression.ndjson',
+>   '.dbg/trae-debug-log-add-data-false-hit.ndjson'
+> )
+> foreach ($file in $files) {
+>   Write-Output "FILE $file"
+>   Get-Content $file | ForEach-Object {
+>     try { $o = $_ | ConvertFrom-Json } catch { return }
+>     if ($o.message -eq 'wt_flow_locator.py:click_relative_region:rectangle_trace') {
+>       $t = $o.trace
+>       [pscustomobject]@{
+>         stepId=$o.stepId
+>         selectedSource=$t.selectedSource
+>         baseRect=($t.baseRect | ConvertTo-Json -Compress)
+>         selectedRect=($t.selectedRect | ConvertTo-Json -Compress)
+>         rootCount=($t.rootCandidates | Measure-Object).Count
+>         parentCount=($t.parentCandidates | Measure-Object).Count
+>       } | ConvertTo-Json -Compress
+>     }
+>   }
+> }
+> '@ | powershell -NoProfile -Command -`
+>
+> </details>
+>
+> 当前代码里已经有“内容区升级为外框”的逻辑，接受阈值也覆盖你日志里的差值；问题更可能出在入口条件或底层 API 没返回候选。刚才日志抽取没有吐出结果，我换一个更直接的筛选方式继续看原始 trace。
+>
+> <details><summary>Ran 3 commands</summary>
+>
+> - Ran `Select-String -Path .dbg\trae-debug-log-default-height-relative-input.ndjson,.dbg\trae-debug-log-start-validation-regression.ndjson,.dbg\trae-debug-log-add-data-false-hit.ndjson -Pattern 'rectangle_trace' -Context 0,0`
+> - Ran `Get-Content wt_flow_locator.py | Select-Object -Skip 1080 -First 140`
+> - Ran `Get-Content wt_flow_locator.py | Select-Object -Skip 2420 -First 230`
+>
+> </details>
+</details>
+
+> 但是我不建议做内容区升级为外框的做法，因为面对其他框的话，不是每个框的反推计算都是相似的
+
+<details><summary>7 previous messages</summary>
+
+> 你的判断是对的。把“内容区升级成外框”做成通用规则，确实会把几何假设扩散到其他窗口；我会把修复点收回到“显式父窗口命中”阶段：当流程明确要求标题为“导入时间序列文件”的 WPF Window 时，应该优先命中真正的顶层对话框，而不是在点击前再靠矩形反推。
+>
+> <details><summary>Ran 2 commands</summary>
+>
+> - Ran `Get-Content wt_flow_locator.py | Select-Object -Skip 1600 -First 330`
+> - Ran `rg -n "should_replace_flow_window_candidate|find_flow_window_for_relative_region|resolve_effective_relative_region_window|_resolve_wrapper_rectangle" tests wt_flow_locator.py`
+>
+> </details>
+>
+> 从代码看，真正危险的是 `find_flow_window_for_relative_region` 会把前台窗口先加入候选；如果前台正好是同标题的 WPF 内容宿主，它会先成为 best。现有“同分时偏向更大外框”只有在外框也进入同一轮候选时才生效，所以修复应加强候选收集/替换，而不是在 `_resolve_wrapper_rectangle` 里全局反推。
+>
+> <details><summary>Ran 2 commands</summary>
+>
+> - Ran `Select-String -Path .dbg\trae-debug-log-default-height-relative-input.ndjson,.dbg\trae-debug-log-start-validation-regression.ndjson -Pattern 'find_flow_window_for_relative_region:found' -Context 0,0`
+> - Ran `Get-Content wt_flow_locator.py | Select-Object -Skip 1480 -First 130`
+>
+> </details>
+>
+> 日志里也支持你的担心：失败时 `topCandidates` 只有一个同标题候选，矩形就是 `128,76,2432,1440`；成功时同样的标题候选矩形直接就是 `115,25,2444,1490`。也就是说并不是“候选里有外框但没选”，而是 UIA 有时给了同一个语义父窗口的内容边界。要稳定修，我倾向引入“记录期父窗口矩形基准”，只对这个步骤声明过的父窗口使用，而不是套一个全局外框推断。
+>
+> <details><summary>Ran 4 commands</summary>
+>
+> - Ran `rg -n 'step_16|step_17|step_26|step_27|导入时间序列文件|parentWindow|relativeRegion|windowRect|recorded|rect' flow_definition.json *.json tests wt_flow_executor.py wt_flow_locator.py`
+> - Ran `Get-Content flow_definition.json | Select-Object -Skip 300 -First 260`
+> - Ran `Get-Content wt_flow_executor.py | Select-Object -Skip 230 -First 170`
+> - Ran `Get-Content flow_definition.json | Select-Object -Skip 1220 -First 760`
+>
+> </details>
+>
+> 我现在不打算继续扩大 `_resolve_wrapper_rectangle` 的升级规则。更稳的修法是给相对区域增加“坐标系来源”：录制时保存父窗口的实际锚定矩形，执行时只有当 `parentWindow` 明确带这个基准时才用它；没有基准的窗口仍按当前命中的窗口矩形算，不影响其他框。
+</details>
+
+你说得对，我不建议把“内容区升级为外框”做成通用修复。这个规则依赖窗口边框/标题栏尺寸，换一个弹窗、DPI、主题或最大化状态都可能误判。
+
+我认为应该这样修：
+
+1. 不在 `_resolve_wrapper_rectangle()` 里做全局反推。
+2. 把问题修在“相对区域的坐标系定义”上：录制步骤时保存父窗口的基准矩形，例如这次成功记录里的：
+   `left=115, top=25, width=2329, height=1465`
+3. 执行时如果 `parentWindow` 明确带了这个 `referenceRect` / `recordedRect`，就用它作为相对坐标换算基准；没有这个字段的旧步骤仍按当前命中的窗口矩形走。
+4. 在步骤编辑界面里把这个字段暴露出来：相对区域不是只存 `x/y/width/height`，还要知道这些比例是相对于哪个父窗口矩形录制出来的。
+5. 对“导入时间序列文件”这组步骤，补上这个基准矩形，避免 UIA 有时返回内容区 `128,76,2304,1364`，有时返回外框 `115,25,2329,1465` 导致点击偏移。
+
+根因不是简单的“找不到窗口”，而是同一个标题的 WPF Window 在不同运行中返回了不同边界。修复方向应该是让流程数据明确坐标系，而不是运行时猜窗口外框。下一步我会按这个方向改：增加可选的 recorded/reference window rect 支持，并只给这类显式相对区域步骤使用。
+
+> 可以
+
+<details><summary>30 previous messages</summary>
+
+> 我按刚才确认的方向改：不再扩大“内容区推外框”的运行时猜测，而是在相对区域数据里支持可选的 `referenceWindowRect`。执行时有这个字段就用它作为坐标系基准；没有字段的步骤保持旧行为。
+>
+> <details><summary>Ran 2 commands</summary>
+>
+> - Ran `Get-Content wt_flow_locator.py | Select-Object -Skip 2385 -First 55`
+> - Ran `Get-Content tests\test_wt_flow_locator_relative_window.py | Select-Object -Last 80`
+>
+> </details>
+>
+> 我会把实现做成显式 opt-in：字段名用 `referenceWindowRect`，放在 `relativeRegion` 里。这样只有流程编辑/录制明确写入该字段的步骤会使用固定坐标系，其他窗口不会受影响。
+>
+> 补丁工具用绝对路径碰到了当前 Windows 沙箱限制，我改用仓库相对路径提交同一处变更。
+>
+> `apply_patch` 在这个环境里连续失败，错误是 Windows 登录沙箱 `CreateProcessWithLogonW failed: 1385`，不是补丁内容问题。为了继续完成修复，我会用受限的 PowerShell 文本替换做同一处小范围修改，并随后用 git diff 校验。
+>
+> <details><summary>Ran a command</summary>
+>
+> - Ran `$path = 'wt_flow_locator.py'
+> $text = Get-Content -Raw -Encoding UTF8 $path
+> $old = @'
+>     normalized["height"] = min(max(normalized["height"], 0.01), 1.0)
+>     return normalized
+>
+>
+> def resolve_relative_region_absolute_rect(window, relative_region, window_rect=None):
+>     window_rect = window_rect or get_wrapper_rectangle(window)
+> '@
+> $new = @'
+>     normalized["height"] = min(max(normalized["height"], 0.01), 1.0)
+>     return normalized
+>
+>
+> def get_relative_region_reference_window_rect(relative_region):
+>     relative_region = relative_region if isinstance(relative_region, dict) else {}
+>     for key in ("referenceWindowRect", "recordedWindowRect"):
+>         candidate = relative_region.get(key)
+>         if not isinstance(candidate, dict):
+>             continue
+>         try:
+>             left = int(candidate.get("left", 0))
+>             top = int(candidate.get("top", 0))
+>             width = int(candidate.get("width", 0))
+>             height = int(candidate.get("height", 0))
+>             right = int(candidate.get("right", left + width))
+>             bottom = int(candidate.get("bottom", top + height))
+>         except Exception:
+>             continue
+>         if width <= 0 and right > left:
+>             width = right - left
+>         if height <= 0 and bottom > top:
+>             height = bottom - top
+>         if width <= 0 or height <= 0:
+>             continue
+>         return {
+>             "left": left,
+>             "top": top,
+>             "right": left + width,
+>             "bottom": top + height,
+>             "width": width,
+>             "height": height,
+>         }
+>     return None
+>
+>
+> def resolve_relative_region_absolute_rect(window, relative_region, window_rect=None):
+>     reference_window_rect = get_relative_region_reference_window_rect(relative_region)
+>     window_rect_source = "referenceWindowRect" if reference_window_rect else "runtime"
+>     window_rect = reference_window_rect or window_rect or get_wrapper_rectangle(window)
+> '@
+> if (-not $text.Contains($old)) { throw 'first replacement anchor not found' }
+> $text = $text.Replace($old, $new)
+> $old2 = @'
+>         "anchor": region["anchor"],
+>         "windowRect": window_rect,
+>     }
+> '@
+> $new2 = @'
+>         "anchor": region["anchor"],
+>         "windowRect": window_rect,
+>         "windowRectSource": window_rect_source,
+>     }
+> '@
+> if (-not $text.Contains($old2)) { throw 'second replacement anchor not found' }
+> $text = $text.Replace($old2, $new2)
+> Set-Content -Encoding UTF8 $path $text`
+>
+> </details>
+>
+> 代码层支持已经加上了。现在我补一个回归测试：即使运行时窗口返回内容区，只要步骤带 `referenceWindowRect`，换算必须使用录制基准矩形，并在元数据里标出来源。
+>
+> <details><summary>Ran a command</summary>
+>
+> - Ran ``$path = 'tests\test_wt_flow_locator_relative_window.py'
+> $text = Get-Content -Raw -Encoding UTF8 $path
+> $insert = @'
+>
+>     def test_relative_region_uses_reference_window_rect_when_present(self):
+>         runtime_rect = {"left": 128, "top": 76, "right": 2432, "bottom": 1440, "width": 2304, "height": 1364}
+>         reference_rect = {"left": 115, "top": 25, "right": 2444, "bottom": 1490, "width": 2329, "height": 1465}
+>         relative_region = {
+>             "x": 0.3033,
+>             "y": 0.1812,
+>             "width": 0.0743,
+>             "height": 0.028,
+>             "anchor": "center",
+>             "referenceWindowRect": reference_rect,
+>         }
+>
+>         absolute_rect = wt_flow_locator.resolve_relative_region_absolute_rect(
+>             None,
+>             relative_region,
+>             window_rect=runtime_rect,
+>         )
+>
+>         self.assertEqual(absolute_rect["windowRect"], reference_rect)
+>         self.assertEqual(absolute_rect["windowRectSource"], "referenceWindowRect")
+>         self.assertEqual(wt_flow_locator.resolve_relative_region_anchor_point(absolute_rect), (907, 310))
+>
+>     def test_relative_region_keeps_runtime_rect_without_reference(self):
+>         runtime_rect = {"left": 128, "top": 76, "right": 2432, "bottom": 1440, "width": 2304, "height": 1364}
+>         relative_region = {"x": 0.3033, "y": 0.1812, "width": 0.0743, "height": 0.028, "anchor": "center"}
+>
+>         absolute_rect = wt_flow_locator.resolve_relative_region_absolute_rect(
+>             None,
+>             relative_region,
+>             window_rect=runtime_rect,
+>         )
+>
+>         self.assertEqual(absolute_rect["windowRect"], runtime_rect)
+>         self.assertEqual(absolute_rect["windowRectSource"], "runtime")
+>         self.assertEqual(wt_flow_locator.resolve_relative_region_anchor_point(absolute_rect), (912, 342))
+> '@
+> $marker = "`r`n`r`nif __name__ == `"__main__`":"
+> if (-not $text.Contains($marker)) { $marker = "`n`nif __name__ == `"__main__`:" }
+> if (-not $text.Contains($marker)) { throw 'test insertion marker not found' }
+> $text = $text.Replace($marker, $insert + $marker)
+> Set-Content -Encoding UTF8 $path $text``
+>
+> </details>
+>
+> 测试插入的定位符没匹配到文件换行格式，没有写入任何内容。我先读取文件尾部的实际文本，再做精确插入。
+>
+> <details><summary>Ran a command</summary>
+>
+> - Ran `Get-Content tests\test_wt_flow_locator_relative_window.py | Select-Object -Last 12`
+>
+> </details>
+>
+> 现在用文件尾部的 `if __name__ == "__main__"` 作为插入点补测试。
+>
+> <details><summary>Ran a command</summary>
+>
+> - Ran `$path = 'tests\test_wt_flow_locator_relative_window.py'
+> $text = Get-Content -Raw -Encoding UTF8 $path
+> $insert = @'
+>
+>     def test_relative_region_uses_reference_window_rect_when_present(self):
+>         runtime_rect = {"left": 128, "top": 76, "right": 2432, "bottom": 1440, "width": 2304, "height": 1364}
+>         reference_rect = {"left": 115, "top": 25, "right": 2444, "bottom": 1490, "width": 2329, "height": 1465}
+>         relative_region = {
+>             "x": 0.3033,
+>             "y": 0.1812,
+>             "width": 0.0743,
+>             "height": 0.028,
+>             "anchor": "center",
+>             "referenceWindowRect": reference_rect,
+>         }
+>
+>         absolute_rect = wt_flow_locator.resolve_relative_region_absolute_rect(
+>             None,
+>             relative_region,
+>             window_rect=runtime_rect,
+>         )
+>
+>         self.assertEqual(absolute_rect["windowRect"], reference_rect)
+>         self.assertEqual(absolute_rect["windowRectSource"], "referenceWindowRect")
+>         self.assertEqual(wt_flow_locator.resolve_relative_region_anchor_point(absolute_rect), (907, 310))
+>
+>     def test_relative_region_keeps_runtime_rect_without_reference(self):
+>         runtime_rect = {"left": 128, "top": 76, "right": 2432, "bottom": 1440, "width": 2304, "height": 1364}
+>         relative_region = {"x": 0.3033, "y": 0.1812, "width": 0.0743, "height": 0.028, "anchor": "center"}
+>
+>         absolute_rect = wt_flow_locator.resolve_relative_region_absolute_rect(
+>             None,
+>             relative_region,
+>             window_rect=runtime_rect,
+>         )
+>
+>         self.assertEqual(absolute_rect["windowRect"], runtime_rect)
+>         self.assertEqual(absolute_rect["windowRectSource"], "runtime")
+>         self.assertEqual(wt_flow_locator.resolve_relative_region_anchor_point(absolute_rect), (912, 342))
+>
+> '@
+> $marker = 'if __name__ == "__main__":'
+> $index = $text.IndexOf($marker)
+> if ($index -lt 0) { throw 'test insertion marker not found' }
+> $text = $text.Insert($index, $insert)
+> Set-Content -Encoding UTF8 $path $text`
+>
+> </details>
+>
+> 运行时代码只有在流程数据里带基准矩形才会生效。接下来我给这组“导入时间序列文件”相对区域步骤补同一个录制基准矩形，范围限定在 `step_16` 到 `step_27` 里实际使用相对区域的步骤。
+>
+> <details><summary>Ran a command</summary>
+>
+> - Ran `$path = 'flow_definition.json'
+> $text = Get-Content -Raw -Encoding UTF8 $path
+> $steps = @('step_27','step_26','step_25','step_24','step_22','step_21','step_19','step_17','step_16')
+> $rect = @'
+> ,
+>           "referenceWindowRect": {
+>             "left": 115,
+>             "top": 25,
+>             "right": 2444,
+>             "bottom": 1490,
+>             "width": 2329,
+>             "height": 1465
+>           }
+> '@
+> foreach ($step in $steps) {
+>     $stepMarker = '"id": "' + $step + '"'
+>     $stepIndex = $text.IndexOf($stepMarker)
+>     if ($stepIndex -lt 0) { throw "step marker not found: $step" }
+>     $nextStepIndex = $text.IndexOf('"id": "', $stepIndex + $stepMarker.Length)
+>     if ($nextStepIndex -lt 0) { $nextStepIndex = $text.Length }
+>     $regionIndex = $text.IndexOf('"relativeRegion": {', $stepIndex)
+>     if ($regionIndex -lt 0 -or $regionIndex -gt $nextStepIndex) { throw "relativeRegion not found in $step" }
+>     $regionEnd = $text.IndexOf('}', $regionIndex)
+>     if ($regionEnd -lt 0 -or $regionEnd -gt $nextStepIndex) { throw "relativeRegion end not found in $step" }
+>     $regionText = $text.Substring($regionIndex, $regionEnd - $regionIndex)
+>     if ($regionText.Contains('"referenceWindowRect"')) { continue }
+>     $anchorMarker = '"anchor": "center"'
+>     $anchorIndex = $text.IndexOf($anchorMarker, $regionIndex)
+>     if ($anchorIndex -lt 0 -or $anchorIndex -gt $regionEnd) { throw "anchor marker not found in $step" }
+>     $insertIndex = $anchorIndex + $anchorMarker.Length
+>     $text = $text.Insert($insertIndex, $rect)
+> }
+> Set-Content -Encoding UTF8 $path $text`
+>
+> </details>
+>
+> 流程数据已写入，接下来我检查 diff 和 JSON 语法。如果插入格式有任何问题会先修正再跑测试。
+>
+> <details><summary>Ran 2 commands</summary>
+>
+> - Ran `git diff -- wt_flow_locator.py tests\test_wt_flow_locator_relative_window.py flow_definition.json`
+> - Ran `python -m json.tool flow_definition.json > $null`
+>
+> </details>
+>
+> 检查发现 PowerShell 默认写入了 UTF-8 BOM，导致 `json.tool` 拒绝解析；内容本身没坏。我会把三个改过的文件重新写成无 BOM 的 UTF-8，然后再验证。
+>
+> <details><summary>Ran a command</summary>
+>
+> - Ran `$encoding = New-Object System.Text.UTF8Encoding($false)
+> foreach ($path in @('wt_flow_locator.py', 'tests\test_wt_flow_locator_relative_window.py', 'flow_definition.json')) {
+>     $text = Get-Content -Raw -Encoding UTF8 $path
+>     if ($text.Length -gt 0 -and [int][char]$text[0] -eq 65279) {
+>         $text = $text.Substring(1)
+>     }
+>     [System.IO.File]::WriteAllText((Resolve-Path $path), $text, $encoding)
+> }`
+>
+> </details>
+>
+> 编码已修正。现在跑 JSON 解析、目标测试和语法检查。
+>
+> <details><summary>Ran 3 commands</summary>
+>
+> - Ran `python -m json.tool flow_definition.json > $null`
+> - Ran `pytest -q tests\test_wt_flow_locator_relative_window.py`
+> - Ran `python -m py_compile wt_flow_locator.py`
+>
+> </details>
+>
+> 目标测试只有一个期望值错了：现有算法是先对区域 `left/width` 分别取整，所以内容区点击点是 `(911,342)`，这也正好和你的日志一致。我修正测试期望后继续跑。
+>
+> <details><summary>Ran a command</summary>
+>
+> - Ran `$path = 'tests\test_wt_flow_locator_relative_window.py'
+> $text = Get-Content -Raw -Encoding UTF8 $path
+> $text = $text.Replace('(912, 342)', '(911, 342)')
+> $encoding = New-Object System.Text.UTF8Encoding($false)
+> [System.IO.File]::WriteAllText((Resolve-Path $path), $text, $encoding)`
+>
+> </details>
+>
+> 继续跑目标测试、全量 tests，并检查 diff。
+>
+> <details><summary>Ran 3 commands</summary>
+>
+> - Ran `pytest -q tests\test_wt_flow_locator_relative_window.py`
+> - Ran `pytest -q tests`
+> - Ran `git diff --check`
+>
+> </details>
+>
+> 测试已经通过，剩下是 diff 格式检查提示三个文件末尾多了空行。我清掉 EOF 多余空行后再做最终检查。
+>
+> <details><summary>Ran a command</summary>
+>
+> - Ran ``$encoding = New-Object System.Text.UTF8Encoding($false)
+> foreach ($path in @('wt_flow_locator.py', 'tests\test_wt_flow_locator_relative_window.py', 'flow_definition.json')) {
+>     $text = Get-Content -Raw -Encoding UTF8 $path
+>     if ($text.Length -gt 0 -and [int][char]$text[0] -eq 65279) { $text = $text.Substring(1) }
+>     $text = [regex]::Replace($text, '(\r?\n){2,}$', "`n")
+>     [System.IO.File]::WriteAllText((Resolve-Path $path), $text, $encoding)
+> }``
+>
+> </details>
+>
+> EOF 已整理。最后再跑一次格式检查、语法检查和当前 diff 摘要。
+>
+> <details><summary>Ran 4 commands</summary>
+>
+> - Ran `git diff --check`
+> - Ran `python -m py_compile wt_flow_locator.py`
+> - Ran `git diff --stat`
+> - Ran `python -m json.tool flow_definition.json > $null`
+>
+> </details>
+>
+> 最终检查通过：JSON 合法、`wt_flow_locator.py` 语法通过、`git diff --check` 没有空白错误。之前目标测试和全量 `tests` 也已通过。
+>
+> <details><summary>Ran a command</summary>
+>
+> - Ran `rg -n "def get_relative_region_reference_window_rect|referenceWindowRect|test_relative_region_uses_reference_window_rect" wt_flow_locator.py tests\test_wt_flow_locator_relative_window.py flow_definition.json`
+>
+> </details>
+</details>
+
+已按你认可的方向修了：没有继续做“内容区反推外框”的通用逻辑，而是给相对区域步骤增加显式坐标系基准 `referenceWindowRect`。
+
+改动点：
+
+- [wt_flow_locator.py](./wt_flow_locator.py:2409)：新增读取 `referenceWindowRect` / `recordedWindowRect` 的逻辑。
+- [wt_flow_locator.py](./wt_flow_locator.py:2443)：相对区域换算时优先使用这个显式基准；没有该字段则保持原来的运行时窗口矩形。
+- [flow_definition.json](./flow_definition.json:1276)：给 `step_16/17/19/21/22/24/25/26/27` 补了成功日志里的窗口基准：
+  `left=115, top=25, right=2444, bottom=1490, width=2329, height=1465`
+- [test_wt_flow_locator_relative_window.py](./tests/test_wt_flow_locator_relative_window.py:165)：补了回归测试，确认运行时即使命中内容区 `128,76,2304,1364`，只要步骤带 `referenceWindowRect`，点击点会按录制基准算。
+
+验证已通过：
+
+```text
+python -m json.tool flow_definition.json
+python -m py_compile wt_flow_locator.py
+pytest -q tests\test_wt_flow_locator_relative_window.py  -> 6 passed
+pytest -q tests                                          -> 38 passed
+git diff --check                                         -> passed
+```
+
+建议你下一次先复跑 `step_16 -> step_27`。重点看 `step_17` 下拉是否能正常展开，以及 `step_26/27` 后是否能进入后续“从时间序列计算”窗口。
+
+> 这个为什么能成功，如果相对位置没变但窗口大小变了是不是就不行？
+
+对，这个方案能成功的前提是：当前“导入时间序列文件”窗口的实际布局和录制时一致，或者至少相对坐标仍然对应同一个视觉位置。
+
+它成功的原因是这次失败不是窗口真的缩放了，而是同一个窗口 UIA 有时返回了两套边界：
+
+- 成功基准：`115,25,2329x1465`
+- 失败时运行时边界：`128,76,2304x1364`
+
+两者差异主要是标题栏/边框/内容区口径不同。你的 `relativeRegion` 本来就是按成功基准录出来的，所以我让这些步骤继续按录制基准换算，就能抵消 UIA 边界口径漂移。
+
+但你说的风险成立：如果用户真的把窗口缩放了、换分辨率、DPI 改了、软件布局自适应了，那么固定 `referenceWindowRect` 不会自动适配。它解决的是“同一窗口同一尺寸下，API 返回内容区/外框不一致”的问题，不是通用缩放适配。
+
+更稳的升级方案是：保存录制基准矩形，但运行时按当前窗口外框与录制外框做比例缩放。也就是：
+
+```text
+runtime_x = current_left + (recorded_relative_x * current_width)
+runtime_y = current_top  + (recorded_relative_y * current_height)
+```
+
+关键是 current_width/current_height 必须是真正同口径的窗口外框。当前问题正是这个 current rect 不稳定，所以不能直接用它。最佳长期方案是：
+
+1. 录制时保存 `referenceWindowRect`。
+2. 执行时先尝试找到同口径外框。
+3. 如果能稳定拿到外框，就按当前外框缩放。
+4. 如果只能拿到内容区，就退回录制基准，避免这次这种偏移。
+
+也就是说，我刚才做的是保守止血修复；它会让你这条固定流程恢复，但不算最终的“可缩放窗口适配”。

@@ -1,0 +1,271 @@
+diff --git a/WT_Launcher.py b/WT_Launcher.py
+index c26cc07..ddb80e4 100644
+--- a/WT_Launcher.py
++++ b/WT_Launcher.py
+@@ -20,6 +20,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
+ 
+ import wt_dpi
+ import wt_theme
++import wt_logging
+ import wt_wheel_router
+ from flow_excel_io import (
+     DEFAULT_FLOW_XLSX,
+@@ -1712,13 +1713,9 @@ class ServerMonitorWindow:
+         # 滚动条先 pack（防止内容长行挤压滚动条，与队列窗口日志区修复保持一致）
+         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+-        for tag, color in (
+-            ("info", "#e6edf3"),
+-            ("error", "#ff7b72"),
+-            ("warning", "#e3b341"),
+-            ("success", "#7ee787"),
+-            ("system", "#79c0ff"),
+-        ):
++        # 日志配色统一从 wt_theme 取（深底变体），不再就地硬编码 ——
++        # 改造前同一系统存在 4 套互不相同的日志配色。
++        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
+             self.log_text.tag_configure(tag, foreground=color)
+ 
+         self._after_id = self.window.after(2000, self._poll_loop)
+@@ -1786,13 +1783,9 @@ class ServerMonitorWindow:
+ 
+     @staticmethod
+     def _classify_line(line):
+-        if any(key in line for key in ("错误", "失败", "ERROR", "Traceback", "Exception")):
+-            return "error"
+-        if any(key in line for key in ("警告", "WARN", "Warning")):
+-            return "warning"
+-        if any(key in line for key in ("完成", "成功", "SUCCESS")):
+-            return "success"
+-        return "info"
++        # 统一委托给 wt_logging：优先读写入方显式级别，缺失时关键字兜底。
++        # 改造前此处与 _tag_for_line / 队列窗口各有一套规则，互不一致。
++        return wt_logging.tag_for_line(line)
+ 
+     def _mark_offline(self, error_text):
+         self.conn_var.set(f"未连接：{error_text}")
+@@ -5402,11 +5395,8 @@ class LauncherApp:
+         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+         self.log_text.config(yscrollcommand=scrollbar.set)
+ 
+-        self.log_text.tag_configure("info", foreground="#f8fafc")
+-        self.log_text.tag_configure("error", foreground="#f87171")
+-        self.log_text.tag_configure("success", foreground="#4ade80")
+-        self.log_text.tag_configure("system", foreground="#60a5fa")
+-        self.log_text.tag_configure("warning", foreground="#fbbf24")
++        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
++            self.log_text.tag_configure(tag, foreground=color)
+ 
+         summary_frame = tk.LabelFrame(
+             report_tab,
+@@ -5531,16 +5521,8 @@ class LauncherApp:
+             self._append_log(line, tag=tag)
+ 
+     def _tag_for_line(self, line):
+-        text = line.lower()
+-        if "错误" in line or "failed" in text or "traceback" in text:
+-            return "error"
+-        if "警告" in line or "warning" in text:
+-            return "warning"
+-        if "完成" in line or "成功" in line:
+-            return "success"
+-        if "启动" in line or "开始" in line or "状态" in line:
+-            return "system"
+-        return "info"
++        # 同 _classify_line：统一委托 wt_logging，消除同系统内多套分类规则。
++        return wt_logging.tag_for_line(line)
+ 
+     def _load_recent_log(self, max_lines=15):
+         if not os.path.exists(LOG_FILE):
+diff --git a/tests/test_wt_logging.py b/tests/test_wt_logging.py
+index 182d894..38090c2 100644
+--- a/tests/test_wt_logging.py
++++ b/tests/test_wt_logging.py
+@@ -267,6 +267,81 @@ class ColorPaletteTests(unittest.TestCase):
+         self.assertNotIn("time", tags, "调色板未定义的标签应被跳过")
+ 
+ 
++class TagForLineTests(unittest.TestCase):
++    """UI 侧着色入口：优先读写入方显式级别，缺失时才关键字兜底。"""
++
++    def test_explicit_level_token_wins_over_keywords(self):
++        """行内含显式 [INFO ] 时，即使正文含"错误"也应按写入方级别着色。"""
++        line = wt_logging.format_line(
++            wt_logging.INFO, "下拉选项枚举进度: 已剔除错误项=0", timestamp=1758000000.0
++        )
++        self.assertEqual(wt_logging.tag_for_line(line), "info")
++
++    def test_explicit_error_level_is_honoured(self):
++        line = wt_logging.format_line(
++            wt_logging.ERROR, "定位失败：控件未找到", timestamp=1758000000.0
++        )
++        self.assertEqual(wt_logging.tag_for_line(line), "error")
++
++    def test_explicit_debug_level_maps_to_debug_tag(self):
++        line = wt_logging.format_line(
++            wt_logging.DEBUG, "[DEBUG] click_flow_control 判定", timestamp=1758000000.0
++        )
++        self.assertEqual(wt_logging.tag_for_line(line), "debug")
++
++    def test_falls_back_to_keywords_without_level_token(self):
++        """历史遗留的纯文本行（改造前落盘的日志）仍能正确着色。"""
++        legacy = "[2026-09-15 14:08:51] 步骤结束: step=x, status=failed, error=控件未找到"
++        self.assertEqual(wt_logging.tag_for_line(legacy), "error")
++        self.assertEqual(
++            wt_logging.tag_for_line("[2026-09-15 14:08:51] 已通过流程链路匹配点击控件"),
++            "success",
++        )
++
++    def test_level_from_line_returns_none_without_token(self):
++        self.assertIsNone(wt_logging.level_from_line("没有级别标记的一行"))
++        self.assertIsNone(wt_logging.level_from_line(""))
++        self.assertIsNone(wt_logging.level_from_line(None))
++
++    def test_level_from_line_reads_each_level(self):
++        for level in wt_logging.LEVELS:
++            with self.subTest(level=level):
++                line = wt_logging.format_line(level, "m", timestamp=1758000000.0)
++                self.assertEqual(wt_logging.level_from_line(line), level)
++
++
++class ClassifierConsolidationTests(unittest.TestCase):
++    """改造前存在 4 个各不相同的分类器，现已全部委托 wt_logging。"""
++
++    def test_launcher_classifiers_delegate(self):
++        import WT_Launcher
++
++        sample = wt_logging.format_line(
++            wt_logging.WARN, "流程控件定位耗时较长", timestamp=1758000000.0
++        )
++        self.assertEqual(WT_Launcher.ServerMonitorWindow._classify_line(sample), "warning")
++
++        app = WT_Launcher.LauncherApp.__new__(WT_Launcher.LauncherApp)
++        self.assertEqual(app._tag_for_line(sample), "warning")
++
++    def test_queue_window_classifier_delegates(self):
++        import wt_task_queue_window
++
++        sample = wt_logging.format_line(
++            wt_logging.ERROR, "定位失败", timestamp=1758000000.0
++        )
++        self.assertEqual(
++            wt_task_queue_window.TaskQueueWindow._classify_line(sample), "error"
++        )
++
++    def test_widget_tag_sets_cover_debug(self):
++        """监视器窗口原先白名单缺 debug，DEBUG 行会被强制降级为 info 色。"""
++        for dark in (False, True):
++            tags = dict(wt_logging.tag_colors_for_widget(dark=dark))
++            self.assertIn("debug", tags)
++            self.assertIn("system", tags)
++
++
+ class DependencyConstraintTests(unittest.TestCase):
+     """wt_logging 会被 headless 流程/CLI 导入，不得引入 tkinter 依赖。"""
+ 
+diff --git a/wt_logging.py b/wt_logging.py
+index c5cdd92..dfdd110 100644
+--- a/wt_logging.py
++++ b/wt_logging.py
+@@ -24,6 +24,7 @@
+ """
+ 
+ import os
++import re
+ import time
+ 
+ # ── 级别枚举 ────────────────────────────────────────────────────────────────
+@@ -237,6 +238,31 @@ def detect_level(line):
+     return INFO
+ 
+ 
++# 已格式化行形如：`[2026-09-17 09:30:12.345] [INFO ] 消息`
++_LEVEL_TOKEN_RE = re.compile(r"^\[[^\]]*\]\s+\[(DEBUG|INFO|WARN|ERROR|CRIT)\s*\]")
++
++
++def level_from_line(line):
++    """从已格式化的日志行中提取写入方显式写入的级别；缺失时返回 None。"""
++    match = _LEVEL_TOKEN_RE.match(str(line or "").lstrip())
++    if not match:
++        return None
++    return normalize_level(match.group(1), default=None)
++
++
++def tag_for_line(line):
++    """把一行日志归入 UI 标签（error / warning / success / system / debug / info）。
++
++    优先采用写入方显式写入的级别 token（log_step 会写 ``[INFO ]`` 等），
++    仅在缺失时回退到关键字猜测 —— 避免 UI 侧二次猜测与写入方判断不一致
++    （改造前 4 个分类器各猜一套，规则互不相同）。
++    """
++    level = level_from_line(line)
++    if level is not None:
++        return _TAG_BY_LEVEL[level]
++    return classify(line)
++
++
+ # ── 配色（延迟从 wt_theme 取） ──────────────────────────────────────────────
+ # 兜底色值：仅当 wt_theme 不可用时使用，与 wt_theme.LOG_LEVEL_COLORS 保持一致。
+ _FALLBACK_COLORS = {
+diff --git a/wt_task_queue_window.py b/wt_task_queue_window.py
+index fb2be59..5c525ae 100644
+--- a/wt_task_queue_window.py
++++ b/wt_task_queue_window.py
+@@ -15,6 +15,7 @@ import urllib.request
+ from tkinter import filedialog, messagebox, ttk
+ 
+ import wt_theme
++import wt_logging
+ 
+ 
+ DEFAULT_URL = "http://127.0.0.1:8768"
+@@ -695,13 +696,8 @@ class TaskQueueWindow:
+         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+ 
+-        for tag, color in (
+-            ("info", "#e2e8f0"),
+-            ("error", "#f87171"),
+-            ("warning", "#fbbf24"),
+-            ("success", "#34d399"),
+-            ("system", "#60a5fa"),
+-        ):
++        # 日志配色统一从 wt_theme 取（深底变体），不再就地硬编码。
++        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
+             self.log_text.tag_configure(tag, foreground=color)
+ 
+         main_paned.add(right_frame, minsize=420, width=580)
+@@ -864,13 +860,8 @@ class TaskQueueWindow:
+         log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+         self.monitor_log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+ 
+-        for tag, color in (
+-            ("info", "#e2e8f0"),
+-            ("error", "#f87171"),
+-            ("warning", "#fbbf24"),
+-            ("success", "#34d399"),
+-            ("system", "#60a5fa"),
+-        ):
++        # 同 log_text：配色统一由 wt_logging 从 wt_theme 取。
++        for tag, color in wt_logging.tag_colors_for_widget(dark=True):
+             self.monitor_log_text.tag_configure(tag, foreground=color)
+ 
+     def _build_flows_tab(self, parent):
+@@ -1971,15 +1962,8 @@ class TaskQueueWindow:
+ 
+     @staticmethod
+     def _classify_line(line):
+-        if any(key in line for key in ("错误", "失败", "ERROR", "Traceback", "Exception")):
+-            return "error"
+-        if any(key in line for key in ("警告", "WARN", "Warning")):
+-            return "warning"
+-        if any(key in line for key in ("完成", "成功", "SUCCESS")):
+-            return "success"
+-        if any(key in line for key in ("queue", "启动", "开始")):
+-            return "system"
+-        return "info"
++        # 统一委托 wt_logging：优先读写入方显式级别，缺失时关键字兜底。
++        return wt_logging.tag_for_line(line)
+ 
+     @staticmethod
+     def _friendly_error(raw):

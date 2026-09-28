@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "project": "WT_Automation",
+  "description": "WT 自动化流程链路定义。当前用于新软件自动化项目的流程可视化、参数编辑、控件信息记录与步骤增删。",
+  "lastUpdated": "2026-07-21T09:38:46",
+  "runtimeConfig": {
+    "gmExe": "",
+    "sourceFilePath": "",
+    "outputDir": "",
+    "projectionFilePath": ""
+  },
+  "flowPackages": [],
+  "steps": []
+}

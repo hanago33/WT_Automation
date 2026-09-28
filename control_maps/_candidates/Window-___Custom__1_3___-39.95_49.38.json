@@ -1,0 +1,38 @@
+{
+  "_candidateMeta": {
+    "sourceScript": "d:\\My_RF_Project\\WT_Automation\\samples\\recorder_scripts\\气象数据录入_20260625.py",
+    "sourceLine": 19,
+    "discoveredAt": "2026-07-21T11:44:07",
+    "status": "pending_review",
+    "uipath": "||Window->||Custom#[1,3]%(-39.95,49.38)",
+    "windowTitle": "",
+    "leafName": "",
+    "leafControlType": "Custom#[1,3]"
+  },
+  "controlDefinition": {
+    "id": "Custom_1_3",
+    "name": "Custom#[1,3]",
+    "role": "来自 recorder 自动转换的目标控件",
+    "targetMethod": "control_type",
+    "targetValue": "Custom#[1,3]",
+    "windowTitle": "",
+    "uiPath": "||Window->||Custom#[1,3]%(-39.95,49.38)",
+    "templateKey": "",
+    "notes": "由 pywinauto_recorder 录制脚本自动转换生成（含 a11y 富化）；若控件库未命中，可继续补充 Inspect/Accessibility 信息。 点击偏移=@(-39.95,49.38)。",
+    "inspectData": {
+      "name": "",
+      "controlType": "Custom#[1,3]",
+      "localizedControlType": "",
+      "automationId": "",
+      "className": "",
+      "frameworkId": "",
+      "ancestors": [
+        "Window"
+      ],
+      "recommendedTargetMethod": "ui_path",
+      "recommendedTargetValue": "||Window->||Custom#[1,3]%(-39.95,49.38)"
+    },
+    "auxChecks": [],
+    "source": "recorder"
+  }
+}

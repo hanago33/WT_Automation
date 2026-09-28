@@ -1,0 +1,1952 @@
+# encoding: utf-8
+
+"""HTTP task queue service for the WT automation host.
+
+The service exposes authenticated queue endpoints to local clients and starts
+WT_AUT_recorded.py as a worker subprocess. Only the standard library is used.
+"""
+
+import argparse
+import json
+import os
+import secrets
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import wt_task_queue
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+AUTOMATION_SCRIPT = os.path.join(BASE_DIR, "WT_AUT_recorded.py")
+DEFAULT_DB_PATH = wt_task_queue.DEFAULT_DB_PATH
+DEFAULT_TASK_LOG_DIR = wt_task_queue.DEFAULT_TASK_LOG_DIR
+DEFAULT_REPORT_DIR = os.path.join(BASE_DIR, "logs", "run_reports")
+DEFAULT_PORT = 8768
+DEFAULT_SERVER_LOG = os.path.join(BASE_DIR, "logs", "task_server.log")
+MAX_BODY_BYTES = 1024 * 1024
+DEFAULT_WEBHOOK = ""
+DEFAULT_LOG_RETENTION_DAYS = 30
+FLOW_VERSION_LEDGER = ".flow_versions.json"
+_FLOW_VERSION_LOCK = threading.Lock()
+STATUS_PENDING = wt_task_queue.STATUS_PENDING
+STATUS_RUNNING = wt_task_queue.STATUS_RUNNING
+STATUS_FAILED = wt_task_queue.STATUS_FAILED
+STATUS_SUCCESS = wt_task_queue.STATUS_SUCCESS
+STATUS_TERMINATED = wt_task_queue.STATUS_TERMINATED
+
+
+def _read_json_file(file_path, default=None):
+    try:
+        with open(file_path, "r", encoding="utf-8") as file_obj:
+            payload = json.load(file_obj)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return default
+
+
+def _safe_flow_name(name):
+    """把上传文件名清洗成安全、可直接写入 flow_packages 的名称。"""
+    raw = os.path.basename(str(name or "").strip())
+    cleaned = "".join(ch for ch in raw if ch.isalnum() or ch in "-_ .")
+    cleaned = cleaned.strip(" .")
+    if not cleaned or cleaned in (".", ".."):
+        return ""
+    if len(cleaned) > 120:
+        cleaned = cleaned[:120]
+    if not cleaned.lower().endswith(".json"):
+        cleaned += ".json"
+    return cleaned
+
+
+def _load_flow_version_ledger(flow_dir):
+    ledger = os.path.join(flow_dir, FLOW_VERSION_LEDGER)
+    data = _read_json_file(ledger, {})
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
+def _save_flow_version_ledger(flow_dir, ledger):
+    target = os.path.join(flow_dir, FLOW_VERSION_LEDGER)
+    tmp_path = target + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as file_obj:
+        json.dump(ledger, file_obj, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, target)
+
+
+def _version_file_name(name, number):
+    stem = name[:-5] if name.lower().endswith(".json") else name
+    return "{}.v{}.json".format(stem, number)
+
+
+def _sha256_text(text):
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _coerce_int_field(payload, name, default, min_value=None):
+    value = payload.get(name, default)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default, None
+    if isinstance(value, bool):
+        return None, "{} must be an integer".format(name)
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None, "{} must be an integer".format(name)
+    if min_value is not None and number < min_value:
+        return None, "{} must be >= {}".format(name, min_value)
+    return number, None
+
+
+def _normalize_scheduled_at(value):
+    if value is None or value == "":
+        return "", None
+    if not isinstance(value, str):
+        return None, "scheduledAt must be an ISO datetime string"
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None, "scheduledAt must be an ISO datetime string"
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed.isoformat(timespec="seconds"), None
+
+
+def _validate_notify_url(value):
+    if value is None or value == "":
+        return "", None
+    if not isinstance(value, str):
+        return None, "notifyUrl must be a URL string"
+    value = value.strip()
+    if len(value) > 500:
+        return None, "notifyUrl too long"
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None, "notifyUrl must be an http(s) URL"
+    return value, None
+
+
+def log_server_event(message, log_path=DEFAULT_SERVER_LOG):
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as file_obj:
+            file_obj.write(
+                "[{}] {}\n".format(
+                    datetime.now().isoformat(timespec="seconds"),
+                    message,
+                )
+            )
+    except OSError:
+        pass
+
+
+_CONTROL_ERROR_ZH = {
+    # wt_task_queue 状态机拒绝信息的中文对照（客户端弹窗直读）
+    "task not found": "任务不存在：该任务不在当前服务器的队列库中（可能提交到了另一台机器，或已被删除）",
+    "cancel is only valid for pending tasks": "只有排队中（pending）的任务才能取消；运行中的任务请用「终止」",
+    "terminate is only valid for running tasks": "只有运行中的任务才能终止",
+    "pause is only valid for pending or running tasks": "只有排队中或运行中的任务才能暂停",
+    "resume is only valid for paused, failed or terminated tasks": "只有已暂停、失败或已终止的任务才能继续/重试",
+    "delete is not allowed while task is running; terminate it first": "运行中的任务不能删除，请先「终止」再删除",
+}
+
+
+def default_worker_launcher(
+    task,
+    task_log_dir=DEFAULT_TASK_LOG_DIR,
+    queue_db=DEFAULT_DB_PATH,
+):
+    cmd = [
+        sys.executable,
+        AUTOMATION_SCRIPT,
+        "--no-monitor",
+        "--task-id",
+        task["taskId"],
+        "--task-user",
+        task["user"],
+        "--task-db",
+        queue_db,
+    ]
+    steps = task.get("stepsRequested") or []
+    if steps:
+        cmd += ["--steps", ",".join(str(step_id) for step_id in steps)]
+    from_step = task.get("resumeFromStep") or task.get("fromStep") or ""
+    if from_step:
+        cmd += ["--from-step", from_step]
+    if task.get("toStep"):
+        cmd += ["--to-step", task["toStep"]]
+    if task.get("resumeFromStep"):
+        cmd += ["--skip-setup"]
+
+    os.makedirs(task_log_dir, exist_ok=True)
+    log_path = wt_task_queue.task_log_path(task["taskId"], task_log_dir)
+    log_file = open(log_path, "a", encoding="utf-8")
+    log_file.write(
+        "[queue] starting task {} user={} flow={}\n".format(
+            task["taskId"],
+            task["user"],
+            task.get("flowPath", ""),
+        )
+    )
+    is_interactive, session_desc = wt_task_queue.check_desktop_interactive()
+    if not is_interactive:
+        log_file.write(
+            "[queue][WARN] Windows 交互桌面预检警告: {}\n"
+            "[queue][WARN] 如后续执行遇窗口查找超时或白屏，请确认服务器桌面未处于锁定状态。\n".format(
+                session_desc
+            )
+        )
+    log_file.flush()
+    # 决定性修复：任务记录里的 flowPath 此前只进日志、不进执行——worker 永远跑
+    # workspace/flow_definition.json 旧链路（远程执行与本地提交内容脱节的总根因）。
+    # 这里与本地 launcher 的注入机制对齐：用 WT_FLOW_DEFINITION_FILE 指定本次任务的
+    # 服务器端流程文件（/api/flows/upload 落盘路径）；worker 端 paramTable 相对路径
+    # 按该文件所在目录解析，与本地行为一致。文件缺失时故意不回退——让 worker 以
+    # "流程文件不存在"显式失败，而不是静默跑旧流程。
+    worker_env = None
+    flow_path = str(task.get("flowPath") or "").strip()
+    if flow_path:
+        worker_env = dict(os.environ)
+        worker_env["WT_FLOW_DEFINITION_FILE"] = flow_path
+    # 任务携带的运行时参数（项目解析结果/业务参数）注入 worker，
+    # 优先级与本地一致：GM_RUNTIME_CONFIG_JSON > 流程文件内 runtimeConfig。
+    runtime_config = task.get("runtimeConfig")
+    if isinstance(runtime_config, dict) and runtime_config:
+        worker_env = worker_env if worker_env is not None else dict(os.environ)
+        worker_env["GM_RUNTIME_CONFIG_JSON"] = json.dumps(
+            runtime_config, ensure_ascii=False
+        )
+    proc = subprocess.Popen(
+        cmd,
+        cwd=BASE_DIR,
+        env=worker_env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    return proc, log_file
+
+
+class TaskQueueHandler(BaseHTTPRequestHandler):
+    server_version = "WTTaskQueue/1.0"
+    # 开启 HTTP/1.1 keep-alive：默认 HTTP/1.0 下每个请求都要新建一条 TCP 连接，
+    # 客户端轮询（Simple 每 2 秒多次查询任务状态）会把握手开销成倍放大。
+    # _send_json 已正确设置 Content-Length，长连接下不会挂起等待响应体。
+    protocol_version = "HTTP/1.1"
+    # 空闲连接读超时（秒），避免长连接长期占用服务线程
+    timeout = 60
+
+    def log_message(self, format, *args):
+        pass
+
+    def _send_json(self, payload, status=200):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_error(self, status, message):
+        self._send_json({"error": message}, status=status)
+
+    def _method_not_allowed(self):
+        self._drain_body_if_any()
+        self._send_json(
+            {"error": "method not allowed", "allowed": ["GET", "POST", "OPTIONS"]},
+            status=405,
+        )
+
+    def _check_auth(self):
+        expected = getattr(self.server, "auth_token", "") or ""
+        if not expected:
+            self._send_unauthorized()
+            return False
+        header = self.headers.get("Authorization", "")
+        token = header[len("Bearer ") :] if header.startswith("Bearer ") else ""
+        if not token and hasattr(self, "path") and "?" in self.path:
+            try:
+                parsed = urllib.parse.urlsplit(self.path)
+                qs = urllib.parse.parse_qs(parsed.query)
+                token = (qs.get("token") or qs.get("authToken") or [""])[0]
+            except Exception:
+                pass
+        if token and secrets.compare_digest(token.strip(), expected):
+            return True
+        self._send_unauthorized()
+        return False
+
+    def _drain_body_if_any(self):
+        """排空未读请求体，避免关闭连接时因残留数据触发 RST。"""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        if 0 < length <= MAX_BODY_BYTES:
+            self._drain_body(length)
+
+    def _send_unauthorized(self):
+        self._drain_body_if_any()
+        self._send_error(401, "unauthorized")
+
+    def _drain_body(self, length):
+        """读取并丢弃请求体，避免返回错误时客户端仍在发送数据。"""
+        remaining = length
+        chunk = 64 * 1024
+        try:
+            while remaining > 0:
+                size = min(chunk, remaining)
+                if not self.rfile.read(size):
+                    break
+                remaining -= size
+        except Exception:
+            pass
+
+    def _read_json_body(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            return None, "invalid Content-Length"
+        if length < 0:
+            return None, "invalid Content-Length"
+        if length > MAX_BODY_BYTES:
+            self._drain_body(length)
+            return None, (413, "request body too large")
+        if length == 0:
+            return {}, None
+        raw = self.rfile.read(length)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return None, "invalid JSON body"
+        if not isinstance(payload, dict):
+            return None, "JSON body must be an object"
+        return payload, None
+
+    def _list_flows(self):
+        flow_dir = os.path.abspath(
+            getattr(self.server, "flow_dir", os.path.join(BASE_DIR, "flow_packages"))
+        )
+        flows = []
+        ledger = _load_flow_version_ledger(flow_dir)
+        archive_files = set()
+        for flow_name, flow_entry in ledger.items():
+            if not isinstance(flow_entry, dict):
+                continue
+            for version in flow_entry.get("versions") or []:
+                archive_name = str(version.get("file") or "")
+                if archive_name and archive_name != flow_name:
+                    archive_files.add(archive_name)
+        if os.path.isdir(flow_dir):
+            for name in sorted(os.listdir(flow_dir)):
+                if not name.endswith(".json"):
+                    continue
+                lowered = name.lower()
+                if name == "flow_package_registry.json" or ".bak" in lowered:
+                    continue
+                if name in archive_files:
+                    continue
+                versions = []
+                for version in (ledger.get(name) or {}).get("versions") or []:
+                    versions.append(
+                        {
+                            "version": version.get("version"),
+                            "file": os.path.join(flow_dir, version.get("file", "")),
+                            "user": version.get("user", ""),
+                            "uploadedAt": version.get("uploadedAt", ""),
+                            "sha256": version.get("sha256", ""),
+                        }
+                    )
+                flows.append(
+                    {
+                        "path": os.path.join(flow_dir, name),
+                        "name": name,
+                        "versions": versions,
+                        "versionCount": len(versions),
+                    }
+                )
+        return {"flows": flows}
+
+    def _handle_flow_upload(self):
+        payload, error = self._read_json_body()
+        if error:
+            if isinstance(error, tuple):
+                self._send_error(error[0], error[1])
+            else:
+                self._send_error(400, error)
+            return
+        name = _safe_flow_name(payload.get("name"))
+        content = payload.get("content")
+        if not name:
+            self._send_error(400, "invalid flow file name")
+            return
+        lowered = name.lower()
+        if lowered == "flow_package_registry.json" or ".bak" in lowered:
+            self._send_error(400, "reserved flow file name")
+            return
+        if not isinstance(content, dict):
+            self._send_error(400, "flow content must be a JSON object")
+            return
+        if "steps" in content and not isinstance(content["steps"], list):
+            self._send_error(400, "flow content steps must be a list")
+            return
+        if "flowPackages" in content and not isinstance(content["flowPackages"], list):
+            self._send_error(400, "flow content flowPackages must be a list")
+            return
+        flow_dir = os.path.abspath(
+            getattr(self.server, "flow_dir", os.path.join(BASE_DIR, "flow_packages"))
+        )
+        abs_flow = os.path.abspath(os.path.join(flow_dir, name))
+        try:
+            inside = os.path.commonpath([flow_dir, abs_flow]) == flow_dir
+        except ValueError:
+            inside = False
+        if not inside:
+            self._send_error(400, "invalid flow file name")
+            return
+        serialized = json.dumps(content, ensure_ascii=False, indent=2)
+        digest = _sha256_text(serialized)
+        uploaded_at = datetime.now().isoformat(timespec="seconds")
+        upload_user = str(payload.get("user") or "").strip()
+        with _FLOW_VERSION_LOCK:
+            try:
+                os.makedirs(flow_dir, exist_ok=True)
+                ledger = _load_flow_version_ledger(flow_dir)
+                entry = ledger.get(name)
+                if not isinstance(entry, dict):
+                    entry = {"versions": []}
+                    ledger[name] = entry
+                old_serialized = None
+                try:
+                    with open(abs_flow, "r", encoding="utf-8") as file_obj:
+                        old_serialized = file_obj.read()
+                except OSError:
+                    old_serialized = None
+                existing_versions = entry.get("versions") or []
+                version = 1
+                if existing_versions:
+                    version = max(
+                        (int(item.get("version") or 0) for item in existing_versions),
+                        default=0,
+                    ) + 1
+                if old_serialized is not None:
+                    archive_number = max(version - 1, 1)
+                    archive_name = _version_file_name(name, archive_number)
+                    while os.path.exists(os.path.join(flow_dir, archive_name)):
+                        archive_number += 1
+                        archive_name = _version_file_name(name, archive_number)
+                    with open(os.path.join(flow_dir, archive_name), "w", encoding="utf-8") as file_obj:
+                        file_obj.write(old_serialized)
+                    replaced = False
+                    canonical_file = os.path.basename(abs_flow)
+                    for record in reversed(existing_versions):
+                        if (
+                            int(record.get("version") or 0) == archive_number
+                            and record.get("file") == canonical_file
+                        ):
+                            record["file"] = archive_name
+                            record["sha256"] = _sha256_text(old_serialized)
+                            replaced = True
+                            break
+                    if not replaced:
+                        for record in reversed(existing_versions):
+                            if record.get("file") == canonical_file:
+                                record["file"] = archive_name
+                                record["sha256"] = _sha256_text(old_serialized)
+                                replaced = True
+                                break
+                    if not replaced:
+                        existing_versions.append(
+                            {
+                                "version": archive_number,
+                                "file": archive_name,
+                                "user": entry.get("lastUser", ""),
+                                "uploadedAt": entry.get("lastUploadedAt", ""),
+                                "sha256": _sha256_text(old_serialized),
+                            }
+                        )
+                tmp_flow = abs_flow + ".tmp"
+                try:
+                    with open(tmp_flow, "w", encoding="utf-8") as file_obj:
+                        file_obj.write(serialized)
+                    os.replace(tmp_flow, abs_flow)
+                finally:
+                    if os.path.exists(tmp_flow):
+                        try:
+                            os.remove(tmp_flow)
+                        except OSError:
+                            pass
+                existing_versions.append(
+                    {
+                        "version": version,
+                        "file": os.path.basename(abs_flow),
+                        "user": upload_user,
+                        "uploadedAt": uploaded_at,
+                        "sha256": digest,
+                    }
+                )
+                entry["versions"] = existing_versions
+                entry["lastUser"] = upload_user
+                entry["lastUploadedAt"] = uploaded_at
+                entry["currentVersion"] = version
+                _save_flow_version_ledger(flow_dir, ledger)
+            except OSError as exc:
+                self._send_error(500, "failed to save flow: {}".format(exc))
+                return
+        wt_task_queue.add_audit_event(
+            user=upload_user,
+            source_ip=self.client_address[0] if self.client_address else "",
+            action="flow_upload",
+            result="ok",
+            detail="name={} version={}".format(name, version),
+            db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+        )
+        self._send_json(
+            {
+                "flowPath": abs_flow,
+                "name": name,
+                "version": version,
+                "uploadedAt": uploaded_at,
+                "sha256": digest,
+            },
+            status=201,
+        )
+
+    def _handle_flow_rollback(self):
+        """把指定历史版本恢复为当前版：当前文件自动按下一版本号归档（历史不丢）。
+
+        与 _handle_flow_upload 同一把 _FLOW_VERSION_LOCK、同一套台账/归档命名，
+        回滚在台账里表现为一次新的"上传"（user=回滚操作者），版本只增不减。
+        """
+        payload, error = self._read_json_body()
+        if error:
+            if isinstance(error, tuple):
+                self._send_error(error[0], error[1])
+            else:
+                self._send_error(400, error)
+            return
+        name = _safe_flow_name(payload.get("name"))
+        try:
+            version = int(payload.get("version") or 0)
+        except (TypeError, ValueError):
+            version = 0
+        if not name or version < 1:
+            self._send_error(400, "name and version are required")
+            return
+        rollback_user = str(payload.get("user") or "").strip() or "unknown"
+        flow_dir = os.path.abspath(
+            getattr(self.server, "flow_dir", os.path.join(BASE_DIR, "flow_packages"))
+        )
+        current_path = os.path.abspath(os.path.join(flow_dir, name))
+        try:
+            inside = os.path.commonpath([flow_dir, current_path]) == flow_dir
+        except ValueError:
+            inside = False
+        if not inside:
+            self._send_error(400, "invalid flow file name")
+            return
+        with _FLOW_VERSION_LOCK:
+            ledger = _load_flow_version_ledger(flow_dir)
+            entry = ledger.get(name)
+            if not isinstance(entry, dict):
+                self._send_error(404, "flow not found in version ledger")
+                return
+            versions = entry.get("versions") or []
+            record = None
+            for item in versions:
+                if int(item.get("version") or 0) == version:
+                    record = item
+                    break
+            if record is None:
+                self._send_error(404, "flow version not found")
+                return
+            archive_path = os.path.abspath(os.path.join(flow_dir, str(record.get("file") or "")))
+            try:
+                archive_inside = os.path.commonpath([flow_dir, archive_path]) == flow_dir
+            except ValueError:
+                archive_inside = False
+            if not archive_inside or not os.path.isfile(archive_path):
+                self._send_error(404, "flow version file not found")
+                return
+            try:
+                with open(archive_path, "r", encoding="utf-8") as file_obj:
+                    serialized = file_obj.read()
+                content = json.loads(serialized)
+                if not isinstance(content, dict):
+                    raise ValueError("content is not a JSON object")
+            except FileNotFoundError:
+                self._send_error(404, "flow version file not found")
+                return
+            except (OSError, ValueError) as exc:
+                self._send_error(500, "flow version file is not readable: {}".format(exc))
+                return
+            # 回滚目标 == 当前文件内容（sha256 相同）→ 幂等成功，不做任何写操作
+            if os.path.isfile(current_path):
+                try:
+                    with open(current_path, "r", encoding="utf-8") as file_obj:
+                        current_text = file_obj.read()
+                except OSError:
+                    current_text = None
+                if current_text is not None and _sha256_text(current_text) == record.get("sha256"):
+                    self._send_json(
+                        {
+                            "flowPath": current_path,
+                            "name": name,
+                            "version": version,
+                            "rolledBack": False,
+                            "message": "目标版本与当前内容一致，无需回滚",
+                        }
+                    )
+                    return
+            # 当前文件先归档（复用 upload 的归档语义：按下一版本号另存，台账补记录）
+            uploaded_at = datetime.now().isoformat(timespec="seconds")
+            new_version = max(
+                (int(item.get("version") or 0) for item in versions), default=0
+            ) + 1
+            try:
+                if os.path.isfile(current_path):
+                    with open(current_path, "r", encoding="utf-8") as file_obj:
+                        old_serialized = file_obj.read()
+                    archive_number = new_version - 1
+                    archive_name = _version_file_name(name, archive_number)
+                    while os.path.exists(os.path.join(flow_dir, archive_name)):
+                        archive_number += 1
+                        archive_name = _version_file_name(name, archive_number)
+                    with open(os.path.join(flow_dir, archive_name), "w", encoding="utf-8") as file_obj:
+                        file_obj.write(old_serialized)
+                    replaced = False
+                    canonical_file = os.path.basename(current_path)
+                    for item in reversed(versions):
+                        if (
+                            int(item.get("version") or 0) == archive_number
+                            and item.get("file") == canonical_file
+                        ):
+                            item["file"] = archive_name
+                            item["sha256"] = _sha256_text(old_serialized)
+                            replaced = True
+                            break
+                    if not replaced:
+                        for item in reversed(versions):
+                            if item.get("file") == canonical_file:
+                                item["file"] = archive_name
+                                item["sha256"] = _sha256_text(old_serialized)
+                                replaced = True
+                                break
+                    if not replaced:
+                        versions.append(
+                            {
+                                "version": archive_number,
+                                "file": archive_name,
+                                "user": entry.get("lastUser", ""),
+                                "uploadedAt": entry.get("lastUploadedAt", ""),
+                                "sha256": _sha256_text(old_serialized),
+                            }
+                        )
+                # 归档内容原子覆盖为当前文件
+                tmp_flow = current_path + ".tmp"
+                try:
+                    with open(tmp_flow, "w", encoding="utf-8") as file_obj:
+                        file_obj.write(serialized)
+                    os.replace(tmp_flow, current_path)
+                finally:
+                    if os.path.exists(tmp_flow):
+                        try:
+                            os.remove(tmp_flow)
+                        except OSError:
+                            pass
+                versions.append(
+                    {
+                        "version": new_version,
+                        "file": os.path.basename(current_path),
+                        "user": rollback_user,
+                        "uploadedAt": uploaded_at,
+                        "sha256": record.get("sha256") or _sha256_text(serialized),
+                    }
+                )
+                entry["versions"] = versions
+                entry["lastUser"] = rollback_user
+                entry["lastUploadedAt"] = uploaded_at
+                entry["currentVersion"] = new_version
+                _save_flow_version_ledger(flow_dir, ledger)
+            except OSError as exc:
+                self._send_error(500, "failed to rollback flow: {}".format(exc))
+                return
+        wt_task_queue.add_audit_event(
+            user=rollback_user,
+            source_ip=self.client_address[0] if self.client_address else "",
+            action="flow_rollback",
+            result="ok",
+            detail="name={} version={} -> new version {}".format(name, version, new_version),
+            db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+        )
+        self._send_json(
+            {
+                "flowPath": current_path,
+                "name": name,
+                "version": new_version,
+                "rolledBackFrom": version,
+                "rolledBack": True,
+                "user": rollback_user,
+                "uploadedAt": uploaded_at,
+                "sha256": record.get("sha256") or _sha256_text(serialized),
+            },
+            status=201,
+        )
+
+    def _handle_submit(self):
+        payload, error = self._read_json_body()
+        if error:
+            if isinstance(error, tuple):
+                self._send_error(error[0], error[1])
+            else:
+                self._send_error(400, error)
+            return
+        user = str(payload.get("user") or "").strip()
+        flow_path = str(payload.get("flowPath") or "").strip()
+        if not user or not flow_path:
+            self._send_error(400, "user and flowPath are required")
+            return
+        flow_dir = os.path.abspath(
+            getattr(self.server, "flow_dir", os.path.join(BASE_DIR, "flow_packages"))
+        )
+        abs_flow = os.path.abspath(flow_path)
+        try:
+            inside = os.path.commonpath([flow_dir, abs_flow]) == flow_dir
+        except ValueError:
+            inside = False
+        if not inside or not os.path.isfile(abs_flow):
+            self._send_error(400, "flowPath must be a JSON flow inside flow_packages")
+            return
+        flow_payload = _read_json_file(abs_flow)
+        if flow_payload is None:
+            self._send_error(400, "flowPath is not a valid JSON object")
+            return
+        # P1 依赖一致性校验：流程引用的相对路径参数表必须在服务器 flow_packages 内
+        # 存在（随发布包部署）。缺失时直接拒绝，避免任务排队到执行期才莫名失败。
+        param_table = str(flow_payload.get("paramTable") or "").strip()
+        if param_table and not os.path.isabs(param_table):
+            param_path = os.path.join(flow_dir, param_table)
+            if not os.path.isfile(param_path):
+                self._send_error(
+                    400,
+                    "paramTable not found on server: {}（参数表未随发布包部署到服务器，"
+                    "请重新打包部署后重试）".format(param_table),
+                )
+                return
+        # 任务级运行时参数（项目解析结果/业务参数），随任务记录存储并在 worker
+        # 启动时注入 GM_RUNTIME_CONFIG_JSON（与本地 Simple 运行同一优先级机制）。
+        runtime_config = payload.get("runtimeConfig")
+        if runtime_config is None:
+            runtime_config = {}
+        if not isinstance(runtime_config, dict):
+            self._send_error(400, "runtimeConfig must be a JSON object")
+            return
+        if "steps" in payload:
+            raw_steps = payload["steps"]
+        else:
+            raw_steps = []
+        if isinstance(raw_steps, str):
+            steps = [item.strip() for item in raw_steps.split(",") if item.strip()]
+        elif isinstance(raw_steps, list):
+            steps = []
+            for item in raw_steps:
+                if not isinstance(item, (str, int)):
+                    self._send_error(400, "steps must contain only strings")
+                    return
+                value = str(item).strip()
+                if value:
+                    steps.append(value)
+        else:
+            self._send_error(400, "steps must be a comma string or an array")
+            return
+        priority, error = _coerce_int_field(payload, "priority", 0)
+        if error:
+            self._send_error(400, error)
+            return
+        max_attempts, error = _coerce_int_field(
+            payload,
+            "maxAttempts",
+            1,
+            min_value=1,
+        )
+        if error:
+            self._send_error(400, error)
+            return
+        retry_delay_seconds, error = _coerce_int_field(
+            payload,
+            "retryDelaySeconds",
+            0,
+            min_value=0,
+        )
+        if error:
+            self._send_error(400, error)
+            return
+        timeout_seconds, error = _coerce_int_field(
+            payload,
+            "timeoutSeconds",
+            0,
+            min_value=0,
+        )
+        if error:
+            self._send_error(400, error)
+            return
+        scheduled_at, error = _normalize_scheduled_at(payload.get("scheduledAt"))
+        if error:
+            self._send_error(400, error)
+            return
+        notify_url, error = _validate_notify_url(payload.get("notifyUrl"))
+        if error:
+            self._send_error(400, error)
+            return
+        source_ip = self.client_address[0] if self.client_address else ""
+        idempotency_key = str(
+            payload.get("idempotencyKey")
+            or payload.get("clientToken")
+            or (self.headers.get("X-Idempotency-Key") if hasattr(self, "headers") else "")
+            or ""
+        ).strip()
+        task = wt_task_queue.submit_task(
+            user=user,
+            flow_path=abs_flow,
+            source_ip=source_ip,
+            steps=steps,
+            from_step=str(payload.get("fromStep") or "").strip(),
+            to_step=str(payload.get("toStep") or "").strip(),
+            priority=priority,
+            scheduled_at=scheduled_at,
+            max_attempts=max_attempts,
+            retry_delay_seconds=retry_delay_seconds,
+            timeout_seconds=timeout_seconds,
+            notify_url=notify_url,
+            runtime_config=runtime_config or None,
+            idempotency_key=idempotency_key,
+            db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+        )
+        is_replay = bool(task.get("idempotentReplay"))
+        wt_task_queue.add_audit_event(
+            user=user,
+            source_ip=source_ip,
+            action="submit_replay" if is_replay else "submit",
+            task_id=task["taskId"],
+            result="ok",
+            detail="flowPath={}".format(abs_flow),
+            db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+        )
+        resp = {"task": task}
+        if is_replay:
+            resp["idempotentReplay"] = True
+        self._send_json(resp, status=201)
+
+    def _handle_batch_submit(self):
+        payload, error = self._read_json_body()
+        if error:
+            if isinstance(error, tuple):
+                self._send_error(error[0], error[1])
+            else:
+                self._send_error(400, error)
+            return
+        tasks_raw = payload.get("tasks")
+        if not isinstance(tasks_raw, list) or not tasks_raw:
+            self._send_error(400, "tasks must be a non-empty array")
+            return
+
+        flow_dir = os.path.abspath(
+            getattr(self.server, "flow_dir", os.path.join(BASE_DIR, "flow_packages"))
+        )
+        source_ip = self.client_address[0] if self.client_address else ""
+        validated_specs = []
+
+        for idx, item in enumerate(tasks_raw):
+            if not isinstance(item, dict):
+                self._send_error(400, "tasks[{}]: item must be a JSON object".format(idx))
+                return
+            user = str(item.get("user") or "").strip()
+            flow_path = str(item.get("flowPath") or item.get("flow_path") or "").strip()
+            if not user or not flow_path:
+                self._send_error(400, "tasks[{}]: user and flowPath are required".format(idx))
+                return
+
+            abs_flow = os.path.abspath(flow_path)
+            try:
+                inside = os.path.commonpath([flow_dir, abs_flow]) == flow_dir
+            except ValueError:
+                inside = False
+            if not inside or not os.path.isfile(abs_flow):
+                self._send_error(
+                    400, "tasks[{}]: flowPath must be a JSON flow inside flow_packages".format(idx)
+                )
+                return
+
+            flow_payload = _read_json_file(abs_flow)
+            if flow_payload is None:
+                self._send_error(400, "tasks[{}]: flowPath is not a valid JSON object".format(idx))
+                return
+
+            param_table = str(flow_payload.get("paramTable") or "").strip()
+            if param_table and not os.path.isabs(param_table):
+                param_path = os.path.join(flow_dir, param_table)
+                if not os.path.isfile(param_path):
+                    self._send_error(
+                        400,
+                        "tasks[{}]: paramTable not found on server: {}".format(idx, param_table),
+                    )
+                    return
+
+            runtime_config = (
+                item.get("runtimeConfig") if "runtimeConfig" in item else item.get("runtime_config")
+            )
+            if runtime_config is None:
+                runtime_config = {}
+            if not isinstance(runtime_config, dict):
+                self._send_error(400, "tasks[{}]: runtimeConfig must be a JSON object".format(idx))
+                return
+
+            raw_steps = item.get("steps") or item.get("stepsRequested") or []
+            if isinstance(raw_steps, str):
+                steps = [s.strip() for s in raw_steps.split(",") if s.strip()]
+            elif isinstance(raw_steps, list):
+                steps = []
+                for s in raw_steps:
+                    if not isinstance(s, (str, int)):
+                        self._send_error(400, "tasks[{}]: steps must contain only strings".format(idx))
+                        return
+                    val = str(s).strip()
+                    if val:
+                        steps.append(val)
+            else:
+                self._send_error(400, "tasks[{}]: steps must be a comma string or an array".format(idx))
+                return
+
+            priority, err = _coerce_int_field(item, "priority", 0)
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+            max_attempts, err = _coerce_int_field(item, "maxAttempts", 1, min_value=1)
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+            retry_delay_seconds, err = _coerce_int_field(item, "retryDelaySeconds", 0, min_value=0)
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+            timeout_seconds, err = _coerce_int_field(item, "timeoutSeconds", 0, min_value=0)
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+            scheduled_at, err = _normalize_scheduled_at(
+                item.get("scheduledAt") or item.get("scheduled_at")
+            )
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+            notify_url, err = _validate_notify_url(item.get("notifyUrl") or item.get("notify_url"))
+            if err:
+                self._send_error(400, "tasks[{}]: {}".format(idx, err))
+                return
+
+            idempotency_key = str(
+                item.get("idempotencyKey")
+                or item.get("clientToken")
+                or item.get("idempotency_key")
+                or ""
+            ).strip()
+
+            validated_specs.append({
+                "user": user,
+                "flow_path": abs_flow,
+                "source_ip": source_ip,
+                "steps": steps,
+                "from_step": str(item.get("fromStep") or item.get("from_step") or "").strip(),
+                "to_step": str(item.get("toStep") or item.get("to_step") or "").strip(),
+                "priority": priority,
+                "scheduled_at": scheduled_at,
+                "max_attempts": max_attempts,
+                "retry_delay_seconds": retry_delay_seconds,
+                "timeout_seconds": timeout_seconds,
+                "notify_url": notify_url,
+                "runtime_config": runtime_config,
+                "idempotency_key": idempotency_key,
+            })
+
+        tasks = wt_task_queue.submit_tasks_batch(
+            validated_specs,
+            db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+        )
+        wt_task_queue.add_audit_event(
+            user=validated_specs[0]["user"] if validated_specs else "",
+            source_ip=source_ip,
+            action="batch_submit",
+            result="ok",
+            detail="submitted {} tasks".format(len(tasks)),
+            db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+        )
+        self._send_json({"tasks": tasks, "count": len(tasks)}, status=201)
+
+    def _handle_maintenance_archive(self):
+        payload, error = self._read_json_body()
+        if error and error != "empty body":
+            if isinstance(error, tuple):
+                self._send_error(error[0], error[1])
+            else:
+                self._send_error(400, error)
+            return
+        payload = payload or {}
+        days = payload.get("days", 30)
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            self._send_error(400, "days must be an integer")
+            return
+        limit = payload.get("limit", 1000)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            self._send_error(400, "limit must be an integer")
+            return
+
+        db_path = getattr(self.server, "queue_db", DEFAULT_DB_PATH)
+        result = wt_task_queue.archive_completed_tasks(days=days, limit=limit, db_path=db_path)
+        source_ip = self.client_address[0] if self.client_address else ""
+        wt_task_queue.add_audit_event(
+            user="admin",
+            source_ip=source_ip,
+            action="archive_tasks",
+            result="ok",
+            detail="archived {} tasks (days={}, cutoff={})".format(
+                result.get("archivedCount", 0), days, result.get("cutoff", "")
+            ),
+            db_path=db_path,
+        )
+        self._send_json(
+            {
+                "ok": True,
+                "archivedCount": result.get("archivedCount", 0),
+                "cutoff": result.get("cutoff", ""),
+                "days": days,
+            }
+        )
+
+    def _handle_task_events_stream(self, task_id):
+        """处理任务实时事件流 (Server-Sent Events / SSE)。
+
+        推送事件：
+          - status: 任务最新状态、进度与动态 ETA
+          - log: 增量日志文本行
+          - ping: 心跳保活
+          - end: 任务终态结束标记
+        """
+        task = wt_task_queue.get_task(
+            task_id,
+            db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+        )
+        if task is None:
+            self._send_error(404, "task not found")
+            return
+
+        try:
+            try:
+                self.connection.settimeout(10.0)
+            except Exception:
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+
+        def _send_sse(event, data):
+            msg = "event: {}\ndata: {}\n\n".format(
+                event, json.dumps(data, ensure_ascii=False)
+            )
+            self.wfile.write(msg.encode("utf-8"))
+            self.wfile.flush()
+
+        log_dir = getattr(self.server, "task_log_dir", DEFAULT_TASK_LOG_DIR)
+        log_file = os.path.join(log_dir, "{}.log".format(task_id))
+
+        try:
+            # 1. 初始状态与近期日志推送
+            task["eta"] = wt_task_queue.calculate_task_eta(task)
+            _send_sse("status", {"task": task, "eta": task["eta"]})
+
+            lines, _ = wt_task_queue.read_task_log_tail(task_id, tail=100, log_dir=log_dir)
+            if lines:
+                _send_sse("log", {"lines": lines, "isInitial": True})
+
+            file_pos = 0
+            if os.path.exists(log_file):
+                file_pos = os.path.getsize(log_file)
+
+            # 若任务已处于终态，推送 end 后直接结束
+            if task.get("status") in (
+                wt_task_queue.STATUS_SUCCESS,
+                "completed",
+                wt_task_queue.STATUS_FAILED,
+                wt_task_queue.STATUS_CANCELED,
+                "cancelled",
+                wt_task_queue.STATUS_TERMINATED,
+            ):
+                _send_sse("end", {"status": task.get("status")})
+                return
+
+            last_status_check = time.time()
+            last_ping = time.time()
+
+            # 2. 实时流式监听循环
+            while True:
+                if (
+                    getattr(self.server, "_shutdown_requested", False)
+                    or getattr(self.server, "_BaseServer__shutdown_request", False)
+                ):
+                    break
+                now = time.time()
+
+                # 增量读取新增日志行
+                if os.path.exists(log_file):
+                    try:
+                        curr_size = os.path.getsize(log_file)
+                        if curr_size > file_pos:
+                            with open(log_file, "rb") as f:
+                                f.seek(file_pos)
+                                new_bytes = f.read(curr_size - file_pos)
+                                file_pos = curr_size
+                            new_text = new_bytes.decode("utf-8", errors="replace")
+                            new_lines = [
+                                l.rstrip("\r")
+                                for l in new_text.split("\n")
+                                if l.rstrip("\r")
+                            ]
+                            if new_lines:
+                                _send_sse("log", {"lines": new_lines, "isInitial": False})
+                    except OSError:
+                        pass
+
+                # 每秒检查一次任务状态
+                if now - last_status_check >= 1.0:
+                    last_status_check = now
+                    curr_task = wt_task_queue.get_task(
+                        task_id,
+                        db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+                    )
+                    if curr_task is None:
+                        _send_sse("end", {"status": "not_found"})
+                        break
+
+                    curr_task["eta"] = wt_task_queue.calculate_task_eta(curr_task)
+                    _send_sse("status", {"task": curr_task, "eta": curr_task["eta"]})
+                    if curr_task.get("status") in (
+                        wt_task_queue.STATUS_SUCCESS,
+                        "completed",
+                        wt_task_queue.STATUS_FAILED,
+                        wt_task_queue.STATUS_CANCELED,
+                        "cancelled",
+                        wt_task_queue.STATUS_TERMINATED,
+                    ):
+                        # 排空最后可能的日志碎片
+                        if os.path.exists(log_file):
+                            try:
+                                curr_size = os.path.getsize(log_file)
+                                if curr_size > file_pos:
+                                    with open(log_file, "rb") as f:
+                                        f.seek(file_pos)
+                                        new_bytes = f.read(curr_size - file_pos)
+                                    new_text = new_bytes.decode("utf-8", errors="replace")
+                                    new_lines = [
+                                        l.rstrip("\r")
+                                        for l in new_text.split("\n")
+                                        if l.rstrip("\r")
+                                    ]
+                                    if new_lines:
+                                        _send_sse(
+                                            "log",
+                                            {"lines": new_lines, "isInitial": False},
+                                        )
+                            except OSError:
+                                pass
+                        _send_sse("end", {"status": curr_task.get("status")})
+                        break
+
+                # 10s 发送一次心跳保活
+                if now - last_ping >= 10.0:
+                    last_ping = now
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+
+                time.sleep(0.3)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # 客户端正常断开连接或关闭窗口，静默退出
+            pass
+
+    def _route_get(self, path, query):
+        if path == "/api/health":
+            is_interactive, session_desc = wt_task_queue.check_desktop_interactive()
+            self._send_json(
+                {
+                    "ok": True,
+                    "service": "wt_task_server",
+                    "version": 1,
+                    "uptimeSeconds": round(
+                        time.time() - getattr(self.server, "_started_at", time.time()),
+                        1,
+                    ),
+                    "queueDb": getattr(self.server, "queue_db", ""),
+                    "runningCount": len(getattr(self.server, "_running", {})),
+                    "logRetentionDays": getattr(
+                        self.server, "log_retention_days", 30
+                    ),
+                    "desktopInteractive": is_interactive,
+                    "desktopSession": session_desc,
+                }
+            )
+            return
+        if not self._check_auth():
+            return
+        if path == "/api/queue/stats":
+            self._send_json(
+                wt_task_queue.get_queue_stats(
+                    db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH)
+                )
+            )
+            return
+        if path == "/api/audit":
+            task_id = str(query.get("taskId", [""])[0] or "").strip()
+            user = str(query.get("user", [""])[0] or "").strip()
+            try:
+                limit = int(query.get("limit", ["200"])[0] or 200)
+            except (TypeError, ValueError):
+                self._send_error(400, "invalid limit")
+                return
+            limit = max(1, min(limit, 500))
+            events = wt_task_queue.list_audit_events(
+                task_id=task_id or None,
+                user=user or None,
+                limit=limit,
+                db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+            )
+            self._send_json({"events": events})
+            return
+        if path == "/api/flows":
+            self._send_json(self._list_flows())
+            return
+        if path == "/api/flows/version":
+            self._handle_flow_version_get(query)
+            return
+        if path == "/api/tasks":
+            scope = str(query.get("scope", ["all"])[0] or "all").strip()
+            user = str(query.get("user", [""])[0] or "").strip()
+            try:
+                limit = int(query.get("limit", ["200"])[0] or 200)
+            except (TypeError, ValueError):
+                self._send_error(400, "invalid limit")
+                return
+            limit = max(1, min(limit, 500))
+            if scope not in ("all", "mine"):
+                self._send_error(400, "scope must be all or mine")
+                return
+            if scope == "mine" and not user:
+                self._send_error(400, "user is required when scope=mine")
+                return
+            # ids=a,b,c（可选）：一次取回指定任务，供客户端把 N 次 /api/tasks/{id}
+            # 合并为 1 次请求。不传该参数时行为与旧版本完全一致。
+            raw_ids = str(query.get("ids", [""])[0] or "").strip()
+            task_ids = [item.strip() for item in raw_ids.split(",") if item.strip()] or None
+            include_archived = str(query.get("includeArchived", ["false"])[0] or "").lower() in ("true", "1")
+            tasks = wt_task_queue.list_tasks(
+                user=user,
+                scope=scope,
+                limit=limit,
+                db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+                task_ids=task_ids,
+                include_archived=include_archived,
+            )
+            self._send_json({"tasks": tasks})
+            return
+        parts = path.strip("/").split("/")
+        if len(parts) == 3 and parts[0] == "api" and parts[1] == "tasks":
+            task = wt_task_queue.get_task(
+                parts[2],
+                db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+            )
+            if task is None:
+                self._send_error(404, "task not found")
+                return
+            task["eta"] = wt_task_queue.calculate_task_eta(task)
+            self._send_json({"task": task})
+            return
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "tasks":
+            task_id = parts[2]
+            sub_path = parts[3]
+            if sub_path == "events":
+                self._handle_task_events_stream(task_id)
+                return
+            if sub_path == "logs":
+                try:
+                    tail = int(query.get("tail", ["300"])[0])
+                except (TypeError, ValueError):
+                    self._send_error(400, "invalid tail")
+                    return
+                tail = max(1, min(tail, 2000))
+                lines, total = wt_task_queue.read_task_log_tail(
+                    task_id,
+                    tail=tail,
+                    log_dir=getattr(self.server, "task_log_dir", DEFAULT_TASK_LOG_DIR),
+                )
+                self._send_json({"lines": lines, "totalLines": total})
+                return
+            if sub_path == "report":
+                task = wt_task_queue.get_task(
+                    task_id,
+                    db_path=getattr(self.server, "queue_db", DEFAULT_DB_PATH),
+                )
+                run_id = (task or {}).get("runId") or ""
+                if not run_id:
+                    self._send_error(404, "task report not found")
+                    return
+                report_path = os.path.join(
+                    getattr(self.server, "report_dir", DEFAULT_REPORT_DIR),
+                    "{}.json".format(run_id),
+                )
+                payload = _read_json_file(report_path)
+                if payload is None:
+                    self._send_error(404, "task report not found")
+                    return
+                self._send_json(payload)
+                return
+        self._send_error(404, "not found")
+
+    def _handle_flow_version_get(self, query):
+        name = str(query.get("name", [""])[0] or "").strip()
+        try:
+            version = int(query.get("version", [""])[0] or 0)
+        except (TypeError, ValueError):
+            self._send_error(400, "invalid version")
+            return
+        if not name or version < 1:
+            self._send_error(400, "name and version are required")
+            return
+        flow_dir = os.path.abspath(
+            getattr(self.server, "flow_dir", os.path.join(BASE_DIR, "flow_packages"))
+        )
+        ledger = _load_flow_version_ledger(flow_dir)
+        version_record = None
+        for item in (ledger.get(name) or {}).get("versions") or []:
+            if int(item.get("version") or 0) == version:
+                version_record = item
+                break
+        if version_record is None:
+            self._send_error(404, "flow version not found")
+            return
+        version_path = os.path.abspath(os.path.join(flow_dir, str(version_record.get("file") or "")))
+        try:
+            inside = os.path.commonpath([flow_dir, version_path]) == flow_dir
+        except ValueError:
+            inside = False
+        if not inside or not os.path.isfile(version_path):
+            self._send_error(404, "flow version file not found")
+            return
+        content = _read_json_file(version_path)
+        if content is None:
+            self._send_error(500, "flow version is not valid JSON")
+            return
+        self._send_json(
+            {
+                "name": name,
+                "version": version,
+                "file": os.path.basename(version_path),
+                "content": content,
+                "user": version_record.get("user", ""),
+                "uploadedAt": version_record.get("uploadedAt", ""),
+                "sha256": version_record.get("sha256", ""),
+            }
+        )
+
+    def _handle_control(self, task_id, action):
+        queue_db = getattr(self.server, "queue_db", DEFAULT_DB_PATH)
+        try:
+            if action == "pause":
+                task = wt_task_queue.request_pause(task_id, db_path=queue_db)
+            elif action == "resume":
+                task = wt_task_queue.resume_task(task_id, db_path=queue_db)
+            elif action == "terminate":
+                task = wt_task_queue.request_terminate(task_id, db_path=queue_db)
+            elif action == "cancel":
+                task = wt_task_queue.cancel_task(task_id, db_path=queue_db)
+            elif action == "delete":
+                task = wt_task_queue.delete_task(task_id, db_path=queue_db)
+            else:
+                self._send_error(404, "not found")
+                return
+        except wt_task_queue.TaskStateError as exc:
+            # 状态机拒绝：附中文化说明，客户端弹窗直接可读；保留原英文便于检索日志
+            zh = _CONTROL_ERROR_ZH.get(str(exc), "")
+            message = "{}（{}）".format(zh, exc) if zh else str(exc)
+            self._send_error(409, message)
+            return
+        wt_task_queue.add_audit_event(
+            user=(task or {}).get("user", ""),
+            source_ip=self.client_address[0] if self.client_address else "",
+            action=action,
+            task_id=task_id,
+            result="ok",
+            detail="status={}".format((task or {}).get("status", "")),
+            db_path=queue_db,
+        )
+        if action == "cancel":
+            self.server._notify_webhook(task, "task.canceled")
+        self._send_json({"task": task})
+
+    def _route_post(self, path):
+        if not self._check_auth():
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = -1
+        if length > MAX_BODY_BYTES:
+            self._drain_body(length)
+            self._send_error(413, "request body too large")
+            return
+        if path == "/api/flows/upload":
+            self._handle_flow_upload()
+            return
+        if path == "/api/flows/rollback":
+            self._handle_flow_rollback()
+            return
+        if path == "/api/tasks/submit":
+            self._handle_submit()
+            return
+        if path == "/api/tasks/batch-submit":
+            self._handle_batch_submit()
+            return
+        if path == "/api/maintenance/archive":
+            self._handle_maintenance_archive()
+            return
+        parts = path.strip("/").split("/")
+        if len(parts) == 4 and parts[0] == "api" and parts[1] == "tasks":
+            self._handle_control(parts[2], parts[3])
+            self._drain_body_if_any()
+            return
+        self._drain_body_if_any()
+        self._send_error(404, "not found")
+
+    def do_GET(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        self._route_get(parsed.path, query)
+
+    def do_POST(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        self._route_post(parsed.path)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_PUT(self):
+        self._method_not_allowed()
+
+    def do_DELETE(self):
+        self._method_not_allowed()
+
+    def do_PATCH(self):
+        self._method_not_allowed()
+
+
+class TaskServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(
+        self,
+        server_address,
+        auth_token="",
+        queue_db=DEFAULT_DB_PATH,
+        worker_launcher=None,
+        task_log_dir=DEFAULT_TASK_LOG_DIR,
+        report_dir=DEFAULT_REPORT_DIR,
+        flow_dir=None,
+        server_log_path=DEFAULT_SERVER_LOG,
+        webhook_url=DEFAULT_WEBHOOK,
+        log_retention_days=DEFAULT_LOG_RETENTION_DAYS,
+    ):
+        super().__init__(server_address, TaskQueueHandler)
+        self.auth_token = auth_token
+        self.queue_db = queue_db
+        self.task_log_dir = task_log_dir
+        self.report_dir = report_dir
+        self.flow_dir = flow_dir or os.path.join(BASE_DIR, "flow_packages")
+        self.server_log_path = server_log_path
+        self.webhook_url = str(webhook_url or "").strip()
+        self.log_retention_days = max(0, int(log_retention_days or 30))
+        self._started_at = time.time()
+        self._last_cleanup_date = ""
+        self.worker_launcher = worker_launcher or default_worker_launcher
+        self._running = {}
+        self._running_files = {}
+        self._running_lock = threading.Lock()
+        self._scheduler_stop = threading.Event()
+        self._scheduler_thread = None
+        wt_task_queue.init_db(queue_db)
+        # 服务端重启后恢复孤儿任务：上次运行中（running）的任务进程已随旧服务端
+        # 退出而失联，标记为失败以解除"存在 running 任务即不派发"的队列卡死。
+        recovered = wt_task_queue.recover_orphan_running_tasks(queue_db)
+        if recovered:
+            log_server_event(
+                "recovered {} orphan running task(s) after restart".format(recovered),
+                log_path=server_log_path,
+            )
+
+    def start_scheduler(self):
+        self._run_log_cleanup()
+        if self._scheduler_thread is None:
+            self._scheduler_thread = threading.Thread(
+                target=self._scheduler_loop,
+                daemon=True,
+            )
+            self._scheduler_thread.start()
+
+    def serve_forever(self, poll_interval=0.5):
+        self.start_scheduler()
+        super().serve_forever(poll_interval=poll_interval)
+
+    def server_close(self):
+        self._scheduler_stop.set()
+        if self._scheduler_thread is not None and self._scheduler_thread.is_alive():
+            self._scheduler_thread.join(timeout=3)
+        with self._running_lock:
+            for task_id, proc in list(self._running.items()):
+                self._kill_process(proc)
+                stopped_task = wt_task_queue.mark_terminated(
+                    task_id,
+                    error="task queue server stopped",
+                    db_path=self.queue_db,
+                )
+                self._notify_webhook(stopped_task, "task.terminated")
+            for file_obj in list(self._running_files.values()):
+                try:
+                    file_obj.close()
+                except Exception:
+                    pass
+            self._running.clear()
+            self._running_files.clear()
+        log_server_event(
+            "task queue server stopped",
+            log_path=self.server_log_path,
+        )
+        super().server_close()
+
+    def _run_log_cleanup(self, force=False):
+        today = datetime.now().strftime("%Y-%m-%d")
+        if not force and self._last_cleanup_date == today:
+            return
+        self._last_cleanup_date = today
+        removed = wt_task_queue.cleanup_task_logs(
+            log_dir=self.task_log_dir,
+            retention_days=self.log_retention_days,
+            db_path=self.queue_db,
+        )
+        if removed:
+            log_server_event(
+                "cleaned {} task log files (retention {}d)".format(
+                    removed, self.log_retention_days
+                ),
+                log_path=self.server_log_path,
+            )
+        try:
+            arch_res = wt_task_queue.archive_completed_tasks(
+                days=self.log_retention_days,
+                limit=2000,
+                db_path=self.queue_db,
+            )
+            if arch_res.get("archivedCount", 0) > 0:
+                log_server_event(
+                    "archived {} completed tasks to tasks_archive (retention {}d)".format(
+                        arch_res["archivedCount"], self.log_retention_days
+                    ),
+                    log_path=self.server_log_path,
+                )
+        except Exception as exc:
+            log_server_event(
+                "daily task archival failed: {}".format(exc),
+                log_path=self.server_log_path,
+            )
+
+    def _notify_webhook(self, task, event="task.finished"):
+        if not task:
+            return
+        url = str(task.get("notifyUrl") or "").strip() or self.webhook_url
+        if not url:
+            return
+        threading.Thread(
+            target=self._send_webhook,
+            args=(task, event, url),
+            daemon=True,
+        ).start()
+
+    def _send_webhook(self, task, event, url):
+        run_id = task.get("runId") or ""
+        report_path = ""
+        if run_id:
+            report_path = "/api/tasks/{}/report".format(
+                urllib.parse.quote(task.get("taskId", ""))
+            )
+        payload = {
+            "event": event,
+            "taskId": task.get("taskId", ""),
+            "status": task.get("status", ""),
+            "user": task.get("user", ""),
+            "flowPath": task.get("flowPath", ""),
+            "error": task.get("error", ""),
+            "progressPercent": task.get("progressPercent", 0),
+            "runId": run_id,
+            "attempts": task.get("attempts", 1),
+            "maxAttempts": task.get("maxAttempts", 1),
+            "reportPath": report_path,
+            "updatedAt": task.get("updatedAt", ""),
+        }
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=data,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "WTTaskQueue/1.0",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=4) as response:
+                response.read()
+            log_server_event(
+                "webhook sent for task {}".format(task.get("taskId", "")),
+                log_path=self.server_log_path,
+            )
+        except Exception as exc:
+            log_server_event(
+                "webhook failed for task {}: {}".format(
+                    task.get("taskId", ""), exc
+                ),
+                log_path=self.server_log_path,
+            )
+
+    def _kill_process(self, proc):
+        try:
+            if getattr(proc, "poll", lambda: None)() is not None:
+                return
+            pid = getattr(proc, "pid", None)
+            if pid:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                )
+                proc.wait(timeout=10)
+                return
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    def _task_timed_out(self, task):
+        timeout = int(task.get("timeoutSeconds") or 0)
+        if timeout <= 0:
+            return False
+        started_at = str(task.get("startedAt") or "")
+        if not started_at:
+            return False
+        try:
+            started = datetime.fromisoformat(started_at)
+        except (TypeError, ValueError):
+            return False
+        return (datetime.now() - started).total_seconds() >= timeout
+
+
+    def _scheduler_loop(self):
+        while not self._scheduler_stop.is_set():
+            try:
+                self._run_log_cleanup()
+                self._scheduler_tick()
+            except Exception as exc:
+                # db 文件被运维清理/替换后，进程级 init_db 缓存会跳过建表，
+                # 调度器将永久刷 "no such table"。这里自愈：疑似表结构缺失时
+                # 强制重建一次；仍失败才落到日志（避免每秒重复刷屏）。
+                if "no such table" in str(exc).lower():
+                    try:
+                        wt_task_queue.init_db(self.queue_db, force=True)
+                        log_server_event(
+                            "scheduler detected missing tables; re-initialized db {}".format(
+                                self.queue_db
+                            ),
+                            log_path=self.server_log_path,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    log_server_event(
+                        "scheduler error: {}".format(exc),
+                        log_path=self.server_log_path,
+                    )
+            self._scheduler_stop.wait(1.0)
+
+    def _scheduler_tick(self):
+        with self._running_lock:
+            if self._running:
+                task_id, proc = next(iter(self._running.items()))
+                task = wt_task_queue.get_task(task_id, db_path=self.queue_db)
+                if task and task.get("terminateRequested") and proc.poll() is None:
+                    self._kill_process(proc)
+                if task and self._task_timed_out(task) and proc.poll() is None:
+                    timeout = int(task.get("timeoutSeconds") or 0)
+                    self._kill_process(proc)
+                    wt_task_queue.mark_failed(
+                        task_id,
+                        error="task timed out after {} seconds".format(timeout),
+                        db_path=self.queue_db,
+                    )
+                    log_server_event(
+                        "task {} timed out after {}s".format(task_id, timeout),
+                        log_path=self.server_log_path,
+                    )
+                if proc.poll() is not None:
+                    self._finalize_finished(task_id, task, proc)
+                    self._running.pop(task_id, None)
+                    file_obj = self._running_files.pop(task_id, None)
+                    if file_obj is not None:
+                        try:
+                            file_obj.close()
+                        except Exception:
+                            pass
+                return
+        task = wt_task_queue.claim_next_pending(db_path=self.queue_db)
+        if task:
+            self._launch_worker(task)
+
+    def _finalize_finished(self, task_id, task, proc):
+        task = wt_task_queue.get_task(task_id, db_path=self.queue_db)
+        if task is None:
+            return
+        if task.get("status") == STATUS_FAILED:
+            result = wt_task_queue.handle_failure(
+                task_id,
+                error=task.get("error") or "",
+                db_path=self.queue_db,
+            )
+            if result is not None and result.get("status") == STATUS_PENDING:
+                log_server_event(
+                    "task {} retry scheduled (attempt {}/{})".format(
+                        task_id,
+                        result.get("attempts"),
+                        result.get("maxAttempts"),
+                    ),
+                    log_path=self.server_log_path,
+                )
+            else:
+                log_server_event(
+                    "task {} finished failed".format(task_id),
+                    log_path=self.server_log_path,
+                )
+                self._notify_webhook(result, "task.failed")
+            return
+        if task.get("status") != STATUS_RUNNING:
+            return
+        if task.get("terminateRequested"):
+            terminated = wt_task_queue.mark_terminated(
+                task_id,
+                error="terminate requested",
+                db_path=self.queue_db,
+            )
+            if terminated is None or terminated.get("status") != STATUS_TERMINATED:
+                # 状态守卫拦截：任务已被其他路径收尾，仅记日志、不重复通知
+                log_server_event(
+                    "task {} terminate skipped (current status {})".format(
+                        task_id, (terminated or {}).get("status", "unknown")
+                    ),
+                    log_path=self.server_log_path,
+                )
+                return
+            log_server_event(
+                "task {} terminated".format(task_id),
+                log_path=self.server_log_path,
+            )
+            self._notify_webhook(terminated, "task.terminated")
+            return
+        code = getattr(proc, "returncode", None)
+        if code == 0:
+            succeeded = wt_task_queue.mark_success(
+                task_id, db_path=self.queue_db
+            )
+            if succeeded is None or succeeded.get("status") != STATUS_SUCCESS:
+                # 状态守卫拦截：迟到完成/并发收尾，任务已被改为其他终态
+                log_server_event(
+                    "task {} success skipped (current status {})".format(
+                        task_id, (succeeded or {}).get("status", "unknown")
+                    ),
+                    log_path=self.server_log_path,
+                )
+                return
+            log_server_event(
+                "task {} finished success".format(task_id),
+                log_path=self.server_log_path,
+            )
+            self._notify_webhook(succeeded, "task.success")
+        else:
+            result = wt_task_queue.handle_failure(
+                task_id,
+                error="automation exited with code {}".format(code),
+                db_path=self.queue_db,
+            )
+            if result is not None and result.get("status") == STATUS_PENDING:
+                log_server_event(
+                    "task {} retry scheduled (attempt {}/{})".format(
+                        task_id,
+                        result.get("attempts"),
+                        result.get("maxAttempts"),
+                    ),
+                    log_path=self.server_log_path,
+                )
+            else:
+                log_server_event(
+                    "task {} finished failed (exit {})".format(task_id, code),
+                    log_path=self.server_log_path,
+                )
+                self._notify_webhook(result, "task.failed")
+
+    def _launch_worker(self, task):
+        try:
+            proc, file_obj = self.worker_launcher(
+                task,
+                task_log_dir=self.task_log_dir,
+                queue_db=self.queue_db,
+            )
+        except Exception as exc:
+            message = "failed to launch worker: {}".format(exc)
+            result = wt_task_queue.handle_failure(
+                task["taskId"],
+                error=message,
+                db_path=self.queue_db,
+            )
+            log_server_event(
+                "task {} launch failed: {}".format(task["taskId"], exc),
+                log_path=self.server_log_path,
+            )
+            if result is not None and result.get("status") == STATUS_PENDING:
+                log_server_event(
+                    "task {} retry scheduled after launch failure (attempt {}/{})".format(
+                        task["taskId"],
+                        result.get("attempts"),
+                        result.get("maxAttempts"),
+                    ),
+                    log_path=self.server_log_path,
+                )
+            else:
+                self._notify_webhook(result, "task.failed")
+            return
+        with self._running_lock:
+            self._running[task["taskId"]] = proc
+            if file_obj is not None:
+                self._running_files[task["taskId"]] = file_obj
+        log_server_event(
+            "task {} worker started".format(task["taskId"]),
+            log_path=self.server_log_path,
+        )
+
+
+def create_server(
+    host="0.0.0.0",
+    port=DEFAULT_PORT,
+    auth_token="",
+    queue_db=DEFAULT_DB_PATH,
+    worker_launcher=None,
+    task_log_dir=DEFAULT_TASK_LOG_DIR,
+    report_dir=DEFAULT_REPORT_DIR,
+    flow_dir=None,
+    server_log_path=DEFAULT_SERVER_LOG,
+    webhook_url=DEFAULT_WEBHOOK,
+    log_retention_days=DEFAULT_LOG_RETENTION_DAYS,
+):
+    return TaskServer(
+        (host, port),
+        auth_token=auth_token,
+        queue_db=queue_db,
+        worker_launcher=worker_launcher,
+        task_log_dir=task_log_dir,
+        report_dir=report_dir,
+        flow_dir=flow_dir,
+        server_log_path=server_log_path,
+        webhook_url=webhook_url,
+        log_retention_days=log_retention_days,
+    )
+
+
+def serve_forever(
+    host="0.0.0.0",
+    port=DEFAULT_PORT,
+    auth_token="",
+    queue_db=DEFAULT_DB_PATH,
+    webhook_url=DEFAULT_WEBHOOK,
+    log_retention_days=DEFAULT_LOG_RETENTION_DAYS,
+):
+    server = create_server(
+        host,
+        port,
+        auth_token=auth_token,
+        queue_db=queue_db,
+        webhook_url=webhook_url,
+        log_retention_days=log_retention_days,
+    )
+    print("WT task queue service listening on {}:{}".format(host, port), flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="WT automation task queue service")
+    parser.add_argument("--host", default="0.0.0.0", help="listen address")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="listen port")
+    parser.add_argument("--auth-token", dest="auth_token", required=True, help="shared bearer token")
+    parser.add_argument("--db", default=DEFAULT_DB_PATH, help="task queue sqlite path")
+    parser.add_argument("--webhook", default=DEFAULT_WEBHOOK, help="global webhook URL for task terminal events")
+    parser.add_argument("--log-retention-days", dest="log_retention_days", type=int, default=DEFAULT_LOG_RETENTION_DAYS, help="task log retention days")
+    args = parser.parse_args()
+    serve_forever(
+        host=args.host,
+        port=args.port,
+        auth_token=args.auth_token,
+        queue_db=args.db,
+        webhook_url=args.webhook,
+        log_retention_days=args.log_retention_days,
+    )
+
+
+if __name__ == "__main__":
+    main()

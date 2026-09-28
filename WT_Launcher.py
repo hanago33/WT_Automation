@@ -1,0 +1,9712 @@
+# encoding: utf-8
+
+import json
+import importlib.util
+import os
+import queue
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+import tkinter as tk
+import zipfile
+import uuid
+import ctypes
+import contextlib
+import io
+from datetime import datetime
+from tkinter import filedialog, messagebox, simpledialog, ttk
+
+import wt_dpi
+import wt_theme
+import wt_logging
+import wt_log_query
+import wt_wheel_router
+from flow_excel_io import (
+    DEFAULT_FLOW_XLSX,
+    audit_flow_excel_roundtrip,
+    export_flow_to_excel,
+    load_flow_payload_from_excel,
+)
+from flow_recorder_converter import convert_recorder_script_to_flow
+from pywinauto import Desktop
+from WT_Flow_Editor import sync_flow_package_registry
+from wt_action_schema import ALLOWED_RELATIVE_REGION_ANCHORS
+from wt_flow_validation import validate_flow_definition
+from wt_flow_editor_utils import normalize_control_window_title
+import wt_task_queue_window
+import wt_project_workdir_parser
+import wt_simple_options
+import wt_mast_config_xml
+from wt_flow_graph import FlowGraphWindow
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+AUTOMATION_SCRIPT = os.path.join(BASE_DIR, "WT_AUT_recorded.py")
+TEMPLATE_BUILDER_SCRIPT = os.path.join(BASE_DIR, "build_image_template_library.py")
+CONTROL_MAP_BUILDER_SCRIPT = os.path.join(BASE_DIR, "build_control_map_library.py")
+FLOW_EDITOR_SCRIPT = os.path.join(BASE_DIR, "WT_Flow_Editor.py")
+FLOW_DEFINITION_FILE = os.path.join(BASE_DIR, "workspace", "flow_definition.json")
+FLOW_PACKAGE_STORE_DIR = os.path.join(BASE_DIR, "flow_packages")
+FLOW_PACKAGE_REGISTRY_FILE = os.path.join(FLOW_PACKAGE_STORE_DIR, "flow_package_registry.json")
+FLOW_EDITOR_STARTUP_SIGNAL = os.path.join(BASE_DIR, "flow_editor_startup.signal")
+PROJECT_CONFIG_RESOURCE = os.path.join(BASE_DIR, "resources", "project_config.resource")
+LOG_FILE = os.path.join(BASE_DIR, "wt_automation.log")
+# 「运行日志」页保留的行数上限。比监视器窗口（400 行）大得多 ——
+# 监视器是小号常驻窗（只看最近动态），总控台是主窗口，用户需要一次运行的完整上下文
+# 才能用过滤条筛出某个步骤/某个错误，故取 2000 行（111 步运行约 350 行，含 DEBUG 也够用）。
+LOG_VIEW_MAX_LINES = 2000
+TEMPLATE_ROOT_DIR = os.path.join(BASE_DIR, "image_templates")
+CONTROL_MAP_DIR = os.path.join(BASE_DIR, "control_maps")
+TEMPLATE_INDEX_FILE = os.path.join(TEMPLATE_ROOT_DIR, "templates_index.json")
+TEMPLATE_DIR = os.path.join(TEMPLATE_ROOT_DIR, "projection")
+LOG_ARCHIVE_DIR = os.path.join(BASE_DIR, "debug_archives")
+RUN_REPORT_DIR = os.path.join(BASE_DIR, "logs", "run_reports")
+LAST_RUN_REPORT_FILE = os.path.join(BASE_DIR, "logs", "last_run_report.json")
+LAUNCHER_STATE_FILE = os.path.join(BASE_DIR, "launcher_state.json")
+DEFAULT_UI_TARS_REPO_ROOT = r"C:\Users\14830\UI-TARS-desktop"
+DEFAULT_UI_TARS_CONFIG = os.path.join(os.path.expanduser("~"), ".ui-tars-cli.json")
+MAX_RECENT_MODELS = 8
+DEFAULT_RECORDER_DIR = r"D:\Pywinauto Recorder\pywinauto_recorder"
+DEFAULT_RECORDER_SCRIPT = "pywinauto_recorder.py"
+SERVER_MONITOR_SCRIPT = os.path.join(BASE_DIR, "wt_server_monitor.py")
+SERVER_MONITOR_DEFAULT_URL = "http://127.0.0.1:8767"
+SERVER_MONITOR_PORT = 8767
+TASK_SERVER_SCRIPT = os.path.join(BASE_DIR, "wt_task_server.py")
+TASK_SERVER_DEFAULT_URL = "http://127.0.0.1:8768"
+TASK_SERVER_PORT = 8768
+FLOW_DEFINITION_ENV_KEY = "WT_FLOW_DEFINITION_FILE"
+RECORDER_LAUNCH_CMD_FILE = os.path.join(BASE_DIR, "_launch_pywinauto_recorder.cmd")
+_PYAUTOGUI_MODULE = None
+_PYAUTOGUI_IMPORT_ERROR = None
+
+
+def _inject_mast_config_xml_override(flow_path, text_ovr, rc, log_fn=None):
+    """「配置导入」链路专用：按塔生成/覆盖导入配置 XML，并把其路径注入 text_overrides。
+
+    仅当 flow 副本含默认配置文本（DEFAULT_MAST_CONFIG_XML_TEXT）时生效；
+    普通链路不含该文本则原样返回 text_ovr（零副作用）。
+    返回合并后的 text_overrides。
+    """
+    try:
+        if not flow_path or not os.path.isfile(flow_path):
+            return text_ovr
+        with open(flow_path, "r", encoding="utf-8", errors="ignore") as fobj:
+            blob = fobj.read(2 ** 20)
+    except OSError:
+        return text_ovr
+    # flow 是 JSON：反斜杠路径在文件里以 \\ 转义存储；需用 ensure_ascii=False
+    # 保留中文原样后再取转义字面，才能与文件文本匹配。
+    _needle_json = json.dumps(wt_mast_config_xml.DEFAULT_MAST_CONFIG_XML_TEXT, ensure_ascii=False)[1:-1]
+    if _needle_json not in blob:
+        return text_ovr
+    mast = str((rc or {}).get("mastName", "") or "").strip()
+    tim = str((rc or {}).get("mastImportFilePath", "") or "").strip()
+    hub = str((rc or {}).get("hubHeight", "") or "").strip()
+    if not (mast and tim and hub) or not os.path.isfile(tim):
+        if log_fn:
+            try:
+                log_fn("配置导入链路：缺 mast/tim/hub 参数，跳过 XML 生成 mast={}".format(mast or "?"))
+            except TypeError:
+                pass
+        return text_ovr
+    try:
+        xml_path = wt_mast_config_xml.save_mast_config_xml(
+            tim, mast, hub, output_dir=os.path.dirname(tim)
+        )
+    except Exception as exc:
+        if log_fn:
+            try:
+                log_fn("生成测风塔配置 XML 失败 mast={}: {}".format(mast, exc), "warning")
+            except TypeError:
+                pass
+        return text_ovr
+    if not xml_path:
+        return text_ovr
+    if log_fn:
+        try:
+            log_fn("已生成/覆盖导入配置 XML: {}".format(xml_path))
+        except TypeError:
+            pass
+    _ovr = dict(text_ovr or {})
+    _ovr[wt_mast_config_xml.DEFAULT_MAST_CONFIG_XML_TEXT] = xml_path
+    return _ovr
+
+
+def load_project_settings():
+    settings = {}
+    if not os.path.exists(PROJECT_CONFIG_RESOURCE):
+        return settings
+
+    try:
+        with open(PROJECT_CONFIG_RESOURCE, "r", encoding="utf-8", errors="ignore") as file_obj:
+            for raw_line in file_obj:
+                line = raw_line.strip()
+                if not line.startswith("${") or "}" not in line:
+                    continue
+                key_end = line.find("}")
+                key = line[2:key_end]
+                value = line[key_end + 1 :].strip()
+                if value:
+                    settings[key] = value.replace("\\\\", "\\")
+    except OSError:
+        return settings
+
+    return settings
+
+
+def get_pyautogui():
+    global _PYAUTOGUI_MODULE, _PYAUTOGUI_IMPORT_ERROR
+    if _PYAUTOGUI_MODULE is not None:
+        return _PYAUTOGUI_MODULE, None
+    if _PYAUTOGUI_IMPORT_ERROR is not None:
+        return None, _PYAUTOGUI_IMPORT_ERROR
+    try:
+        import pyautogui as imported_pyautogui
+
+        _PYAUTOGUI_MODULE = imported_pyautogui
+        return _PYAUTOGUI_MODULE, None
+    except Exception as exc:
+        _PYAUTOGUI_IMPORT_ERROR = exc
+        return None, exc
+
+
+def load_json_file(file_path):
+    if not file_path or not os.path.exists(file_path):
+        return None, f"未找到配置文件：{file_path}"
+    try:
+        with open(file_path, "r", encoding="utf-8") as file_obj:
+            return json.load(file_obj), None
+    except Exception as exc:
+        return None, f"读取配置失败：{exc}"
+
+
+def save_json_file(file_path, payload):
+    tmp_path = file_path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as file_obj:
+            json.dump(payload, file_obj, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, file_path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def _read_log_tail(path, max_lines=20):
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as file_obj:
+            lines = file_obj.read().splitlines()
+        return "\n".join(lines[-max_lines:])
+    except OSError:
+        return ""
+
+
+def load_flow_runtime_config(flow_definition_path=None):
+    payload, _error = load_json_file(flow_definition_path or FLOW_DEFINITION_FILE)
+    payload = payload or {}
+    runtime_config = payload.get("runtimeConfig", {}) if isinstance(payload, dict) else {}
+    if not isinstance(runtime_config, dict):
+        runtime_config = {}
+    return {
+        "gmExe": str(runtime_config.get("gmExe", "")).strip() or DEFAULT_GM_EXE,
+        "sourceFilePath": str(runtime_config.get("sourceFilePath", "")).strip() or DEFAULT_SOURCE_FILE_PATH,
+        "outputDir": str(runtime_config.get("outputDir", "")).strip() or DEFAULT_OUTPUT_DIR,
+        "projectionFilePath": str(runtime_config.get("projectionFilePath", "")).strip() or DEFAULT_PROJECTION_FILE_PATH,
+    }
+
+
+def _normalize_flow_payload(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    runtime_config = payload.get("runtimeConfig", {})
+    flow_packages = payload.get("flowPackages", [])
+    steps = payload.get("steps", [])
+    if not isinstance(runtime_config, dict):
+        runtime_config = {}
+    if not isinstance(flow_packages, list):
+        flow_packages = []
+    if not isinstance(steps, list):
+        steps = []
+    steps = [item for item in steps if isinstance(item, dict)]
+    for step in steps:
+        controls = step.get("controls")
+        if isinstance(controls, list):
+            for control in controls:
+                normalize_control_window_title(control)
+    return {
+        "runtimeConfig": runtime_config,
+        "flowPackages": [item for item in flow_packages if isinstance(item, dict)],
+        "steps": steps,
+        "sourceDefinitionPath": str(payload.get("sourceDefinitionPath", "")).strip(),
+    }
+
+
+def _has_flow_content(payload):
+    normalized = _normalize_flow_payload(payload)
+    return bool(normalized["flowPackages"] or normalized["steps"])
+
+
+def _build_flow_package_map(flow_packages):
+    package_map = {}
+    for package in flow_packages:
+        if not isinstance(package, dict):
+            continue
+        package_id = str(package.get("id", "")).strip()
+        if package_id:
+            package_map[package_id] = package
+    return package_map
+
+
+def _build_step_map(steps):
+    step_map = {}
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_id = str(step.get("id", "")).strip()
+        if step_id:
+            step_map[step_id] = step
+    return step_map
+
+
+def _collect_package_refs(steps):
+    package_ids = []
+    seen_package_ids = set()
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        package_id = str(step.get("packageRef", "")).strip()
+        if not package_id or package_id in seen_package_ids:
+            continue
+        package_ids.append(package_id)
+        seen_package_ids.add(package_id)
+    return package_ids
+
+
+def _collect_package_step_ids(flow_packages):
+    step_ids = []
+    seen_step_ids = set()
+    for package in flow_packages:
+        if not isinstance(package, dict):
+            continue
+        for item in package.get("stepIds", []):
+            step_id = str(item).strip()
+            if not step_id or step_id in seen_step_ids:
+                continue
+            step_ids.append(step_id)
+            seen_step_ids.add(step_id)
+    return step_ids
+
+
+def _merge_target_with_registry(target_payload, registry_payload):
+    normalized_target = _normalize_flow_payload(target_payload)
+    normalized_registry = _normalize_flow_payload(registry_payload)
+    if not _has_flow_content(normalized_target):
+        return normalized_registry
+
+    merged_runtime = dict(normalized_registry.get("runtimeConfig", {}))
+    merged_runtime.update(normalized_target.get("runtimeConfig", {}))
+
+    target_packages = normalized_target.get("flowPackages", [])
+    registry_package_map = _build_flow_package_map(normalized_registry.get("flowPackages", []))
+    merged_packages = list(target_packages)
+    existing_package_ids = {str(package.get("id", "")).strip() for package in target_packages if str(package.get("id", "")).strip()}
+    for package_id in _collect_package_refs(normalized_target.get("steps", [])):
+        if package_id in existing_package_ids:
+            continue
+        registry_package = registry_package_map.get(package_id)
+        if isinstance(registry_package, dict):
+            merged_packages.append(registry_package)
+            existing_package_ids.add(package_id)
+
+    target_steps = normalized_target.get("steps", [])
+    registry_step_map = _build_step_map(normalized_registry.get("steps", []))
+    merged_steps = list(target_steps)
+    existing_step_ids = {str(step.get("id", "")).strip() for step in target_steps if str(step.get("id", "")).strip()}
+    for step_id in _collect_package_step_ids(merged_packages):
+        if step_id in existing_step_ids:
+            continue
+        registry_step = registry_step_map.get(step_id)
+        if isinstance(registry_step, dict):
+            merged_steps.append(registry_step)
+            existing_step_ids.add(step_id)
+
+    return {
+        "runtimeConfig": merged_runtime,
+        "flowPackages": merged_packages,
+        "steps": merged_steps,
+        "sourceDefinitionPath": normalized_target.get("sourceDefinitionPath", "") or normalized_registry.get("sourceDefinitionPath", ""),
+    }
+
+
+def load_effective_flow_payload(flow_definition_path=None):
+    target_path = flow_definition_path or FLOW_DEFINITION_FILE
+    target_payload, _target_error = load_json_file(target_path)
+    normalized_target = _normalize_flow_payload(target_payload)
+    registry_payload, _registry_error = load_json_file(FLOW_PACKAGE_REGISTRY_FILE)
+    normalized_registry = _normalize_flow_payload(registry_payload)
+    if _has_flow_content(normalized_target):
+        merged_payload = _merge_target_with_registry(normalized_target, normalized_registry)
+        source_definition_path = normalized_registry.get("sourceDefinitionPath", "") if _has_flow_content(normalized_registry) else ""
+        return merged_payload, target_path, source_definition_path
+    if _has_flow_content(normalized_registry):
+        source_definition_path = normalized_registry.get("sourceDefinitionPath", "")
+        return normalized_registry, FLOW_PACKAGE_REGISTRY_FILE, source_definition_path
+
+    return normalized_target, target_path, ""
+
+
+def validate_effective_flow_payload(flow_definition_path=None):
+    payload, effective_path, source_definition_path = load_effective_flow_payload(flow_definition_path)
+    validation_errors = validate_flow_definition(payload)
+    return payload, effective_path, source_definition_path, validation_errors
+
+
+def validate_imported_flow_payload_or_raise(payload, source_label="导入流程"):
+    normalized_payload = _normalize_flow_payload(payload)
+    validation_errors = validate_flow_definition(normalized_payload)
+    if validation_errors:
+        raise ValueError(f"{source_label}校验未通过：\n- " + "\n- ".join(validation_errors[:12]))
+    return normalized_payload
+
+
+PROJECT_SETTINGS = load_project_settings()
+DEFAULT_GM_EXE = PROJECT_SETTINGS.get("GM_EXE", "")
+DEFAULT_SOURCE_FILE_PATH = PROJECT_SETTINGS.get("SOURCE_FILE_PATH", "")
+DEFAULT_OUTPUT_DIR = PROJECT_SETTINGS.get("OUTPUT_DIR", "")
+DEFAULT_PROJECTION_FILE_PATH = PROJECT_SETTINGS.get("PROJECTION_FILE_PATH", "")
+DEFAULT_MODEL_NAME = PROJECT_SETTINGS.get("MODEL_NAME", "")
+DEFAULT_BASE_URL = PROJECT_SETTINGS.get("UI_TARS_VLM_BASE_URL", "")
+# 项目计算参数默认值（人工确认项；打开「项目参数」弹窗时预填，可按项目修改）
+DEFAULT_PROJECT_PARAMS = {
+    "radius": "5000",
+    "cfdHRes": "22.5",
+    "cfdBuf": "25",
+    "cfdMax": "4",
+    "cfdMin": "4",
+    "cpVersion": "Cp0.429",
+    "mastId": "M1",
+    # 默认值与 发送综合计算 流程模板写死值对齐（step_25=35.0 / step_21=1.220）：
+    # 项目参数弹窗预填这些值、保存即固化进 project_params；解析器 build_text_overrides 会
+    # 把模板写死值替换为 project_params 值。若默认值与模板不一致，用户只改海拔没动极风时
+    # 保存会把"预填默认值"静默替换进流程（如 35.0 变 50），造成非预期覆盖。
+    "wind50": "35.0",
+    # 综合计算设置：海拔/空气密度依项目而定，人工确认（海拔预留 0，空气密度按需人工填）
+    "elevation": "0",
+    "airDensity": "1.220",
+    # 风机类型（板块4 新建风机类型）：人工定义
+    "turbineType": "",
+    # 空间计算域与绘图范围（若选择项目文件夹，将根据测风塔与机位坐标自动计算并填入，亦支持人工直接编辑）
+    "domainCenterX": "",
+    "domainCenterY": "",
+    "domainNwX": "",
+    "domainNwY": "",
+    "domainSeX": "",
+    "domainSeY": "",
+    "domainOuterRadius": "",
+}
+
+
+class RelativeRegionHelperDialog:
+    def __init__(self, parent, theme):
+        self.parent = parent
+        self.theme = dict(theme or {})
+        self.window_rect = None
+        self.overlay_window = None
+        self.overlay_canvas = None
+        self.overlay_rect_id = None
+        self.overlay_hint_id = None
+        self.overlay_start = None
+        self.capture_after_id = None
+        self.preview_refresh_after_id = None
+        # 批量画框采集状态：一个界面内连续框选多个控件，最后导出校准数据
+        self.multi_regions = []
+        self.multi_overlay_window = None
+        self.multi_overlay_canvas = None
+        self.multi_overlay_rect_id = None
+        self.multi_overlay_start = None
+        self.multi_overlay_region_items = []
+        self.multi_toolbar_window = None
+        self.var_multi_region_count = tk.StringVar(value="批量采集：0 个区域")
+        self.var_capture_delay_seconds = tk.StringVar(value="3")
+        self.status_var = tk.StringVar(value="建议先延时抓父窗口，再手动画框；鼠标中心建议用延时记录，避免点按钮后位置偏移。")
+        self.preview_metrics_var = tk.StringVar(value="预览摘要：尚未抓取父窗口")
+        self.var_parent_title = tk.StringVar()
+        self.var_parent_class = tk.StringVar()
+        self.var_parent_framework = tk.StringVar(value="WPF")
+        self.var_window_rect = tk.StringVar(value="未捕获")
+        self.var_center_x = tk.StringVar(value="0")
+        self.var_center_y = tk.StringVar(value="0")
+        self.var_region_x = tk.StringVar(value="0.45")
+        self.var_region_y = tk.StringVar(value="0.45")
+        self.var_region_width = tk.StringVar(value="0.32")
+        self.var_region_height = tk.StringVar(value="0.08")
+        self.var_anchor = tk.StringVar(value="center")
+        self.var_action_name = tk.StringVar(value="type_text_relative")
+        self.var_text = tk.StringVar(value="${runtime.sourceFilePath}")
+
+        self.window = tk.Toplevel(parent)
+        self.window.title("父窗口相对区域取点助手")
+        wt_dpi.geometry(self.window, 980, 760)
+        self.window.minsize(wt_dpi.scale(860), wt_dpi.scale(680))
+        self.window.configure(bg=self.theme.get("bg", "#eef3f9"))
+        self.window.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._build_ui()
+        self._bind_preview_traces()
+        self._refresh_preview()
+
+    def _build_ui(self):
+        container = tk.Frame(self.window, bg=self.theme.get("bg", "#eef3f9"), padx=14, pady=14)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        header = tk.LabelFrame(
+            container,
+            text="使用说明",
+            padx=10,
+            pady=10,
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("text", "#1f2d3d"),
+        )
+        header.pack(fill=tk.X)
+        tk.Label(
+            header,
+            text="1. 可直接抓前台父窗口，也可用延时抓取让总控台先最小化。2. 抓到父窗口后，优先用“手动画框选择区域”框出目标输入框或按钮。3. 鼠标中心建议用延时记录，避免点击按钮时鼠标已偏移。4. 右侧会显示父窗口和相对区域可视化预览。",
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=900,
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("muted", "#5f6f82"),
+        ).pack(fill=tk.X)
+
+        body = tk.Frame(container, bg=self.theme.get("bg", "#eef3f9"))
+        body.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+
+        left = tk.LabelFrame(
+            body,
+            text="参数配置",
+            padx=10,
+            pady=10,
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("text", "#1f2d3d"),
+        )
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        right = tk.LabelFrame(
+            body,
+            text="预览结果",
+            padx=10,
+            pady=10,
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("text", "#1f2d3d"),
+        )
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
+
+        for column in (1, 3, 5):
+            left.columnconfigure(column, weight=1)
+
+        row = 0
+        wt_theme.create_flat_button(left, "抓取当前前台窗口", self.capture_foreground_window, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=0, sticky="ew", pady=4)
+        wt_theme.create_flat_button(left, "延时抓取父窗口", self.capture_foreground_window_with_delay, tone="primary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=1, sticky="ew", padx=(8, 12), pady=4)
+        wt_theme.create_flat_button(left, "手动画框选择区域", self.start_region_overlay_capture, tone="primary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=2, columnspan=2, sticky="ew", padx=(0, 12), pady=4)
+        wt_theme.create_flat_button(left, "最小化总控台", self.minimize_launcher, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=4, sticky="ew", pady=4)
+        wt_theme.create_flat_button(left, "刷新预览", self._refresh_preview, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=5, sticky="ew", padx=(8, 0), pady=4)
+        row += 1
+        self._grid_label_entry(left, "延时秒数", self.var_capture_delay_seconds, row, 0)
+        self._grid_label_entry(left, "鼠标中心 X", self.var_center_x, row, 2)
+        self._grid_label_entry(left, "鼠标中心 Y", self.var_center_y, row, 4)
+        row += 1
+        wt_theme.create_flat_button(left, "延时记录鼠标为区域中心", self.capture_mouse_center_with_delay, tone="warning", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=0, columnspan=2, sticky="ew", pady=4)
+        wt_theme.create_flat_button(left, "立即读取当前鼠标", self.capture_mouse_center, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=2, columnspan=1, sticky="ew", padx=(8, 12), pady=4)
+        tk.Label(
+            left,
+            text="建议优先使用“延时抓父窗口 + 手动画框选择区域”；若用鼠标中心，优先点延时记录，避免你点按钮时鼠标位置已经变了。",
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=430,
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("muted", "#5f6f82"),
+        ).grid(row=row, column=3, columnspan=3, sticky="ew", padx=(0, 0), pady=4)
+        row += 1
+
+        self._grid_label_entry(left, "父窗口标题 *", self.var_parent_title, row, 0)
+        self._grid_label_entry(left, "父窗口类名", self.var_parent_class, row, 2)
+        row += 1
+        self._grid_label_entry(left, "框架类型", self.var_parent_framework, row, 0)
+        self._grid_label_entry(left, "窗口矩形", self.var_window_rect, row, 2)
+        row += 1
+        self._grid_label_entry(left, "区域 X(0-1) *", self.var_region_x, row, 0)
+        self._grid_label_entry(left, "区域 Y(0-1) *", self.var_region_y, row, 2)
+        row += 1
+        self._grid_label_entry(left, "区域宽度 *", self.var_region_width, row, 0)
+        self._grid_label_entry(left, "区域高度 *", self.var_region_height, row, 2)
+        row += 1
+        self.action_name_label = tk.Label(
+            left,
+            text="动作类型",
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("text", "#1f2d3d"),
+        )
+        self.action_name_label.grid(row=row, column=0, sticky="w", pady=4)
+        self.action_combo = ttk.Combobox(
+            left,
+            textvariable=self.var_action_name,
+            values=("type_text_relative", "click_relative_region"),
+            state="readonly",
+        )
+        self.action_combo.grid(row=row, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self.action_combo.bind("<<ComboboxSelected>>", self._on_action_name_change)
+        self.anchor_label = tk.Label(
+            left,
+            text="点击锚点",
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("text", "#1f2d3d"),
+        )
+        self.anchor_label.grid(row=row, column=2, sticky="w", pady=4)
+        self.anchor_combo = ttk.Combobox(
+            left,
+            textvariable=self.var_anchor,
+            values=("center", "top_left", "top_right", "bottom_left", "bottom_right"),
+            state="readonly",
+        )
+        self.anchor_combo.grid(row=row, column=3, sticky="ew", padx=(8, 12), pady=4)
+        self.default_text_label = tk.Label(
+            left,
+            text="输入文本",
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("text", "#1f2d3d"),
+        )
+        self.default_text_label.grid(row=row, column=4, sticky="w", pady=4)
+        self.default_text_entry = tk.Entry(left, textvariable=self.var_text, font=("Microsoft YaHei UI", 9), relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.theme.get("border", "#d7e0ee"))
+        self.default_text_entry.grid(row=row, column=5, sticky="ew", padx=(8, 12), pady=4, ipady=2)
+        row += 1
+
+        button_row = tk.Frame(left, bg=self.theme.get("card", "#ffffff"))
+        button_row.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
+        wt_theme.create_flat_button(button_row, "复制 actionConfig", self.copy_action_config, tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=5).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        wt_theme.create_flat_button(button_row, "复制完整步骤样例", self.copy_step_template, tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=5).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        row += 1
+
+        multi_row = tk.Frame(left, bg=self.theme.get("card", "#ffffff"))
+        multi_row.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
+        wt_theme.create_flat_button(
+            multi_row,
+            "批量画框采集",
+            self.start_multi_region_capture,
+            tone="primary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=5,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        wt_theme.create_flat_button(
+            multi_row,
+            "导出校准数据",
+            self.export_multi_region_calibration,
+            tone="success",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=5,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        tk.Label(
+            multi_row,
+            textvariable=self.var_multi_region_count,
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("muted", "#5f6f82"),
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        row += 1
+
+        tk.Label(
+            left,
+            textvariable=self.status_var,
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=640,
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("muted", "#5f6f82"),
+        ).grid(row=row, column=0, columnspan=6, sticky="ew", pady=(12, 0))
+
+        preview_hint = tk.Label(
+            right,
+            text="父窗口与相对区域预览",
+            anchor="w",
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("text", "#1f2d3d"),
+        )
+        preview_hint.pack(fill=tk.X, pady=(0, 6))
+        self.region_preview_canvas = tk.Canvas(
+            right,
+            height=260,
+            bg="#f8fbff",
+            highlightthickness=1,
+            highlightbackground=self.theme.get("border", "#d7e0ee"),
+        )
+        self.region_preview_canvas.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(
+            right,
+            textvariable=self.preview_metrics_var,
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=430,
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("muted", "#5f6f82"),
+        ).pack(fill=tk.X, pady=(0, 10))
+        self.preview_text = tk.Text(
+            right,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            bg="#fbfdff",
+            fg=self.theme.get("text", "#1f2d3d"),
+            relief=tk.FLAT,
+            bd=1,
+            insertbackground=self.theme.get("text", "#1f2d3d"),
+        )
+        self.preview_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        preview_scrollbar = tk.Scrollbar(right, command=self.preview_text.yview, relief=tk.FLAT)
+        preview_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.preview_text.config(yscrollcommand=preview_scrollbar.set)
+
+    def _grid_label_entry(self, parent, label, variable, row, column):
+        tk.Label(parent, text=label, font=("Microsoft YaHei UI", 9), bg=self.theme.get("card", "#ffffff"), fg=self.theme.get("text", "#1f2d3d")).grid(
+            row=row, column=column, sticky="w", pady=4
+        )
+        tk.Entry(
+            parent,
+            textvariable=variable,
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self.theme.get("border", "#d7e0ee"),
+        ).grid(row=row, column=column + 1, sticky="ew", padx=(8, 12), pady=4, ipady=2)
+
+    def _bind_preview_traces(self):
+        for variable in (
+            self.var_parent_title,
+            self.var_parent_class,
+            self.var_parent_framework,
+            self.var_window_rect,
+            self.var_center_x,
+            self.var_center_y,
+            self.var_region_x,
+            self.var_region_y,
+            self.var_region_width,
+            self.var_region_height,
+            self.var_anchor,
+            self.var_action_name,
+            self.var_text,
+        ):
+            variable.trace_add("write", self._schedule_preview_refresh)
+
+    def _schedule_preview_refresh(self, *_args):
+        if self.preview_refresh_after_id is not None:
+            return
+        try:
+            self.preview_refresh_after_id = self.window.after_idle(self._run_scheduled_preview_refresh)
+        except Exception:
+            self.preview_refresh_after_id = None
+
+    def _run_scheduled_preview_refresh(self):
+        self.preview_refresh_after_id = None
+        self._refresh_preview()
+
+    def _on_close(self):
+        self._cancel_overlay_capture()
+        self._cancel_multi_region_capture()
+        if self.capture_after_id:
+            try:
+                self.window.after_cancel(self.capture_after_id)
+            except Exception:
+                pass
+            self.capture_after_id = None
+        if self.preview_refresh_after_id:
+            try:
+                self.window.after_cancel(self.preview_refresh_after_id)
+            except Exception:
+                pass
+            self.preview_refresh_after_id = None
+        try:
+            self.window.destroy()
+        except Exception:
+            pass
+
+    def minimize_launcher(self):
+        try:
+            self.window.iconify()
+        except Exception:
+            pass
+        try:
+            self.parent.iconify()
+        except Exception:
+            pass
+
+    def _get_foreground_handle(self):
+        try:
+            return int(ctypes.windll.user32.GetForegroundWindow() or 0)
+        except Exception:
+            return 0
+
+    def _get_foreground_window_wrapper(self):
+        handle = self._get_foreground_handle()
+        if not handle:
+            return None
+        try:
+            return Desktop(backend="uia").window(handle=handle)
+        except Exception:
+            return None
+
+    def _set_window_capture_from_wrapper(self, wrapper, status_text):
+        rect = wrapper.rectangle()
+        self.window_rect = {
+            "left": int(rect.left),
+            "top": int(rect.top),
+            "right": int(rect.right),
+            "bottom": int(rect.bottom),
+            "width": max(0, int(rect.right) - int(rect.left)),
+            "height": max(0, int(rect.bottom) - int(rect.top)),
+        }
+        self.var_parent_title.set(str(wrapper.window_text() or "").strip())
+        self.var_parent_class.set(str(wrapper.class_name() or "").strip())
+        self.var_parent_framework.set(str(getattr(wrapper.element_info, "framework_id", "") or "").strip() or "WPF")
+        self.var_window_rect.set(
+            "{left},{top},{right},{bottom}".format(
+                left=self.window_rect["left"],
+                top=self.window_rect["top"],
+                right=self.window_rect["right"],
+                bottom=self.window_rect["bottom"],
+            )
+        )
+        self.status_var.set(status_text)
+        self._refresh_preview()
+
+    def capture_foreground_window(self):
+        wrapper = self._get_foreground_window_wrapper()
+        if wrapper is None:
+            self.status_var.set("未能读取当前前台窗口，请先把目标窗口切到最前面。")
+            return
+        try:
+            self._set_window_capture_from_wrapper(wrapper, "已抓取当前前台窗口，可继续画框选择相对区域。")
+        except Exception as exc:
+            self.status_var.set(f"抓取前台窗口失败：{exc}")
+
+    def capture_foreground_window_with_delay(self):
+        delay_seconds = max(1.0, self._parse_float(self.var_capture_delay_seconds.get(), 3.0))
+        if self.capture_after_id:
+            try:
+                self.window.after_cancel(self.capture_after_id)
+            except Exception:
+                pass
+            self.capture_after_id = None
+        self.status_var.set(f"将在 {delay_seconds:.1f} 秒后抓取当前前台父窗口，助手和总控台将暂时隐藏。")
+        try:
+            self.window.withdraw()
+        except Exception:
+            pass
+        try:
+            self.parent.iconify()
+        except Exception:
+            pass
+        self.capture_after_id = self.parent.after(int(delay_seconds * 1000), self._finish_delayed_foreground_capture)
+
+    def _finish_delayed_foreground_capture(self):
+        self.capture_after_id = None
+        wrapper = self._get_foreground_window_wrapper()
+        try:
+            self.parent.deiconify()
+        except Exception:
+            pass
+        try:
+            self.window.deiconify()
+            self.window.lift()
+            self.window.focus_force()
+        except Exception:
+            pass
+        if wrapper is None:
+            self.status_var.set("延时抓取失败：未读取到当前前台窗口，请重试。")
+            return
+        try:
+            self._set_window_capture_from_wrapper(wrapper, "已按延时方式抓取父窗口，可继续手动画框选择区域。")
+        except Exception as exc:
+            self.status_var.set(f"延时抓取前台窗口失败：{exc}")
+
+    def capture_mouse_center_with_delay(self):
+        if not self.window_rect or not self.window_rect.get("width") or not self.window_rect.get("height"):
+            self.status_var.set("请先抓取父窗口，再延时记录鼠标中心点。")
+            messagebox.showinfo("请先抓父窗口", "手动画框和鼠标中心记录都依赖父窗口矩形。\n请先点“抓取当前前台窗口”或“延时抓取父窗口”。")
+            return
+        delay_seconds = max(1.0, self._parse_float(self.var_capture_delay_seconds.get(), 3.0))
+        if self.capture_after_id:
+            try:
+                self.window.after_cancel(self.capture_after_id)
+            except Exception:
+                pass
+            self.capture_after_id = None
+        self.status_var.set(f"将在 {delay_seconds:.1f} 秒后记录当前鼠标中心，助手和总控台将暂时隐藏。")
+        try:
+            self.window.withdraw()
+        except Exception:
+            pass
+        try:
+            self.parent.iconify()
+        except Exception:
+            pass
+        self.capture_after_id = self.parent.after(int(delay_seconds * 1000), self._finish_delayed_mouse_capture)
+
+    def _finish_delayed_mouse_capture(self):
+        self.capture_after_id = None
+        self._capture_mouse_center_impl(restore_window=True, status_text="已按延时方式记录鼠标中心，并同步更新相对区域。")
+
+    def capture_mouse_center(self):
+        self._capture_mouse_center_impl(restore_window=False, status_text="已按当前鼠标位置计算相对区域左上角，可微调后复制。")
+
+    def _capture_mouse_center_impl(self, restore_window, status_text):
+        if not self.window_rect or not self.window_rect.get("width") or not self.window_rect.get("height"):
+            self.status_var.set("请先抓取父窗口，再记录鼠标中心点。")
+            return
+        pyautogui_module, import_error = get_pyautogui()
+        if restore_window:
+            try:
+                self.parent.deiconify()
+            except Exception:
+                pass
+            try:
+                self.window.deiconify()
+                self.window.lift()
+                self.window.focus_force()
+            except Exception:
+                pass
+        if pyautogui_module is None:
+            self.status_var.set(f"鼠标定位依赖加载失败：{import_error}")
+            messagebox.showerror("依赖加载失败", f"无法加载 pyautogui，暂时不能记录鼠标中心点：\n{import_error}")
+            return
+        x, y = pyautogui_module.position()
+        self.var_center_x.set(str(int(x)))
+        self.var_center_y.set(str(int(y)))
+        rel_x = (float(x) - float(self.window_rect["left"])) / float(self.window_rect["width"])
+        rel_y = (float(y) - float(self.window_rect["top"])) / float(self.window_rect["height"])
+        rel_width = self._parse_float(self.var_region_width.get(), 0.32)
+        rel_height = self._parse_float(self.var_region_height.get(), 0.08)
+        self.var_region_x.set(f"{max(0.0, min(1.0, rel_x - rel_width / 2.0)):.4f}")
+        self.var_region_y.set(f"{max(0.0, min(1.0, rel_y - rel_height / 2.0)):.4f}")
+        self.status_var.set(status_text)
+        self._refresh_preview()
+
+    def start_region_overlay_capture(self):
+        if not self.window_rect or not self.window_rect.get("width") or not self.window_rect.get("height"):
+            self.status_var.set("手动画框前必须先抓到父窗口，因为需要用父窗口矩形换算相对比例。")
+            messagebox.showinfo(
+                "请先抓父窗口",
+                "手动画框选择区域前，需要先拿到父窗口矩形。\n\n建议顺序：\n1. 点“延时抓取父窗口”\n2. 切到目标弹窗\n3. 抓到后再点“手动画框选择区域”",
+            )
+            return
+        if self.overlay_window is not None:
+            self.status_var.set("画框选择窗口已打开，请直接在屏幕上拖动选择。")
+            return
+        self.overlay_start = None
+        self.overlay_rect_id = None
+        try:
+            self.window.withdraw()
+        except Exception:
+            pass
+        overlay = tk.Toplevel(self.parent)
+        self.overlay_window = overlay
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        try:
+            overlay.attributes("-alpha", 0.22)
+        except Exception:
+            pass
+        screen_width = overlay.winfo_screenwidth()
+        screen_height = overlay.winfo_screenheight()
+        # 全屏遮罩用真实屏幕像素，绕过 DPI 自动缩放，否则会超出屏幕、框选坐标错位
+        wt_dpi.raw_geometry(overlay, f"{screen_width}x{screen_height}+0+0")
+        overlay.configure(bg="#0f172a")
+        canvas = tk.Canvas(overlay, bg="#0f172a", highlightthickness=0, cursor="crosshair")
+        canvas.pack(fill=tk.BOTH, expand=True)
+        self.overlay_canvas = canvas
+        parent_rect = self.window_rect or {}
+        canvas.create_rectangle(
+            parent_rect.get("left", 0),
+            parent_rect.get("top", 0),
+            parent_rect.get("right", 0),
+            parent_rect.get("bottom", 0),
+            outline="#60a5fa",
+            width=3,
+        )
+        self.overlay_hint_id = canvas.create_text(
+            max(220, parent_rect.get("left", 0) + 180),
+            max(40, parent_rect.get("top", 0) - 20),
+            text="请在父窗口内拖动画框选择区域，Esc 取消，松开鼠标后自动回到助手。",
+            fill="#ffffff",
+            font=("TkDefaultFont", 11, "bold"),
+        )
+        canvas.bind("<ButtonPress-1>", self._on_overlay_mouse_down)
+        canvas.bind("<B1-Motion>", self._on_overlay_mouse_drag)
+        canvas.bind("<ButtonRelease-1>", self._on_overlay_mouse_up)
+        overlay.bind("<Escape>", lambda _event=None: self._cancel_overlay_capture(restore_status=True))
+        overlay.focus_force()
+        self.status_var.set("请在父窗口内拖动画框选择相对区域，按 Esc 可取消。")
+
+    def _cancel_overlay_capture(self, restore_status=False):
+        overlay = self.overlay_window
+        self.overlay_window = None
+        self.overlay_canvas = None
+        self.overlay_rect_id = None
+        self.overlay_hint_id = None
+        self.overlay_start = None
+        if overlay is not None:
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+        try:
+            if self.window.winfo_exists():
+                self.window.deiconify()
+                self.window.lift()
+        except Exception:
+            pass
+        if restore_status:
+            self.status_var.set("已取消画框选择区域。")
+
+    def _clamp_overlay_point(self, x_value, y_value):
+        rect = self.window_rect or {}
+        left = int(rect.get("left", 0))
+        top = int(rect.get("top", 0))
+        right = int(rect.get("right", left))
+        bottom = int(rect.get("bottom", top))
+        clamped_x = min(max(int(x_value), left), right)
+        clamped_y = min(max(int(y_value), top), bottom)
+        return clamped_x, clamped_y
+
+    def _on_overlay_mouse_down(self, event):
+        if self.overlay_canvas is None:
+            return
+        start_x, start_y = self._clamp_overlay_point(event.x_root, event.y_root)
+        self.overlay_start = (start_x, start_y)
+        if self.overlay_rect_id is not None:
+            self.overlay_canvas.delete(self.overlay_rect_id)
+        self.overlay_rect_id = self.overlay_canvas.create_rectangle(
+            start_x,
+            start_y,
+            start_x,
+            start_y,
+            outline="#facc15",
+            width=3,
+            dash=(6, 4),
+        )
+
+    def _on_overlay_mouse_drag(self, event):
+        if self.overlay_canvas is None or self.overlay_rect_id is None or self.overlay_start is None:
+            return
+        current_x, current_y = self._clamp_overlay_point(event.x_root, event.y_root)
+        self.overlay_canvas.coords(self.overlay_rect_id, self.overlay_start[0], self.overlay_start[1], current_x, current_y)
+
+    def _on_overlay_mouse_up(self, event):
+        if self.overlay_start is None:
+            return
+        end_x, end_y = self._clamp_overlay_point(event.x_root, event.y_root)
+        start_x, start_y = self.overlay_start
+        left = min(start_x, end_x)
+        top = min(start_y, end_y)
+        right = max(start_x, end_x)
+        bottom = max(start_y, end_y)
+        self._cancel_overlay_capture()
+        if right - left < 4 or bottom - top < 4:
+            self.status_var.set("画框区域过小，请重新框选。")
+            return
+        self._apply_absolute_region(left, top, right, bottom, "已按画框结果生成相对区域，可继续微调后复制。")
+
+    def _apply_absolute_region(self, left, top, right, bottom, status_text):
+        if not self.window_rect or not self.window_rect.get("width") or not self.window_rect.get("height"):
+            self.status_var.set("请先抓取父窗口，再应用画框区域。")
+            return
+        parent_left = float(self.window_rect["left"])
+        parent_top = float(self.window_rect["top"])
+        parent_width = float(self.window_rect["width"])
+        parent_height = float(self.window_rect["height"])
+        rel_x = max(0.0, min(1.0, (float(left) - parent_left) / parent_width))
+        rel_y = max(0.0, min(1.0, (float(top) - parent_top) / parent_height))
+        rel_width = max(0.0, min(1.0, (float(right) - float(left)) / parent_width))
+        rel_height = max(0.0, min(1.0, (float(bottom) - float(top)) / parent_height))
+        center_x = int(round((float(left) + float(right)) / 2.0))
+        center_y = int(round((float(top) + float(bottom)) / 2.0))
+        self.var_center_x.set(str(center_x))
+        self.var_center_y.set(str(center_y))
+        self.var_region_x.set(f"{rel_x:.4f}")
+        self.var_region_y.set(f"{rel_y:.4f}")
+        self.var_region_width.set(f"{rel_width:.4f}")
+        self.var_region_height.set(f"{rel_height:.4f}")
+        self.status_var.set(status_text)
+        self._refresh_preview()
+
+    def _parse_float(self, value, default_value):
+        try:
+            return float(value)
+        except Exception:
+            return float(default_value)
+
+    def _set_widget_visible(self, widget, visible):
+        if widget is None:
+            return
+        if visible:
+            widget.grid()
+        else:
+            widget.grid_remove()
+
+    def _is_input_relative_action(self):
+        return (self.var_action_name.get().strip() or "type_text_relative") == "type_text_relative"
+
+    def _refresh_action_specific_fields(self):
+        show_text_input = self._is_input_relative_action()
+        self._set_widget_visible(getattr(self, "default_text_label", None), show_text_input)
+        self._set_widget_visible(getattr(self, "default_text_entry", None), show_text_input)
+
+    def _on_action_name_change(self, _event=None):
+        if self._is_input_relative_action() and not self.var_text.get().strip():
+            self.var_text.set("${runtime.sourceFilePath}")
+        self._refresh_action_specific_fields()
+        self._refresh_preview()
+
+    def build_action_config(self):
+        action_name = self.var_action_name.get().strip() or "type_text_relative"
+        payload = {
+            "action": action_name,
+            "timeoutSeconds": 3.0 if action_name == "type_text_relative" else 2.5,
+            "waitBefore": 0.0,
+            "waitAfter": 0.15 if action_name == "type_text_relative" else 0.12,
+            "parentWindow": {
+                "title": self.var_parent_title.get().strip(),
+                "className": self.var_parent_class.get().strip(),
+                "frameworkId": self.var_parent_framework.get().strip(),
+            },
+            "relativeRegion": {
+                "x": round(self._parse_float(self.var_region_x.get(), 0.45), 4),
+                "y": round(self._parse_float(self.var_region_y.get(), 0.45), 4),
+                "width": round(self._parse_float(self.var_region_width.get(), 0.32), 4),
+                "height": round(self._parse_float(self.var_region_height.get(), 0.08), 4),
+                "anchor": self.var_anchor.get().strip() or "center",
+            },
+        }
+        if action_name == "type_text_relative":
+            payload["text"] = self.var_text.get().strip() or "${runtime.sourceFilePath}"
+        return payload
+
+    def build_step_template(self):
+        parent_title = self.var_parent_title.get().strip() or "请补充父窗口标题"
+        action_name = self.var_action_name.get().strip() or "type_text_relative"
+        return {
+            "id": f"{action_name}_step",
+            "name": "父窗口区域输入" if action_name == "type_text_relative" else "父窗口区域点击",
+            "stage": "custom",
+            "strategy": "action",
+            "actionType": "action",
+            "windowTitle": parent_title,
+            "description": "通过父窗口相对区域点击输入文本。" if action_name == "type_text_relative" else "通过父窗口相对区域点击目标位置。",
+            "actionConfig": self.build_action_config(),
+        }
+
+    def _refresh_preview(self):
+        self._refresh_action_specific_fields()
+        self._refresh_region_preview()
+        preview = {
+            "actionConfig": self.build_action_config(),
+            "stepExample": self.build_step_template(),
+        }
+        self.preview_text.delete("1.0", tk.END)
+        self.preview_text.insert("1.0", json.dumps(preview, ensure_ascii=False, indent=2))
+
+    def _refresh_region_preview(self):
+        canvas = getattr(self, "region_preview_canvas", None)
+        if canvas is None:
+            return
+        canvas.delete("all")
+        canvas_width = max(int(canvas.winfo_width() or 0), 520)
+        canvas_height = max(int(canvas.winfo_height() or 0), 260)
+        canvas.create_rectangle(10, 10, canvas_width - 10, canvas_height - 10, outline=self.theme.get("border", "#d7e0ee"), width=1)
+        if not self.window_rect or not self.window_rect.get("width") or not self.window_rect.get("height"):
+            self.preview_metrics_var.set("预览摘要：尚未抓取父窗口，暂无像素尺寸与中心点信息")
+            canvas.create_text(
+                canvas_width / 2,
+                canvas_height / 2,
+                text="尚未抓取父窗口\n请先抓取父窗口后再画框或记录鼠标中心",
+                fill=self.theme.get("muted", "#5f6f82"),
+                font=("TkDefaultFont", 11),
+                justify=tk.CENTER,
+            )
+            return
+        padding = 28
+        preview_left = padding
+        preview_top = padding
+        preview_width = canvas_width - padding * 2
+        preview_height = canvas_height - padding * 2
+        parent_width_px = max(int(self.window_rect.get("width", 0) or 0), 1)
+        parent_height_px = max(int(self.window_rect.get("height", 0) or 0), 1)
+        canvas.create_rectangle(
+            preview_left,
+            preview_top,
+            preview_left + preview_width,
+            preview_top + preview_height,
+            fill="#eef6ff",
+            outline="#60a5fa",
+            width=2,
+        )
+        region_x = max(0.0, min(1.0, self._parse_float(self.var_region_x.get(), 0.45)))
+        region_y = max(0.0, min(1.0, self._parse_float(self.var_region_y.get(), 0.45)))
+        region_width = max(0.0, min(1.0, self._parse_float(self.var_region_width.get(), 0.32)))
+        region_height = max(0.0, min(1.0, self._parse_float(self.var_region_height.get(), 0.08)))
+        region_width_px = max(1, int(round(parent_width_px * region_width)))
+        region_height_px = max(1, int(round(parent_height_px * region_height)))
+        region_left_px = int(round(parent_width_px * region_x))
+        region_top_px = int(round(parent_height_px * region_y))
+        region_center_x_px = int(round(region_left_px + region_width_px / 2.0))
+        region_center_y_px = int(round(region_top_px + region_height_px / 2.0))
+        region_left = preview_left + preview_width * region_x
+        region_top = preview_top + preview_height * region_y
+        region_right = min(preview_left + preview_width, region_left + preview_width * region_width)
+        region_bottom = min(preview_top + preview_height, region_top + preview_height * region_height)
+        canvas.create_rectangle(
+            region_left,
+            region_top,
+            region_right,
+            region_bottom,
+            fill="#93c5fd",
+            outline="#1d4ed8",
+            width=2,
+        )
+        center_x = (region_left + region_right) / 2.0
+        center_y = (region_top + region_bottom) / 2.0
+        canvas.create_line(center_x - 10, center_y, center_x + 10, center_y, fill="#1e3a8a", width=2)
+        canvas.create_line(center_x, center_y - 10, center_x, center_y + 10, fill="#1e3a8a", width=2)
+        anchor_text = self.var_anchor.get().strip() or "center"
+        canvas.create_text(
+            preview_left + 6,
+            preview_top - 10,
+            text="父窗口",
+            anchor="w",
+            fill=self.theme.get("text", "#1f2d3d"),
+            font=("TkDefaultFont", 10, "bold"),
+        )
+        canvas.create_text(
+            region_left + 6,
+            max(preview_top + 14, region_top - 10),
+            text=f"区域 {region_width:.3f} x {region_height:.3f} / {region_width_px}px x {region_height_px}px / anchor={anchor_text}",
+            anchor="w",
+            fill="#1e3a8a",
+            font=("TkDefaultFont", 9, "bold"),
+        )
+        canvas.create_text(
+            preview_left,
+            preview_top + preview_height + 12,
+            text=f"窗口矩形: {self.var_window_rect.get() or '未捕获'}",
+            anchor="w",
+            fill=self.theme.get("muted", "#5f6f82"),
+            font=("TkDefaultFont", 9),
+        )
+        canvas.create_text(
+            preview_left,
+            preview_top + preview_height + 28,
+            text=f"中心点: ({region_center_x_px}, {region_center_y_px})   左上角: ({region_left_px}, {region_top_px})   区域占比: x={region_x:.4f}, y={region_y:.4f}",
+            anchor="w",
+            fill=self.theme.get("muted", "#5f6f82"),
+            font=("TkDefaultFont", 9),
+        )
+        self.preview_metrics_var.set(
+            "预览摘要："
+            f"父窗口 {parent_width_px} x {parent_height_px}px；"
+            f"区域 {region_width_px} x {region_height_px}px；"
+            f"中心点 ({region_center_x_px}, {region_center_y_px})；"
+            f"左上角比例 ({region_x:.4f}, {region_y:.4f})"
+        )
+
+    def _copy_payload(self, payload, label):
+        self.parent.clipboard_clear()
+        self.parent.clipboard_append(json.dumps(payload, ensure_ascii=False, indent=2))
+        self.parent.update_idletasks()
+        self.status_var.set(f"已复制 {label} 到剪贴板。")
+
+    def copy_action_config(self):
+        self._refresh_preview()
+        self._copy_payload(self.build_action_config(), "actionConfig")
+
+    def copy_step_template(self):
+        self._refresh_preview()
+        self._copy_payload(self.build_step_template(), "完整步骤样例")
+
+    # ---------- 批量画框采集：一个界面内连续框选多个控件，导出校准数据 ----------
+
+    def start_multi_region_capture(self):
+        if not self.window_rect or not self.window_rect.get("width") or not self.window_rect.get("height"):
+            self.status_var.set("批量画框前必须先抓到父窗口，因为需要父窗口矩形换算相对比例。")
+            messagebox.showinfo(
+                "请先抓父窗口",
+                "批量画框采集前，需要先拿到父窗口矩形。\n\n建议顺序：\n1. 点“延时抓取父窗口”\n2. 切到目标弹窗\n3. 抓到后再点“批量画框采集”",
+                parent=self.window,
+            )
+            return
+        if self.overlay_window is not None:
+            self.status_var.set("单框画框窗口已打开，请先完成或取消它。")
+            return
+        if self.multi_overlay_window is not None:
+            self.status_var.set("批量画框窗口已打开，请继续框选。")
+            return
+        self.multi_regions = []
+        self._update_multi_region_count()
+        self.multi_overlay_start = None
+        self.multi_overlay_rect_id = None
+        self.multi_overlay_region_items = []
+        try:
+            self.window.withdraw()
+        except Exception:
+            pass
+        overlay = tk.Toplevel(self.parent)
+        self.multi_overlay_window = overlay
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        try:
+            overlay.attributes("-alpha", 0.22)
+        except Exception:
+            pass
+        screen_width = overlay.winfo_screenwidth()
+        screen_height = overlay.winfo_screenheight()
+        wt_dpi.raw_geometry(overlay, f"{screen_width}x{screen_height}+0+0")
+        overlay.configure(bg="#0f172a")
+        canvas = tk.Canvas(overlay, bg="#0f172a", highlightthickness=0, cursor="crosshair")
+        canvas.pack(fill=tk.BOTH, expand=True)
+        self.multi_overlay_canvas = canvas
+        parent_rect = self.window_rect or {}
+        canvas.create_rectangle(
+            parent_rect.get("left", 0),
+            parent_rect.get("top", 0),
+            parent_rect.get("right", 0),
+            parent_rect.get("bottom", 0),
+            outline="#60a5fa",
+            width=3,
+        )
+        canvas.create_text(
+            max(240, parent_rect.get("left", 0) + 200),
+            max(40, parent_rect.get("top", 0) - 20),
+            text="批量画框：拖动框选控件，松开后输入名称继续；Del 撤销上一个；F2 完成；Esc 取消",
+            fill="#ffffff",
+            font=("TkDefaultFont", 11, "bold"),
+        )
+        canvas.bind("<ButtonPress-1>", self._on_multi_overlay_mouse_down)
+        canvas.bind("<B1-Motion>", self._on_multi_overlay_mouse_drag)
+        canvas.bind("<ButtonRelease-1>", self._on_multi_overlay_mouse_up)
+        overlay.bind("<F2>", lambda _event=None: self._finish_multi_region_capture())
+        overlay.bind("<Delete>", lambda _event=None: self._undo_last_multi_region())
+        overlay.bind("<BackSpace>", lambda _event=None: self._undo_last_multi_region())
+        overlay.bind("<Escape>", lambda _event=None: self._cancel_multi_region_capture(restore_status=True, clear_regions=True))
+        overlay.focus_force()
+        self._build_multi_toolbar()
+        self.status_var.set("批量画框采集：连续框选各控件，松开鼠标后输入名称继续；Del 撤销；F2 完成。")
+
+    def _on_multi_overlay_mouse_down(self, event):
+        canvas = self.multi_overlay_canvas
+        if canvas is None:
+            return
+        start_x, start_y = self._clamp_overlay_point(event.x_root, event.y_root)
+        self.multi_overlay_start = (start_x, start_y)
+        if self.multi_overlay_rect_id is not None:
+            canvas.delete(self.multi_overlay_rect_id)
+        self.multi_overlay_rect_id = canvas.create_rectangle(
+            start_x, start_y, start_x, start_y, outline="#facc15", width=3, dash=(6, 4),
+        )
+
+    def _on_multi_overlay_mouse_drag(self, event):
+        canvas = self.multi_overlay_canvas
+        if canvas is None or self.multi_overlay_rect_id is None or self.multi_overlay_start is None:
+            return
+        current_x, current_y = self._clamp_overlay_point(event.x_root, event.y_root)
+        canvas.coords(
+            self.multi_overlay_rect_id,
+            self.multi_overlay_start[0],
+            self.multi_overlay_start[1],
+            current_x,
+            current_y,
+        )
+
+    def _on_multi_overlay_mouse_up(self, event):
+        if self.multi_overlay_start is None:
+            return
+        end_x, end_y = self._clamp_overlay_point(event.x_root, event.y_root)
+        start_x, start_y = self.multi_overlay_start
+        left = min(start_x, end_x)
+        top = min(start_y, end_y)
+        right = max(start_x, end_x)
+        bottom = max(start_y, end_y)
+        self.multi_overlay_start = None
+        if self.multi_overlay_rect_id is not None:
+            try:
+                self.multi_overlay_canvas.delete(self.multi_overlay_rect_id)
+            except Exception:
+                pass
+            self.multi_overlay_rect_id = None
+        if right - left < 4 or bottom - top < 4:
+            self.status_var.set("画框区域过小，请重新框选。")
+            return
+        self._prompt_multi_region_tag(left, top, right, bottom)
+
+    def _prompt_multi_region_tag(self, left, top, right, bottom):
+        overlay = self.multi_overlay_window
+        try:
+            overlay.withdraw()
+        except Exception:
+            pass
+        self._destroy_multi_toolbar()
+        try:
+            self.window.deiconify()
+            self.window.lift()
+        except Exception:
+            pass
+        tag = simpledialog.askstring(
+            "控件名称",
+            "这个框选的是哪个控件/区域？\n（如：Date/Time、默认高度、风速通道、风向通道、应用、开始校验、添加到数据…）",
+            parent=self.window,
+        )
+        try:
+            self.window.withdraw()
+        except Exception:
+            pass
+        try:
+            overlay.deiconify()
+            overlay.lift()
+            overlay.focus_force()
+        except Exception:
+            pass
+        tag = (tag or "").strip()
+        if not tag:
+            self.status_var.set("已跳过该框选区域（未命名）。")
+            self._build_multi_toolbar()
+            return
+        region = self._make_multi_region_record(tag, left, top, right, bottom)
+        self.multi_regions.append(region)
+        self._update_multi_region_count()
+        if self.multi_overlay_canvas is not None:
+            rect_id = self.multi_overlay_canvas.create_rectangle(
+                left, top, right, bottom, outline="#ef4444", width=2,
+            )
+            text_id = self.multi_overlay_canvas.create_text(
+                left + 6, top - 6, text=tag, anchor="w",
+                fill="#ffffff", font=("TkDefaultFont", 9, "bold"),
+            )
+            self.multi_overlay_region_items.append((rect_id, text_id, tag, left, top, right, bottom))
+        self.status_var.set(f"已记录 {tag}，继续框选下一个；Del 撤销上一个；F2 完成。")
+        self._build_multi_toolbar()
+
+    def _make_multi_region_record(self, tag, left, top, right, bottom):
+        parent = self.window_rect or {}
+        parent_width = max(float(parent.get("width", 0) or 0), 1.0)
+        parent_height = max(float(parent.get("height", 0) or 0), 1.0)
+        parent_left = float(parent.get("left", 0) or 0)
+        parent_top = float(parent.get("top", 0) or 0)
+        return {
+            "tag": tag,
+            "left": int(left),
+            "top": int(top),
+            "right": int(right),
+            "bottom": int(bottom),
+            "width": int(right - left),
+            "height": int(bottom - top),
+            "center_x": int(round((left + right) / 2.0)),
+            "center_y": int(round((top + bottom) / 2.0)),
+            "rel_x": round(max(0.0, min(1.0, (float(left) - parent_left) / parent_width)), 4),
+            "rel_y": round(max(0.0, min(1.0, (float(top) - parent_top) / parent_height)), 4),
+            "rel_width": round(max(0.0, min(1.0, (float(right) - float(left)) / parent_width)), 4),
+            "rel_height": round(max(0.0, min(1.0, (float(bottom) - float(top)) / parent_height)), 4),
+        }
+
+    def _finish_multi_region_capture(self):
+        self._cancel_multi_region_capture(restore_status=False)
+        count = len(self.multi_regions)
+        if not count:
+            self.status_var.set("批量画框采集已退出（未记录任何区域），可重新开始。")
+            return
+        if messagebox.askyesno(
+            "批量采集完成",
+            f"已采集 {count} 个区域。\n\n是否立即将校准数据复制到剪贴板？\n（可直接粘贴发给 AI 做坐标校正，同时保存到 workspace/relative_region_calibration.json）",
+            parent=self.window,
+        ):
+            self._copy_multi_region_calibration()
+            self.status_var.set(f"批量画框采集完成，共 {count} 个区域，校准数据已复制到剪贴板。")
+        else:
+            self.status_var.set(f"批量画框采集完成，共 {count} 个区域，可点“导出校准数据”复制。")
+
+    def _cancel_multi_region_capture(self, restore_status=False, clear_regions=False):
+        overlay = self.multi_overlay_window
+        self.multi_overlay_window = None
+        self.multi_overlay_canvas = None
+        self.multi_overlay_rect_id = None
+        self.multi_overlay_start = None
+        self.multi_overlay_region_items = []
+        if overlay is not None:
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+        self._destroy_multi_toolbar()
+        if clear_regions:
+            self.multi_regions = []
+            self._update_multi_region_count()
+        try:
+            if self.window.winfo_exists():
+                self.window.deiconify()
+                self.window.lift()
+        except Exception:
+            pass
+        if restore_status:
+            if clear_regions:
+                self.status_var.set("已取消批量画框采集并清空已采区域。")
+            else:
+                self.status_var.set("已取消批量画框采集。")
+
+    # ---------- 批量画框采集：底部工具栏 / 撤销 / 一键复制校准数据 ----------
+
+    def _build_multi_toolbar(self):
+        """在屏幕底部中央创建不透明工具栏：完成采集 / 撤销上一个 / 取消。"""
+        toolbar = tk.Toplevel(self.parent)
+        self.multi_toolbar_window = toolbar
+        toolbar.overrideredirect(True)
+        toolbar.attributes("-topmost", True)
+        toolbar.configure(bg="#1e293b")
+        toolbar_width = wt_dpi.scale(640)
+        toolbar_height = wt_dpi.scale(54)
+        try:
+            screen_width = toolbar.winfo_screenwidth()
+            screen_height = toolbar.winfo_screenheight()
+            x = max(0, (screen_width - toolbar_width) // 2)
+            y = max(0, screen_height - wt_dpi.scale(88))
+            wt_dpi.raw_geometry(toolbar, f"{toolbar_width}x{toolbar_height}+{x}+{y}")
+        except Exception:
+            pass
+        tk.Label(
+            toolbar,
+            textvariable=self.var_multi_region_count,
+            bg="#1e293b",
+            fg="#e2e8f0",
+            font=("TkDefaultFont", 10, "bold"),
+        ).pack(side=tk.LEFT, padx=(14, 8), pady=8)
+        tk.Button(
+            toolbar,
+            text="完成采集 (F2)",
+            command=self._finish_multi_region_capture,
+            bg="#22c55e",
+            fg="#ffffff",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=14,
+            pady=6,
+        ).pack(side=tk.LEFT, padx=4)
+        tk.Button(
+            toolbar,
+            text="撤销上一个 (Del)",
+            command=self._undo_last_multi_region,
+            bg="#f59e0b",
+            fg="#ffffff",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=14,
+            pady=6,
+        ).pack(side=tk.LEFT, padx=4)
+        tk.Button(
+            toolbar,
+            text="取消 (Esc)",
+            command=lambda: self._cancel_multi_region_capture(restore_status=True, clear_regions=True),
+            bg="#ef4444",
+            fg="#ffffff",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=14,
+            pady=6,
+        ).pack(side=tk.LEFT, padx=4)
+        # 无论焦点在 overlay 还是工具栏，F2 / Del / Esc 都生效
+        toolbar.bind("<F2>", lambda _event=None: self._finish_multi_region_capture())
+        toolbar.bind("<Delete>", lambda _event=None: self._undo_last_multi_region())
+        toolbar.bind("<BackSpace>", lambda _event=None: self._undo_last_multi_region())
+        toolbar.bind("<Escape>", lambda _event=None: self._cancel_multi_region_capture(restore_status=True, clear_regions=True))
+        try:
+            toolbar.lift()
+        except Exception:
+            pass
+
+    def _destroy_multi_toolbar(self):
+        toolbar = self.multi_toolbar_window
+        self.multi_toolbar_window = None
+        if toolbar is not None:
+            try:
+                toolbar.destroy()
+            except Exception:
+                pass
+
+    def _undo_last_multi_region(self):
+        """撤销最近一个框选区域：删除 overlay 上的图形并移出记录。"""
+        if not self.multi_regions:
+            self.status_var.set("没有可撤销的区域。")
+            return
+        self.multi_regions.pop()
+        if self.multi_overlay_region_items and self.multi_overlay_canvas is not None:
+            rect_id, text_id, _tag, _l, _t, _r, _b = self.multi_overlay_region_items.pop()
+            try:
+                self.multi_overlay_canvas.delete(rect_id)
+            except Exception:
+                pass
+            try:
+                self.multi_overlay_canvas.delete(text_id)
+            except Exception:
+                pass
+        self._update_multi_region_count()
+        remaining = len(self.multi_regions)
+        self.status_var.set(f"已撤销上一个区域，剩余 {remaining} 个；继续框选或按 F2 完成。")
+        if self.multi_toolbar_window is not None:
+            self._destroy_multi_toolbar()
+            self._build_multi_toolbar()
+
+    def _update_multi_region_count(self):
+        try:
+            self.var_multi_region_count.set(f"批量采集：{len(self.multi_regions)} 个区域")
+        except Exception:
+            pass
+
+    def _build_multi_region_calibration_payload(self):
+        return {
+            "windowRect": self.window_rect,
+            "regionCount": len(self.multi_regions),
+            "regions": self.multi_regions,
+        }
+
+    def _copy_multi_region_calibration(self):
+        """构建校准数据，保存到 workspace 并复制到剪贴板。返回是否成功。"""
+        data = self._build_multi_region_calibration_payload()
+        try:
+            payload = json.dumps(data, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            self.status_var.set(f"导出序列化失败：{exc}")
+            return False
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace")
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception:
+            out_dir = os.path.dirname(os.path.abspath(__file__))
+        out_path = os.path.join(out_dir, "relative_region_calibration.json")
+        try:
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+        except Exception as exc:
+            self.status_var.set(f"导出保存失败：{exc}")
+            return False
+        try:
+            self.parent.clipboard_clear()
+            self.parent.clipboard_append(payload)
+            self.parent.update_idletasks()
+        except Exception:
+            pass
+        return True
+
+    def export_multi_region_calibration(self):
+        if not self.window_rect or not self.multi_regions:
+            self.status_var.set("请先抓父窗口并批量画框采集，再导出校准数据。")
+            messagebox.showinfo("无数据", "请先抓取父窗口并批量画框采集，再导出校准数据。", parent=self.window)
+            return
+        if self._copy_multi_region_calibration():
+            self.status_var.set(
+                f"已导出 {len(self.multi_regions)} 个区域到 workspace/relative_region_calibration.json，并已复制到剪贴板。"
+            )
+        else:
+            self.status_var.set("导出校准数据失败，请查看状态提示。")
+
+
+class ServerMonitorWindow:
+    """只读服务器监控窗口。"""
+    def __init__(self, master, initial_url, on_url_change=None):
+        self.on_url_change = on_url_change
+        self.base_url = (initial_url or SERVER_MONITOR_DEFAULT_URL).strip().rstrip("/")
+        self._fetching = False
+        self._after_id = None
+        self._closing = False
+
+        self.window = tk.Toplevel(master)
+        self.window.title("服务器监控（只读）")
+        self.window.configure(bg="#f4f7fb")
+        self.window.geometry("760x620")
+        self.window.minsize(640, 480)
+        self.window.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        top = tk.Frame(self.window, bg="#eaf1fb", padx=10, pady=8)
+        top.pack(fill=tk.X)
+        tk.Label(top, text="服务器地址", bg="#eaf1fb", fg="#1f2937").pack(side=tk.LEFT)
+        self.url_var = tk.StringVar(value=self.base_url)
+        tk.Entry(top, textvariable=self.url_var, width=42).pack(side=tk.LEFT, padx=8)
+        tk.Button(
+            top,
+            text="刷新",
+            command=self._apply_url_and_refresh,
+            bg="#dbeafe",
+            fg="#1f2937",
+            relief=tk.FLAT,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+        self.auto_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            top,
+            text="自动刷新 (2s)",
+            variable=self.auto_var,
+            bg="#eaf1fb",
+            fg="#1f2937",
+            activebackground="#eaf1fb",
+            selectcolor="#ffffff",
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+        status_frame = tk.LabelFrame(
+            self.window,
+            text="运行状态",
+            padx=10,
+            pady=8,
+            bg="#ffffff",
+            fg="#1f2937",
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        status_frame.pack(fill=tk.X, padx=10, pady=8)
+        self.conn_var = tk.StringVar(value="未连接")
+        self.run_status_var = tk.StringVar(value="未知")
+        self.activity_var = tk.StringVar(value="-")
+        self.error_var = tk.StringVar(value="-")
+        self.updated_var = tk.StringVar(value="-")
+        rows = [
+            ("连接状态", self.conn_var),
+            ("运行状态", self.run_status_var),
+            ("当前活动", self.activity_var),
+            ("最后错误", self.error_var),
+            ("更新时间", self.updated_var),
+        ]
+        for row_index, (label, var) in enumerate(rows):
+            tk.Label(status_frame, text=label, bg="#ffffff", fg="#64748b").grid(
+                row=row_index, column=0, sticky="w", padx=(0, 10), pady=2
+            )
+            tk.Label(status_frame, textvariable=var, bg="#ffffff", fg="#1f2937").grid(
+                row=row_index, column=1, sticky="w"
+            )
+
+        log_frame = tk.LabelFrame(
+            self.window,
+            text="运行日志",
+            padx=6,
+            pady=6,
+            bg="#ffffff",
+            fg="#1f2937",
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        text_frame = tk.Frame(log_frame, bg="#111418")
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.log_text = tk.Text(
+            text_frame,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            bg="#111418",
+            fg="#e6edf3",
+            insertbackground="#e6edf3",
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+            padx=8,
+            pady=8,
+        )
+        scrollbar = tk.Scrollbar(text_frame, command=self.log_text.yview, relief=tk.FLAT)
+        self.log_text.config(yscrollcommand=scrollbar.set)
+        # 滚动条先 pack（防止内容长行挤压滚动条，与队列窗口日志区修复保持一致）
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # 日志配色统一从 wt_theme 取（深底变体），不再就地硬编码 ——
+        # 改造前同一系统存在 4 套互不相同的日志配色。
+        wt_logging.configure_log_tags(
+            self.log_text, dark=True, font_family="Consolas", font_size=9
+        )
+
+        self._after_id = self.window.after(2000, self._poll_loop)
+
+    def _apply_url_and_refresh(self):
+        url = self.url_var.get().strip().rstrip("/")
+        if url:
+            self.base_url = url
+            if self.on_url_change:
+                self.on_url_change(url)
+        self.refresh()
+
+    def refresh(self):
+        if self._fetching:
+            return
+        self._fetching = True
+        threading.Thread(target=self._fetch_worker, daemon=True).start()
+
+    def _fetch_worker(self):
+        try:
+            status_payload = self._get_json("/api/status")
+            logs_payload = self._get_json("/api/logs?tail=300")
+        except Exception as exc:
+            self._post_ui(lambda: self._mark_offline(str(exc)))
+            self._fetching = False
+            return
+        self._post_ui(lambda: self._apply_payload(status_payload, logs_payload))
+        self._fetching = False
+
+    def _get_json(self, path):
+        url = self.base_url + path
+        request = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def _post_ui(self, callback):
+        try:
+            self.window.after(0, callback)
+        except Exception:
+            pass
+
+    def _apply_payload(self, status_payload, logs_payload):
+        self.conn_var.set("已连接")
+        status = str(status_payload.get("status", "unknown"))
+        labels = {
+            "idle": "空闲",
+            "running": "运行中",
+            "success": "成功",
+            "failed": "失败",
+            "unknown": "未知",
+        }
+        self.run_status_var.set(labels.get(status, status))
+        self.activity_var.set(str(status_payload.get("activity") or "-"))
+        self.error_var.set(str(status_payload.get("error") or "-"))
+        self.updated_var.set(str(status_payload.get("updatedAt") or "-"))
+        self._render_logs(logs_payload.get("lines", []))
+
+    def _render_logs(self, lines):
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.delete("1.0", tk.END)
+        for line in lines:
+            self.log_text.insert(tk.END, str(line) + "\n", self._classify_line(str(line)))
+        self.log_text.config(state=tk.DISABLED)
+        self.log_text.see(tk.END)
+
+    @staticmethod
+    def _classify_line(line):
+        # 统一委托给 wt_logging：优先读写入方显式级别，缺失时关键字兜底。
+        # 改造前此处与 _tag_for_line / 队列窗口各有一套规则，互不一致。
+        return wt_logging.tag_for_line(line)
+
+    def _mark_offline(self, error_text):
+        self.conn_var.set(f"未连接：{error_text}")
+        self.run_status_var.set("未知")
+        self.activity_var.set("-")
+        self.error_var.set("-")
+        self.updated_var.set("-")
+
+    def _poll_loop(self):
+        if self._closing:
+            return
+        if self.auto_var.get():
+            self.refresh()
+        self._after_id = self.window.after(2000, self._poll_loop)
+
+    def _on_close(self):
+        self._closing = True
+        if self._after_id is not None:
+            try:
+                self.window.after_cancel(self._after_id)
+            except Exception:
+                pass
+        self.window.destroy()
+
+
+# ---------------------------------------------------------------------------
+# 统一鼠标滚轮路由（wt_wheel_router 共享模块）
+# ---------------------------------------------------------------------------
+# 历史问题：Simple 模式滚动区、左侧面板、步骤区各自 bind_all("<MouseWheel>")，
+# 其中两处还用 Enter/Leave 动态 bind/unbind —— unbind_all 会把其他区域的
+# 常驻绑定一并拆掉，导致滚轮时滚错区域或无响应（ttkbootstrap 2.0 源码
+# 注释独立证实了同一坑）。统一方案与路由细节（含高精度触控板精细 delta
+# 的余数累积，修复 |delta|<120 被 int(delta/120) 截断为 0 的零响应问题）
+# 见 wt_wheel_router.py 模块文档。
+_WHEEL_ROUTER = wt_wheel_router.ROUTER
+
+
+class LauncherApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("WT 自动化项目总控台")
+        wt_dpi.geometry(self.root, 1320, 860)
+        self.root.minsize(wt_dpi.scale(1140), wt_dpi.scale(760))
+        self.theme = wt_theme.get_palette()
+        self.root.configure(bg=self.theme["bg"])
+
+        self.process = None
+        self.output_queue = queue.Queue()
+        # 多塔串行队列生命周期标志：队列运行中为 True，全部结束（或停止）置 False
+        self._mast_queue_active = False
+        # 多塔队列停止请求：置 True 后队列在塔间隙中止
+        self._mast_queue_stop = False
+        self.status_var = tk.StringVar(value="状态：准备就绪")
+        self.current_step_var = tk.StringVar(value="当前步骤：等待启动")
+        self.process_var = tk.StringVar(value="流程进程：未运行")
+        self.config_summary_var = tk.StringVar(value="配置概览：尚未检查")
+        self.template_summary_var = tk.StringVar(value="模板库概览：尚未检查")
+        self.template_category_var = tk.StringVar(value="")
+        self.run_report_summary_var = tk.StringVar(value="运行报告：尚未生成")
+        self.run_report_meta_var = tk.StringVar(value="最近一次流程执行后，会在这里展示结构化运行结果。")
+        # 「运行日志」页的完整行缓冲与过滤条件。缓冲独立于 Text 控件保存 ——
+        # 切换过滤条件时要能重新筛选全量行，而不只是当前可见的那部分。
+        self._log_all_lines = []
+        self._log_filter = wt_log_query.LogFilter()
+        self.skip_setup_var = tk.BooleanVar(value=False)
+        self.pre_raise_var = tk.BooleanVar(value=True)
+        self.show_monitor_var = tk.BooleanVar(value=True)
+        self.flow_steps = []
+        self.flow_step_display_map = {}
+        self.step_check_vars = {}
+        self.flow_packages = []
+        self.selected_flow_package_var = tk.StringVar(value="")
+        self.step_scroll_hint_var = tk.StringVar(value="步骤列表位置：顶部")
+        self.flow_definition_path_var = tk.StringVar(value=FLOW_DEFINITION_FILE)
+        self.template_categories = []
+        self._task_server_process = None
+        self._launcher_subprocess_log_handles = []
+
+        launcher_state, _state_error = load_json_file(LAUNCHER_STATE_FILE)
+        launcher_state = launcher_state or {}
+        self.simple_mode_flows = {}
+        simple_flows = launcher_state.get("simpleModeFlows", {})
+        if isinstance(simple_flows, dict):
+            self.simple_mode_flows.update(simple_flows)
+        self.simple_mode_enabled = {}
+        simple_enabled = launcher_state.get("simpleModeEnabled", {})
+        if isinstance(simple_enabled, dict):
+            self.simple_mode_enabled.update(simple_enabled)
+        raw_monitor_url = launcher_state.get("serverMonitorUrl") or SERVER_MONITOR_DEFAULT_URL
+        self.server_monitor_url = str(raw_monitor_url).strip().rstrip("/") or SERVER_MONITOR_DEFAULT_URL
+        raw_task_url = launcher_state.get("taskQueueUrl") or TASK_SERVER_DEFAULT_URL
+        self.task_queue_url = str(raw_task_url).strip().rstrip("/") or TASK_SERVER_DEFAULT_URL
+        self.task_queue_user = str(launcher_state.get("taskQueueUser") or "").strip()
+        self.task_queue_token = str(launcher_state.get("taskQueueToken") or "").strip()
+        self.simple_remote_var = tk.BooleanVar(value=bool(launcher_state.get("simpleModeRemote", False)))
+        # Simple 远程队列共享状态：轮询线程与主线程都会读写，用可重入锁保护
+        self._simple_remote_lock = threading.RLock()
+        self._simple_remote_task_ids = {}
+        self._simple_remote_stop = False
+        self._simple_remote_outcomes = {}
+        self._simple_remote_total = 0
+        # 市场项目工作文件夹（自动解析键入值，仅在选择后对 Simple 板块运行生效；未指定不影响现有流程）
+        self.project_work_dir = str(launcher_state.get("projectWorkDir") or "").strip()
+        self.project_params = launcher_state.get("projectParams") or {}
+        if not isinstance(self.project_params, dict):
+            self.project_params = {}
+        # 下拉选项列表（Cp 版本 / 风机类型型号）：固定种子 + 用户自行新建/删除，持久化到 launcher_state。
+        # 加载语义见 wt_simple_options.load_options：仅「键缺失」时播种默认项；
+        # 已存在显式列表（含用户主动删空后的空列表）即完全尊重，避免删掉又被默认值复活。
+        for _opt_kind, _opt_meta in wt_simple_options.OPTION_KINDS.items():
+            setattr(
+                self,
+                _opt_meta["attr"],
+                wt_simple_options.load_options(
+                    launcher_state.get(_opt_meta["state_key"]),
+                    _opt_meta["defaults"],
+                ),
+            )
+        # 当前项目识别出的测风塔编号（供「测风塔对象编号」下拉选项）
+        self.project_mast_ids = []
+        # 加载项目文件夹时解析出的「解析参数」摘要（供「项目计算参数」对话框的「解析参数」标签页查看）
+        self.parsed_project_info = None
+        self.parsed_diag = None
+        # 若 launcher_state 已保存过项目文件夹，则启动时即预解析摘要，便于直接查看
+        if str(getattr(self, "project_work_dir", "") or "").strip():
+            try:
+                self.parsed_project_info = wt_project_workdir_parser.summarize_project_work_dir(
+                    self.project_work_dir, self.project_params or {})
+            except Exception as exc:
+                self.parsed_project_info = None
+                self.parsed_diag = {"error": str(exc)}
+            if self.parsed_project_info is None and self.parsed_diag is None:
+                self.parsed_diag = wt_project_workdir_parser.diagnose_project_work_dir(self.project_work_dir)
+        self._initial_ui_mode = "simple" if launcher_state.get("uiMode") == "simple" else "advanced"
+        self.enable_ai_intervention_var = tk.BooleanVar(value=bool(launcher_state.get("enableAiIntervention", False)))
+        # 执行中自动更新控件模板开关：勾选后每次运行截图并与上次模板对比、不一致才替换，
+        # 自动关联步骤兜底；不勾选则完全不采集/不更新模板（默认关闭，防止假成功污染模板库）
+        self.template_auto_update_var = tk.BooleanVar(value=bool(launcher_state.get("templateAutoUpdate", False)))
+        self.ui_scale_var = tk.StringVar(value=wt_dpi.scale_to_label(wt_dpi.load_scale_config()))
+        self.flow_definition_path_var.set(launcher_state.get("flowDefinitionPath") or FLOW_DEFINITION_FILE)
+        state_step_order = launcher_state.get("stepOrderByFlowPath", {})
+        self.step_order_by_flow_path = state_step_order if isinstance(state_step_order, dict) else {}
+
+        initial_repo_root = launcher_state.get("repoRoot") or os.environ.get("UI_TARS_REPO_ROOT") or PROJECT_SETTINGS.get(
+            "UI_TARS_REPO_ROOT", DEFAULT_UI_TARS_REPO_ROOT
+        )
+        initial_config_path = launcher_state.get("configPath") or os.environ.get("UI_TARS_CLI_CONFIG") or PROJECT_SETTINGS.get(
+            "UI_TARS_CLI_CONFIG", DEFAULT_UI_TARS_CONFIG
+        )
+        config_data, _error = load_json_file(initial_config_path)
+        config_data = config_data or {}
+
+        self.ui_tars_repo_var = tk.StringVar(value=initial_repo_root)
+        self.ui_tars_config_path_var = tk.StringVar(value=initial_config_path)
+        self.api_key_var = tk.StringVar(
+            value=launcher_state.get("apiKey")
+            or os.environ.get("VOLC_API_KEY")
+            or os.environ.get("UI_TARS_API_KEY")
+            or config_data.get("apiKey", "")
+        )
+        self.model_name_var = tk.StringVar(
+            value=launcher_state.get("model")
+            or os.environ.get("MODEL_NAME")
+            or os.environ.get("UI_TARS_MODEL")
+            or config_data.get("model", "")
+            or DEFAULT_MODEL_NAME
+        )
+        self.base_url_var = tk.StringVar(
+            value=launcher_state.get("baseURL")
+            or os.environ.get("UI_TARS_VLM_BASE_URL")
+            or config_data.get("baseURL", "")
+            or DEFAULT_BASE_URL
+        )
+        self.use_responses_api_var = tk.BooleanVar(
+            value=bool(launcher_state.get("useResponsesApi", config_data.get("useResponsesApi", False)))
+        )
+        self.show_api_key_var = tk.BooleanVar(value=False)
+        self.recent_models = self._normalize_recent_models(launcher_state.get("recentModels", []))
+        self.model_history_var = tk.StringVar(value="")
+        self.model_history_values = []
+
+        self._configure_styles()
+        self._build_ui()
+        self._refresh_api_entry_mode()
+        self._refresh_model_history_options(select_current=True)
+        self._refresh_config_summary()
+        self._refresh_template_library_summary()
+        self._load_recent_log()
+        self.current_run_report = None
+        self.run_report_step_items = []
+        self._refresh_run_report_view()
+        self._refresh_flow_steps()
+        self.root.after(120, self._poll_output_queue)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _build_ui(self):
+        container = tk.Frame(self.root, padx=16, pady=16, bg=self.theme["bg"])
+        container.pack(fill=tk.BOTH, expand=True)
+
+        # ── 头部：标题 + 模式切换 ──
+        header = tk.Frame(container, bg=self.theme["primary"], padx=20, pady=14)
+        header.pack(fill=tk.X)
+        header.columnconfigure(0, weight=1)
+
+        title_frame = tk.Frame(header, bg=self.theme["primary"])
+        title_frame.grid(row=0, column=0, sticky="w")
+        tk.Label(
+            title_frame,
+            text="WT 自动化项目总控台",
+            font=("Microsoft YaHei UI", 16, "bold"),
+            bg=self.theme["primary"],
+            fg="white",
+        ).pack(anchor="w")
+        tk.Label(
+            title_frame,
+            text="集成流程运行监测、模板制作、运行检测、模型配置编辑与日志打包",
+            fg="#dbeafe",
+            bg=self.theme["primary"],
+        ).pack(anchor="w", pady=(2, 0))
+
+        # 模式切换胶囊（顶部右侧）
+        mode_frame = tk.Frame(
+            header,
+            bg="#1d4ed8",
+            padx=3,
+            pady=3,
+            highlightthickness=1,
+            highlightbackground="#3b82f6",
+        )
+        mode_frame.grid(row=0, column=1, sticky="e", padx=(20, 0))
+        self.ui_mode_var = tk.StringVar(value=self._initial_ui_mode)
+
+        self.btn_simple_mode = tk.Button(
+            mode_frame,
+            text="▸ Simple",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            command=lambda: self._switch_ui_mode("simple"),
+            relief=tk.FLAT,
+            bd=0,
+            padx=16,
+            pady=5,
+            cursor="hand2",
+        )
+        self.btn_simple_mode.pack(side=tk.LEFT, padx=(0, 2))
+
+        self.btn_advanced_mode = tk.Button(
+            mode_frame,
+            text="Advanced ◂",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            command=lambda: self._switch_ui_mode("advanced"),
+            relief=tk.FLAT,
+            bd=0,
+            padx=16,
+            pady=5,
+            cursor="hand2",
+        )
+        self.btn_advanced_mode.pack(side=tk.LEFT)
+        self._update_mode_button_styles()
+
+        # ── 模式内容主容器（使用 grid 空间复用，避免 pack_forget 造成全量重排与黑闪） ──
+        self.content_box = tk.Frame(container, bg=self.theme["bg"])
+        self.content_box.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        self.content_box.grid_rowconfigure(0, weight=1)
+        self.content_box.grid_columnconfigure(0, weight=1)
+
+        # ── Simple 模式内容区 ──
+        self.simple_frame = tk.Frame(self.content_box, bg=self.theme["bg"])
+        self.simple_frame.grid(row=0, column=0, sticky="nsew")
+        self._build_simple_panel(self.simple_frame)
+
+        # ── Advanced 模式内容区（原界面） ──
+        self.advanced_frame = tk.Frame(self.content_box, bg=self.theme["bg"])
+        self.advanced_frame.grid(row=0, column=0, sticky="nsew")
+
+        self.main_paned = tk.PanedWindow(
+            self.advanced_frame,
+            orient=tk.HORIZONTAL,
+            sashwidth=4,
+            sashrelief=tk.FLAT,
+            showhandle=False,
+            bd=0,
+            bg=self.theme["border"],
+            sashcursor="sb_h_double_arrow",
+            opaqueresize=False,
+        )
+        self.main_paned.pack(fill=tk.BOTH, expand=True)
+
+        left_frame = tk.Frame(
+            self.main_paned,
+            width=430,
+            padx=14,
+            pady=14,
+            bg=self.theme["card"],
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
+        left_frame.pack_propagate(False)
+
+        right_frame = tk.Frame(
+            self.main_paned,
+            padx=14,
+            pady=14,
+            bg=self.theme["card"],
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
+
+        self.main_paned.add(left_frame, minsize=wt_dpi.scale(360))
+        self.main_paned.add(right_frame, minsize=wt_dpi.scale(760))
+        self.root.after(120, lambda: self._set_left_panel_width(430))
+
+        self._build_left_panel(left_frame)
+        self._build_right_panel(right_frame)
+
+        # 初始模式显示与隐藏设置（使用 grid_remove 保留几何计算与底层资源，不占主窗 resize 计算）
+        if self.ui_mode_var.get() == "simple":
+            self.advanced_frame.grid_remove()
+            self.simple_frame.grid()
+        else:
+            self.simple_frame.grid_remove()
+            self.advanced_frame.grid()
+
+    # ── 模式切换 ──────────────────────────────────────────────────────────────
+
+    def _update_mode_button_styles(self):
+        active_bg = "#ffffff"
+        inactive_bg = "#1d4ed8"
+        active_fg = self.theme["primary"]
+        inactive_fg = "#bfdbfe"
+        mode = self.ui_mode_var.get()
+        self.btn_simple_mode.config(
+            bg=active_bg if mode == "simple" else inactive_bg,
+            fg=active_fg if mode == "simple" else inactive_fg,
+        )
+        self.btn_advanced_mode.config(
+            bg=active_bg if mode == "advanced" else inactive_bg,
+            fg=active_fg if mode == "advanced" else inactive_fg,
+        )
+
+    def _switch_ui_mode(self, mode):
+        self.ui_mode_var.set(mode)
+        self._update_mode_button_styles()
+
+        # 使用 tk busy 遮罩拦截用户交互并防止半途未完成布局渲染暴露
+        try:
+            self.root.tk.call("tk", "busy", "hold", self.root)
+        except Exception:
+            pass
+
+        try:
+            if mode == "simple":
+                self.advanced_frame.grid_remove()
+                self.simple_frame.grid()
+            else:
+                self.simple_frame.grid_remove()
+                self.advanced_frame.grid()
+            self.root.update_idletasks()
+            try:
+                self._simple_save_state()
+            except Exception:
+                pass
+        finally:
+            try:
+                self.root.tk.call("tk", "busy", "forget", self.root)
+            except Exception:
+                pass
+
+    # ── Simple 模式界面 ──────────────────────────────────────────────────────
+
+    SIMPLE_SECTIONS = [
+        {"key": "terrain", "title": "新建地形信息数据", "icon": "🗺️"},
+        {"key": "weather", "title": "新建气象数据", "icon": "🌤️"},
+        {"key": "element", "title": "新增及配置元素", "icon": "🧩"},
+        {"key": "turbine", "title": "新建风机类型", "icon": "🌬️"},
+        {"key": "project", "title": "新建工程项目", "icon": "📋"},
+        {"key": "cfd", "title": "发送 CFD 计算", "icon": "⚙️"},
+        {"key": "comprehensive", "title": "发送综合计算", "icon": "📊"},
+        {"key": "export_result", "title": "导出计算结果", "icon": "📤"},
+    ]
+
+    def _build_simple_panel(self, parent):
+        """构建 Simple 模式界面：响应式卡片网格 + 顶部操作栏 + 底部状态行。"""
+        theme = self.theme
+
+        # ── 顶部操作栏 ──
+        toolbar = tk.Frame(
+            parent, bg=theme["toolbar"], padx=14, pady=8,
+            highlightthickness=1, highlightbackground=theme["border"],
+        )
+        toolbar.pack(fill=tk.X, pady=(0, 12))
+
+        # ── 第一行：项目工程区（左） + 远程协同区（右） ──
+        toolbar_top = tk.Frame(toolbar, bg=theme["toolbar"])
+        toolbar_top.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            toolbar_top, text="📁 项目工程:", font=("Microsoft YaHei UI", 9, "bold"),
+            bg=theme["toolbar"], fg=theme["text"],
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_simple_workdir = tk.Button(
+            toolbar_top, text="选择项目文件夹", command=self._simple_select_work_dir,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_workdir.pack(side=tk.LEFT, padx=(0, 4))
+        self.simple_workdir_label = tk.Label(
+            toolbar_top, text="", bg=theme["toolbar"], fg=theme["muted"],
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.simple_workdir_label.pack(side=tk.LEFT, padx=(0, 8))
+        self.btn_simple_params = tk.Button(
+            toolbar_top, text="⚙ 项目参数", command=self._simple_edit_project_params,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_params.pack(side=tk.LEFT, padx=(0, 4))
+        self.btn_simple_clear_workdir = tk.Button(
+            toolbar_top, text="清除", command=self._simple_clear_work_dir,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=9, pady=4, cursor="hand2", state=tk.DISABLED, font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_clear_workdir.pack(side=tk.LEFT, padx=(0, 4))
+        self._simple_update_work_dir_label()
+
+        # 远程协同与扩展工具（右对齐）
+        self.btn_simple_flow_graph = tk.Button(
+            toolbar_top, text="🗺 流程图", command=self._open_flow_graph,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_flow_graph.pack(side=tk.RIGHT, padx=(4, 0))
+
+        self.btn_simple_submit_chain = tk.Button(
+            toolbar_top, text="🔗 提交链路", command=self._submit_chain_to_remote_queue,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_submit_chain.pack(side=tk.RIGHT, padx=(4, 0))
+
+        self.btn_simple_test_conn = tk.Button(
+            toolbar_top, text="⚡ 测试连接", command=self._simple_test_connection,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_simple_test_conn.pack(side=tk.RIGHT, padx=(4, 0))
+
+        self.btn_task_monitor = tk.Button(
+            toolbar_top, text="📊 任务与监控", command=self.open_task_queue,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9, "bold"),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_task_monitor.pack(side=tk.RIGHT, padx=(4, 0))
+
+        def _toggle_simple_remote_mode():
+            new_val = not self.simple_remote_var.get()
+            self.simple_remote_var.set(new_val)
+            try:
+                self._simple_save_state()
+            except Exception:
+                pass
+
+        self.btn_simple_remote = tk.Button(
+            toolbar_top,
+            text="💻 本地模式 (点击切远程)",
+            command=_toggle_simple_remote_mode,
+            bg=theme["secondary"],
+            fg=theme["text"],
+            relief=tk.FLAT,
+            padx=14,
+            pady=4,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            activebackground=theme["secondary_active"],
+            activeforeground=theme["text"],
+            highlightthickness=1,
+            highlightbackground=theme.get("border_dark", "#cbd5e1"),
+        )
+        self.btn_simple_remote.pack(side=tk.RIGHT, padx=(8, 4))
+
+        # ── 中间柔和分割线 ──
+        toolbar_sep = tk.Frame(toolbar, height=1, bg=theme["border"])
+        toolbar_sep.pack(fill=tk.X, pady=4)
+
+        # ── 第二行：板块运行主控台 ──
+        toolbar_bottom = tk.Frame(toolbar, bg=theme["toolbar"])
+        toolbar_bottom.pack(fill=tk.X, pady=(2, 0))
+
+        tk.Label(
+            toolbar_bottom, text="快捷运行", font=("Microsoft YaHei UI", 12, "bold"),
+            bg=theme["toolbar"], fg=theme["text"],
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Button(
+            toolbar_bottom, text="全选", command=lambda: self._simple_toggle_all(True),
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        tk.Button(
+            toolbar_bottom, text="取消全选", command=lambda: self._simple_toggle_all(False),
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=12, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        ).pack(side=tk.LEFT, padx=4)
+
+        sep2 = tk.Frame(toolbar_bottom, width=1, bg=theme["border"])
+        sep2.pack(side=tk.LEFT, fill=tk.Y, padx=10)
+
+        self.btn_simple_run = tk.Button(
+            toolbar_bottom, text="▶ 运行所选板块", command=self._run_simple_mode,
+            bg="#059669", fg="white", font=("Microsoft YaHei UI", 11, "bold"),
+            relief=tk.FLAT, padx=24, pady=6, cursor="hand2",
+            activebackground="#047857",
+        )
+        self.btn_simple_run.pack(side=tk.LEFT)
+
+        self.btn_simple_stop = tk.Button(
+            toolbar_bottom, text="■ 停止排队", command=self._simple_stop_queue,
+            bg=theme["danger"], fg="white", font=("Microsoft YaHei UI", 10, "bold"),
+            relief=tk.FLAT, padx=18, pady=6, cursor="hand2",
+            activebackground=theme["danger_active"], state=tk.DISABLED,
+        )
+        self.btn_simple_stop.pack(side=tk.LEFT, padx=(8, 0))
+
+        self.btn_simple_submit_remote = tk.Button(
+            toolbar_bottom, text="提交所选板块到远程队列",
+            command=self._submit_simple_to_remote_queue,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=16, pady=6, cursor="hand2", font=("Microsoft YaHei UI", 10, "bold"),
+            activebackground=theme["secondary_active"],
+        )
+
+        self.simple_remote_var.trace_add("write", self._on_simple_remote_mode_changed)
+        self._on_simple_remote_mode_changed()
+
+        self.simple_status_var = tk.StringVar(value="就绪")
+        self.simple_status_label = tk.Label(
+            toolbar_bottom, textvariable=self.simple_status_var, bg=theme["toolbar"],
+            fg=theme["muted"], font=("Microsoft YaHei UI", 9), anchor="e",
+        )
+        self.simple_status_label.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(12, 0))
+
+        # ── 卡片滚动容器 ──
+        canvas_frame = tk.Frame(parent, bg=theme["bg"])
+        canvas_frame.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(canvas_frame, bg=theme["bg"], highlightthickness=0)
+        h_scroll = tk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+        scrollable = tk.Frame(canvas, bg=theme["bg"])
+
+        def _on_canvas_configure(event):
+            new_w = getattr(event, "width", 0) or canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(canvas, "_last_width", -1):
+                canvas._last_width = new_w
+                canvas.itemconfigure("inner", width=new_w)
+
+        _scrollregion_scheduled = [False]
+
+        def _schedule_scrollregion_update():
+            # resize 期间 <Configure> 每帧多次触发，bbox("all") 是全量子树遍历；
+            # after_idle 语义（Tk doc/after.n）：回调在事件队列排空、
+            # 无事件可处理时执行一次。Configure 风暴期间不执行，风暴
+            # 结束才跑一次 —— 效果即合帧：风暴 N 次触发只做 1 次
+            # bbox("all") 全量重算（每帧调用会造成 resize 迟滞）
+            if _scrollregion_scheduled[0]:
+                return
+            _scrollregion_scheduled[0] = True
+            def _apply():
+                _scrollregion_scheduled[0] = False
+                try:
+                    canvas.configure(scrollregion=canvas.bbox("all"))
+                except Exception:
+                    pass
+            canvas.after_idle(_apply)
+
+        def _on_scrollable_configure(event):
+            _schedule_scrollregion_update()
+            self._simple_relayout_cards(scrollable, event_width=event.width)
+
+        canvas.bind("<Configure>", _on_canvas_configure)
+        scrollable.bind("<Configure>", _on_scrollable_configure)
+        canvas.create_window((0, 0), window=scrollable, anchor="nw", tags="inner")
+        canvas.configure(yscrollcommand=h_scroll.set)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        h_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 注册进统一滚轮路由器（root 上一次绑定，按指针位置分发，
+        # 不再各自 bind_all 互相覆盖；详见模块级 _WheelRouter 注释）
+        _WHEEL_ROUTER.register(canvas)
+        _WHEEL_ROUTER.bind_root(self.root)
+
+        # ── 板块卡片 ──
+        self.simple_section_vars = {}
+        section_widgets = {}
+        self._simple_cards = []
+
+        for i, sec in enumerate(self.SIMPLE_SECTIONS):
+            key = sec["key"]
+            enabled_var = tk.BooleanVar(value=bool(self.simple_mode_enabled.get(key, True)))
+            path_key = "simple_{}_path".format(key)
+            flow_path = getattr(self, path_key, "") or self.simple_mode_flows.get(key, "")
+
+            self.simple_section_vars[key] = {
+                "enabled": enabled_var,
+                "path": flow_path,
+            }
+
+            card = tk.Frame(
+                scrollable, bg=theme["card"],
+                highlightthickness=1, highlightbackground=theme.get("border_dark", "#cbd5e1"),
+                padx=18, pady=14,
+            )
+
+            # 顶部彩色辨识指示条 (Top Accent Bar)：3px 高度，未配置深灰，已配置科技蓝
+            top_bar = tk.Frame(
+                card, height=3,
+                bg=theme["primary"] if flow_path else theme.get("border_dark", "#cbd5e1"),
+            )
+            top_bar.pack(fill=tk.X, pady=(0, 10))
+
+            # 标题行：序号 + 勾选 + 图标 + 名称 + 配置徽标
+            title_row = tk.Frame(card, bg=theme["card"])
+            title_row.pack(fill=tk.X, anchor="w")
+
+            seq_badge = tk.Label(
+                title_row,
+                text="{:02d}".format(i + 1),
+                font=("Microsoft YaHei UI", 9, "bold"),
+                bg=theme["primary_soft"],
+                fg=theme["primary_text"],
+                padx=7,
+                pady=2,
+            )
+            seq_badge.pack(side=tk.LEFT, padx=(0, 6))
+
+            tk.Checkbutton(
+                title_row, variable=enabled_var, bg=theme["card"],
+                font=("Microsoft YaHei UI", 11, "bold"), cursor="hand2",
+                command=lambda k=key: self._simple_on_toggle(k),
+            ).pack(side=tk.LEFT)
+            tk.Label(title_row, text="{} {}".format(sec["icon"], sec["title"]),
+                     font=("Microsoft YaHei UI", 12, "bold"), bg=theme["card"],
+                     fg=theme["text"]).pack(side=tk.LEFT, padx=(4, 0))
+
+            badge_label = wt_theme.create_badge(
+                title_row, text="未配置", tone="muted"
+            )
+            badge_label.pack(side=tk.RIGHT)
+
+            # 标题与内容区之间的细微分割线
+            title_sep = tk.Frame(card, height=1, bg=theme["border"])
+            title_sep.pack(fill=tk.X, pady=(8, 0))
+
+            # 悬停聚焦反馈：鼠标滑入时边界高亮为科技蓝
+            def _bind_card_hover(wgt, c=card):
+                def _on_enter(_e):
+                    try:
+                        c.configure(highlightbackground=theme["primary"])
+                    except Exception:
+                        pass
+                def _on_leave(_e):
+                    try:
+                        c.configure(highlightbackground=theme.get("border_dark", "#cbd5e1"))
+                    except Exception:
+                        pass
+                wgt.bind("<Enter>", _on_enter, add="+")
+                wgt.bind("<Leave>", _on_leave, add="+")
+
+            _bind_card_hover(card)
+            _bind_card_hover(top_bar)
+            _bind_card_hover(title_row)
+
+            # 路径行：放入微缩卡片槽中
+            path_card = tk.Frame(
+                card, bg=theme.get("panel_soft", "#f8fafc"),
+                padx=12, pady=8,
+                highlightthickness=1, highlightbackground=theme["border"],
+            )
+            path_card.pack(fill=tk.X, anchor="w", pady=(10, 0))
+
+            path_row = tk.Frame(path_card, bg=theme.get("panel_soft", "#f8fafc"))
+            path_row.pack(fill=tk.X, anchor="w")
+
+            tk.Label(path_row, text="流程:", font=("Microsoft YaHei UI", 9, "bold"),
+                     bg=path_card["bg"], fg=theme["muted"]).pack(side=tk.LEFT)
+            path_label = tk.Label(
+                path_row, text="（未设置）",
+                font=("Microsoft YaHei UI", 9, "bold"), bg=path_card["bg"],
+                fg="#9ca3af", anchor="w",
+            )
+            path_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
+
+            dir_label = tk.Label(
+                path_card, text="", font=("Consolas", 8), bg=path_card["bg"],
+                fg=theme["muted"], anchor="w", justify="left",
+            )
+            dir_label.pack(fill=tk.X, anchor="w", pady=(2, 0))
+
+            # 操作行 1：核心高频动作
+            btn_row = tk.Frame(card, bg=theme["card"])
+            btn_row.pack(fill=tk.X, anchor="w", pady=(10, 0))
+
+            # 操作行 2：辅助配置动作
+            btn_row2 = tk.Frame(card, bg=theme["card"])
+            btn_row2.pack(fill=tk.X, anchor="w", pady=(6, 0))
+
+            def _make_import_flow(k=key):
+                return lambda: self._simple_import_flow(k)
+
+            def _make_import_excel(k=key):
+                return lambda: self._simple_import_excel(k)
+
+            def _make_export(k=key):
+                return lambda: self._simple_export_flow(k)
+
+            def _make_edit(k=key):
+                return lambda: self._simple_edit_flow(k)
+
+            def _make_clear(k=key):
+                return lambda: self._simple_clear_flow(k)
+
+            def _make_run_one(k=key):
+                return lambda: self._simple_run_one(k)
+
+            wt_theme.create_flat_button(
+                btn_row, text="▶ 运行此板块", command=_make_run_one(),
+                tone="success", font=("Microsoft YaHei UI", 9, "bold"), padx=16, pady=4
+            ).pack(side=tk.LEFT, padx=(0, 6))
+            wt_theme.create_flat_button(
+                btn_row, text="✎ 编辑流程", command=_make_edit(),
+                tone="secondary", font=("Microsoft YaHei UI", 9), padx=12, pady=4
+            ).pack(side=tk.LEFT, padx=2)
+            wt_theme.create_flat_button(
+                btn_row, text="清空", command=_make_clear(),
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=8, pady=4
+            ).pack(side=tk.RIGHT)
+
+            wt_theme.create_flat_button(
+                btn_row2, text="导入流程", command=_make_import_flow(),
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+            ).pack(side=tk.LEFT, padx=(0, 4))
+            wt_theme.create_flat_button(
+                btn_row2, text="导入Excel", command=_make_import_excel(),
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+            ).pack(side=tk.LEFT, padx=3)
+            wt_theme.create_flat_button(
+                btn_row2, text="导出", command=_make_export(),
+                tone="subtle", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+            ).pack(side=tk.LEFT, padx=3)
+
+            section_widgets[key] = {
+                "frame": card,
+                "top_bar": top_bar,
+                "path_label": path_label,
+                "dir_label": dir_label,
+                "badge_label": badge_label,
+            }
+            self._simple_cards.append((sec, card))
+
+        self._simple_section_widgets = section_widgets
+        for sec in self.SIMPLE_SECTIONS:
+            self._simple_update_path_label(sec["key"])
+
+        # ── 底部状态行 ──
+        footer = tk.Frame(parent, bg=theme["bg"])
+        footer.pack(fill=tk.X, pady=(10, 0))
+        self.simple_summary_var = tk.StringVar(value="")
+        tk.Label(footer, textvariable=self.simple_summary_var, bg=theme["bg"],
+                 fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
+        tk.Label(footer, text="滚轮滚动板块列表", bg=theme["bg"],
+                 fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.RIGHT)
+
+        self._simple_grid_columns = 0
+        self._simple_refresh_summary()
+        self.root.after(80, lambda: self._simple_relayout_cards(scrollable))
+
+
+    def _simple_update_path_label(self, section_key):
+        w = self._simple_section_widgets.get(section_key)
+        if not w:
+            return
+        path = self.simple_section_vars[section_key]["path"]
+        short, parent_dir = self._simple_short_path(path)
+        w["path_label"].config(
+            text=short,
+            fg=self.theme["primary"] if path else "#9ca3af",
+        )
+        w["dir_label"].config(text=parent_dir or "")
+        top_bar = w.get("top_bar")
+        if top_bar:
+            top_bar.configure(
+                bg=self.theme["primary"] if path else self.theme.get("border_dark", "#cbd5e1")
+            )
+        self._simple_update_badge(section_key)
+        self._simple_refresh_summary()
+
+    def _simple_short_path(self, path):
+        if not path:
+            return "（未设置）", ""
+        base = os.path.basename(path)
+        if len(base) > 42:
+            base = base[:39] + "..."
+        return base, os.path.dirname(path)
+
+    def _simple_update_badge(self, section_key):
+        w = self._simple_section_widgets.get(section_key)
+        if not w:
+            return
+        path = self.simple_section_vars.get(section_key, {}).get("path", "")
+        badge = w.get("badge_label")
+        if not badge:
+            return
+        if path and os.path.isfile(path):
+            if hasattr(badge, "set_badge"):
+                badge.set_badge("已配置", "success")
+            else:
+                badge.config(text="已配置", fg="#059669")
+        elif path:
+            if hasattr(badge, "set_badge"):
+                badge.set_badge("文件缺失", "danger")
+            else:
+                badge.config(text="文件缺失", fg=self.theme["danger"])
+        else:
+            if hasattr(badge, "set_badge"):
+                badge.set_badge("未配置", "muted")
+            else:
+                badge.config(text="未配置", fg="#9ca3af")
+
+    def _simple_refresh_summary(self):
+        if not hasattr(self, "simple_summary_var"):
+            return
+        total = len(self.SIMPLE_SECTIONS)
+        configured = 0
+        checked = 0
+        missing = 0
+        for sec in self.SIMPLE_SECTIONS:
+            info = self.simple_section_vars.get(sec["key"], {})
+            path = info.get("path", "")
+            if path:
+                configured += 1
+                if not os.path.isfile(path):
+                    missing += 1
+            enabled_var = info.get("enabled")
+            if enabled_var is not None and enabled_var.get():
+                checked += 1
+        parts = ["已配置 {}/{}".format(configured, total), "勾选 {}/{}".format(checked, total)]
+        if missing:
+            parts.append("文件缺失 {}".format(missing))
+        self.simple_summary_var.set(" · ".join(parts))
+
+    def _simple_enabled_state(self):
+        result = {}
+        for sec in self.SIMPLE_SECTIONS:
+            key = sec["key"]
+            enabled_var = self.simple_section_vars.get(key, {}).get("enabled")
+            result[key] = bool(enabled_var.get()) if enabled_var is not None else True
+        return result
+
+    def _simple_on_toggle(self, section_key):
+        self._simple_save_state()
+        self._simple_refresh_summary()
+
+    def _simple_toggle_all(self, checked):
+        for sec in self.SIMPLE_SECTIONS:
+            self.simple_section_vars[sec["key"]]["enabled"].set(checked)
+        self._simple_refresh_summary()
+        self._simple_save_state()
+
+    def _simple_set_status(self, text, kind="idle"):
+        self.simple_status_var.set(text)
+        colors = {
+            "idle": self.theme["muted"],
+            "running": "#1d4ed8",
+            "success": "#059669",
+            "warning": "#b45309",
+            "error": self.theme["danger"],
+        }
+        self.simple_status_label.config(fg=colors.get(kind, self.theme["muted"]))
+
+    def _simple_save_state(self):
+        """将 Simple 模式配置持久化到 launcher_state.json。"""
+        try:
+            state, _ = load_json_file(LAUNCHER_STATE_FILE)
+            state = state or {}
+            simple_flows = {}
+            simple_enabled = {}
+            for sec in self.SIMPLE_SECTIONS:
+                key = sec["key"]
+                info = self.simple_section_vars.get(key, {})
+                path = info.get("path", "")
+                if path:
+                    simple_flows[key] = path
+                enabled_var = info.get("enabled")
+                if enabled_var is not None:
+                    simple_enabled[key] = bool(enabled_var.get())
+            state["simpleModeFlows"] = simple_flows
+            state["simpleModeEnabled"] = simple_enabled
+            state["simpleModeRemote"] = bool(self.simple_remote_var.get())
+            state["projectWorkDir"] = getattr(self, "project_work_dir", "")
+            state["projectParams"] = getattr(self, "project_params", {})
+            state["cpVersionOptions"] = getattr(self, "cp_version_options", [])
+            state["turbineTypeOptions"] = getattr(self, "turbine_type_options", [])
+            state["uiMode"] = self.ui_mode_var.get()
+            save_json_file(LAUNCHER_STATE_FILE, state)
+        except Exception:
+            pass
+
+    def _simple_update_work_dir_label(self):
+        """更新工具栏上的项目工作文件夹路径回显。"""
+        if not hasattr(self, "simple_workdir_label"):
+            return
+        path = str(getattr(self, "project_work_dir", "") or "").strip()
+        if path and os.path.isdir(path):
+            self.simple_workdir_label.config(
+                text="📁 {}".format(path),
+                fg="#059669",
+            )
+            self.btn_simple_params.config(state=tk.NORMAL)
+            self.btn_simple_clear_workdir.config(state=tk.NORMAL)
+        else:
+            self.simple_workdir_label.config(text="未指定（按原配置运行）", fg=self.theme["muted"])
+            self.btn_simple_params.config(state=tk.DISABLED)
+            self.btn_simple_clear_workdir.config(state=tk.DISABLED)
+
+    def _simple_clear_work_dir(self):
+        """取消选择项目工作文件夹，回到「未指定（按原配置运行）」状态。"""
+        if not str(getattr(self, "project_work_dir", "") or "").strip():
+            return
+        if not messagebox.askyesno(
+            "清除项目文件夹",
+            "确定取消选择当前项目文件夹吗？\n清除后运行将恢复为按原流程配置执行，\n同时清除已解析的项目参数信息（测风塔/机位点等）。",
+        ):
+            return
+        self.project_work_dir = ""
+        self.project_params = {}
+        self.project_mast_ids = []
+        self.parsed_project_info = None
+        self.parsed_diag = None
+        self._simple_update_work_dir_label()
+        self._simple_save_state()
+        self._simple_set_status("已清除项目文件夹，恢复按原配置运行", "idle")
+
+    def _open_flow_graph(self):
+        """打开流程链路可视化窗口（只读），默认示范「发送综合计算」板块。"""
+        FlowGraphWindow(self.root, BASE_DIR, default_section="comprehensive",
+                        theme=self.theme)
+
+    def _simple_select_work_dir(self):
+        """选择市场项目工作文件夹（含 03-WT输入 / 04-WT输出）。"""
+        path = self._simple_pick_directory()
+        if not path:
+            return
+        self.project_work_dir = path
+        # 自动读取项目内可选的 project.params.json（人工确认的项目计算参数）
+        self.project_params = wt_project_workdir_parser.load_project_params_from_work_dir(path)
+        # 识别项目中的测风塔编号，供「测风塔对象编号」下拉选择
+        self.project_mast_ids = []
+        self.parsed_project_info = None
+        try:
+            parsed = wt_project_workdir_parser.parse_project_work_dir(path, self.project_params)
+            if parsed:
+                mast_ids = parsed.get("runtime_config", {}).get("mastIds") or []
+                if isinstance(mast_ids, list):
+                    self.project_mast_ids = [str(item) for item in mast_ids]
+        except Exception:
+            self.project_mast_ids = []
+        # 解析「解析参数」摘要（测风塔信息 / 机位点信息 / 文件路径等），供项目参数对话框查看
+        self.parsed_diag = None
+        try:
+            self.parsed_project_info = wt_project_workdir_parser.summarize_project_work_dir(path, self.project_params)
+        except Exception as exc:
+            self.parsed_project_info = None
+            self.parsed_diag = {"error": str(exc)}
+        if self.parsed_project_info is None and self.parsed_diag is None:
+            self.parsed_diag = wt_project_workdir_parser.diagnose_project_work_dir(path)
+        self._simple_update_work_dir_label()
+        self._simple_save_state()
+        self._simple_set_status("已选择项目文件夹：{}".format(path), "idle")
+
+    def _simple_pick_directory(self):
+        """自绘目录选择对话框。
+
+        不用 filedialog.askdirectory：本进程已声明 Per-Monitor DPI Aware V2，
+        在部分 Windows + Tk 8.6 组合下原生目录对话框会出现“弹不出 / 主线程挂起”的
+        兼容性问题（askopenfilename/asksaveasfilename 走新版 IFileDialog 不受影响）。
+        此处用 Toplevel + 目录列表自行实现，完全绕开原生对话框。
+        """
+        initial = str(getattr(self, "project_work_dir", "") or "").strip()
+        if not initial or not os.path.isdir(initial):
+            initial = os.path.expanduser("~")
+        result = {"path": ""}
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("选择市场项目工作文件夹（含 03-WT输入 / 04-WT输出）")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        wt_dpi.geometry(dialog, 680, 520)
+        dialog.minsize(wt_dpi.scale(560), wt_dpi.scale(400))
+        dialog.configure(bg=self.theme["bg"])
+        theme = self.theme
+
+        path_var = tk.StringVar(value=initial)
+        listbox = tk.Listbox(
+            dialog, font=("Microsoft YaHei UI", 10), bg="#ffffff", fg=theme["text"],
+            selectbackground=theme["primary"], selectforeground="white", activestyle="none",
+        )
+        listbox.pack(fill=tk.BOTH, expand=True, padx=14, pady=(6, 4))
+
+        def _refresh():
+            cur = path_var.get().strip().rstrip("\\/")
+            entries = []
+            try:
+                if cur and os.path.isdir(cur):
+                    entries = sorted(
+                        d for d in os.listdir(cur)
+                        if os.path.isdir(os.path.join(cur, d))
+                    )
+            except OSError:
+                entries = []
+            listbox.delete(0, tk.END)
+            for d in entries:
+                listbox.insert(tk.END, d)
+            path_var.set(cur or os.path.expanduser("~"))
+
+        def _enter():
+            sel = listbox.curselection()
+            if not sel:
+                return
+            name = listbox.get(sel[0])
+            cur = path_var.get().strip().rstrip("\\/")
+            path_var.set(os.path.join(cur, name))
+            _refresh()
+
+        def _go_up():
+            cur = os.path.abspath(path_var.get().strip() or os.path.expanduser("~"))
+            parent = os.path.dirname(cur)
+            if parent and parent != cur:
+                path_var.set(parent)
+                _refresh()
+
+        def _on_entry_return(_event=None):
+            _refresh()
+
+        def _ok():
+            path = path_var.get().strip().rstrip("\\/")
+            if not path or not os.path.isdir(path):
+                messagebox.showwarning("提示", "目录不存在：\n{}".format(path), parent=dialog)
+                return
+            # 校验是否为市场项目工作文件夹（含 03-WT输入 / 04-WT输出 子目录）
+            input_root = os.path.join(path, "03-WT输入")
+            output_root = os.path.join(path, "04-WT输出")
+            if not os.path.isdir(input_root) and not os.path.isdir(output_root):
+                if not messagebox.askyesno(
+                    "目录结构提示",
+                    "所选目录下未找到 03-WT输入 / 04-WT输出 子目录：\n{}\n\n"
+                    "确定要将此目录作为「项目工作文件夹」吗？\n"
+                    "（通常应该选择包含 03-WT输入 的项目根目录，"
+                    "而非其上级目录如 Desktop）".format(path),
+                    parent=dialog,
+                ):
+                    return
+            result["path"] = path
+            dialog.destroy()
+
+        def _cancel():
+            dialog.destroy()
+
+        def _on_close():
+            dialog.destroy()
+
+        top_row = tk.Frame(dialog, bg=theme["bg"])
+        top_row.pack(fill=tk.X, padx=14, pady=(12, 4))
+        tk.Label(top_row, text="目录", width=6, anchor="w",
+                 bg=theme["bg"], fg=theme["muted"]).pack(side=tk.LEFT)
+        entry = tk.Entry(top_row, textvariable=path_var, font=("Microsoft YaHei UI", 10))
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        entry.bind("<Return>", _on_entry_return)
+
+        nav_row = tk.Frame(dialog, bg=theme["bg"])
+        nav_row.pack(fill=tk.X, padx=14, pady=(0, 4))
+        tk.Button(nav_row, text="↑ 上一级", command=_go_up,
+                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+                  padx=10, pady=4, cursor="hand2").pack(side=tk.LEFT)
+        tk.Label(nav_row, text="双击目录进入", bg=theme["bg"],
+                 fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(10, 0))
+
+        listbox.bind("<Double-Button-1>", lambda _e: _enter())
+        listbox.bind("<Return>", lambda _e: _enter())
+
+        bottom = tk.Frame(dialog, bg=theme["bg"])
+        bottom.pack(fill=tk.X, padx=14, pady=10)
+        tk.Button(bottom, text="选择此目录", command=_ok,
+                  bg="#059669", fg="white", relief=tk.FLAT, padx=18, pady=6,
+                  cursor="hand2").pack(side=tk.LEFT)
+        tk.Button(bottom, text="取消", command=_cancel,
+                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+                  padx=18, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=(8, 0))
+
+        dialog.protocol("WM_DELETE_WINDOW", _on_close)
+        _refresh()
+        self.root.wait_window(dialog)
+        return result["path"] or ""
+
+    def _simple_edit_project_params(self):
+        """编辑项目计算参数（人工确认项：半径 / CFD网格 / Cp版本 / 测风对象 / 50年风速）。"""
+        if not str(getattr(self, "project_work_dir", "") or "").strip():
+            messagebox.showinfo("提示", "请先选择项目工作文件夹。")
+            return
+        # 按板块分组，便于辨识：(标题, 字段列表, 说明文字)
+        sections = [
+            ("空间计算域与建模范围（自动推导 / 支持人工修改）", [
+                ("domainCenterX", "建模中心 X"),
+                ("domainCenterY", "建模中心 Y"),
+                ("radius", "计算域半径 R (m)"),
+                ("domainNwX", "绘图西北角 X"),
+                ("domainNwY", "绘图西北角 Y"),
+                ("domainSeX", "绘图东南角 X"),
+                ("domainSeY", "绘图东南角 Y"),
+                ("domainOuterRadius", "规范外圆半径 (m)"),
+            ], "基于机位点与测风塔坐标自动推导（2500m 缓冲正方形与外接圆），修改后可直接覆盖"),
+            ("新建风机类型", [
+                ("turbineType", "风机类型/型号"),
+            ], "同时用于发送综合计算的「全文检索」检索并选中风机型号"),
+            ("发送 CFD 计算", [
+                ("cfdHRes", "CFD 水平分辨率"),
+                ("cfdBuf", "CFD 边界缓冲"),
+                ("cfdMax", "CFD 最大网格"),
+                ("cfdMin", "CFD 最小网格"),
+            ], None),
+            ("发送综合计算", [
+                ("cpVersion", "Cp 版本"),
+                ("mastId", "测风对象编号"),
+                ("wind50", "50年回归风速"),
+                ("elevation", "海拔 (m)"),
+                ("airDensity", "空气密度 (kg/m³)"),
+            ], None),
+        ]
+        dialog = tk.Toplevel(self.root)
+        dialog.title("项目计算参数（人工确认与空间推导）")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        wt_dpi.geometry(dialog, 780, 840)
+        dialog.minsize(wt_dpi.scale(660), wt_dpi.scale(640))
+        dialog.configure(bg=self.theme["bg"])
+
+        notebook = ttk.Notebook(dialog)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 2))
+
+        # ── 标签页 1：人工确认参数（表单支持滚动）──
+        confirm_tab = tk.Frame(notebook, bg=self.theme["bg"])
+        notebook.add(confirm_tab, text="① 人工确认与空间参数")
+
+        tab1_canvas = tk.Canvas(confirm_tab, bg=self.theme["bg"], highlightthickness=0)
+        tab1_scroll = tk.Scrollbar(confirm_tab, orient=tk.VERTICAL, command=tab1_canvas.yview, relief=tk.FLAT)
+        form_wrapper = tk.Frame(tab1_canvas, bg=self.theme["bg"])
+        tab1_win = tab1_canvas.create_window((0, 0), window=form_wrapper, anchor="nw")
+
+        _tab1_sr_scheduled = [False]
+
+        def _schedule_tab1_scrollregion():
+            if _tab1_sr_scheduled[0]:
+                return
+            _tab1_sr_scheduled[0] = True
+
+            def _apply():
+                _tab1_sr_scheduled[0] = False
+                try:
+                    tab1_canvas.configure(scrollregion=tab1_canvas.bbox("all"))
+                except Exception:
+                    pass
+
+            tab1_canvas.after_idle(_apply)
+
+        def _on_tab1_form_configure(_e=None):
+            _schedule_tab1_scrollregion()
+
+        def _on_tab1_canvas_configure(_e=None):
+            new_w = tab1_canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(tab1_canvas, "_last_width", -1):
+                tab1_canvas._last_width = new_w
+                tab1_canvas.itemconfig(tab1_win, width=new_w)
+
+        form_wrapper.bind("<Configure>", _on_tab1_form_configure)
+        tab1_canvas.bind("<Configure>", _on_tab1_canvas_configure)
+        tab1_canvas.configure(yscrollcommand=tab1_scroll.set)
+        tab1_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        tab1_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        entries = {}
+        tk.Label(
+            form_wrapper, text="项目计算参数", font=("Microsoft YaHei UI", 12, "bold"),
+            bg=self.theme["bg"], fg=self.theme["text"],
+        ).pack(pady=(10, 2))
+        tk.Label(
+            form_wrapper, text="按板块分组；空间计算域自动推导并预填，支持人工直接微调后保存",
+            font=("Microsoft YaHei UI", 9), bg=self.theme["bg"], fg=self.theme["muted"],
+        ).pack(pady=(0, 6))
+        form = tk.Frame(form_wrapper, bg=self.theme["bg"])
+        form.pack(fill=tk.BOTH, expand=True, padx=18)
+
+        # ── 标签页 2：解析参数（加载项目文件夹时自动解析，只读）──
+        parsed_tab = tk.Frame(notebook, bg=self.theme["bg"])
+        notebook.add(parsed_tab, text="② 解析参数（只读）")
+        self._build_parsed_params_view(parsed_tab)
+
+        current = dict(getattr(self, "project_params", {}) or {})
+        parsed_info = getattr(self, "parsed_project_info", None) or {}
+        # 自动预填空间计算域字段（若人工未显式覆盖，使用解析值）
+        spatial_defaults = [
+            ("domainCenterX", "domain_center_x"),
+            ("domainCenterY", "domain_center_y"),
+            ("radius", "domain_radius_r"),
+            ("domainNwX", "domain_nw_x"),
+            ("domainNwY", "domain_nw_y"),
+            ("domainSeX", "domain_se_x"),
+            ("domainSeY", "domain_se_y"),
+            ("domainOuterRadius", "domain_outer_radius"),
+        ]
+        for p_key, info_key in spatial_defaults:
+            if not str(current.get(p_key, "")).strip() and parsed_info.get(info_key):
+                current[p_key] = str(parsed_info.get(info_key)).strip()
+
+        combo_widgets = {}
+        for section_title, field_list, section_note in sections:
+            tk.Label(
+                form, text=section_title, font=("Microsoft YaHei UI", 10, "bold"),
+                bg=self.theme["bg"], fg=self.theme["primary"],
+            ).pack(anchor="w", pady=(10, 2))
+            if section_note:
+                tk.Label(
+                    form, text=section_note, font=("Microsoft YaHei UI", 9),
+                    bg=self.theme["bg"], fg=self.theme["muted"],
+                ).pack(anchor="w", pady=(0, 2))
+            for key, label_text in field_list:
+                row = tk.Frame(form, bg=self.theme["bg"])
+                row.pack(fill=tk.X, pady=3)
+                tk.Label(row, text=label_text, width=18, anchor="w",
+                         bg=self.theme["bg"], fg=self.theme["text"]).pack(side=tk.LEFT)
+                var = tk.StringVar(value=str(current.get(key, DEFAULT_PROJECT_PARAMS.get(key, ""))))
+                if key in wt_simple_options.OPTION_KIND_KEYS:
+                    # Cp 版本 / 风机类型型号：下拉选择 + 新建（＋）+ 删除当前（－）+ 管理列表
+                    combo = ttk.Combobox(
+                        row, textvariable=var, values=self._simple_option_values(key),
+                        state="normal", font=("Microsoft YaHei UI", 10),
+                    )
+                    combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    try:
+                        combo.configure(style="Modern.TCombobox")
+                    except tk.TclError:
+                        pass
+                    combo_widgets[key] = combo
+                    # 三个按钮依次为「新建 / 删除当前 / 管理列表」，
+                    # 各自捕获本行的 var/combo，点击时即时生效并刷新下拉列表
+                    for _btn_text, _btn_width, _btn_cmd in (
+                        ("＋", 3,
+                         lambda k=key, v=var, c=combo: self._simple_add_option(k, v, c)),
+                        ("－", 3,
+                         lambda k=key, v=var, c=combo: self._simple_remove_current_option(k, v, c)),
+                        ("管理", 5,
+                         lambda k=key, v=var, c=combo: self._simple_manage_options(k, v, c)),
+                    ):
+                        tk.Button(
+                            row, text=_btn_text, width=_btn_width, cursor="hand2",
+                            command=_btn_cmd,
+                            bg=self.theme["secondary"], fg=self.theme["text"], relief=tk.FLAT,
+                        ).pack(side=tk.LEFT, padx=(4, 0))
+                elif key == "mastId":
+                    # 测风塔对象编号：下拉选择（选项=项目识别出的测风塔数量）
+                    combo = ttk.Combobox(
+                        row, textvariable=var, values=list(self.project_mast_ids or []),
+                        state="normal", font=("Microsoft YaHei UI", 10),
+                    )
+                    combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    try:
+                        combo.configure(style="Modern.TCombobox")
+                    except tk.TclError:
+                        pass
+                    combo_widgets[key] = combo
+                else:
+                    tk.Entry(row, textvariable=var, width=18, font=("Microsoft YaHei UI", 9), relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.theme.get("border", "#d7e0ee")).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+                entries[key] = var
+
+        def _save():
+            new_params = dict(getattr(self, "project_params", {}) or {})
+            for key, var in entries.items():
+                value = var.get().strip()
+                if value:
+                    new_params[key] = value
+                else:
+                    new_params.pop(key, None)
+            self.project_params = new_params
+            self._simple_save_state()
+            dialog.destroy()
+            # 手输了下拉列表里没有的值时给个提示，引导用「＋」把它固化成选项
+            pending_new = []
+            for key in wt_simple_options.OPTION_KIND_KEYS:
+                var = entries.get(key)
+                if var is None:
+                    continue
+                value = var.get().strip()
+                if value and value not in self._simple_option_values(key):
+                    pending_new.append((key, value))
+            if pending_new:
+                self._simple_set_status(
+                    "项目计算参数已保存（{} 项）；{} 不在下拉列表中，可点该行「＋」加入".format(
+                        len(new_params),
+                        "、".join("{}={}".format(wt_simple_options.OPTION_KINDS[k]["title"], v)
+                                  for k, v in pending_new),
+                    ),
+                    "warning",
+                )
+            else:
+                self._simple_set_status("项目计算参数已保存（{} 项）".format(len(new_params)), "idle")
+
+        def _recalculate_spatial():
+            work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+            if not work_dir or not os.path.isdir(work_dir):
+                messagebox.showinfo("提示", "未找到有效的项目工作目录。")
+                return
+            try:
+                import wt_spatial_domain_calc
+                pts = wt_spatial_domain_calc.parse_points_from_input_dir(os.path.join(work_dir, "03-WT输入"))
+                if not pts:
+                    messagebox.showwarning("提示", "未在项目 03-WT输入 目录下找到机位点或测风塔坐标文件！")
+                    return
+                calc = wt_spatial_domain_calc.calculate_spatial_domain(pts, buffer_m=2500.0)
+                sq = calc["square_domain"]
+                cir = calc["circles"]
+                if "domainCenterX" in entries: entries["domainCenterX"].set(f"{sq['center_x']:.3f}")
+                if "domainCenterY" in entries: entries["domainCenterY"].set(f"{sq['center_y']:.3f}")
+                if "radius" in entries: entries["radius"].set(str(int(round(cir["inner_radius_R"]))))
+                if "domainNwX" in entries: entries["domainNwX"].set(f"{sq['nw_corner']['x']:.1f}")
+                if "domainNwY" in entries: entries["domainNwY"].set(f"{sq['nw_corner']['y']:.1f}")
+                if "domainSeX" in entries: entries["domainSeX"].set(f"{sq['se_corner']['x']:.1f}")
+                if "domainSeY" in entries: entries["domainSeY"].set(f"{sq['se_corner']['y']:.1f}")
+                if "domainOuterRadius" in entries: entries["domainOuterRadius"].set(f"{cir['outer_radius_Router']:.1f}")
+                messagebox.showinfo(
+                    "计算完成",
+                    f"已成功基于 {len(pts)} 个坐标点重新推导空间计算域并更新表单！\n"
+                    f"正方形边长: {sq['side_length']:.1f} m\n"
+                    f"内圆半径 R: {int(round(cir['inner_radius_R']))} m\n"
+                    f"外圆半径 Router: {cir['outer_radius_Router']:.1f} m"
+                )
+            except Exception as e:
+                messagebox.showerror("计算异常", f"重新推导空间域失败：{e}")
+
+        def _inject_to_json():
+            try:
+                import wt_spatial_domain_calc
+                sq_res = {
+                    "square_domain": {
+                        "center_x": float(entries["domainCenterX"].get().strip() or 0.0),
+                        "center_y": float(entries["domainCenterY"].get().strip() or 0.0),
+                        "side_length": 0.0,
+                        "nw_corner": {
+                            "x": float(entries["domainNwX"].get().strip() or 0.0),
+                            "y": float(entries["domainNwY"].get().strip() or 0.0),
+                        },
+                        "se_corner": {
+                            "x": float(entries["domainSeX"].get().strip() or 0.0),
+                            "y": float(entries["domainSeY"].get().strip() or 0.0),
+                        },
+                    },
+                    "circles": {
+                        "inner_radius_R": float(entries["radius"].get().strip() or 0.0),
+                        "outer_radius_Router": float(entries["domainOuterRadius"].get().strip() or 0.0),
+                    }
+                }
+                flow_imp = os.path.join(BASE_DIR, "flow_packages", "flow_definition_导入并配置元素.json")
+                flow_mod = os.path.join(BASE_DIR, "flow_packages", "flow_definition_创建一个新建模.json")
+                res = wt_spatial_domain_calc.inject_into_flow_definitions(
+                    sq_res, flow_imp, flow_mod, in_place=True
+                )
+                messagebox.showinfo(
+                    "写入成功",
+                    "已将当前空间坐标直接写入流程定义 JSON 文件：\n\n" +
+                    f"1. 导入并配置元素.json:\n   西北角: ({entries['domainNwX'].get()}, {entries['domainNwY'].get()})\n   东南角: ({entries['domainSeX'].get()}, {entries['domainSeY'].get()})\n\n" +
+                    f"2. 创建一个新建模.json:\n   中心: ({entries['domainCenterX'].get()}, {entries['domainCenterY'].get()})\n   半径R: {entries['radius'].get()} m"
+                )
+            except Exception as e:
+                messagebox.showerror("写入失败", f"参数写入流程文件失败：{e}")
+
+        btn_row = tk.Frame(dialog, bg=self.theme["bg"])
+        btn_row.pack(fill=tk.X, pady=12)
+        tk.Button(btn_row, text="保存参数", command=_save,
+                  bg="#059669", fg="white", relief=tk.FLAT, padx=16, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=(18, 6))
+        tk.Button(btn_row, text="重新按坐标计算", command=_recalculate_spatial,
+                  bg=self.theme["primary"], fg="white", relief=tk.FLAT, padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_row, text="写入流程文件", command=_inject_to_json,
+                  bg="#2563eb", fg="white", relief=tk.FLAT, padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_row, text="取消", command=dialog.destroy,
+                  bg=self.theme["secondary"], fg=self.theme["text"],
+                  relief=tk.FLAT, padx=16, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=6)
+        tk.Button(
+            btn_row, text="生成测风塔配置文件（自动生成 XML）",
+            command=self._generate_mast_config_xml_for_project,
+            bg=self.theme["primary"], fg="white", relief=tk.FLAT, padx=12, pady=6,
+        ).pack(side=tk.RIGHT, padx=(6, 18))
+
+    def _generate_mast_config_xml_for_project(self):
+        """人工触发：为项目内全部测风塔生成/覆盖导入配置文件（<塔>配置信息.xml）。
+
+        供 Simple「参数配置」对话框使用：逐塔调用 wt_mast_config_xml 以固定模板
+        注入轮毂高度 + tim 实际列名生成配置，写回测风塔数据目录。
+        """
+        work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+        if not work_dir or not os.path.isdir(work_dir):
+            messagebox.showinfo("提示", "请先选择项目工作文件夹。")
+            return
+        project_params = dict(getattr(self, "project_params", {}) or {})
+        parsed_list = wt_project_workdir_parser.parse_all_masts(work_dir, project_params)
+        if not parsed_list:
+            messagebox.showwarning(
+                "未生成",
+                "未能解析到测风塔数据。\n请确认项目文件夹包含 CFT信息.txt 与各塔测风数据目录。",
+            )
+            return
+        ok = []
+        skipped = []
+        failed = []
+        for parsed in parsed_list:
+            rc = (parsed or {}).get("runtime_config") or {}
+            mast = str(rc.get("mastName", "") or "").strip() or "(无名塔)"
+            hub = str(rc.get("hubHeight", "") or "").strip()
+            tim = str(rc.get("mastImportFilePath", "") or "").strip()
+            if not hub:
+                skipped.append("{}（缺轮毂高度）".format(mast))
+                continue
+            if not tim or not os.path.isfile(tim):
+                skipped.append("{}（未找到 tim 文件）".format(mast))
+                continue
+            try:
+                xml_path = wt_mast_config_xml.save_mast_config_xml(
+                    tim, mast, hub, output_dir=os.path.dirname(tim)
+                )
+            except Exception as exc:
+                failed.append("{}（异常：{}）".format(mast, exc))
+                continue
+            if xml_path:
+                ok.append(mast)
+                self._append_log("人工生成导入配置 XML: {}".format(xml_path), tag="system")
+            else:
+                failed.append("{}（tim 第 13 行非标准列头，未生成）".format(mast))
+        summary = "成功 {} 塔；跳过 {} 塔；失败 {} 塔".format(len(ok), len(skipped), len(failed))
+        self._append_log("生成测风塔配置文件：{}".format(summary), tag="system")
+        detail = []
+        if ok:
+            detail.append("成功：" + "、".join(ok))
+        if skipped:
+            detail.append("跳过：" + "；".join(skipped))
+        if failed:
+            detail.append("失败：" + "；".join(failed))
+        messagebox.showinfo("生成测风塔配置文件", summary + ("\n\n" + "\n".join(detail) if detail else ""))
+
+    def _build_parsed_params_view(self, parent):
+        """构建「解析参数」标签页：展示加载项目文件夹时解析出的测风塔/机位点/文件信息（只读）。"""
+        theme = self.theme
+        info = getattr(self, "parsed_project_info", None)
+        if not info or not isinstance(info, dict):
+            diag = getattr(self, "parsed_diag", None) or {}
+            lines = ["未解析到项目参数，可能原因："]
+            if isinstance(diag, dict):
+                err = diag.get("error")
+                if err:
+                    lines.append("· 解析异常：{}".format(err))
+                work_dir = diag.get("work_dir") or str(getattr(self, "project_work_dir", "") or "").strip()
+                if work_dir:
+                    lines.append("· 当前项目文件夹：{}".format(work_dir))
+                for hint in (diag.get("hints") or []):
+                    lines.append("· {}".format(hint))
+            else:
+                lines.append("· 请确认项目文件夹包含 03-WT输入 / 04-WT输出，并重新选择项目文件夹后再打开本窗口")
+            tk.Label(
+                parent, text="\n".join(lines),
+                bg=theme["bg"], fg=theme["muted"], justify=tk.LEFT,
+                font=("Microsoft YaHei UI", 10), wraplength=640,
+            ).pack(anchor="w", padx=18, pady=(18, 8))
+            return
+
+        # 滚动容器，避免内容超出窗口高度
+        canvas = tk.Canvas(parent, bg=theme["bg"], highlightthickness=0)
+        scrollbar = tk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview, relief=tk.FLAT)
+        content = tk.Frame(canvas, bg=theme["bg"])
+        canvas_window = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        _sr_scheduled = [False]
+
+        def _on_content_configure(_event=None):
+            # after_idle 语义（Tk doc/after.n）：回调在事件队列排空、
+            # 无事件可处理时执行一次。Configure 风暴期间不执行，风暴
+            # 结束才跑一次 —— 效果即合帧：风暴 N 次触发只做 1 次
+            # bbox("all") 全量重算（每帧调用会造成 resize 迟滞）
+            if _sr_scheduled[0]:
+                return
+            _sr_scheduled[0] = True
+            def _apply():
+                _sr_scheduled[0] = False
+                try:
+                    canvas.configure(scrollregion=canvas.bbox("all"))
+                except Exception:
+                    pass
+            canvas.after_idle(_apply)
+
+        def _on_canvas_configure(_event=None):
+            new_w = canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(canvas, "_last_width", -1):
+                canvas._last_width = new_w
+                canvas.itemconfig(canvas_window, width=new_w)
+
+        content.bind("<Configure>", _on_content_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        def _info_row(parent_frame, label, value):
+            row = tk.Frame(parent_frame, bg=theme["bg"])
+            row.pack(fill=tk.X, pady=1)
+            tk.Label(row, text=label, width=10, anchor="w",
+                     bg=theme["bg"], fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
+            tk.Label(row, text=value or "未解析", anchor="w", justify=tk.LEFT,
+                     bg=theme["bg"], fg=theme["text"], font=("Microsoft YaHei UI", 9),
+                     wraplength=600).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        def _section(title):
+            frame = tk.LabelFrame(content, text=title, padx=8, pady=6,
+                                  bg=theme["bg"], fg=theme["text"], bd=1, relief=tk.GROOVE)
+            frame.pack(fill=tk.X, padx=12, pady=6)
+            return frame
+
+        # ── 项目信息 ──
+        proj = _section("项目信息")
+        _info_row(proj, "项目名称", info.get("project_name", ""))
+        _info_row(proj, "项目文件夹", info.get("work_dir", ""))
+        _info_row(proj, "投影缩写", info.get("projection_abbrev", ""))
+        utm = "{}, {}".format(str(info.get("utm_x", "")).strip(), str(info.get("utm_y", "")).strip()).strip(", ")
+        _info_row(proj, "UTM 坐标", utm)
+
+        # ── 测风塔信息 ──
+        mast = _section("测风塔信息")
+        mast_entries = info.get("masts") or []
+        if mast_entries:
+            tree = ttk.Treeview(mast, columns=("name", "lon", "lat", "elev", "hub", "utm_x", "utm_y"),
+                                show="headings", height=min(6, max(1, len(mast_entries))))
+            for col, title, width in (
+                ("name", "名称", 90), ("lon", "经度", 80), ("lat", "纬度", 80),
+                ("elev", "海拔", 60), ("hub", "轮毂高", 70),
+                ("utm_x", "UTM X", 100), ("utm_y", "UTM Y", 100),
+            ):
+                tree.heading(col, text=title)
+                tree.column(col, width=width, minwidth=50, anchor="center")
+            for ent in mast_entries:
+                tree.insert("", tk.END, values=(
+                    ent.get("mastName", ""), ent.get("longitude", ""), ent.get("latitude", ""),
+                    ent.get("elevation", ""), ent.get("hubHeight", ""),
+                    ent.get("utmX", ""), ent.get("utmY", ""),
+                ))
+            tree.pack(fill=tk.X)
+            _info_row(mast, "数据来源", info.get("cft_info_file", ""))
+        else:
+            mast_ids = info.get("mast_ids") or []
+            if mast_ids:
+                _info_row(mast, "测风塔编号", "、".join(str(i) for i in mast_ids))
+
+        # ── 气象数据文件（全部测风塔的 tim/TI/TISD）──
+        mast_data = info.get("mast_data") or []
+        if mast_data:
+            mdata = _section("气象数据文件")
+            mtree = ttk.Treeview(mdata, columns=("name", "tim", "ti", "tis"),
+                                 show="headings", height=min(6, max(1, len(mast_data))))
+            mtree.heading("name", text="测风塔")
+            mtree.column("name", width=80, minwidth=60, anchor="center")
+            mtree.heading("tim", text="主数据 (tim)")
+            mtree.column("tim", width=250, minwidth=120, anchor="w")
+            mtree.heading("ti", text="湍流强度 (TI)")
+            mtree.column("ti", width=200, minwidth=100, anchor="w")
+            mtree.heading("tis", text="湍流相对标准偏差 (TISD)")
+            mtree.column("tis", width=200, minwidth=100, anchor="w")
+            for md in mast_data:
+                mtree.insert("", tk.END, values=(
+                    md.get("mastName", ""), md.get("tim", ""), md.get("ti", ""), md.get("tis", ""),
+                ))
+            mtree.pack(fill=tk.X)
+        else:
+            mdata_fallback = _section("气象数据文件")
+            _info_row(mdata_fallback, "主数据 (tim)", info.get("mast_tim", ""))
+            _info_row(mdata_fallback, "湍流强度 (TI)", info.get("mast_ti", ""))
+            _info_row(mdata_fallback, "湍流相对标准偏差 (TISD)", info.get("mast_tis", ""))
+
+        # ── 风机类型 / 功率曲线（机型 / 性能曲线版本）──
+        turb = _section("风机类型 / 功率曲线")
+        _info_row(turb, "机型", info.get("turbine_type", ""))
+        _info_row(turb, "性能曲线版本", info.get("cp_version", ""))
+        _info_row(turb, "风轮直径 (m)", info.get("rotor_diameter", ""))
+        _info_row(turb, "制造商", info.get("turbine_manufacturer", ""))
+        _info_row(turb, "功率曲线文件", info.get("turbine_curve", ""))
+
+        # ── 机位点信息 ──
+        turb_pos = _section("机位点信息")
+        turbines = info.get("turbines") or []
+        if turbines:
+            _info_row(turb_pos, "机位点编号", "、".join(str(t.get("name", "")) for t in turbines if t.get("name")))
+        _info_row(turb_pos, "坐标文件", info.get("turbine_pos_file", ""))
+
+        # ── 解析到的文件 ──
+        files = _section("解析到的文件")
+        _info_row(files, "地形图", info.get("terrain_file", ""))
+        _info_row(files, "输出目录", info.get("output_dir", ""))
+        _info_row(files, "输出分目录", "、".join(str(m) for m in (info.get("output_masts") or [])))
+
+        # ── 空间计算域与双圆包络 ──
+        sp = info.get("spatial_domain") or {}
+        sp_frame = _section("空间计算域与双圆包络（Buffer 2500m）")
+        if sp:
+            ext = sp.get("extremes") or {}
+            raw_b = sp.get("raw_bounding_box") or {}
+            sq_d = sp.get("square_domain") or {}
+            cir_d = sp.get("circles") or {}
+            w_pt = ext.get("west_min_x") or {}
+            e_pt = ext.get("east_max_x") or {}
+            s_pt = ext.get("south_min_y") or {}
+            n_pt = ext.get("north_max_y") or {}
+            _info_row(sp_frame, "极西元素 (Min X)", f"{w_pt.get('name', '')} (X={w_pt.get('x', '')}, Y={w_pt.get('y', '')})")
+            _info_row(sp_frame, "极东元素 (Max X)", f"{e_pt.get('name', '')} (X={e_pt.get('x', '')}, Y={e_pt.get('y', '')})")
+            _info_row(sp_frame, "极南元素 (Min Y)", f"{s_pt.get('name', '')} (X={s_pt.get('x', '')}, Y={s_pt.get('y', '')})")
+            _info_row(sp_frame, "极北元素 (Max Y)", f"{n_pt.get('name', '')} (X={n_pt.get('x', '')}, Y={n_pt.get('y', '')})")
+            _info_row(sp_frame, "原始要素跨度", f"东西向 ΔX={raw_b.get('span_x', 0):.2f} m, 南北向 ΔY={raw_b.get('span_y', 0):.2f} m")
+            nw_pt = sq_d.get("nw_corner") or {}
+            se_pt = sq_d.get("se_corner") or {}
+            _info_row(sp_frame, "正方形边长 (L)", f"{sq_d.get('side_length', 0):.2f} m ({sq_d.get('side_length', 0)/1000.0:.3f} km)")
+            _info_row(sp_frame, "中心坐标 (Xc, Yc)", f"({sq_d.get('center_x', '')}, {sq_d.get('center_y', '')})")
+            _info_row(sp_frame, "绘图西北角 (NW)", f"X={nw_pt.get('x', '')}, Y={nw_pt.get('y', '')}")
+            _info_row(sp_frame, "绘图东南角 (SE)", f"X={se_pt.get('x', '')}, Y={se_pt.get('y', '')}")
+            _info_row(sp_frame, "WT 内圆半径 (R)", f"{cir_d.get('inner_radius_R', '')} m (正方形外接圆)")
+            _info_row(sp_frame, "WT 规范外圆半径", f"{cir_d.get('outer_radius_Router', '')} m (风程标准 Router=1.2*√2*R+2000m)")
+        elif info.get("domain_center_x"):
+            _info_row(sp_frame, "中心坐标 (Xc, Yc)", f"({info.get('domain_center_x', '')}, {info.get('domain_center_y', '')})")
+            _info_row(sp_frame, "绘图西北角 (NW)", f"X={info.get('domain_nw_x', '')}, Y={info.get('domain_nw_y', '')}")
+            _info_row(sp_frame, "绘图东南角 (SE)", f"X={info.get('domain_se_x', '')}, Y={info.get('domain_se_y', '')}")
+            _info_row(sp_frame, "WT 内圆半径 (R)", f"{info.get('domain_radius_r', '')} m")
+            _info_row(sp_frame, "WT 规范外圆半径", f"{info.get('domain_outer_radius', '')} m")
+        else:
+            _info_row(sp_frame, "状态", "未解析到机位点或测风塔坐标")
+
+    # ── 下拉选项（Cp 版本 / 风机类型型号）的新建、删除与管理 ────────────────
+    # 规则本体在 wt_simple_options（纯函数、可单测）；这里只做「取列表 → 调规则 →
+    # 写回并持久化 → 同步界面」的接线，避免把业务判断散落在 GUI 代码里。
+
+    def _simple_option_values(self, kind):
+        """取指定字段当前的下拉选项列表（返回副本，避免调用方误改内部状态）。"""
+        meta = wt_simple_options.OPTION_KINDS.get(kind) or {}
+        return list(getattr(self, meta.get("attr", ""), []) or [])
+
+    def _simple_set_option_values(self, kind, options):
+        """写回选项列表（规范化去重）并持久化到 launcher_state。"""
+        meta = wt_simple_options.OPTION_KINDS.get(kind) or {}
+        attr = meta.get("attr")
+        if not attr:
+            return
+        setattr(self, attr, wt_simple_options.normalize_options(options))
+        try:
+            self._simple_save_state()
+        except Exception:
+            pass
+
+    def _simple_refresh_option_combo(self, kind, combo):
+        """把最新选项同步进 Combobox。
+
+        原实现只在构建时把 values 传一次快照，新增/删除后下拉列表不会变，
+        必须关掉弹窗重开才生效；这里改为每次变更后立即刷新。
+        """
+        options = self._simple_option_values(kind)
+        if combo is not None:
+            try:
+                combo.configure(values=options)
+            except Exception:
+                pass
+        return options
+
+    def _simple_report_option_result(self, kind, status, value="", count=1):
+        """把结果码写到 Simple 状态栏（文案与配色都取自 wt_simple_options）。"""
+        self._simple_set_status(
+            wt_simple_options.describe_result(kind, status, value, count),
+            wt_simple_options.status_kind_for(status),
+        )
+
+    def _simple_confirm_remove_options(self, kind, values, target_var=None):
+        """删除前二次确认：列出待删项、说明是否清空当前字段、说明影响范围。"""
+        meta = wt_simple_options.OPTION_KINDS.get(kind) or {}
+        current = str(target_var.get() or "").strip() if target_var is not None else ""
+        lines = ["确定从「{}」下拉选项中删除以下 {} 项吗？".format(
+            meta.get("title", "下拉选项"), len(values))]
+        lines.append("")
+        lines.extend("  · {}".format(value) for value in values)
+        lines.append("")
+        if current and current in values:
+            lines.append("注意：当前字段正在使用该值，删除后字段将被清空。")
+        lines.append("（下拉选项列表为全局配置，对本机所有项目生效）")
+        return bool(messagebox.askyesno("删除下拉选项", "\n".join(lines)))
+
+    def _simple_remove_options(self, kind, values, target_var=None, combo=None, confirm=True):
+        """从下拉选项中删除若干项。
+
+        :return: 是否真的发生了删除（调用方据此决定后续动作）。
+        """
+        if not wt_simple_options.OPTION_KINDS.get(kind):
+            return False
+        cleaned_values = []
+        for item in values or ():
+            cleaned = wt_simple_options.clean_value(item)
+            if cleaned and cleaned not in cleaned_values:
+                cleaned_values.append(cleaned)
+        if not cleaned_values:
+            messagebox.showinfo("提示", "请先选择要删除的选项。")
+            return False
+        options, status = wt_simple_options.remove_options(
+            self._simple_option_values(kind), cleaned_values)
+        if status != wt_simple_options.RESULT_REMOVED:
+            messagebox.showinfo(
+                "提示", wt_simple_options.describe_result(kind, status, cleaned_values[0]))
+            return False
+        if confirm and not self._simple_confirm_remove_options(kind, cleaned_values, target_var):
+            return False
+        self._simple_set_option_values(kind, options)
+        self._simple_refresh_option_combo(kind, combo)
+        # 被删掉的选项若正是当前字段的值，字段一并清空（确认框里已提示）
+        current = str(target_var.get() or "").strip() if target_var is not None else ""
+        if current and current in cleaned_values:
+            target_var.set("")
+        self._simple_report_option_result(
+            kind, wt_simple_options.RESULT_REMOVED, cleaned_values[0], len(cleaned_values))
+        return True
+
+    def _simple_add_option(self, kind, target_var=None, combo=None):
+        """新建一个下拉选项：输入 → 校验 → 入库 → 同步下拉框 → 持久化。"""
+        meta = wt_simple_options.OPTION_KINDS.get(kind)
+        if not meta:
+            return
+        # 预填当前字段值：多数场景是「微调已有取值后固化成新选项」
+        initial = str(target_var.get() or "").strip() if target_var is not None else ""
+        value = simpledialog.askstring(
+            "新建{}".format(meta["title"]), meta["prompt"],
+            initialvalue=initial, parent=self.root,
+        )
+        if value is None:  # 用户取消
+            return
+        options, status = wt_simple_options.add_option(self._simple_option_values(kind), value)
+        if status in (wt_simple_options.RESULT_EMPTY, wt_simple_options.RESULT_TOO_LONG):
+            messagebox.showinfo("提示", wt_simple_options.describe_result(kind, status))
+            return
+        cleaned = wt_simple_options.clean_value(value)
+        if status == wt_simple_options.RESULT_ADDED:
+            self._simple_set_option_values(kind, options)
+        self._simple_refresh_option_combo(kind, combo)
+        if target_var is not None and cleaned:
+            target_var.set(cleaned)
+        self._simple_report_option_result(kind, status, cleaned)
+
+    def _simple_remove_current_option(self, kind, target_var=None, combo=None):
+        """删除下拉框中当前选中的选项（－ 按钮）。"""
+        meta = wt_simple_options.OPTION_KINDS.get(kind)
+        if not meta:
+            return False
+        value = str(target_var.get() or "").strip() if target_var is not None else ""
+        if not value:
+            messagebox.showinfo("提示", "请先在下拉框中选择要删除的{}。".format(meta["title"]))
+            return False
+        return self._simple_remove_options(kind, [value], target_var, combo)
+
+    def _simple_manage_options(self, kind, target_var=None, combo=None):
+        """下拉选项管理对话框：新建 / 重命名 / 删除（支持多选）/ 上移下移 / 恢复默认。
+
+        所有编辑即时写回 LauncherApp 的选项列表与 launcher_state，并同步主对话框的
+        Combobox，避免「改完还要重开弹窗才生效」。
+        """
+        meta = wt_simple_options.OPTION_KINDS.get(kind)
+        if not meta:
+            return
+        theme = self.theme
+        dialog = tk.Toplevel(self.root)
+        dialog.title("管理下拉选项 — {}".format(meta["title"]))
+        dialog.transient(self.root)
+        dialog.grab_set()
+        wt_dpi.geometry(dialog, 560, 540)
+        dialog.minsize(wt_dpi.scale(500), wt_dpi.scale(440))
+        dialog.configure(bg=theme["bg"])
+
+        tk.Label(
+            dialog, text="{} 下拉选项".format(meta["title"]),
+            font=("Microsoft YaHei UI", 12, "bold"), bg=theme["bg"], fg=theme["text"],
+        ).pack(anchor="w", padx=14, pady=(12, 2))
+        hint_var = tk.StringVar(value="")
+        tk.Label(
+            dialog, textvariable=hint_var, font=("Microsoft YaHei UI", 9),
+            bg=theme["bg"], fg=theme["muted"], justify=tk.LEFT, anchor="w",
+        ).pack(anchor="w", fill=tk.X, padx=14, pady=(0, 6))
+
+        list_wrap = tk.Frame(dialog, bg=theme["bg"])
+        list_wrap.pack(fill=tk.BOTH, expand=True, padx=14)
+        listbox = tk.Listbox(
+            list_wrap, selectmode=tk.EXTENDED, activestyle="none", exportselection=False,
+            font=("Microsoft YaHei UI", 10), relief=tk.FLAT, bd=0,
+            highlightthickness=1, highlightbackground=theme.get("border", "#e2e8f0"),
+            bg=theme["card"], fg=theme["text"],
+            selectbackground=theme["primary"], selectforeground="#ffffff",
+        )
+        scroll = tk.Scrollbar(list_wrap, orient=tk.VERTICAL, command=listbox.yview, relief=tk.FLAT)
+        listbox.configure(yscrollcommand=scroll.set)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        status_var = tk.StringVar(value="")
+        status_label = tk.Label(
+            dialog, textvariable=status_var, font=("Microsoft YaHei UI", 9),
+            bg=theme["bg"], fg=theme["muted"], justify=tk.LEFT, anchor="w", wraplength=520,
+        )
+        status_label.pack(anchor="w", fill=tk.X, padx=14, pady=(6, 0))
+
+        def _current_options():
+            return self._simple_option_values(kind)
+
+        def _selected():
+            return [listbox.get(i) for i in listbox.curselection()]
+
+        def _refresh():
+            listbox.delete(0, tk.END)
+            options = _current_options()
+            for item in options:
+                listbox.insert(tk.END, item)
+            if options:
+                hint_var.set("共 {} 项；列表顺序即下拉框显示顺序。双击可重命名，Delete 键删除选中项。".format(len(options)))
+            else:
+                hint_var.set("当前没有任何选项；可点「新建」添加，或点「恢复默认」还原内置选项。")
+
+        def _set_local_status(text, kind_name="idle"):
+            colors = {
+                "idle": theme["muted"], "success": theme.get("success", "#059669"),
+                "warning": theme.get("warning", "#b45309"), "error": theme["danger"],
+            }
+            status_var.set(text)
+            status_label.config(fg=colors.get(kind_name, theme["muted"]))
+
+        def _apply(status, value="", count=1, report=True):
+            """规则执行后统一收口：刷新列表 + 同步主对话框 + 本地提示。
+
+            ``report=False`` 用于调用方（如 _simple_remove_options）已经向主状态栏
+            上报过的场景，避免同一条消息写两遍。
+            """
+            self._simple_refresh_option_combo(kind, combo)
+            _refresh()
+            text = wt_simple_options.describe_result(kind, status, value, count)
+            _set_local_status(text, wt_simple_options.status_kind_for(status))
+            if report:
+                self._simple_report_option_result(kind, status, value, count)
+
+        def _on_add():
+            value = simpledialog.askstring(
+                "新建{}".format(meta["title"]), meta["prompt"], parent=dialog)
+            if value is None:
+                return
+            options, status = wt_simple_options.add_option(_current_options(), value)
+            cleaned = wt_simple_options.clean_value(value)
+            if status == wt_simple_options.RESULT_ADDED:
+                self._simple_set_option_values(kind, options)
+            elif status in (wt_simple_options.RESULT_EMPTY, wt_simple_options.RESULT_TOO_LONG):
+                _set_local_status(
+                    wt_simple_options.describe_result(kind, status),
+                    wt_simple_options.status_kind_for(status))
+                return
+            _apply(status, cleaned)
+            if target_var is not None and cleaned and status == wt_simple_options.RESULT_ADDED:
+                target_var.set(cleaned)
+
+        def _on_rename():
+            selected = _selected()
+            if len(selected) != 1:
+                _set_local_status("请先选中恰好一项再重命名。", "warning")
+                return
+            old_value = selected[0]
+            new_value = simpledialog.askstring(
+                "重命名{}".format(meta["title"]), "输入新的名称：",
+                initialvalue=old_value, parent=dialog)
+            if new_value is None:
+                return
+            options, status = wt_simple_options.rename_option(
+                _current_options(), old_value, new_value)
+            if status == wt_simple_options.RESULT_RENAMED:
+                self._simple_set_option_values(kind, options)
+                # 当前字段用的就是被重命名项时，跟着改成新名，避免字段与列表脱节
+                if target_var is not None and str(target_var.get() or "").strip() == old_value:
+                    target_var.set(wt_simple_options.clean_value(new_value))
+                _apply(status, new_value)
+            else:
+                _set_local_status(
+                    wt_simple_options.describe_result(kind, status, new_value),
+                    wt_simple_options.status_kind_for(status))
+
+        def _on_delete():
+            selected = _selected()
+            if not selected:
+                _set_local_status("请先选中要删除的选项（可按住 Ctrl / Shift 多选）。", "warning")
+                return
+            if self._simple_remove_options(kind, selected, target_var, combo, confirm=True):
+                # _simple_remove_options 已上报主状态栏，这里只刷新本地列表与提示
+                _apply(wt_simple_options.RESULT_REMOVED, selected[0], len(selected), report=False)
+
+        def _on_move(delta):
+            selected = _selected()
+            if len(selected) != 1:
+                _set_local_status("请先选中恰好一项再调整顺序。", "warning")
+                return
+            value = selected[0]
+            options, status = wt_simple_options.move_option(_current_options(), value, delta)
+            if status == wt_simple_options.RESULT_MOVED:
+                self._simple_set_option_values(kind, options)
+                _apply(status)
+                # 移动后保持选中，便于连续调整
+                try:
+                    index = _current_options().index(value)
+                    listbox.selection_clear(0, tk.END)
+                    listbox.selection_set(index)
+                    listbox.see(index)
+                except ValueError:
+                    pass
+            else:
+                _set_local_status(
+                    wt_simple_options.describe_result(kind, status, value),
+                    wt_simple_options.status_kind_for(status))
+
+        def _on_reset():
+            defaults = list(meta["defaults"])
+            if not messagebox.askyesno(
+                "恢复默认选项",
+                "将「{}」下拉选项恢复为内置默认 {} 项：\n\n{}\n\n"
+                "当前自定义选项（含新增与排序）会被替换，是否继续？".format(
+                    meta["title"], len(defaults), "、".join(defaults)),
+            ):
+                return
+            self._simple_set_option_values(kind, wt_simple_options.reset_options(defaults))
+            _apply(wt_simple_options.RESULT_RESET, "、".join(defaults), len(defaults))
+
+        def _on_close():
+            # 每次编辑都已即时落盘并上报，关闭时无需再提示
+            dialog.destroy()
+
+        # ── 操作按钮区 ──
+        btns = tk.Frame(dialog, bg=theme["bg"])
+        btns.pack(fill=tk.X, padx=14, pady=(10, 4))
+
+        def _mk_button(parent, text, command, primary=False):
+            return tk.Button(
+                parent, text=text, command=command, cursor="hand2", relief=tk.FLAT,
+                padx=12, pady=5,
+                bg=theme["primary"] if primary else theme["secondary"],
+                fg="#ffffff" if primary else theme["text"],
+            )
+
+        row1 = tk.Frame(btns, bg=theme["bg"])
+        row1.pack(fill=tk.X)
+        _mk_button(row1, "新建", _on_add, primary=True).pack(side=tk.LEFT)
+        _mk_button(row1, "重命名", _on_rename).pack(side=tk.LEFT, padx=(6, 0))
+        _mk_button(row1, "删除", _on_delete).pack(side=tk.LEFT, padx=(6, 0))
+        row2 = tk.Frame(btns, bg=theme["bg"])
+        row2.pack(fill=tk.X, pady=(6, 0))
+        _mk_button(row2, "上移", lambda: _on_move(-1)).pack(side=tk.LEFT)
+        _mk_button(row2, "下移", lambda: _on_move(1)).pack(side=tk.LEFT, padx=(6, 0))
+        _mk_button(row2, "恢复默认", _on_reset).pack(side=tk.LEFT, padx=(6, 0))
+        _mk_button(row2, "关闭", _on_close).pack(side=tk.RIGHT)
+
+        listbox.bind("<Double-Button-1>", lambda _e: _on_rename())
+        listbox.bind("<Delete>", lambda _e: _on_delete())
+        listbox.bind("<Return>", lambda _e: _on_rename())
+        dialog.protocol("WM_DELETE_WINDOW", _on_close)
+        _refresh()
+
+    def _on_simple_remote_mode_changed(self, *args):
+        """当「远程模式」状态变化时，动态更新 Simple 远程切换按钮、主运行按钮文案与主题，并消除冗余按钮。"""
+        is_remote = bool(self.simple_remote_var.get())
+        if hasattr(self, "btn_simple_remote"):
+            if is_remote:
+                self.btn_simple_remote.config(
+                    text="☁ 远程模式 (已启用)",
+                    bg="#2563eb",
+                    fg="#ffffff",
+                    activebackground="#1d4ed8",
+                    activeforeground="#ffffff",
+                    highlightbackground="#1d4ed8",
+                )
+            else:
+                self.btn_simple_remote.config(
+                    text="💻 本地模式 (点击切远程)",
+                    bg=self.theme["secondary"],
+                    fg=self.theme["text"],
+                    activebackground=self.theme["secondary_active"],
+                    activeforeground=self.theme["text"],
+                    highlightbackground=self.theme.get("border_dark", "#cbd5e1"),
+                )
+        if hasattr(self, "btn_simple_run"):
+            if is_remote:
+                self.btn_simple_run.config(
+                    text="☁ 提交远程队列",
+                    bg="#2563eb",
+                    activebackground="#1d4ed8",
+                )
+            else:
+                self.btn_simple_run.config(
+                    text="▶ 运行所选板块",
+                    bg="#059669",
+                    activebackground="#047857",
+                )
+        if hasattr(self, "btn_simple_submit_remote"):
+            self.btn_simple_submit_remote.pack_forget()
+
+    def _run_simple_mode(self):
+        """运行 Simple 模式中勾选的板块（顺序执行，线程安全）。"""
+        selected = []
+        missing = []
+        for sec in self.SIMPLE_SECTIONS:
+            key = sec["key"]
+            info = self.simple_section_vars.get(key, {})
+            enabled_var = info.get("enabled")
+            enabled = bool(enabled_var.get()) if enabled_var is not None else False
+            if not enabled:
+                continue
+            path = info.get("path", "")
+            if not path or not os.path.isfile(path):
+                missing.append(sec["title"])
+                continue
+            selected.append(key)
+
+        if not selected:
+            hint = "请先勾选要运行的板块，并确保每个板块已设置流程文件。"
+            if missing:
+                hint += "\n\n未就绪：" + "、".join(missing[:5])
+            messagebox.showinfo("提示", hint)
+            return
+        if missing:
+            skip = messagebox.askyesno(
+                "部分板块未就绪",
+                "以下板块缺少流程文件，将跳过：\n- {}\n\n是否继续运行其余板块？".format("\n- ".join(missing[:8])),
+            )
+            if not skip:
+                return
+        if self.simple_remote_var.get():
+            self._start_simple_remote(selected)
+            return
+        self._start_simple_queue(selected)
+
+    def _post_ui(self, callback):
+        """把回调投递到主线程执行；窗口已关闭时静默忽略。
+
+        语义对齐 ServerMonitorWindow._post_ui。LauncherApp 的 Simple 远程轮询
+        （后台线程）依赖它在主线程更新状态/按钮，缺失会导致线程抛 AttributeError
+        死亡、状态永久卡住。
+        """
+        try:
+            self.root.after(0, callback)
+        except Exception:
+            pass
+
+    def _remote_submit_ready(self):
+        """远程提交前的公共检查：远程队列空闲、服务器配置完整、本地无流程占用界面。"""
+        if getattr(self, "_simple_remote_submitting", False):
+            messagebox.showinfo("提示", "正在提交远程任务，请稍候。")
+            return False
+        if getattr(self, "_simple_remote_task_ids", None):
+            messagebox.showinfo("提示", "Simple 远程队列正在运行中，请先停止或等待完成。")
+            return False
+        if not self.task_queue_url or not self.task_queue_user or not self.task_queue_token:
+            messagebox.showwarning(
+                "提示",
+                "远程提交需要先配置服务器地址、用户名和服务令牌。\n请先打开任务队列窗口填写连接参数。",
+            )
+            return False
+        # 本地流程与远程任务会争抢同一套目标软件界面，提交前先确认本地空闲
+        if self.process and self.process.poll() is None:
+            messagebox.showinfo("提示", "本地已有自动化流程正在运行，请先等待其完成或停止。")
+            return False
+        if getattr(self, "_mast_queue_active", False):
+            messagebox.showinfo("提示", "多塔串行队列正在运行中，请先停止或等待完成。")
+            return False
+        # 提交前实际连通检测：失败明确提示，避免"点了没反应"或失败信息被隐藏
+        ok, message = self._test_queue_connection()
+        if not ok:
+            messagebox.showwarning(
+                "无法连接任务队列服务",
+                "{}\n\n请确认：\n1) 服务器已运行 start_queue_service.bat；\n"
+                "2) 地址正确（本地为 http://127.0.0.1:8768）；\n"
+                "3) 令牌与服务端 --auth-token 一致；\n"
+                "4) 服务器防火墙放行 8768 入站。".format(message),
+            )
+            return False
+        return True
+
+    def _test_queue_connection(self):
+        """实测与任务队列服务的连通性 + 鉴权（同步，最多约 6s）。
+
+        用需要鉴权的 /api/queue/stats 探测：能同时验证"服务可达"与"令牌正确"
+        （/api/health 不走鉴权，错误令牌也会返回 200，无法暴露令牌错误）。
+        返回 (ok, message)：ok=False 时 message 说明失败原因。
+        """
+        import urllib.error  # 局部导入，确保 HTTPError 引用可靠
+
+        url = (getattr(self, "task_queue_url", "") or "").strip().rstrip("/")
+        token = (getattr(self, "task_queue_token", "") or "").strip()
+        if not url:
+            return False, "未配置服务器地址：请先打开「任务与服务器监控」填写地址/用户名/令牌。"
+        if not token:
+            return False, "未配置服务令牌：令牌须与服务端启动时的 --auth-token 一致。"
+        probe_url = url + "/api/queue/stats"
+        request = urllib.request.Request(
+            probe_url, headers={"Authorization": "Bearer " + token}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                return False, "认证失败（401）：令牌与服务端 --auth-token 不一致。"
+            return False, "服务返回错误 {}：{}".format(exc.code, exc.reason)
+        except Exception as exc:
+            return False, "无法连接 {}：{}".format(probe_url, exc)
+        if not isinstance(payload, dict) or "total" not in payload:
+            return False, "服务响应异常：{}".format(str(payload)[:80])
+        total = payload.get("total", "?")
+        text = "连接成功：队列服务正常（总任务 {} 个）".format(total)
+        statuses = payload.get("byStatus")
+        if isinstance(statuses, dict):
+            parts = []
+            for key in ("pending", "running", "paused", "success", "failed",
+                        "canceled", "terminated"):
+                count = statuses.get(key, 0)
+                if count:
+                    parts.append("{} {}".format(count, key))
+            text += "\n状态分布：" + (" / ".join(parts) if parts else "全部 0")
+        return True, text
+
+    def _simple_test_connection(self):
+        """Simple 界面"测试连接"按钮：立即测连通并弹窗反馈。"""
+        if not getattr(self, "task_queue_url", "") or not getattr(self, "task_queue_token", ""):
+            messagebox.showinfo(
+                "测试连接",
+                "请先打开「任务与服务器监控」填写服务器地址、用户名和服务令牌，再点测试连接。",
+            )
+            self.open_task_queue()
+            return
+        ok, message = self._test_queue_connection()
+        messagebox.showinfo(
+            "测试连接 - {}".format("成功" if ok else "失败"),
+            message,
+        )
+
+    def _validate_sections_for_remote(self, sections):
+        """提交前校验流程定义，返回问题列表 [(板块标题, 原因), ...]。"""
+        problems = []
+        for sec in sections or []:
+            path = sec.get("path") or ""
+            title = sec.get("title") or sec.get("key") or ""
+            if not path or not os.path.isfile(path):
+                problems.append((title, "流程文件不存在"))
+                continue
+            payload, err = load_json_file(path)
+            if err or not isinstance(payload, dict):
+                problems.append((title, "流程文件无法解析：{}".format(err or "内容不是 JSON 对象")))
+                continue
+            try:
+                issues = validate_flow_definition(payload)
+            except Exception as exc:
+                issues = ["校验异常：{}".format(exc)]
+            if issues:
+                problems.append((title, "；".join(str(item) for item in issues[:3])))
+        return problems
+
+    def _drop_invalid_sections(self, sections, problems):
+        """提示存在校验问题的板块，确认后剔除；返回剔除后的列表，None 表示用户取消。"""
+        detail = "\n".join("- {}：{}".format(title, reason) for title, reason in problems[:8])
+        if not messagebox.askyesno(
+            "流程校验未通过",
+            "以下板块的流程定义存在问题，提交后很可能直接在服务器上失败：\n\n{}\n\n"
+            "是否跳过这些板块，仅提交其余板块？".format(detail),
+        ):
+            return None
+        bad_titles = {title for title, _ in problems}
+        return [s for s in sections if (s.get("title") or s.get("key")) not in bad_titles]
+
+    def _submit_sections_to_remote(self, sections, use_dialog=False):
+        """统一的远程提交入口：打开队列窗口、置按钮状态、跟踪提交结果与执行进度。
+
+        提交期间置 _simple_remote_submitting 标志并禁用提交按钮，防止重复点击产生
+        重复排队任务；每成功入队一个任务经 on_task_submitted 增量登记，使"停止排队"
+        在提交进行中也能终止已提交的任务（避免孤儿任务）。
+        """
+        # 项目解析注入（对齐本地 Simple 运行）：应用覆盖、按塔展开、附带 runtimeConfig
+        sections = self._prepare_remote_sections(sections)
+        # 为每个板块注入客户端幂等标记，防止快速重复提交或网络重试导致任务重复创建
+        batch_prefix = "bat_{}".format(uuid.uuid4().hex[:8])
+        for idx, sec in enumerate(sections or []):
+            if isinstance(sec, dict) and not sec.get("clientToken"):
+                sec["clientToken"] = "{}_{}_{}".format(batch_prefix, sec.get("key", "sec"), idx)
+        self.open_task_queue()
+        window = getattr(self, "_task_queue_window", None)
+        if window is None:
+            # 窗口创建失败（如构建中途异常）时复位标志与按钮，否则永久卡"正在提交"
+            with self._simple_remote_lock:
+                self._simple_remote_submitting = False
+            try:
+                self.btn_simple_run.config(state=tk.NORMAL)
+                self.btn_simple_submit_remote.config(state=tk.NORMAL)
+                self.btn_simple_stop.config(state=tk.DISABLED)
+            except Exception:
+                pass
+            self._simple_set_status("远程提交失败：任务队列窗口创建异常，请查看控制台日志", "error")
+            return False
+        with self._simple_remote_lock:
+            self._simple_remote_submitting = True
+            self._simple_remote_stop = False
+            self._simple_remote_task_ids = {}
+            self._simple_remote_outcomes = {}
+            self._simple_remote_total = 0
+        self.btn_simple_run.config(state=tk.DISABLED)
+        self.btn_simple_submit_remote.config(state=tk.DISABLED)
+        self.btn_simple_stop.config(state=tk.NORMAL)
+        self._simple_set_status("正在提交 {} 个板块到远程队列".format(len(sections)), "running")
+        callback = lambda ids, results: self._simple_remote_submitted(ids, results)
+
+        def on_task_submitted(task_id):
+            with self._simple_remote_lock:
+                self._simple_remote_task_ids[str(task_id)] = True
+
+        if use_dialog:
+            # 弹窗可勾选板块、追加链路文件、设置"跳过内容未变化的流程"等选项
+            window.submit_simple_sections_dialog(
+                sections,
+                completed_callback=callback,
+                on_task_submitted=on_task_submitted,
+            )
+        else:
+            window.submit_simple_sections(
+                sections,
+                completed_callback=callback,
+                on_task_submitted=on_task_submitted,
+            )
+        return True
+
+    def _submit_simple_to_remote_queue(self):
+        """把 Simple 界面勾选且已配置流程文件的板块提交到远程任务队列。"""
+        selected = []
+        missing = []
+        for sec in self.SIMPLE_SECTIONS:
+            key = sec["key"]
+            info = self.simple_section_vars.get(key, {})
+            enabled_var = info.get("enabled")
+            enabled = bool(enabled_var.get()) if enabled_var is not None else False
+            if not enabled:
+                continue
+            path = info.get("path", "")
+            if not path or not os.path.isfile(path):
+                missing.append(sec["title"])
+                continue
+            selected.append(
+                {"key": key, "title": sec["title"], "path": path}
+            )
+        if not selected:
+            hint = "请先勾选要提交的板块，并确保每个板块已设置流程文件。"
+            if missing:
+                hint += "\n\n未配置：" + "、".join(missing[:5])
+            messagebox.showinfo("提示", hint)
+            return
+        if missing:
+            skip = messagebox.askyesno(
+                "部分板块未配置",
+                "以下板块缺少流程文件，将跳过：\n- {}\n\n是否继续提交其余板块？".format(
+                    "\n- ".join(missing[:8])
+                ),
+            )
+            if not skip:
+                return
+        if not self._remote_submit_ready():
+            return
+        problems = self._validate_sections_for_remote(selected)
+        if problems:
+            selected = self._drop_invalid_sections(selected, problems)
+            if selected is None:
+                return
+        if not selected:
+            messagebox.showinfo("提示", "没有可提交的板块（校验通过的板块为空）。")
+            return
+        # 直接提交（不弹板块勾选对话框）：Simple 界面已勾选即视为确认，
+        # 一次点击即提交；提交完成后会弹窗反馈并刷新队列窗口。
+        self._submit_sections_to_remote(selected, use_dialog=False)
+
+    def _submit_chain_to_remote_queue(self):
+        if not self.task_queue_url or not self.task_queue_user or not self.task_queue_token:
+            messagebox.showwarning(
+                "提示",
+                "请先打开任务队列窗口填写服务器地址、用户名和服务令牌（--auth-token）。",
+            )
+            return
+        self.open_task_queue()
+        window = getattr(self, "_task_queue_window", None)
+        if window is not None:
+            window.submit_local_flow_file()
+
+    def _start_simple_remote(self, keys):
+        if not self._remote_submit_ready():
+            return False
+        sections = []
+        for key in keys:
+            sec = next(s for s in self.SIMPLE_SECTIONS if s["key"] == key)
+            sections.append({
+                "key": key,
+                "title": sec["title"],
+                "path": self.simple_section_vars.get(key, {}).get("path", ""),
+            })
+        problems = self._validate_sections_for_remote(sections)
+        if problems:
+            sections = self._drop_invalid_sections(sections, problems)
+            if sections is None:
+                return False
+        if not sections:
+            messagebox.showinfo("提示", "没有可提交的板块（校验通过的板块为空）。")
+            return False
+        return self._submit_sections_to_remote(sections, use_dialog=False)
+
+    def _simple_remote_submitted(self, task_ids, results):
+        with self._simple_remote_lock:
+            self._simple_remote_submitting = False
+        if self._simple_remote_stop:
+            # 提交期间用户点了停止：把已增量登记的任务交给后台线程逐个终止，
+            # 避免提交进行中停止产生无人管理的孤儿任务。
+            with self._simple_remote_lock:
+                to_terminate = list(self._simple_remote_task_ids)
+                self._simple_remote_task_ids = {}
+                self._simple_remote_outcomes = {}
+            self._simple_finish_remote_run("已停止提交")
+            window = getattr(self, "_task_queue_window", None)
+            if to_terminate and window is not None:
+                threading.Thread(
+                    target=self._terminate_remote_tasks,
+                    args=(list(to_terminate), window),
+                    daemon=True,
+                ).start()
+            return
+        submitted = 0
+        failed = 0
+        for result in results or []:
+            # "已提交" / "已提交（内容未变化，跳过上传）" 都算成功
+            if str(result[1]).startswith("已提交"):
+                submitted += 1
+            else:
+                failed += 1
+        if not task_ids:
+            # results 为空说明是对话框取消/未选板块，属正常中止而非错误
+            note = "已取消提交" if not results else "远程提交失败，未获取到任务 ID"
+            self._simple_finish_remote_run(note)
+            return
+        with self._simple_remote_lock:
+            for task_id in task_ids:
+                self._simple_remote_task_ids[task_id] = True
+            self._simple_remote_outcomes = {}
+            # 总数在提交时固定，供轮询显示"已完成 X / 共 Y"
+            self._simple_remote_total = len(task_ids)
+        if failed:
+            self._append_log(
+                "远程提交：成功 {} 个，失败 {} 个".format(submitted, failed), tag="warning"
+            )
+        else:
+            self._append_log(
+                "远程提交成功：{} 个任务已被服务器接受".format(len(task_ids)), tag="success"
+            )
+        self._simple_set_status(
+            "已提交 {} 个任务，等待执行".format(len(task_ids)),
+            "running",
+        )
+        # 提交成功明确反馈：弹窗 + 强制刷新队列窗口，让任务立即可见
+        window = getattr(self, "_task_queue_window", None)
+        if window is not None:
+            try:
+                window.refresh()
+            except Exception:
+                pass
+            try:
+                messagebox.showinfo(
+                    "远程提交",
+                    "已提交 {} 个任务到服务器队列，服务器已接受并排队执行。\n"
+                    "可在「任务与服务器监控」窗口查看进度。".format(len(task_ids))
+                    + ("\n\n{} 个提交失败，详见日志区。".format(failed) if failed else ""),
+                )
+            except Exception:
+                pass
+        # 提交后快照确认：用一次批量查询核实任务已被服务端接收。
+        # 若服务端刚重启导致任务丢失，立即发现并止损，避免轮询空转卡死。
+        missing = self._confirm_remote_tasks(task_ids, window) if window is not None else []
+        if missing:
+            detail = "、".join(missing[:5]) + ("…" if len(missing) > 5 else "")
+            self._append_log(
+                "远程快照确认：{} 个任务未在服务端找到（可能服务端重启丢失）：{}".format(
+                    len(missing), detail
+                ),
+                tag="error",
+            )
+            if len(missing) == len(task_ids):
+                self._simple_finish_remote_run(
+                    "提交的任务均未在服务端找到，请检查队列服务是否重启过"
+                )
+                return
+            self._simple_set_status(
+                "已提交 {} 个任务，其中 {} 个未在服务端找到".format(
+                    len(task_ids) - len(missing), len(missing)
+                ),
+                "warning",
+            )
+        threading.Thread(target=self._simple_remote_poll, daemon=True).start()
+
+    def _simple_remote_poll(self):
+        """远程轮询入口：包一层顶层异常兜底，避免轮询线程静默死亡导致按钮卡死。"""
+        try:
+            self._simple_remote_poll_impl()
+        except Exception as exc:
+            self._append_log("远程轮询异常终止：{}".format(exc), tag="error")
+            self._post_ui(
+                lambda: self._simple_finish_remote_run(
+                    "远程轮询异常终止，请检查任务队列服务"
+                )
+            )
+
+    def _simple_remote_poll_impl(self):
+        """轮询已提交的远程任务状态（后台线程）。
+
+        - 用 _simple_remote_lock 保护任务集合，避免与"停止排队"并发读写；
+        - 优先用 1 次批量查询替代 N 次单查（服务端不支持时自动降级为逐个查询）；
+        - 查询连续失败时按 2→4→8→16→30 秒退避，成功一轮后归零；
+        - 进度按"已完成 X / 共 Y"展示，Y 在提交时固定，避免每轮分母跳变。
+        """
+        window = getattr(self, "_task_queue_window", None)
+        if window is None:
+            self._post_ui(lambda: self._simple_finish_remote_run("任务队列窗口已关闭"))
+            return
+        with self._simple_remote_lock:
+            self._simple_remote_outcomes = getattr(self, "_simple_remote_outcomes", None) or {}
+            total = int(getattr(self, "_simple_remote_total", 0) or 0)
+        fail_streak = 0
+        batch_enabled = True  # 服务端不支持批量查询时降级为逐个查询，不再重试批量
+        degraded_notified = False
+        while True:
+            if self._simple_remote_stop:
+                return
+            with self._simple_remote_lock:
+                remaining = list(self._simple_remote_task_ids)
+            if not remaining:
+                return
+            if not total:
+                total = len(remaining)
+            running_detail = None
+            query_failed = False
+            # 批量查询（1 次请求替代 N 次）；不支持时降级为逐个查询
+            details = None
+            if batch_enabled:
+                try:
+                    details = window.get_tasks_batch(remaining)
+                    if details is None:
+                        # 服务端不识别 ids 参数，后续轮次不再尝试批量
+                        batch_enabled = False
+                        if not degraded_notified:
+                            degraded_notified = True
+                            self._post_ui(
+                                lambda: self._simple_set_status(
+                                    "队列服务版本过旧，已切换为逐个查询（建议升级服务端）",
+                                    "warning",
+                                )
+                            )
+                except Exception as exc:
+                    query_failed = True
+                    self._post_ui(
+                        lambda e=exc: self._simple_set_status(
+                            "远程查询失败：{}".format(e), "warning"
+                        )
+                    )
+            if details is None and not query_failed:
+                # 降级路径：逐个查询
+                for task_id in remaining:
+                    try:
+                        payload = window.get_task_detail(task_id)
+                        task = payload.get("task") or {} if isinstance(payload, dict) else {}
+                        _finished, detail = self._consume_simple_remote_result(task_id, task)
+                    except Exception as exc:
+                        query_failed = True
+                        self._post_ui(
+                            lambda e=exc: self._simple_set_status(
+                                "远程查询失败：{}".format(e), "warning"
+                            )
+                        )
+                        break
+                    if running_detail is None and detail is not None:
+                        running_detail = detail
+            elif details is not None:
+                # 批量路径：直接取用结果
+                for task_id in remaining:
+                    _finished, detail = self._consume_simple_remote_result(
+                        task_id, details.get(task_id) or {}
+                    )
+                    if running_detail is None and detail is not None:
+                        running_detail = detail
+            if query_failed:
+                fail_streak += 1
+                time.sleep(self._remote_poll_delay(fail_streak))
+                continue
+            fail_streak = 0
+            with self._simple_remote_lock:
+                left = len(self._simple_remote_task_ids)
+                stop_requested = bool(self._simple_remote_stop)
+            if running_detail is not None:
+                step = str(running_detail.get("currentStepName") or "").strip()
+                percent = running_detail.get("progressPercent")
+                status_text = str(running_detail.get("status") or "")
+                if isinstance(percent, (int, float)):
+                    info = "{:.0f}%".format(percent)
+                else:
+                    info = status_text
+                if step:
+                    info += " {}".format(step)
+                done = max(0, total - left)
+                self._post_ui(
+                    lambda i=info, d=done, t=total: self._simple_set_status(
+                        "远程执行中 {}/{}：{}".format(d, t, i),
+                        "running",
+                    )
+                )
+            if not left and not stop_requested:
+                self._post_ui(lambda: self._simple_finish_remote_run())
+                return
+            # 自适应节流：有运行中/排队中任务时 2s 刷新进度；全部排队等待时
+            # 拉长到 5s，减少无进展时的空转请求。
+            time.sleep(2 if running_detail is not None else 5)
+
+    def _confirm_remote_tasks(self, task_ids, window):
+        """提交后立即用一次批量查询确认任务已被服务端接收。
+
+        返回未在服务端找到的 task_id 列表。服务端版本过旧（批量接口不可用）
+        或查询失败时返回 []（跳过确认，不影响正常运行）。
+        """
+        if not task_ids or window is None:
+            return []
+        try:
+            details = window.get_tasks_batch(task_ids)
+        except Exception:
+            return []
+        if details is None:
+            return []
+        return [t for t in task_ids if t not in details]
+
+    def _consume_simple_remote_result(self, task_id, task):
+        """消费一条远程轮询结果（批量/逐个查询共用）。
+
+        任务进入终态（成功/失败/取消/终止）时移出待查集合并记录结果；
+        处于排队/运行/暂停时返回该任务供进度展示。
+
+        返回 (finished, running_detail)：
+        - finished：任务是否已结束；
+        - running_detail：运行中的任务 dict，否则 None。
+        """
+        status = str(task.get("status") or "") if isinstance(task, dict) else ""
+        if status in ("success", "failed", "canceled", "terminated"):
+            with self._simple_remote_lock:
+                self._simple_remote_task_ids.pop(task_id, None)
+                self._simple_remote_outcomes[task_id] = {
+                    "status": status,
+                    "error": str(task.get("error") or ""),
+                    "flow": os.path.basename(str(task.get("flowPath") or "")),
+                }
+            return True, None
+        if status in ("pending", "running", "paused"):
+            return False, task
+        return False, None
+
+    @staticmethod
+    def _remote_poll_delay(streak):
+        """轮询失败退避秒数：2 → 4 → 8 → 16 → 30 封顶，与任务队列窗口策略一致。"""
+        return float(min(30, 2 ** min(max(0, int(streak)), 5)))
+
+    def _simple_finish_remote_run(self, note=""):
+        """远程任务全部结束：汇总成功/失败数量，并为失败任务提供重试入口。"""
+        with self._simple_remote_lock:
+            outcomes = dict(self._simple_remote_outcomes or {})
+            self._simple_remote_task_ids = {}
+            self._simple_remote_outcomes = {}
+        self._simple_remote_stop = False
+        self.btn_simple_run.config(state=tk.NORMAL)
+        self.btn_simple_submit_remote.config(state=tk.NORMAL)
+        self.btn_simple_stop.config(state=tk.DISABLED)
+        if note:
+            self._simple_set_status(note, "idle")
+            return
+        if not outcomes:
+            self._simple_set_status("全部远程任务完成", "success")
+            return
+        success = [k for k, v in outcomes.items() if v.get("status") == "success"]
+        failed = [(k, v) for k, v in outcomes.items() if v.get("status") != "success"]
+        # 服务端 resume 仅对 failed / terminated / paused 生效，canceled 不支持重跑
+        retryable = [(k, v) for k, v in failed if v.get("status") in ("failed", "terminated")]
+        text = "远程任务完成：成功 {} / 失败 {}".format(len(success), len(failed))
+        self._simple_set_status(text, "success" if not failed else "warning")
+        self._append_log(text, tag="success" if not failed else "warning")
+        if not failed:
+            return
+        detail = "\n".join(
+            "- {}：{}{}".format(
+                v.get("flow") or k,
+                v.get("status"),
+                "（{}）".format(v.get("error")) if v.get("error") else "",
+            )
+            for k, v in failed[:8]
+        )
+        if retryable and messagebox.askyesno(
+            "远程任务有失败项",
+            "{}\n\n{}\n\n是否重试这些失败任务？".format(text, detail),
+        ):
+            self._retry_failed_remote_tasks([k for k, _ in retryable])
+
+    def _terminate_remote_tasks(self, task_ids, window):
+        """后台逐个终止已提交到服务器的任务（提交期间停止时使用，避免孤儿任务）。"""
+        terminated = 0
+        for task_id in task_ids:
+            try:
+                if window.control_task(task_id, "terminate"):
+                    terminated += 1
+            except Exception:
+                pass
+        if terminated:
+            self._append_log(
+                "已终止 {} 个已提交的远程任务".format(terminated), tag="warning"
+            )
+
+    def _retry_failed_remote_tasks(self, task_ids):
+        """对失败的远程任务调用 resume（后台线程），服务端会把任务回退到 pending。
+
+        原实现同步循环 control_task（每个最多阻塞 6s），N 个失败任务会卡死 UI 线程；
+        改为后台线程执行，结果经 _post_ui 回主线程更新状态。
+        """
+        task_ids = list(task_ids or [])
+        if not task_ids:
+            return
+        window = getattr(self, "_task_queue_window", None)
+        if window is None:
+            self.open_task_queue()
+            window = getattr(self, "_task_queue_window", None)
+        if window is None:
+            self._simple_set_status("重试失败：任务队列窗口不可用", "error")
+            return
+        self._simple_set_status(
+            "正在重试 {} 个失败任务...".format(len(task_ids)), "running"
+        )
+
+        def _worker(win):
+            ok = 0
+            fail = 0
+            for task_id in task_ids:
+                try:
+                    if win.control_task(task_id, "resume"):
+                        ok += 1
+                    else:
+                        fail += 1
+                except Exception:
+                    fail += 1
+            self._post_ui(lambda: self._retry_finished(ok, fail))
+
+        threading.Thread(target=_worker, args=(window,), daemon=True).start()
+
+    def _retry_finished(self, ok, fail):
+        """重试后台线程完成后的主线程收尾：日志 + 状态。"""
+        self._append_log(
+            "远程任务重试：成功 {} 个，失败 {} 个".format(ok, fail),
+            tag="success" if not fail else "warning",
+        )
+        self._simple_set_status(
+            "已重试 {} 个任务，失败 {} 个".format(ok, fail),
+            "success" if not fail else "warning",
+        )
+
+    def _simple_run_one(self, section_key):
+        info = self.simple_section_vars.get(section_key, {})
+        path = info.get("path", "")
+        if not path or not os.path.isfile(path):
+            messagebox.showinfo("提示", "该板块尚未设置可用的流程文件，请先导入流程或 Excel。")
+            return
+        self._start_simple_queue([section_key])
+
+    def _start_simple_queue(self, keys):
+        if getattr(self, "_simple_run_queue", None):
+            messagebox.showinfo("提示", "Simple 队列正在运行中，请先停止或等待完成。")
+            return False
+        if self.process and self.process.poll() is None:
+            messagebox.showinfo("提示", "已有自动化流程正在运行，请先等待其完成或停止。")
+            return False
+        self.btn_simple_run.config(state=tk.DISABLED)
+        self.btn_simple_stop.config(state=tk.NORMAL)
+        self._simple_set_status("准备运行 {} 个板块".format(len(keys)), "running")
+        self._simple_run_queue = list(keys)
+        self._simple_run_index = 0
+        self._simple_run_next()
+        return True
+
+    def _simple_stop_queue(self):
+        """停止 Simple 排队。
+
+        除清空待跑队列外，还终止正在运行的本地子进程（多塔串行队列则置停止标志并
+        终止当前塔）与已提交的远程任务。按钮在进程真正退出后才恢复，避免"点了停止
+        但当前板块仍在后台运行、且按钮已置灰无法再次停止"的问题。
+        """
+        with self._simple_remote_lock:
+            task_ids = list(self._simple_remote_task_ids or [])
+            self._simple_remote_task_ids = {}
+        window = getattr(self, "_task_queue_window", None)
+        self._simple_remote_stop = True
+        self._simple_run_queue = []
+        self._simple_run_index = 0
+        # 联动：多塔串行队列运行中时一并请求停止
+        mast_active = bool(getattr(self, "_mast_queue_active", False))
+        if mast_active:
+            self._mast_queue_stop = True
+            self._append_log("正在停止多塔串行队列...", tag="warning")
+        # 本地子进程 / 多塔当前塔：复用与"停止流程"一致的终止逻辑（terminate → kill）
+        local_running = bool(self.process) and self.process.poll() is None
+        if local_running or mast_active:
+            self._simple_set_status("正在停止当前板块...", "warning")
+            threading.Thread(target=self._stop_process_worker, daemon=True).start()
+            threading.Thread(target=self._simple_wait_stopped, daemon=True).start()
+        else:
+            self.btn_simple_run.config(state=tk.NORMAL)
+            self.btn_simple_stop.config(state=tk.DISABLED)
+            self._simple_set_status("已停止排队", "idle")
+        if task_ids and window is not None:
+            def _terminate_tasks():
+                for task_id in task_ids:
+                    try:
+                        window.control_task(task_id, "terminate")
+                    except Exception:
+                        pass
+            threading.Thread(target=_terminate_tasks, daemon=True).start()
+
+    def _simple_wait_stopped(self, timeout=20.0):
+        """等待本地进程/多塔队列真正退出（后台线程），超时也放行以便恢复按钮。"""
+        deadline = time.time() + max(1.0, float(timeout))
+        while time.time() < deadline:
+            queue_active = bool(getattr(self, "_mast_queue_active", False))
+            proc = self.process
+            proc_running = bool(proc) and proc.poll() is None
+            if not queue_active and not proc_running:
+                break
+            time.sleep(0.2)
+        still_running = bool(getattr(self, "_mast_queue_active", False)) or (
+            bool(self.process) and self.process.poll() is None
+        )
+        self._post_ui(lambda: self._simple_after_stopped(still_running))
+
+    def _simple_after_stopped(self, still_running):
+        """停止收尾：恢复 Simple 按钮并按实际退出情况提示。"""
+        self.btn_simple_run.config(state=tk.NORMAL)
+        self.btn_simple_stop.config(state=tk.DISABLED)
+        if still_running:
+            self._simple_set_status("⚠ 停止超时，进程可能仍在运行", "warning")
+        else:
+            self._simple_set_status("已停止排队", "idle")
+
+    def _simple_run_next(self):
+        """启动下一个待运行板块（由 after 在主线程中调度，线程安全）。"""
+        if not getattr(self, "_simple_run_queue", None):
+            return
+        if self._simple_run_index >= len(self._simple_run_queue):
+            self._simple_run_queue = []
+            self._simple_run_index = 0
+            self.btn_simple_run.config(state=tk.NORMAL)
+            self.btn_simple_stop.config(state=tk.DISABLED)
+            self._simple_set_status(
+                "全部运行完成 ✓ {}".format(datetime.now().strftime("%H:%M:%S")),
+                "success",
+            )
+            return
+
+        key = self._simple_run_queue[self._simple_run_index]
+        sec = next(s for s in self.SIMPLE_SECTIONS if s["key"] == key)
+        flow_path = self.simple_section_vars.get(key, {}).get("path", "")
+        idx = self._simple_run_index + 1
+        total = len(self._simple_run_queue)
+
+        if not flow_path or not os.path.isfile(flow_path):
+            self._simple_set_status("⚠ {}/{} {}：流程文件缺失，跳过".format(idx, total, sec["title"]), "warning")
+            self._simple_run_index += 1
+            self.root.after(500, self._simple_run_next)
+            return
+
+        self._simple_set_status("▶ {}/{} {} 启动中".format(idx, total, sec["title"]), "running")
+        original_path = self._get_flow_definition_path()
+        self.flow_definition_path_var.set(flow_path)
+        # 仅当指定了项目工作文件夹时，本次运行启用自动解析注入；未指定则完全保持原逻辑
+        self._simple_run_project_inject = bool(str(getattr(self, "project_work_dir", "") or "").strip())
+        try:
+            self._launch_automation([], banner="========== Simple: {} ==========".format(sec["title"]))
+        except Exception as exc:
+            self._simple_set_status("⚠ {}/{} 启动失败：{}".format(idx, total, exc), "error")
+            self._simple_run_index += 1
+            self.root.after(800, self._simple_run_next)
+            return
+        self.flow_definition_path_var.set(original_path)
+
+        self._simple_run_index += 1
+        import threading as _th
+        _th.Thread(target=self._simple_wait_for_next, args=(idx, total, sec["title"]), daemon=True).start()
+
+    def _simple_wait_for_next(self, idx, total, title, timeout=14400.0):
+        """等待当前板块/多塔队列完成，然后调度下一个板块（后台线程）。
+
+        多塔串行队列需等待队列整体完成（_mast_queue_active 置 False），而非单个塔退出，
+        否则 Simple 队列会在第一塔结束时提前推进下一个板块，与后续塔并发运行。
+        等待期间周期性回写"已等待时长"，避免长时间无提示被误判为卡死；
+        timeout 用于兜底（默认 4 小时），超时则中止排队并明确提示。
+        """
+        deadline = time.time() + max(1.0, float(timeout))
+        started = time.time()
+        last_hint = 0.0
+        timed_out = False
+        try:
+            while True:
+                queue_active = bool(getattr(self, "_mast_queue_active", False))
+                proc = self.process
+                proc_running = bool(proc) and proc.poll() is None
+                if not queue_active and not proc_running:
+                    break
+                if time.time() > deadline:
+                    timed_out = True
+                    break
+                elapsed = time.time() - started
+                if elapsed - last_hint >= 30.0:
+                    last_hint = elapsed
+                    self._post_ui(
+                        lambda e=int(elapsed // 60), i=idx, n=total, t=title: self._simple_set_status(
+                            "⏳ {}/{} {} 运行中，已等待 {} 分钟".format(i, n, t, e),
+                            "running",
+                        )
+                    )
+                time.sleep(0.5)
+        except Exception:
+            pass
+        time.sleep(0.5)
+        if timed_out:
+            self._mast_queue_stop = True
+            self._post_ui(
+                lambda t=title: self._simple_abort_queue("等待 {} 超时，已停止排队".format(t))
+            )
+            return
+        self.root.after(0, self._simple_run_next)
+
+    def _simple_abort_queue(self, reason):
+        """中止 Simple 排队：清空待跑队列、恢复按钮并提示原因。"""
+        self._simple_run_queue = []
+        self._simple_run_index = 0
+        self.btn_simple_run.config(state=tk.NORMAL)
+        self.btn_simple_stop.config(state=tk.DISABLED)
+        self._simple_set_status("⚠ {}".format(reason), "error")
+        self._append_log("Simple 排队已中止：{}".format(reason), tag="warning")
+
+
+    def _simple_import_flow(self, section_key):
+        """为某个板块导入流程链路文件（JSON）。"""
+        path = filedialog.askopenfilename(
+            title="导入流程链路文件 - {}".format(section_key),
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        info = self.simple_section_vars.get(section_key, {})
+        if info:
+            info["path"] = path
+        self._simple_update_path_label(section_key)
+        self._simple_save_state()
+
+    def _simple_import_excel(self, section_key):
+        """为某个板块导入 Excel 流程定义，自动转换为流程文件并设为默认。"""
+        path = filedialog.askopenfilename(
+            title="导入流程 Excel - {}".format(section_key),
+            filetypes=[("Excel 文件", "*.xlsx"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            flow_payload = load_flow_payload_from_excel(path)
+            if not flow_payload:
+                messagebox.showwarning("导入失败", "Excel 文件未能解析为有效的流程定义。")
+                return
+            target_dir = os.path.join(BASE_DIR, "flow_packages")
+            os.makedirs(target_dir, exist_ok=True)
+            base_name = "simple_{}_{}.json".format(
+                section_key, datetime.now().strftime("%Y%m%d_%H%M%S")
+            )
+            target_path = os.path.join(target_dir, base_name)
+            with open(target_path, "w", encoding="utf-8") as f:
+                json.dump(flow_payload, f, ensure_ascii=False, indent=2)
+            info = self.simple_section_vars.get(section_key, {})
+            if info:
+                info["path"] = target_path
+            self._simple_update_path_label(section_key)
+            self._simple_save_state()
+            messagebox.showinfo("导入完成", "已将 Excel 转换为流程文件并设为默认:\n{}".format(target_path))
+        except Exception as exc:
+            messagebox.showerror("导入失败", "导入 Excel 时出错:\n{}".format(exc))
+
+    def _simple_export_flow(self, section_key):
+        """导出某个板块的默认流程文件。"""
+        flow_path = self.simple_section_vars.get(section_key, {}).get("path", "")
+        if not flow_path:
+            messagebox.showinfo("提示", "该板块尚未设置默认流程，无法导出。")
+            return
+        out_path = filedialog.asksaveasfilename(
+            title="导出流程 - {}".format(section_key),
+            initialfile=os.path.basename(flow_path),
+            defaultextension=".json",
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not out_path:
+            return
+        try:
+            shutil.copy2(flow_path, out_path)
+            messagebox.showinfo("导出完成", "已导出到:\n{}".format(out_path))
+        except Exception as exc:
+            messagebox.showerror("导出失败", str(exc))
+
+    def _simple_edit_flow(self, section_key):
+        flow_path = self.simple_section_vars.get(section_key, {}).get("path", "")
+        if not flow_path or not os.path.isfile(flow_path):
+            messagebox.showinfo("提示", "该板块尚未设置可用的流程文件，请先导入流程或 Excel。")
+            return
+        self.flow_definition_path_var.set(flow_path)
+        try:
+            self._save_launcher_state()
+        except Exception:
+            pass
+        self.open_flow_editor()
+
+    def _simple_clear_flow(self, section_key):
+        info = self.simple_section_vars.get(section_key, {})
+        path = info.get("path", "")
+        if not path:
+            self._simple_set_status("该板块尚未配置流程", "idle")
+            return
+        sec = next(s for s in self.SIMPLE_SECTIONS if s["key"] == section_key)
+        if not messagebox.askyesno(
+            "清空配置",
+            "确定清空 {} 的默认流程配置吗？".format(sec["title"]),
+        ):
+            return
+        info["path"] = ""
+        self.simple_mode_flows.pop(section_key, None)
+        self._simple_update_path_label(section_key)
+        self._simple_save_state()
+        self._simple_set_status("已清空 {} 的流程配置".format(sec["title"]), "idle")
+
+    def _simple_relayout_cards(self, parent, event_width=None):
+        if not hasattr(self, "_simple_cards") or not self._simple_cards:
+            return
+        try:
+            width = event_width or parent.winfo_width()
+        except Exception:
+            width = 0
+        if width <= 720:
+            cols = 1
+        elif width <= 1360:
+            cols = 2
+        else:
+            cols = 3
+        if cols == getattr(self, "_simple_grid_columns", 0) and getattr(self, "_simple_grid_laid_out", False):
+            return
+        for child in parent.winfo_children():
+            child.grid_forget()
+        for idx, (sec, card) in enumerate(self._simple_cards):
+            row, col = divmod(idx, cols)
+            card.grid(row=row, column=col, sticky="nsew", padx=8, pady=8)
+        for col in range(cols):
+            parent.columnconfigure(col, weight=1, uniform="simple_cards")
+        row_count = (len(self._simple_cards) + cols - 1) // cols
+        for row in range(row_count):
+            parent.rowconfigure(row, weight=1)
+        self._simple_grid_columns = cols
+        self._simple_grid_laid_out = True
+
+
+    def _configure_styles(self):
+        wt_theme.get_theme_manager().init_theme(self.root, "flatly")
+
+    def _create_secondary_button(self, parent, text, command):
+        return wt_theme.create_flat_button(
+            parent,
+            text=text,
+            command=command,
+            tone="secondary",
+            padx=12,
+            pady=6,
+            font=("Microsoft YaHei UI", 9),
+        )
+
+    def _build_tool_section(self, parent, title, buttons):
+        frame = tk.LabelFrame(
+            parent,
+            text="  {}  ".format(title),
+            padx=8,
+            pady=8,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            bd=1,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=0,
+        )
+        frame.pack(fill=tk.X, pady=(8, 0))
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        total_btns = len(buttons)
+        for idx, item in enumerate(buttons):
+            text = item[0]
+            handler = item[1]
+            is_hot = item[2] if len(item) > 2 else False
+            if is_hot:
+                btn = wt_theme.create_flat_button(
+                    frame,
+                    text="★ " + text,
+                    command=handler,
+                    tone="secondary",
+                    padx=10,
+                    pady=5,
+                    font=("Microsoft YaHei UI", 9, "bold"),
+                )
+                btn.configure(
+                    bg=self.theme.get("primary_soft", "#dbeafe"),
+                    fg=self.theme.get("primary_text", "#1e40af"),
+                    activebackground=self.theme.get("primary", "#2563eb"),
+                    activeforeground="#ffffff",
+                )
+            else:
+                btn = self._create_secondary_button(frame, text, handler)
+            if idx == total_btns - 1 and total_btns % 2 == 1:
+                btn.grid(row=idx // 2, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
+            else:
+                r = idx // 2
+                c = idx % 2
+                btn.grid(row=r, column=c, sticky="ew", padx=2, pady=2)
+        return frame
+
+    def _build_left_panel(self, parent):
+        outer = tk.Frame(parent, bg=self.theme["card"])
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        # ── 顶层常驻启停控制区 (Pinned Top Bar) ──
+        pinned_top = tk.Frame(outer, bg=self.theme["card"], padx=10, pady=8)
+        pinned_top.pack(fill=tk.X, side=tk.TOP)
+
+        action_frame = tk.Frame(pinned_top, bg=self.theme["card"])
+        action_frame.pack(fill=tk.X)
+
+        self.start_button = tk.Button(
+            action_frame,
+            text="▶ 启动自动化流程",
+            command=self.start_automation,
+            bg=self.theme["primary"],
+            fg="white",
+            activebackground=self.theme["primary_active"],
+            activeforeground="white",
+            relief=tk.FLAT,
+            bd=0,
+            font=("Microsoft YaHei UI", 11, "bold"),
+            cursor="hand2",
+            pady=8,
+        )
+        self.start_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
+        self.stop_button = tk.Button(
+            action_frame,
+            text="■ 停止当前流程",
+            command=self.stop_automation,
+            state=tk.DISABLED,
+            bg=self.theme["danger"],
+            fg="white",
+            activebackground=self.theme["danger_active"],
+            activeforeground="white",
+            relief=tk.FLAT,
+            bd=0,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            cursor="hand2",
+            pady=8,
+            padx=14,
+        )
+        self.stop_button.pack(side=tk.RIGHT, fill=tk.X, padx=(0, 0))
+
+        status_strip = tk.Frame(
+            pinned_top,
+            bg=self.theme.get("panel_soft", "#f8fafc"),
+            padx=8,
+            pady=4,
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
+        status_strip.pack(fill=tk.X, pady=(6, 0))
+        tk.Label(
+            status_strip,
+            text="状态:",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            bg=status_strip["bg"],
+            fg=self.theme["muted"],
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            status_strip,
+            textvariable=self.status_var,
+            font=("Microsoft YaHei UI", 8),
+            bg=status_strip["bg"],
+            fg=self.theme["text"],
+            anchor="w",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        # ── 3-Tab 现代化功能分页 (Notebook) ──
+        notebook = ttk.Notebook(outer)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 4))
+
+        def _make_tab_page():
+            page_frame = tk.Frame(notebook, bg=self.theme["card"])
+            canvas = tk.Canvas(page_frame, highlightthickness=0, borderwidth=0, bg=self.theme["card"])
+            canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+            scrollbar = wt_theme.create_modern_scrollbar(
+                page_frame,
+                orient=tk.VERTICAL,
+                command=canvas.yview,
+            )
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            canvas.configure(yscrollcommand=scrollbar.set)
+
+            content_frame = tk.Frame(canvas, bg=self.theme["card"], padx=8, pady=6)
+            canvas_window = canvas.create_window((0, 0), window=content_frame, anchor="nw")
+
+            sr_scheduled = [False]
+
+            def _apply_scrollregion():
+                sr_scheduled[0] = False
+                try:
+                    canvas.configure(scrollregion=canvas.bbox("all"))
+                except Exception:
+                    pass
+
+            def _update_canvas_window_width():
+                new_w = canvas.winfo_width()
+                if new_w > 0 and new_w != getattr(canvas, "_last_width", -1):
+                    canvas._last_width = new_w
+                    canvas.itemconfig(canvas_window, width=new_w)
+
+            def on_content_configure(_event=None):
+                if not sr_scheduled[0]:
+                    sr_scheduled[0] = True
+                    canvas.after_idle(_apply_scrollregion)
+                _update_canvas_window_width()
+
+            def on_canvas_configure(_event=None):
+                _update_canvas_window_width()
+
+            content_frame.bind("<Configure>", on_content_configure)
+            canvas.bind("<Configure>", on_canvas_configure)
+
+            _WHEEL_ROUTER.register(canvas)
+            _WHEEL_ROUTER.bind_root(self.root)
+            return page_frame, content_frame
+
+        # ==========================================
+        # Tab 1: 🚀 步骤编排与测试
+        # ==========================================
+        tab1_page, tab1_content = _make_tab_page()
+        notebook.add(tab1_page, text=" 🚀 步骤编排与测试 ")
+
+        # 1. 链路定义文件
+        flow_file_frame = tk.LabelFrame(
+            tab1_content,
+            text="  链路定义文件  ",
+            padx=10,
+            pady=8,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        flow_file_frame.pack(fill=tk.X, pady=(2, 0))
+
+        tk.Label(
+            flow_file_frame,
+            textvariable=self.flow_definition_path_var,
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=340,
+            bg=self.theme["card"],
+            fg=self.theme["muted"],
+        ).pack(fill=tk.X, anchor="w")
+
+        flow_btn_row = tk.Frame(flow_file_frame, bg=self.theme["card"])
+        flow_btn_row.pack(fill=tk.X, pady=(6, 0))
+        tk.Button(
+            flow_btn_row,
+            text="📂 加载链路文件",
+            command=self.select_flow_definition_file,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=12,
+            pady=4,
+        ).pack(side=tk.LEFT)
+        tk.Button(
+            flow_btn_row,
+            text="🔄 刷新步骤",
+            command=self._refresh_flow_steps,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=12,
+            pady=4,
+        ).pack(side=tk.RIGHT)
+
+        # 2. 步骤列表与编排
+        test_frame = tk.LabelFrame(
+            tab1_content,
+            text="  步骤列表与执行  ",
+            padx=10,
+            pady=8,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        test_frame.pack(fill=tk.X, pady=(8, 0))
+
+        step_toolbar = tk.Frame(test_frame, bg=self.theme["card"])
+        step_toolbar.pack(fill=tk.X, pady=(2, 0))
+        tk.Button(
+            step_toolbar,
+            text="全选",
+            command=lambda: self._set_all_step_checks(True),
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT)
+        tk.Button(
+            step_toolbar,
+            text="全不选",
+            command=lambda: self._set_all_step_checks(False),
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        tk.Button(
+            step_toolbar,
+            text="↑ 上移已选",
+            command=lambda: self._move_selected_steps(-1),
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        tk.Button(
+            step_toolbar,
+            text="↓ 下移已选",
+            command=lambda: self._move_selected_steps(1),
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        steps_box = tk.Frame(test_frame, bg=self.theme["card"])
+        steps_box.pack(fill=tk.X, pady=(8, 0))
+        self.steps_canvas = tk.Canvas(
+            steps_box,
+            height=310,
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+            borderwidth=0,
+            bg="#fbfdff",
+        )
+        self.steps_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.steps_scrollbar = tk.Scrollbar(
+            steps_box,
+            orient=tk.VERTICAL,
+            command=self.steps_canvas.yview,
+            relief=tk.FLAT,
+            width=16,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["primary_soft"],
+            troughcolor=self.theme.get("toolbar", self.theme["bg"]),
+            highlightthickness=0,
+            bd=0,
+        )
+        self.steps_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.steps_canvas.configure(yscrollcommand=self._on_steps_canvas_scroll)
+
+        self.steps_inner = tk.Frame(self.steps_canvas, bg="#fbfdff")
+        self.steps_canvas_window = self.steps_canvas.create_window((0, 0), window=self.steps_inner, anchor="nw")
+
+        _steps_sr_scheduled = [False]
+
+        def on_steps_inner_configure(_event=None):
+            # after_idle 语义（Tk doc/after.n）：回调在事件队列排空、
+            # 无事件可处理时执行一次。Configure 风暴期间不执行，风暴
+            # 结束才跑一次 —— 效果即合帧：风暴 N 次触发只做 1 次
+            # bbox("all") 全量重算（每帧调用会造成 resize 迟滞）
+            if _steps_sr_scheduled[0]:
+                return
+            _steps_sr_scheduled[0] = True
+            def _apply():
+                _steps_sr_scheduled[0] = False
+                try:
+                    self.steps_canvas.configure(scrollregion=self.steps_canvas.bbox("all"))
+                except Exception:
+                    pass
+            self.steps_canvas.after_idle(_apply)
+
+        def on_steps_canvas_configure(_event=None):
+            new_w = self.steps_canvas.winfo_width()
+            if new_w > 0 and new_w != getattr(self.steps_canvas, "_last_width", -1):
+                self.steps_canvas._last_width = new_w
+                self.steps_canvas.itemconfig(self.steps_canvas_window, width=new_w)
+
+        _WHEEL_ROUTER.register(self.steps_canvas)
+        _WHEEL_ROUTER.bind_root(self.root)
+
+        self.steps_inner.bind("<Configure>", on_steps_inner_configure)
+        self.steps_canvas.bind("<Configure>", on_steps_canvas_configure)
+        tk.Label(
+            test_frame,
+            textvariable=self.step_scroll_hint_var,
+            bg=self.theme["card"],
+            fg=self.theme["muted"],
+            justify=tk.LEFT,
+            anchor="w",
+        ).pack(fill=tk.X, anchor="w", pady=(6, 0))
+
+        action_row = tk.Frame(test_frame, bg=self.theme["card"])
+        action_row.pack(fill=tk.X, pady=(8, 0))
+        tk.Button(
+            action_row,
+            text="▶ 运行所选步骤",
+            command=self.start_selected_steps,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            cursor="hand2",
+            pady=7,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(
+            action_row,
+            text="⏩ 从所选开始",
+            command=self.start_from_selected_step,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            cursor="hand2",
+            pady=7,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        package_row = tk.Frame(test_frame, bg=self.theme["card"])
+        package_row.pack(fill=tk.X, pady=(8, 0))
+        tk.Label(
+            package_row,
+            text="流程包",
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+        ).pack(side=tk.LEFT)
+        self.flow_package_combo = ttk.Combobox(
+            package_row,
+            textvariable=self.selected_flow_package_var,
+            state="readonly",
+            style="Modern.TCombobox",
+        )
+        self.flow_package_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+        tk.Button(
+            package_row,
+            text="测试流程包",
+            command=self.start_selected_flow_package,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            cursor="hand2",
+            padx=14,
+            pady=5,
+        ).pack(side=tk.RIGHT)
+
+        # 3. 执行控制选项
+        options_frame = tk.LabelFrame(
+            tab1_content,
+            text="  执行控制选项  ",
+            padx=10,
+            pady=8,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        options_frame.pack(fill=tk.X, pady=(8, 0))
+        tk.Checkbutton(
+            options_frame,
+            text="跳过启动/导入（假定 WT 已处于测试界面）",
+            variable=self.skip_setup_var,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+        ).pack(anchor="w")
+        tk.Checkbutton(
+            options_frame,
+            text="运行前置顶 WT 主窗口（流程包/步骤测试前自动置顶）",
+            variable=self.pre_raise_var,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+        ).pack(anchor="w", pady=(4, 0))
+        tk.Checkbutton(
+            options_frame,
+            text="显示流程监视器",
+            variable=self.show_monitor_var,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+        ).pack(anchor="w", pady=(4, 0))
+        tk.Checkbutton(
+            options_frame,
+            text="启用 AI 失效介入（仅在普通执行和模板兜底都失败后调用 UI-TARS）",
+            variable=self.enable_ai_intervention_var,
+            command=self._refresh_config_summary,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+            wraplength=340,
+            justify=tk.LEFT,
+            anchor="w",
+        ).pack(anchor="w", pady=(4, 0))
+        tk.Checkbutton(
+            options_frame,
+            text="自动更新控件模板（每次运行截图与上次对比，不一致才替换，并自动关联步骤模板兜底）",
+            variable=self.template_auto_update_var,
+            command=self._refresh_config_summary,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+            wraplength=340,
+            justify=tk.LEFT,
+            anchor="w",
+        ).pack(anchor="w", pady=(4, 0))
+
+        # ==========================================
+        # Tab 2: 🧰 常用工具箱
+        # ==========================================
+        tab2_page, tab2_content = _make_tab_page()
+        notebook.add(tab2_page, text=" 🧰 常用工具箱 ")
+
+        # ── 顶层常用推荐卡片 (Quick Launch Featured) ──
+        featured_frame = tk.LabelFrame(
+            tab2_content,
+            text="  ★ 核心常用推荐  ",
+            padx=10,
+            pady=10,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            bd=1,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=1,
+            highlightbackground=self.theme.get("primary_soft", "#dbeafe"),
+        )
+        featured_frame.pack(fill=tk.X, pady=(2, 4))
+        featured_frame.columnconfigure(0, weight=1)
+        featured_frame.columnconfigure(1, weight=1)
+
+        featured_tools = [
+            ("🚀 打开流程链路编辑", self.open_flow_editor, "primary"),
+            ("🎨 进入模板制作", self.open_template_builder, "primary"),
+            ("🎯 进入控件库采集", self.open_control_map_builder, "primary"),
+            ("⚡ 实时控件检测", self.open_live_detector, "primary"),
+            ("📊 任务与服务器监控", self.open_task_queue, "success"),
+            ("📝 打开运行日志", self.open_log_file, "secondary"),
+        ]
+        for idx, (text, handler, tone) in enumerate(featured_tools):
+            btn = wt_theme.create_flat_button(
+                featured_frame,
+                text=text,
+                command=handler,
+                tone=tone,
+                padx=10,
+                pady=6,
+                font=("Microsoft YaHei UI", 9, "bold"),
+            )
+            r = idx // 2
+            c = idx % 2
+            btn.grid(row=r, column=c, sticky="ew", padx=3, pady=3)
+
+        self._build_tool_section(
+            tab2_content,
+            "流程设计与转换",
+            [
+                ("启动 WT AI Agent（自然语言编排）", self.open_wt_agent, True),
+                ("启动 pywinauto recorder", self.open_pywinauto_recorder, True),
+                ("同步录制脚本(增量·最新)", self.sync_recorded_scripts),
+                ("打开流程链路编辑", self.open_flow_editor, True),
+                ("相对区域取点", self.open_relative_region_helper),
+                ("转换 Recorder 脚本", self.convert_recorder_script),
+                ("导出流程 Excel", self.export_flow_excel),
+                ("导入流程 Excel", self.import_flow_excel),
+            ],
+        )
+        self._build_tool_section(
+            tab2_content,
+            "模板与资源库",
+            [
+                ("进入模板制作", self.open_template_builder, True),
+                ("打开控件库", self.open_control_import_standalone),
+                ("进入控件库采集", self.open_control_map_builder, True),
+                ("实时控件检测", self.open_live_detector, True),
+                ("外部控件采集(uia-peek/axe)", self.open_external_capture),
+                ("打开模板库目录", self.open_template_root_dir),
+                ("刷新模板库概览", self.refresh_template_library_summary_action),
+            ],
+        )
+        self._build_tool_section(
+            tab2_content,
+            "检查与日志",
+            [
+                ("运行环境检测", self.run_environment_check, True),
+                ("启动监控服务", self.start_server_monitor_service),
+                ("启动任务队列服务", self.start_task_queue_service),
+                ("停止任务队列服务", self.stop_task_queue_service),
+                ("任务与服务器监控", self.open_task_queue, True),
+                ("模型配置检查", self.run_model_check),
+                ("打开 UI-TARS 配置", self.open_ui_tars_config),
+                ("打开运行日志", self.open_log_file, True),
+                ("分析运行日志·最近一次", self.analyze_run_logs_last),
+                ("分析运行日志·汇总趋势", self.analyze_run_logs_aggregate),
+                ("一键日志打包", self.package_debug_logs),
+            ],
+        )
+
+        # ==========================================
+        # Tab 3: ⚙️ 环境与配置
+        # ==========================================
+        tab3_page, tab3_content = _make_tab_page()
+        notebook.add(tab3_page, text=" ⚙️ 环境与配置 ")
+
+        # 界面缩放
+        scale_card = tk.LabelFrame(
+            tab3_content,
+            text="  界面缩放  ",
+            padx=10,
+            pady=8,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        scale_card.pack(fill=tk.X, pady=(2, 0))
+        scale_row = tk.Frame(scale_card, bg=self.theme["card"])
+        scale_row.pack(fill=tk.X, pady=2)
+        tk.Label(
+            scale_row,
+            text="缩放比例",
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side=tk.LEFT)
+        ttk.Combobox(
+            scale_row,
+            textvariable=self.ui_scale_var,
+            values=[label for label, _ in wt_dpi.SCALE_PRESETS],
+            state="readonly",
+            width=8,
+        ).pack(side=tk.LEFT, padx=(8, 4))
+        tk.Label(
+            scale_row,
+            text="（修改后本窗口即时生效，其余窗口重启生效）",
+            bg=self.theme["card"],
+            fg=self.theme.get("muted", self.theme["text"]),
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT)
+        self.ui_scale_var.trace_add("write", lambda *_args: self._on_ui_scale_changed())
+
+        # 模型参数
+        model_frame = tk.LabelFrame(
+            tab3_content,
+            text="  UI-TARS / VLM 参数  ",
+            padx=10,
+            pady=10,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        model_frame.pack(fill=tk.X, pady=(8, 0))
+        model_frame.columnconfigure(1, weight=1)
+
+        tk.Label(model_frame, text="最近模型", bg=self.theme["card"], fg=self.theme["text"]).grid(row=0, column=0, sticky="w", pady=4)
+        self.model_history_combo = ttk.Combobox(
+            model_frame,
+            textvariable=self.model_history_var,
+            state="readonly",
+            style="Modern.TCombobox",
+        )
+        self.model_history_combo.grid(row=0, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=4)
+        self.model_history_combo.bind("<<ComboboxSelected>>", self._on_recent_model_selected)
+
+        tk.Label(model_frame, text="API Key", bg=self.theme["card"], fg=self.theme["text"]).grid(row=1, column=0, sticky="w", pady=4)
+        self.api_key_entry = tk.Entry(model_frame, textvariable=self.api_key_var, show="*", width=30)
+        self.api_key_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=4)
+        tk.Checkbutton(
+            model_frame,
+            text="显示",
+            variable=self.show_api_key_var,
+            command=self._refresh_api_entry_mode,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+        ).grid(row=1, column=2, sticky="w", padx=(8, 0))
+
+        tk.Label(model_frame, text="模型名称", bg=self.theme["card"], fg=self.theme["text"]).grid(row=2, column=0, sticky="w", pady=4)
+        tk.Entry(model_frame, textvariable=self.model_name_var).grid(row=2, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=4)
+
+        tk.Label(model_frame, text="BaseURL", bg=self.theme["card"], fg=self.theme["text"]).grid(row=3, column=0, sticky="w", pady=4)
+        tk.Entry(model_frame, textvariable=self.base_url_var).grid(row=3, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=4)
+
+        tk.Label(model_frame, text="仓库路径", bg=self.theme["card"], fg=self.theme["text"]).grid(row=4, column=0, sticky="w", pady=4)
+        tk.Entry(model_frame, textvariable=self.ui_tars_repo_var).grid(row=4, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=4)
+
+        tk.Label(model_frame, text="配置文件", bg=self.theme["card"], fg=self.theme["text"]).grid(row=5, column=0, sticky="w", pady=4)
+        tk.Entry(model_frame, textvariable=self.ui_tars_config_path_var).grid(row=5, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=4)
+
+        tk.Checkbutton(
+            model_frame,
+            text="useResponsesApi",
+            variable=self.use_responses_api_var,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            activebackground=self.theme["card"],
+        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 4))
+
+        model_action_frame = tk.Frame(model_frame, bg=self.theme["card"])
+        model_action_frame.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        tk.Button(
+            model_action_frame,
+            text="保存模型配置",
+            command=self.save_model_config,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=14,
+            pady=6,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(
+            model_action_frame,
+            text="重新加载配置",
+            command=self.reload_model_config,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=14,
+            pady=6,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        # 运行时状态详情
+        info_frame = tk.LabelFrame(
+            tab3_content,
+            text="  运行时状态详情  ",
+            padx=10,
+            pady=10,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        info_frame.pack(fill=tk.X, pady=(8, 0))
+        tk.Label(info_frame, textvariable=self.status_var, justify=tk.LEFT, anchor="w", wraplength=370, fg=self.theme["muted"]).pack(fill=tk.X, anchor="w")
+        tk.Label(info_frame, textvariable=self.current_step_var, justify=tk.LEFT, anchor="w", wraplength=370, pady=6, fg=self.theme["muted"]).pack(fill=tk.X, anchor="w")
+        tk.Label(info_frame, textvariable=self.process_var, justify=tk.LEFT, anchor="w", wraplength=370, fg=self.theme["muted"]).pack(fill=tk.X, anchor="w")
+
+        for child in info_frame.winfo_children():
+            child.configure(bg=self.theme["card"], fg=self.theme["text"])
+
+        # 配置概览
+        config_frame = tk.LabelFrame(
+            tab3_content,
+            text="  配置概览  ",
+            padx=10,
+            pady=10,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        config_frame.pack(fill=tk.X, pady=(8, 0))
+        tk.Label(
+            config_frame,
+            textvariable=self.config_summary_var,
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=370,
+            fg=self.theme["muted"],
+            bg=self.theme["card"],
+        ).pack(fill=tk.X, anchor="w")
+
+        # 模板库概览
+        template_frame = tk.LabelFrame(
+            tab3_content,
+            text="  模板库概览  ",
+            padx=10,
+            pady=10,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.GROOVE,
+        )
+        template_frame.pack(fill=tk.X, pady=(8, 0))
+        tk.Label(
+            template_frame,
+            textvariable=self.template_summary_var,
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=370,
+            fg=self.theme["muted"],
+            bg=self.theme["card"],
+        ).pack(fill=tk.X, anchor="w")
+        category_box = tk.Frame(template_frame, bg=self.theme["card"])
+        category_box.pack(fill=tk.X, pady=(10, 0))
+        tk.Label(
+            category_box,
+            text="分类列表",
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(anchor="w")
+        category_list_wrap = tk.Frame(category_box, bg=self.theme["card"])
+        category_list_wrap.pack(fill=tk.X, pady=(6, 0))
+        self.template_category_listbox = tk.Listbox(
+            category_list_wrap,
+            height=6,
+            exportselection=False,
+            activestyle="none",
+            relief=tk.FLAT,
+            bg="#fbfdff",
+            fg=self.theme["text"],
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+            selectbackground=self.theme["primary"],
+            selectforeground="white",
+        )
+        self.template_category_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.template_category_listbox.bind("<<ListboxSelect>>", self._on_template_category_selected)
+        category_scrollbar = tk.Scrollbar(category_list_wrap, command=self.template_category_listbox.yview, relief=tk.FLAT)
+        category_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.template_category_listbox.config(yscrollcommand=category_scrollbar.set)
+        tk.Label(
+            category_box,
+            textvariable=self.template_category_var,
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=340,
+            fg=self.theme["muted"],
+            bg=self.theme["card"],
+        ).pack(fill=tk.X, anchor="w", pady=(8, 0))
+        category_button_row = tk.Frame(category_box, bg=self.theme["card"])
+        category_button_row.pack(fill=tk.X, pady=(8, 0))
+        self._create_secondary_button(
+            category_button_row,
+            "打开所选分类",
+            self.open_selected_template_category,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._create_secondary_button(
+            category_button_row,
+            "打开模板根目录",
+            self.open_template_root_dir,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+
+    def _set_left_panel_width(self, target_width):
+        if not hasattr(self, "main_paned"):
+            return
+        try:
+            total_width = int(self.main_paned.winfo_width() or 0)
+            safe_width = int(target_width)
+            if total_width > 0:
+                safe_width = max(360, min(safe_width, total_width - 760))
+            self.main_paned.sash_place(0, safe_width, 1)
+        except Exception:
+            pass
+
+    def _on_steps_canvas_scroll(self, first, last):
+        if hasattr(self, "steps_scrollbar"):
+            self.steps_scrollbar.set(first, last)
+        try:
+            first_value = float(first)
+            last_value = float(last)
+        except Exception:
+            self.step_scroll_hint_var.set("步骤列表位置：滚动中")
+            return
+        if first_value <= 0.001 and last_value >= 0.999:
+            self.step_scroll_hint_var.set("步骤列表位置：全部可见")
+        elif first_value <= 0.001:
+            self.step_scroll_hint_var.set("步骤列表位置：顶部")
+        elif last_value >= 0.999:
+            self.step_scroll_hint_var.set("步骤列表位置：底部")
+        else:
+            self.step_scroll_hint_var.set(
+                f"步骤列表位置：{int(round(first_value * 100))}% - {int(round(last_value * 100))}%"
+            )
+
+    def _build_right_panel(self, parent):
+        top_info = tk.Frame(parent, bg=self.theme["card"])
+        top_info.pack(fill=tk.X)
+        tk.Label(
+            top_info,
+            text="流程运行监测",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            top_info,
+            text="实时输出 / 运行报告 / 检测回显 / 打包结果",
+            fg=self.theme["muted"],
+            bg=self.theme["card"],
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        action_row = tk.Frame(parent, bg=self.theme["card"])
+        action_row.pack(fill=tk.X, pady=(10, 0))
+        self._create_secondary_button(action_row, "刷新运行报告", self._refresh_run_report_view).pack(side=tk.LEFT)
+        self._create_secondary_button(action_row, "打开报告 JSON", self.open_last_run_report).pack(side=tk.LEFT, padx=(8, 0))
+        self._create_secondary_button(action_row, "打开报告目录", self.open_run_report_dir).pack(side=tk.LEFT, padx=(8, 0))
+        self._create_secondary_button(action_row, "导出步骤结果 Excel", self.export_run_report_steps_excel).pack(side=tk.LEFT, padx=(8, 0))
+
+        notebook = ttk.Notebook(parent)
+        notebook.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+
+        log_tab = tk.Frame(notebook, bg=self.theme["card"])
+        report_tab = tk.Frame(notebook, bg=self.theme["card"])
+        notebook.add(log_tab, text="运行日志")
+        notebook.add(report_tab, text="运行报告")
+        # 保存引用：报告页点某步骤时要联动切到日志页并筛出该步日志。
+        self.report_notebook = notebook
+        self.log_tab = log_tab
+
+        self._build_log_filter_bar(log_tab)
+
+        text_frame = tk.Frame(log_tab, bg=self.theme["card"])
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.log_text = tk.Text(
+            text_frame,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            font=("Consolas", 10),
+            bg=self.theme["terminal_bg"],
+            fg=self.theme["terminal_fg"],
+            insertbackground=self.theme["terminal_fg"],
+            relief=tk.FLAT,
+            padx=12,
+            pady=12,
+        )
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = wt_theme.create_modern_scrollbar(text_frame, command=self.log_text.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.config(yscrollcommand=scrollbar.set)
+
+        # 同「运行日志」页：统一由 wt_logging 从 wt_theme 取色（深底变体）。
+        wt_logging.configure_log_tags(
+            self.log_text, dark=True, font_family="Consolas", font_size=10
+        )
+
+        summary_frame = tk.LabelFrame(
+            report_tab,
+            text="  最近一次运行摘要  ",
+            padx=12,
+            pady=10,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            bd=1,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=0,
+        )
+        summary_frame.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(
+            summary_frame,
+            textvariable=self.run_report_summary_var,
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=760,
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(fill=tk.X, anchor="w")
+        tk.Label(
+            summary_frame,
+            textvariable=self.run_report_meta_var,
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=760,
+            bg=self.theme["card"],
+            fg=self.theme["muted"],
+        ).pack(fill=tk.X, anchor="w", pady=(6, 0))
+
+        report_split = tk.PanedWindow(report_tab, orient=tk.VERTICAL, sashrelief=tk.FLAT, sashwidth=4, bg=self.theme["border"], bd=0)
+        report_split.pack(fill=tk.BOTH, expand=True)
+
+        report_list_frame = tk.LabelFrame(
+            report_split,
+            text="  步骤结果  ",
+            padx=8,
+            pady=8,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            bd=1,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=0,
+        )
+        report_detail_frame = tk.LabelFrame(
+            report_split,
+            text="  步骤详情  ",
+            padx=8,
+            pady=8,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            bd=1,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=0,
+        )
+        report_split.add(report_list_frame, stretch="always")
+        report_split.add(report_detail_frame, stretch="always")
+
+        report_tree_wrap = tk.Frame(report_list_frame, bg=self.theme["card"])
+        report_tree_wrap.pack(fill=tk.BOTH, expand=True)
+        self.run_report_tree = ttk.Treeview(
+            report_tree_wrap,
+            columns=("seq", "stepName", "status", "elapsed", "strategy"),
+            show="headings",
+            height=10,
+            style="RunReport.Treeview",
+        )
+        self.run_report_tree.heading("seq", text="#")
+        self.run_report_tree.heading("stepName", text="步骤")
+        self.run_report_tree.heading("status", text="结果")
+        self.run_report_tree.heading("elapsed", text="耗时(秒)")
+        self.run_report_tree.heading("strategy", text="策略")
+        self.run_report_tree.column("seq", width=40, minwidth=40, stretch=False, anchor="center")
+        self.run_report_tree.column("stepName", width=320, minwidth=180, stretch=False, anchor="w")
+        self.run_report_tree.column("status", width=90, minwidth=80, stretch=False, anchor="center")
+        self.run_report_tree.column("elapsed", width=90, minwidth=80, stretch=False, anchor="center")
+        self.run_report_tree.column("strategy", width=260, minwidth=160, stretch=False, anchor="w")
+        self.run_report_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.run_report_tree.bind("<<TreeviewSelect>>", self._on_run_report_step_select)
+        # 日志联动绑定在「用户点击」上，而不是 <<TreeviewSelect>>：
+        # 实测 selection_set() 同样会触发该虚拟事件，且是**异步**到达的
+        # （调用后要跑一次事件循环才到）。而 _refresh_run_report_view 每次刷新都会
+        # selection_set("0") 定位首行 —— 若绑在选中事件上，每次刷新都会把用户正在看
+        # 的页签切走、并把日志筛到第 1 步。绑 ButtonRelease-1 与事件时序无关。
+        self.run_report_tree.bind("<ButtonRelease-1>", self._on_run_report_tree_click)
+        self.run_report_tree.tag_configure("success", foreground="#059669")
+        self.run_report_tree.tag_configure("failed", foreground="#dc2626")
+        self.run_report_tree.tag_configure("skipped", foreground="#d97706")
+
+        report_tree_scrollbar = wt_theme.create_modern_scrollbar(report_tree_wrap, orient=tk.VERTICAL, command=self.run_report_tree.yview)
+        report_tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        report_tree_h_scrollbar = wt_theme.create_modern_scrollbar(report_list_frame, orient=tk.HORIZONTAL, command=self.run_report_tree.xview)
+        report_tree_h_scrollbar.pack(fill=tk.X, pady=(6, 0))
+        self.run_report_tree.config(yscrollcommand=report_tree_scrollbar.set, xscrollcommand=report_tree_h_scrollbar.set)
+
+        self.run_report_detail_text = tk.Text(
+            report_detail_frame,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            font=("Consolas", 10),
+            bg=self.theme["panel_soft"],
+            fg=self.theme["text"],
+            relief=tk.FLAT,
+            padx=10,
+            pady=10,
+            insertbackground=self.theme["text"],
+        )
+        self.run_report_detail_text.pack(fill=tk.BOTH, expand=True)
+
+    def _refresh_api_entry_mode(self):
+        self.api_key_entry.config(show="" if self.show_api_key_var.get() else "*")
+
+    # ── 运行日志页：过滤条与渲染 ─────────────────────────────────────────────
+    def _build_log_filter_bar(self, parent):
+        """构建日志过滤条（级别 / 关键字 / 步骤）。
+
+        动机：一次运行上百步、近百行日志，若只能看尾部且无法按级别或步骤筛选，
+        定位「第一个出问题的步骤」就只能靠肉眼滚屏；而「运行报告」页虽然列出每步
+        结果，却与日志视图互不相通。过滤条把两者接上。
+        """
+        row = tk.Frame(parent, bg=self.theme["card"])
+        row.pack(fill=tk.X, pady=(0, 8))
+
+        label_font = ("Microsoft YaHei UI", 9)
+        entry_font = ("Consolas", 10)
+
+        def _label(text):
+            tk.Label(
+                row, text=text, bg=self.theme["card"], fg=self.theme["muted"], font=label_font
+            ).pack(side=tk.LEFT)
+
+        def _entry(variable, width):
+            widget = tk.Entry(
+                row,
+                textvariable=variable,
+                width=width,
+                font=entry_font,
+                relief=tk.FLAT,
+                bg=self.theme["panel_soft"],
+                fg=self.theme["text"],
+                insertbackground=self.theme["text"],
+            )
+            widget.pack(side=tk.LEFT, padx=(4, 12), ipady=3)
+            widget.bind("<Return>", lambda _event: self._apply_log_filter())
+            return widget
+
+        _label("级别")
+        self.log_level_var = tk.StringVar(value=wt_log_query.LEVEL_CHOICES[0][0])
+        self.log_level_combo = ttk.Combobox(
+            row,
+            textvariable=self.log_level_var,
+            values=[label for label, _value in wt_log_query.LEVEL_CHOICES],
+            state="readonly",
+            width=12,
+            font=label_font,
+        )
+        self.log_level_combo.pack(side=tk.LEFT, padx=(4, 12))
+        self.log_level_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self._apply_log_filter()
+        )
+
+        _label("关键字")
+        self.log_keyword_var = tk.StringVar(value="")
+        _entry(self.log_keyword_var, 16)
+
+        _label("步骤")
+        self.log_step_var = tk.StringVar(value="")
+        _entry(self.log_step_var, 22)
+
+        self._create_secondary_button(row, "应用筛选", self._apply_log_filter).pack(side=tk.LEFT)
+        self._create_secondary_button(row, "清除", self._clear_log_filter).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+
+        self.log_filter_status_var = tk.StringVar(value="未过滤 · 共 0 行")
+        tk.Label(
+            row,
+            textvariable=self.log_filter_status_var,
+            bg=self.theme["card"],
+            fg=self.theme["muted"],
+            font=label_font,
+        ).pack(side=tk.RIGHT)
+
+    def _build_log_filter(self):
+        """从界面控件读出当前过滤条件。"""
+        selected_label = self.log_level_var.get()
+        min_level = ""
+        for label, value in wt_log_query.LEVEL_CHOICES:
+            if label == selected_label:
+                min_level = value
+                break
+        return wt_log_query.LogFilter(
+            min_level=min_level or None,
+            keyword=self.log_keyword_var.get(),
+            step_id=self.log_step_var.get(),
+        )
+
+    def _apply_log_filter(self):
+        self._log_filter = self._build_log_filter()
+        self._render_log_view()
+
+    def _clear_log_filter(self):
+        self.log_level_var.set(wt_log_query.LEVEL_CHOICES[0][0])
+        self.log_keyword_var.set("")
+        self.log_step_var.set("")
+        self._log_filter = wt_log_query.LogFilter()
+        self._render_log_view()
+
+    def _filter_log_by_step(self, step_id):
+        """筛出指定步骤的日志，并切到「运行日志」页。
+
+        由 `_on_run_report_tree_click` 在**用户点击报告表格行**时调用；
+        程序化选中（刷新后定位首行）不会走到这里，以免把用户正在看的页签切走。
+        """
+        if not step_id:
+            return
+        self.log_step_var.set(str(step_id))
+        self._log_filter = self._build_log_filter()
+        self._render_log_view()
+        try:
+            self.report_notebook.select(self.log_tab)
+        except Exception:
+            pass
+
+    def _render_log_view(self):
+        """按当前过滤条件重渲染整个日志视图（切换筛选条件时调用）。"""
+        widget = getattr(self, "log_text", None)
+        if widget is None:
+            return
+        visible = [
+            (text, tag)
+            for text, tag in self._log_all_lines
+            if self._log_filter.matches(text)
+        ]
+        widget.config(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        for text, tag in visible:
+            widget.insert(tk.END, text + "\n", tag)
+        widget.config(state=tk.DISABLED)
+        widget.see(tk.END)
+        self._update_log_filter_status()
+
+    def _count_visible_log_lines(self):
+        widget = getattr(self, "log_text", None)
+        if widget is None:
+            return 0
+        try:
+            return max(0, int(widget.index("end-1c").split(".")[0]) - 1)
+        except Exception:
+            return 0
+
+    def _update_log_filter_status(self):
+        if not hasattr(self, "log_filter_status_var"):
+            return
+        self.log_filter_status_var.set(
+            self._log_filter.describe(
+                len(self._log_all_lines), self._count_visible_log_lines()
+            )
+        )
+
+    def _trim_log_view(self):
+        """头部裁剪：日志视图行数不超过 LOG_VIEW_MAX_LINES。"""
+        widget = getattr(self, "log_text", None)
+        if widget is None:
+            return
+        try:
+            row = int(widget.index("end-1c").split(".")[0] or 0)
+            excess = max(0, row - 1) - LOG_VIEW_MAX_LINES
+            if excess > 0:
+                widget.delete("1.0", "%d.0" % (excess + 1))
+        except Exception:
+            pass
+
+    def _append_log(self, message, tag="info"):
+        """追加一行日志：先入缓冲，再按当前过滤条件决定是否上屏。
+
+        缓冲独立于 Text 控件 —— 切换过滤条件时要能重新筛选**全量**行，
+        而不只是当前可见的那部分。
+        """
+        text = str(message).rstrip()
+        if not text:
+            return
+
+        buffer = self._log_all_lines
+        buffer.append((text, tag))
+        if len(buffer) > LOG_VIEW_MAX_LINES:
+            del buffer[: len(buffer) - LOG_VIEW_MAX_LINES]
+
+        widget = getattr(self, "log_text", None)
+        if widget is None:
+            return
+        if self._log_filter.matches(text):
+            widget.config(state=tk.NORMAL)
+            widget.insert(tk.END, text + "\n", tag)
+            self._trim_log_view()
+            widget.see(tk.END)
+            widget.config(state=tk.DISABLED)
+        self._update_log_filter_status()
+
+    def _log_block(self, title, lines):
+        self._append_log(f"========== {title} ==========", tag="system")
+        for line, tag in lines:
+            self._append_log(line, tag=tag)
+
+    def _tag_for_line(self, line):
+        # 同 _classify_line：统一委托 wt_logging，消除同系统内多套分类规则。
+        return wt_logging.tag_for_line(line)
+
+    def _load_recent_log(self, max_lines=300):
+        # 重新载入前清空缓冲，避免重复调用时旧行累积。
+        self._log_all_lines = []
+        if not os.path.exists(LOG_FILE):
+            self._append_log("尚未检测到历史运行日志。", tag="system")
+            return
+
+        # 载入行数由 15 提到 300：过滤条要能筛「一次运行的完整上下文」才有意义，
+        # 15 行连一个步骤都装不下。
+        lines = wt_log_query.read_log_lines(LOG_FILE, tail=max_lines)
+        self._append_log("已载入最近一次流程日志片段：", tag="system")
+        for line in lines:
+            self._append_log(line, tag=self._tag_for_line(line))
+
+    def _set_run_report_detail_text(self, text):
+        if not hasattr(self, "run_report_detail_text"):
+            return
+        self.run_report_detail_text.config(state=tk.NORMAL)
+        self.run_report_detail_text.delete("1.0", tk.END)
+        self.run_report_detail_text.insert("1.0", text)
+        self.run_report_detail_text.config(state=tk.DISABLED)
+
+    def _load_last_run_report(self):
+        payload, error = load_json_file(LAST_RUN_REPORT_FILE)
+        if error or not isinstance(payload, dict):
+            return None, error or "运行报告格式不正确"
+        return payload, None
+
+    def _refresh_run_report_view(self):
+        report, error = self._load_last_run_report()
+        self.current_run_report = report if isinstance(report, dict) else None
+        self.run_report_step_items = []
+        if hasattr(self, "run_report_tree"):
+            self.run_report_tree.delete(*self.run_report_tree.get_children())
+        if not report:
+            self.run_report_summary_var.set("运行报告：尚未生成")
+            self.run_report_meta_var.set(f"未找到最近一次运行报告：{LAST_RUN_REPORT_FILE}" if error else "最近一次流程执行后，会在这里展示结构化运行结果。")
+            self._set_run_report_detail_text("当前还没有可展示的结构化运行报告。")
+            return
+
+        summary = report.get("summary", {}) if isinstance(report.get("summary"), dict) else {}
+        base_summary = (
+            "运行状态：{status} | 请求 {requested} 步 | 实际记录 {executed} 步 | 成功 {success} | 失败 {failed} | 跳过 {skipped} | fallback {fallback}".format(
+                status=report.get("status", "unknown"),
+                requested=summary.get("requestedCount", len(report.get("stepsRequested", []) or [])),
+                executed=summary.get("executedCount", len(report.get("stepResults", []) or [])),
+                success=summary.get("successCount", 0),
+                failed=summary.get("failedCount", 0),
+                skipped=summary.get("skippedCount", 0),
+                fallback=summary.get("fallbackCount", 0),
+            )
+        )
+        # MUP 数据落盘铁证：展示运行前后数据文件变化
+        mup_files = report.get("mupDataFiles") if isinstance(report.get("mupDataFiles"), dict) else None
+        if mup_files:
+            parts = []
+            new_map = mup_files.get("new", {}) or {}
+            _dir_label = {"terrain": "地形", "timeseries": "气象", "roughness": "粗糙度", "results": "计算", "synthesis": "合成"}
+            for key, files in sorted(new_map.items()):
+                if files:
+                    parts.append("{label}新增{count}个".format(label=_dir_label.get(key, key), count=len(files)))
+            if parts:
+                base_summary += " | 数据落盘：{}".format("、".join(parts))
+            else:
+                base_summary += " | 数据落盘：未检测到新增文件"
+        self.run_report_summary_var.set(base_summary)
+        _mast_name = ""
+        _report_rc = report.get("runtimeConfig")
+        if isinstance(_report_rc, dict):
+            _mast_name = str(_report_rc.get("mastName", "") or "").strip()
+        self.run_report_meta_var.set(
+            "开始：{started} | 结束：{ended} | 总耗时：{elapsed:.3f} 秒 | 报告：{path}".format(
+                started=report.get("startedAt", "") or "-",
+                ended=report.get("endedAt", "") or "-",
+                elapsed=float(summary.get("totalElapsedSeconds", 0.0) or 0.0),
+                path=report.get("reportPath", "") or LAST_RUN_REPORT_FILE,
+            )
+            + (f" | 测风塔：{_mast_name}" if _mast_name else "")
+        )
+
+        step_results = report.get("stepResults", []) if isinstance(report.get("stepResults"), list) else []
+        for index, item in enumerate(step_results, start=1):
+            if not isinstance(item, dict):
+                continue
+            self.run_report_step_items.append(item)
+            self.run_report_tree.insert(
+                "",
+                tk.END,
+                iid=str(index - 1),
+                values=(
+                    index,
+                    str(item.get("stepName", "")).strip() or str(item.get("stepId", "")).strip(),
+                    str(item.get("status", "")).strip() or "-",
+                    f"{float(item.get('elapsedSeconds', 0.0) or 0.0):.3f}",
+                    str(item.get("strategy", "")).strip() or "-",
+                ),
+                tags=(str(item.get("status", "")).strip(),),
+            )
+        if self.run_report_step_items:
+            self.run_report_tree.selection_set("0")
+            self._on_run_report_step_select()
+        else:
+            self._set_run_report_detail_text("当前报告没有记录任何步骤结果。")
+
+    def _on_run_report_step_select(self, _event=None):
+        if not hasattr(self, "run_report_tree"):
+            return
+        selected = self.run_report_tree.selection()
+        if not selected:
+            self._set_run_report_detail_text("请选择一条步骤结果查看详情。")
+            return
+        try:
+            item = self.run_report_step_items[int(selected[-1])]
+        except Exception:
+            self._set_run_report_detail_text("当前步骤详情读取失败。")
+            return
+        detail_payload = {
+            "stepId": item.get("stepId", ""),
+            "stepName": item.get("stepName", ""),
+            "status": item.get("status", ""),
+            "actionType": item.get("actionType", ""),
+            "strategy": item.get("strategy", ""),
+            "elapsedSeconds": item.get("elapsedSeconds", 0.0),
+            "error": item.get("error", ""),
+            "extra": item.get("extra", {}),
+        }
+        self._set_run_report_detail_text(json.dumps(detail_payload, ensure_ascii=False, indent=2))
+
+    def _run_report_item_by_iid(self, iid):
+        """按 Treeview iid 取回步骤结果条目（插入时 iid = 列表下标）。"""
+        try:
+            index = int(iid)
+        except (TypeError, ValueError):
+            return None
+        if 0 <= index < len(self.run_report_step_items):
+            return self.run_report_step_items[index]
+        return None
+
+    def _on_run_report_tree_click(self, event=None):
+        """用户点击报告表格某行 → 把「运行日志」页筛到该步骤并切过去。
+
+        这正是「回溯到 UI 首次未按预期变化的那一步」的操作路径 ——
+        改造前两个页签互不相通，只能靠肉眼在几百行日志里找。
+        """
+        if not hasattr(self, "run_report_tree"):
+            return
+        if event is not None:
+            try:
+                if not self.run_report_tree.identify_row(event.y):
+                    return  # 点在空白区：不改动筛选，避免误触发
+            except Exception:
+                return
+        selected = self.run_report_tree.selection()
+        if not selected:
+            return
+        item = self._run_report_item_by_iid(selected[-1])
+        if not item:
+            return
+        self._filter_log_by_step(item.get("stepId", ""))
+
+    def open_last_run_report(self):
+        if not os.path.exists(LAST_RUN_REPORT_FILE):
+            messagebox.showinfo("提示", "当前还没有生成运行报告。")
+            return
+        os.startfile(LAST_RUN_REPORT_FILE)
+
+    def open_run_report_dir(self):
+        os.makedirs(RUN_REPORT_DIR, exist_ok=True)
+        os.startfile(RUN_REPORT_DIR)
+
+    def _load_run_log_analyzer(self):
+        """惰性加载 tools/analyze_run_logs.py（只读分析工具），并缓存模块。"""
+        module = getattr(self, "_run_log_analyzer_module", None)
+        if module is not None:
+            return module
+        tool_path = os.path.join(BASE_DIR, "tools", "analyze_run_logs.py")
+        spec = importlib.util.spec_from_file_location("wt_analyze_run_logs", tool_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self._run_log_analyzer_module = module
+        return module
+
+    def _render_run_log_analysis(self, print_callable, analysis):
+        """把分析工具的文本输出捕获后填入运行报告详情面板。"""
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            print_callable(analysis)
+        self._set_run_report_detail_text(buffer.getvalue())
+
+    def analyze_run_logs_last(self):
+        """诊断最近一次运行：首因定位 + 软成功 + 耗时热点，结果显示在报告面板。"""
+        try:
+            analyzer = self._load_run_log_analyzer()
+            report = analyzer.resolve_single_report("last", RUN_REPORT_DIR)
+            if report is None:
+                self._append_log("未找到可分析的运行报告，先跑一次自动化流程后再试。", tag="warning")
+                self._set_run_report_detail_text("未找到可分析的运行报告。先跑一次自动化流程后再试。")
+                return
+            analysis = analyzer.build_single_analysis(report)
+            self._render_run_log_analysis(analyzer.print_single_analysis, analysis)
+            root_cause = analysis.get("rootCause")
+            if root_cause:
+                self._append_log(
+                    f"运行日志分析(最近一次)：首因 {root_cause.get('stepId', '')} "
+                    f"{root_cause.get('stepName', '')}",
+                    tag="error",
+                )
+            else:
+                self._append_log(
+                    f"运行日志分析(最近一次)：{analysis.get('runId', '')} 无失败步 ✅",
+                    tag="success",
+                )
+        except Exception as exc:
+            self._append_log(f"分析运行日志失败：{exc}", tag="error")
+
+    def analyze_run_logs_aggregate(self):
+        """聚合最近若干次运行：失败频次 / 错误签名聚类 / fallback 高频步 / 慢步。"""
+        try:
+            analyzer = self._load_run_log_analyzer()
+            paths = analyzer.iter_report_paths(RUN_REPORT_DIR)
+            if not paths:
+                self._append_log("报告目录为空，暂无可聚合的运行日志。", tag="warning")
+                self._set_run_report_detail_text("报告目录为空。先跑几次自动化流程后再试。")
+                return
+            recent_paths = paths[-40:]
+            reports = [r for r in (analyzer.load_report(p) for p in recent_paths) if r is not None]
+            analysis = analyzer.build_aggregate_analysis(reports, top_n=10)
+            self._render_run_log_analysis(analyzer.print_aggregate_analysis, analysis)
+            self._append_log(
+                f"运行日志分析(汇总)：纳入最近 {analysis.get('runCount', 0)} 次运行",
+                tag="system",
+            )
+        except Exception as exc:
+            self._append_log(f"分析运行日志失败：{exc}", tag="error")
+
+    def _get_run_report_for_export(self):
+        report = self.current_run_report if isinstance(getattr(self, "current_run_report", None), dict) else None
+        if report:
+            return report
+        report, _error = self._load_last_run_report()
+        return report if isinstance(report, dict) else None
+
+    def export_run_report_steps_excel(self):
+        report = self._get_run_report_for_export()
+        if not report:
+            messagebox.showinfo("提示", "当前没有可导出的运行报告。")
+            return
+        step_results = report.get("stepResults", []) if isinstance(report.get("stepResults"), list) else []
+        if not step_results:
+            messagebox.showinfo("提示", "当前运行报告没有步骤结果可导出。")
+            return
+        default_name = f"{str(report.get('runId', 'wt_run')).strip() or 'wt_run'}_步骤结果.xlsx"
+        target_path = filedialog.asksaveasfilename(
+            title="导出步骤结果 Excel",
+            initialdir=RUN_REPORT_DIR,
+            initialfile=default_name,
+            defaultextension=".xlsx",
+            filetypes=[("Excel 文件", "*.xlsx")],
+        )
+        if not target_path:
+            return
+        try:
+            from openpyxl import Workbook
+        except Exception:
+            messagebox.showerror("导出失败", "当前环境缺少 openpyxl，无法导出 Excel。请先执行: py -3.11 -m pip install openpyxl")
+            return
+        try:
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "步骤结果"
+            worksheet.append(["编号", "步骤ID", "步骤", "结果", "耗时(秒)", "策略"])
+            for index, item in enumerate(step_results, start=1):
+                if not isinstance(item, dict):
+                    continue
+                worksheet.append([
+                    index,
+                    str(item.get("stepId", "")).strip(),
+                    str(item.get("stepName", "")).strip() or str(item.get("stepId", "")).strip(),
+                    str(item.get("status", "")).strip() or "-",
+                    float(item.get("elapsedSeconds", 0.0) or 0.0),
+                    str(item.get("strategy", "")).strip() or "-",
+                ])
+            workbook.save(target_path)
+        except Exception as exc:
+            messagebox.showerror("导出失败", f"导出步骤结果 Excel 失败：\n{exc}")
+            self._append_log(f"导出步骤结果 Excel 失败：{exc}", tag="error")
+            return
+        self._append_log(f"已导出步骤结果 Excel：{target_path}", tag="success")
+        self.status_var.set("状态：步骤结果 Excel 导出完成")
+        messagebox.showinfo("导出完成", f"步骤结果已导出到：\n{target_path}")
+
+    def _get_config_path(self):
+        return self.ui_tars_config_path_var.get().strip()
+
+    def _get_flow_definition_path(self):
+        return self.flow_definition_path_var.get().strip() or FLOW_DEFINITION_FILE
+
+    def _get_effective_flow_definition_path(self):
+        _payload, effective_path, _source_definition_path = load_effective_flow_payload(self._get_flow_definition_path())
+        return effective_path
+
+    def _get_repo_root(self):
+        return self.ui_tars_repo_var.get().strip()
+
+    def _get_model_config_values(self):
+        return {
+            "apiKey": self.api_key_var.get().strip(),
+            "model": self.model_name_var.get().strip(),
+            "baseURL": self.base_url_var.get().strip(),
+            "useResponsesApi": bool(self.use_responses_api_var.get()),
+            "repoRoot": self._get_repo_root(),
+            "configPath": self._get_config_path(),
+        }
+
+    def _normalize_recent_models(self, raw_items):
+        normalized = []
+        if not isinstance(raw_items, list):
+            return normalized
+
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            normalized.append(
+                {
+                    "apiKey": str(item.get("apiKey", "")).strip(),
+                    "model": str(item.get("model", "")).strip(),
+                    "baseURL": str(item.get("baseURL", "")).strip(),
+                    "useResponsesApi": bool(item.get("useResponsesApi", False)),
+                    "repoRoot": str(item.get("repoRoot", "")).strip(),
+                    "configPath": str(item.get("configPath", "")).strip(),
+                    "lastUsedAt": str(item.get("lastUsedAt", "")).strip(),
+                }
+            )
+        return normalized
+
+    def _build_recent_model_label(self, item):
+        model = item.get("model") or "未命名模型"
+        base_url = item.get("baseURL") or "未配置BaseURL"
+        return f"{model} | {base_url}"
+
+    def _find_recent_model_match_index(self, values):
+        for index, item in enumerate(self.recent_models):
+            if (
+                item.get("model", "") == values.get("model", "")
+                and item.get("baseURL", "") == values.get("baseURL", "")
+                and item.get("repoRoot", "") == values.get("repoRoot", "")
+                and item.get("configPath", "") == values.get("configPath", "")
+            ):
+                return index
+        return None
+
+    def _refresh_model_history_options(self, select_current=False):
+        self.model_history_values = [self._build_recent_model_label(item) for item in self.recent_models]
+        self.model_history_combo["values"] = self.model_history_values
+
+        if not self.model_history_values:
+            self.model_history_var.set("")
+            return
+
+        if select_current:
+            current_values = self._get_model_config_values()
+            match_index = self._find_recent_model_match_index(current_values)
+            if match_index is not None:
+                self.model_history_var.set(self.model_history_values[match_index])
+                return
+
+        current_label = self.model_history_var.get().strip()
+        if current_label in self.model_history_values:
+            self.model_history_var.set(current_label)
+        else:
+            self.model_history_var.set(self.model_history_values[0])
+
+    def _add_current_config_to_recent_models(self):
+        values = self._get_model_config_values()
+        if not values["model"]:
+            return
+
+        record = {
+            "apiKey": values["apiKey"],
+            "model": values["model"],
+            "baseURL": values["baseURL"],
+            "useResponsesApi": values["useResponsesApi"],
+            "repoRoot": values["repoRoot"],
+            "configPath": values["configPath"],
+            "lastUsedAt": datetime.now().isoformat(timespec="seconds"),
+        }
+
+        deduped = [record]
+        for item in self.recent_models:
+            if (
+                item.get("model", "") == record["model"]
+                and item.get("baseURL", "") == record["baseURL"]
+                and item.get("repoRoot", "") == record["repoRoot"]
+                and item.get("configPath", "") == record["configPath"]
+            ):
+                continue
+            deduped.append(item)
+
+        self.recent_models = deduped[:MAX_RECENT_MODELS]
+        self._refresh_model_history_options(select_current=True)
+
+    def _apply_recent_model_record(self, item):
+        self.api_key_var.set(item.get("apiKey", ""))
+        self.model_name_var.set(item.get("model", ""))
+        self.base_url_var.set(item.get("baseURL", ""))
+        self.use_responses_api_var.set(bool(item.get("useResponsesApi", False)))
+        self.ui_tars_repo_var.set(item.get("repoRoot", "") or self.ui_tars_repo_var.get())
+        self.ui_tars_config_path_var.set(item.get("configPath", "") or self.ui_tars_config_path_var.get())
+        self._apply_model_env()
+        self._refresh_config_summary()
+
+    def _on_recent_model_selected(self, _event=None):
+        selected_label = self.model_history_var.get().strip()
+        if not selected_label or selected_label not in self.model_history_values:
+            return
+
+        selected_index = self.model_history_values.index(selected_label)
+        selected_item = self.recent_models[selected_index]
+        self._apply_recent_model_record(selected_item)
+        self._append_log(f"已切换到最近使用模型：{selected_item.get('model', '未命名模型')}", tag="system")
+        self.status_var.set("状态：已切换最近使用模型")
+        self.current_step_var.set("当前步骤：模型参数已从历史记录回填")
+
+    def _on_ui_scale_changed(self):
+        """界面缩放变更：写入共享配置并即时应用到主窗口。"""
+        try:
+            value = wt_dpi.label_to_scale(self.ui_scale_var.get())
+            wt_dpi.apply_scale(self.root, value, 1320, 860)
+        except Exception as exc:
+            self._append_log(f"应用界面缩放失败：{exc}", tag="warning")
+
+    def _save_launcher_state(self):
+        values = self._get_model_config_values()
+        self._add_current_config_to_recent_models()
+        simple_flows = {}
+        if hasattr(self, "simple_section_vars"):
+            for sec in self.SIMPLE_SECTIONS:
+                key = sec["key"]
+                path = self.simple_section_vars.get(key, {}).get("path", "")
+                if path:
+                    simple_flows[key] = path
+        save_json_file(
+            LAUNCHER_STATE_FILE,
+            {
+                "apiKey": values["apiKey"],
+                "model": values["model"],
+                "baseURL": values["baseURL"],
+                "useResponsesApi": values["useResponsesApi"],
+                "repoRoot": values["repoRoot"],
+                "configPath": values["configPath"],
+                "enableAiIntervention": bool(self.enable_ai_intervention_var.get()),
+                "templateAutoUpdate": bool(self.template_auto_update_var.get()),
+                "flowDefinitionPath": self._get_flow_definition_path(),
+                "stepOrderByFlowPath": self.step_order_by_flow_path,
+                "recentModels": self.recent_models,
+                "simpleModeFlows": simple_flows,
+                "simpleModeEnabled": self._simple_enabled_state() if hasattr(self, "simple_section_vars") else {},
+                "simpleModeRemote": bool(getattr(self, "simple_remote_var", tk.BooleanVar(value=False)).get()),
+                "projectWorkDir": getattr(self, "project_work_dir", ""),
+                "projectParams": getattr(self, "project_params", {}),
+                "cpVersionOptions": getattr(self, "cp_version_options", []),
+                "turbineTypeOptions": getattr(self, "turbine_type_options", []),
+                "serverMonitorUrl": getattr(self, "server_monitor_url", SERVER_MONITOR_DEFAULT_URL),
+                "taskQueueUrl": getattr(self, "task_queue_url", TASK_SERVER_DEFAULT_URL),
+                "taskQueueUser": getattr(self, "task_queue_user", ""),
+                "taskQueueToken": getattr(self, "task_queue_token", ""),
+                "uiMode": self.ui_mode_var.get() if hasattr(self, "ui_mode_var") else "advanced",
+                "updatedAt": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+
+    def _apply_model_env(self, env=None):
+        target_env = env if env is not None else os.environ
+        values = self._get_model_config_values()
+        target_env["UI_TARS_REPO_ROOT"] = values["repoRoot"]
+        target_env["UI_TARS_CLI_CONFIG"] = values["configPath"]
+        target_env["MODEL_NAME"] = values["model"]
+        target_env["UI_TARS_MODEL"] = values["model"]
+        target_env["UI_TARS_VLM_BASE_URL"] = values["baseURL"]
+        target_env["UI_TARS_USE_RESPONSES_API"] = "true" if values["useResponsesApi"] else "false"
+        target_env["WT_ENABLE_AI_INTERVENTION"] = "true" if self.enable_ai_intervention_var.get() else "false"
+        target_env["WT_TEMPLATE_AUTO_UPDATE"] = "true" if self.template_auto_update_var.get() else "false"
+        target_env["WT_AI_INTERVENTION_LOG_LINES"] = "10"
+        if values["apiKey"]:
+            target_env["VOLC_API_KEY"] = values["apiKey"]
+            target_env["UI_TARS_API_KEY"] = values["apiKey"]
+        return target_env
+
+    def _set_running_state(self, running):
+        self.start_button.config(state=tk.DISABLED if running else tk.NORMAL)
+        self.stop_button.config(state=tk.NORMAL if running else tk.DISABLED)
+
+    def _mask_secret(self, value):
+        if not value:
+            return "未配置"
+        if len(value) <= 8:
+            return "*" * len(value)
+        return value[:4] + "*" * max(4, len(value) - 8) + value[-4:]
+
+    def _refresh_config_summary(self):
+        values = self._get_model_config_values()
+        target_flow_definition_path = self._get_flow_definition_path()
+        effective_flow_definition_path = self._get_effective_flow_definition_path()
+        flow_definition_lines = [f"链路文件：{target_flow_definition_path}"]
+        if effective_flow_definition_path != target_flow_definition_path:
+            flow_definition_lines.append(f"运行读取：{effective_flow_definition_path}")
+        flow_definition_lines.append(f"流程包仓库：{FLOW_PACKAGE_REGISTRY_FILE}")
+        summary = (
+            "\n".join(flow_definition_lines)
+            + "\n"
+            f"程序路径：{'已配置' if DEFAULT_GM_EXE else '未配置'}\n"
+            f"UI-TARS仓库：{values['repoRoot'] or '未配置'}\n"
+            f"配置文件：{values['configPath'] or '未配置'}\n"
+            f"模型：{values['model'] or '未配置'}\n"
+            f"BaseURL：{values['baseURL'] or '未配置'}\n"
+            f"API Key：{self._mask_secret(values['apiKey'])}\n"
+            f"失败后 AI 介入：{'已开启' if self.enable_ai_intervention_var.get() else '未开启'}\n"
+            f"自动更新模板：{'已开启' if self.template_auto_update_var.get() else '未开启'}"
+        )
+        self.config_summary_var.set(summary)
+
+    def _collect_template_category_rows(self):
+        rows = []
+        category_counts = {}
+        if os.path.exists(TEMPLATE_INDEX_FILE):
+            payload, error = load_json_file(TEMPLATE_INDEX_FILE)
+            if not error and isinstance(payload, dict):
+                categories = payload.get("categories", [])
+                for item in categories:
+                    if not isinstance(item, dict):
+                        continue
+                    category_id = str(item.get("id", "")).strip()
+                    if not category_id:
+                        continue
+                    try:
+                        count = int(item.get("count", 0))
+                    except Exception:
+                        count = 0
+                    category_counts[category_id] = max(count, 0)
+        if os.path.isdir(TEMPLATE_ROOT_DIR):
+            for entry in os.listdir(TEMPLATE_ROOT_DIR):
+                entry_path = os.path.join(TEMPLATE_ROOT_DIR, entry)
+                if not os.path.isdir(entry_path):
+                    continue
+                category_counts.setdefault(entry, 0)
+        for category_id in sorted(category_counts.keys()):
+            rows.append(
+                {
+                    "id": category_id,
+                    "count": category_counts.get(category_id, 0),
+                    "path": os.path.join(TEMPLATE_ROOT_DIR, category_id),
+                }
+            )
+        return rows
+
+    def _refresh_template_category_list(self):
+        self.template_categories = self._collect_template_category_rows()
+        if not hasattr(self, "template_category_listbox"):
+            return
+        listbox = self.template_category_listbox
+        listbox.delete(0, tk.END)
+        for item in self.template_categories:
+            listbox.insert(tk.END, f"{item['id']} ({item['count']})")
+        if self.template_categories:
+            listbox.selection_set(0)
+            listbox.see(0)
+            self._update_template_category_detail(0)
+        else:
+            self.template_category_var.set("当前没有可展示的模板分类。")
+
+    def _update_template_category_detail(self, index):
+        if index < 0 or index >= len(self.template_categories):
+            self.template_category_var.set("当前没有可展示的模板分类。")
+            return
+        item = self.template_categories[index]
+        path_exists = os.path.isdir(item["path"])
+        self.template_category_var.set(
+            f"当前分类：{item['id']}\n"
+            f"模板数量：{item['count']}\n"
+            f"目录状态：{'已存在' if path_exists else '索引存在但目录缺失'}\n"
+            f"目录路径：{item['path']}"
+        )
+
+    def _on_template_category_selected(self, _event=None):
+        if not hasattr(self, "template_category_listbox"):
+            return
+        selected = self.template_category_listbox.curselection()
+        if not selected:
+            self._update_template_category_detail(-1)
+            return
+        self._update_template_category_detail(selected[-1])
+
+    def _refresh_template_library_summary(self):
+        if not os.path.isdir(TEMPLATE_ROOT_DIR):
+            self.template_summary_var.set("模板库概览：模板根目录尚未创建")
+            self.template_categories = []
+            if hasattr(self, "template_category_listbox"):
+                self.template_category_listbox.delete(0, tk.END)
+            self.template_category_var.set("当前没有可展示的模板分类。")
+            return
+
+        categories = sorted(
+            entry for entry in os.listdir(TEMPLATE_ROOT_DIR) if os.path.isdir(os.path.join(TEMPLATE_ROOT_DIR, entry))
+        )
+        if os.path.exists(TEMPLATE_INDEX_FILE):
+            payload, error = load_json_file(TEMPLATE_INDEX_FILE)
+            if error or not isinstance(payload, dict):
+                self.template_summary_var.set(
+                    f"模板库概览：已发现模板目录 {len(categories)} 个，但索引读取失败\n"
+                    f"根目录：{TEMPLATE_ROOT_DIR}"
+                )
+                return
+            meta = payload.get("meta", {}) if isinstance(payload.get("meta", {}), dict) else {}
+            category_rows = payload.get("categories", []) if isinstance(payload.get("categories", []), list) else []
+            category_text = ", ".join(
+                f"{str(item.get('id', '')).strip()}:{int(item.get('count', 0))}"
+                for item in category_rows[:6]
+                if isinstance(item, dict) and str(item.get("id", "")).strip()
+            ) or "暂无"
+            suffix = f" 等{len(category_rows)}类" if len(category_rows) > 6 else ""
+            self.template_summary_var.set(
+                f"模板总数：{meta.get('templateCount', 0)}\n"
+                f"分类数量：{meta.get('categoryCount', len(category_rows))}\n"
+                f"分类分布：{category_text}{suffix}\n"
+                f"根目录：{TEMPLATE_ROOT_DIR}"
+            )
+            self._refresh_template_category_list()
+            return
+
+        self.template_summary_var.set(
+            f"模板库概览：索引尚未建立\n"
+            f"已有分类目录：{', '.join(categories[:6]) if categories else '暂无'}\n"
+            f"根目录：{TEMPLATE_ROOT_DIR}"
+        )
+        self._refresh_template_category_list()
+
+    def refresh_template_library_summary_action(self):
+        self._refresh_template_library_summary()
+        self._append_log("已刷新模板库概览。", tag="system")
+        self.status_var.set("状态：模板库概览已刷新")
+        self.current_step_var.set("当前步骤：模板分类与索引统计已更新")
+
+    def open_selected_template_category(self):
+        if not self.template_categories:
+            messagebox.showinfo("提示", "当前没有可打开的模板分类。")
+            return
+        selected_index = 0
+        if hasattr(self, "template_category_listbox"):
+            selected = self.template_category_listbox.curselection()
+            if selected:
+                selected_index = selected[-1]
+        selected_index = min(max(selected_index, 0), len(self.template_categories) - 1)
+        target = self.template_categories[selected_index]
+        os.makedirs(target["path"], exist_ok=True)
+        os.startfile(target["path"])
+        self._append_log(f"已打开模板分类目录：{target['id']}", tag="system")
+
+    def reload_model_config(self):
+        config_path = self._get_config_path()
+        config_data, error = load_json_file(config_path)
+        if error:
+            messagebox.showerror("读取失败", error)
+            self._append_log(error, tag="error")
+            return
+
+        self.api_key_var.set(config_data.get("apiKey", ""))
+        self.model_name_var.set(config_data.get("model", "") or DEFAULT_MODEL_NAME)
+        self.base_url_var.set(config_data.get("baseURL", "") or DEFAULT_BASE_URL)
+        self.use_responses_api_var.set(bool(config_data.get("useResponsesApi", False)))
+        self._apply_model_env()
+        self._save_launcher_state()
+        self._refresh_config_summary()
+        self._append_log(f"已从配置文件重新加载模型参数：{config_path}", tag="success")
+
+    def save_model_config(self):
+        values = self._get_model_config_values()
+        config_path = values["configPath"]
+        if not config_path:
+            messagebox.showerror("保存失败", "请先填写 UI-TARS 配置文件路径。")
+            return
+
+        try:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            save_json_file(
+                config_path,
+                {
+                    "baseURL": values["baseURL"],
+                    "apiKey": values["apiKey"],
+                    "model": values["model"],
+                    "useResponsesApi": values["useResponsesApi"],
+                },
+            )
+        except Exception as exc:
+            messagebox.showerror("保存失败", f"写入配置文件失败：\n{exc}")
+            return
+
+        self._apply_model_env()
+        self._save_launcher_state()
+        self._refresh_config_summary()
+        self._append_log(f"已保存模型配置到：{config_path}", tag="success")
+        self.status_var.set("状态：模型配置已保存")
+        self.current_step_var.set("当前步骤：模型配置已更新")
+
+    def start_automation(self):
+        self._launch_automation([], banner="========== 启动新的自动化流程 ==========")
+
+    def _absolutize_param_table(self, flow_path, payload):
+        """将 payload 中 paramTable 相对路径基于原流程文件目录转为绝对路径。
+
+        子进程按 FLOW_DEFINITION_FILE 所在目录解析相对 paramTable；Simple 模式会把
+        流程写到 workspace/ 临时文件，导致相对 paramTable 在临时文件目录下找不到
+        （如 param_table_发送综合计算.xlsx 实际在 flow_packages/）。写临时文件前调用。
+        """
+        if not isinstance(payload, dict):
+            return payload
+        param = str(payload.get("paramTable", "") or "").strip()
+        if param and not os.path.isabs(param):
+            abs_param = os.path.normpath(
+                os.path.join(os.path.dirname(os.path.abspath(flow_path or "")), param)
+            )
+            if os.path.isfile(abs_param):
+                payload["paramTable"] = abs_param
+        return payload
+
+    def _write_project_tmp_flow(self, flow_path, text_overrides, path_prefix_overrides,
+                                absolutize_param_table=True,
+                                tmp_name="flow_definition_project_tmp.json"):
+        """将项目解析覆盖应用到流程 payload，写临时流程文件供子进程读取；原文件不动。
+
+        absolutize_param_table：本地运行传 True（paramTable 转绝对路径，避免临时文件
+        所在目录解析不到相对参数表）；远程提交传 False（保留相对路径——上传到服务器
+        后，worker 按服务器端流程文件所在目录解析，与服务器 flow_packages 资产对齐）。
+        """
+        try:
+            payload, _err = load_json_file(flow_path)
+            if not isinstance(payload, dict):
+                return None
+            new_payload = wt_project_workdir_parser.apply_overrides_to_payload(
+                payload, text_overrides, path_prefix_overrides
+            )
+            if absolutize_param_table:
+                self._absolutize_param_table(flow_path, new_payload)
+            tmp_dir = os.path.join(BASE_DIR, "workspace")
+            os.makedirs(tmp_dir, exist_ok=True)
+            tmp_path = os.path.join(tmp_dir, tmp_name)
+            save_json_file(tmp_path, new_payload)
+            return tmp_path
+        except Exception as exc:
+            self._append_log("写入临时流程文件失败，按原流程运行：{}".format(exc), tag="warning")
+            return None
+
+    def _write_project_tmp_flow_for_mast(self, flow_path, text_overrides, path_prefix_overrides, mast_name,
+                                         absolutize_param_table=True):
+        """多塔：按 mastName 写独立临时文件，避免覆盖。"""
+        try:
+            payload, _err = load_json_file(flow_path)
+            if not isinstance(payload, dict):
+                return None
+            new_payload = wt_project_workdir_parser.apply_overrides_to_payload(
+                payload, text_overrides, path_prefix_overrides
+            )
+            if absolutize_param_table:
+                self._absolutize_param_table(flow_path, new_payload)
+            tmp_dir = os.path.join(BASE_DIR, "workspace")
+            os.makedirs(tmp_dir, exist_ok=True)
+            safe = "".join(c if c.isalnum() else "_" for c in str(mast_name or "mast"))
+            tmp_path = os.path.join(tmp_dir, f"flow_definition_project_tmp_{safe}.json")
+            save_json_file(tmp_path, new_payload)
+            return tmp_path
+        except Exception as exc:
+            self._append_log(f"写入多塔临时流程失败 mast={mast_name}: {exc}", tag="warning")
+            return None
+
+    def _prepare_remote_sections(self, sections):
+        """远程提交前的板块准备：对齐本地 Simple 运行的项目解析注入。
+
+        - 指定项目工作文件夹时，逐板块解析项目并应用覆盖（文本/路径前缀），写远程
+          临时流程文件（paramTable 保持相对路径——上传后由服务器 worker 按
+          flow_packages 目录解析）；未指定项目文件夹时原样返回（行为与旧版一致）。
+        - 逐塔录入类流程（如新建气象数据）按 CFT 全量塔展开为多个板块任务
+          （towerMode=single），与本地多塔串行队列语义一致；缺数据塔跳过。
+        - 每个板块附带 runtimeConfig（业务参数/塔信息），随任务提交、由服务端
+          worker 启动时注入，使远程执行拿到与本地相同的项目参数。
+        """
+        project_work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+        if not project_work_dir or not os.path.isdir(project_work_dir):
+            return sections
+        project_params = dict(getattr(self, "project_params", {}) or {})
+        prepared = []
+        for sec in sections or []:
+            flow_path = str(sec.get("path") or "").strip()
+            if not flow_path or not os.path.isfile(flow_path):
+                prepared.append(sec)
+                continue
+            try:
+                prepared.extend(
+                    self._prepare_remote_section(sec, flow_path, project_work_dir, project_params)
+                )
+            except Exception as exc:
+                self._append_log(
+                    "板块 {} 项目解析失败，按原流程提交：{}".format(sec.get("title"), exc),
+                    tag="warning",
+                )
+                prepared.append(sec)
+        return prepared
+
+    def _prepare_remote_section(self, sec, flow_path, project_work_dir, project_params):
+        """单个板块的远程准备；返回板块列表（多塔展开时多于一个）。"""
+        payload, _err = load_json_file(flow_path)
+        payload_text = json.dumps(payload, ensure_ascii=False) if isinstance(payload, dict) else ""
+        payload_rc = (payload or {}).get("runtimeConfig") if isinstance(payload, dict) else {}
+        is_meteo_flow = (
+            "气象" in flow_path
+            or "气象" in payload_text
+            or (isinstance(payload_rc, dict) and bool(payload_rc.get("multiMast")))
+        )
+        is_meteo_entry_flow = (
+            "新建气象数据" in flow_path
+            or "气象数据录入" in flow_path
+            or "气象数据录入" in payload_text
+        )
+        try:
+            mast_entries = wt_project_workdir_parser.list_mast_entries(project_work_dir)
+        except Exception:
+            mast_entries = []
+        want_mast = str((project_params or {}).get("mastId", "") or "").strip()
+        mast_names = {str(e.get("mastName", "") or "").strip() for e in mast_entries}
+        want_single = (not is_meteo_entry_flow) and want_mast in mast_names
+        if is_meteo_flow and len(mast_entries) > 1 and not want_single:
+            if is_meteo_entry_flow and want_mast in mast_names:
+                self._append_log(
+                    "气象数据录入流程：忽略 mastId={} 的单塔选择，按 CFT 全量 {} 座测风塔逐塔提交".format(
+                        want_mast, len(mast_entries)
+                    ),
+                    tag="system",
+                )
+            mast_parsed_list = wt_project_workdir_parser.parse_all_masts(
+                project_work_dir, project_params=project_params, flow_path=flow_path
+            ) or []
+            if len(mast_parsed_list) > 1:
+                return self._expand_remote_mast_sections(sec, flow_path, mast_parsed_list)
+        # 单塔/默认塔：与本地 _launch_automation 单塔分支同构
+        parsed = wt_project_workdir_parser.parse_project_work_dir(
+            project_work_dir, project_params=project_params, flow_path=flow_path
+        )
+        runtime_config = load_flow_runtime_config(flow_path)
+        text_ovr, path_ovr = {}, {}
+        if parsed:
+            parsed_rc = parsed.get("runtime_config") or {}
+            if isinstance(parsed_rc, dict):
+                runtime_config.update(parsed_rc)
+            text_ovr = parsed.get("text_overrides") or {}
+            path_ovr = parsed.get("path_prefix_overrides") or {}
+        self._apply_tower_mode(runtime_config, project_work_dir)
+        out = dict(sec)
+        out["name"] = os.path.basename(flow_path)
+        if text_ovr or path_ovr:
+            safe_key = "".join(
+                c if c.isalnum() else "_"
+                for c in str(sec.get("key") or sec.get("title") or "sec")
+            )
+            tmp_path = self._write_project_tmp_flow(
+                flow_path, text_ovr, path_ovr,
+                absolutize_param_table=False,
+                tmp_name="flow_definition_remote_tmp_{}.json".format(safe_key),
+            )
+            if tmp_path:
+                out["path"] = tmp_path
+        if runtime_config:
+            out["runtimeConfig"] = runtime_config
+        return [out]
+
+    def _expand_remote_mast_sections(self, sec, flow_path, mast_parsed_list):
+        """逐塔录入流程的多塔展开：每塔一个板块任务（towerMode=single）。"""
+        out = []
+        title = str(sec.get("title") or sec.get("key") or "板块")
+        for idx, parsed in enumerate(mast_parsed_list, 1):
+            if not parsed:
+                continue
+            rc_parsed = parsed.get("runtime_config") or {}
+            mast = str(
+                rc_parsed.get("mastName") or rc_parsed.get("selectedMast") or "mast{}".format(idx)
+            )
+            missing = rc_parsed.get("missingMastFiles") or []
+            if missing:
+                self._append_log(
+                    "板块 {} 塔 {} 缺少气象数据文件({})，跳过该塔".format(
+                        title, mast, ", ".join(missing)
+                    ),
+                    tag="warning",
+                )
+                continue
+            cur_runtime = dict(load_flow_runtime_config(flow_path))
+            cur_runtime.update(rc_parsed)
+            cur_runtime["towerMode"] = "single"
+            text_ovr = _inject_mast_config_xml_override(
+                flow_path, parsed.get("text_overrides") or {}, rc_parsed, self._append_log
+            )
+            path_ovr = parsed.get("path_prefix_overrides") or {}
+            tmp_path = self._write_project_tmp_flow_for_mast(
+                flow_path, text_ovr, path_ovr, mast,
+                absolutize_param_table=False,
+            )
+            item = dict(sec)
+            item["title"] = "{}·{}".format(title, mast)
+            # 上传名按塔区分：多塔临时流程内容互不相同，若共用原始文件名会
+            # 在服务器端互相覆盖/产生混淆的版本归档
+            stem, ext = os.path.splitext(os.path.basename(flow_path))
+            item["name"] = "{}{}{}".format(stem, mast, ext)
+            if tmp_path:
+                item["path"] = tmp_path
+            item["runtimeConfig"] = cur_runtime
+            out.append(item)
+        if not out:
+            self._append_log(
+                "板块 {} 所有塔均缺数据，按原流程提交单任务兜底".format(title), tag="warning"
+            )
+            return [sec]
+        return out
+
+    def _apply_tower_mode(self, runtime_config, project_work_dir):
+        """按项目解析出的测风塔数量补 towerMode/synthesisDesc（与本地单塔运行一致）。"""
+        try:
+            mast_entries = wt_project_workdir_parser.list_mast_entries(project_work_dir)
+        except Exception:
+            mast_entries = []
+        mast_ids = runtime_config.get("mastIds")
+        mast_count = len(mast_ids) if isinstance(mast_ids, list) and mast_ids else len(mast_entries)
+        if mast_count > 0:
+            runtime_config["towerMode"] = "multi" if mast_count >= 2 else "single"
+            turbine = str(runtime_config.get("turbineType", "") or "").strip()
+            tower_cn = "多塔" if runtime_config["towerMode"] == "multi" else "单塔"
+            runtime_config["synthesisDesc"] = (
+                "{} {}".format(turbine, tower_cn).strip() if turbine else tower_cn
+            )
+
+    def _launch_meteo_mast_queue(self, flow_definition_path, mast_parsed_list, base_runtime_config, banner, extra_args):
+        """Simple 多塔串行：每塔一临时流程，串行等待子进程退出。
+
+        队列生命周期内只发一次 exit 事件（全部完成/停止时），由 _handle_process_exit
+        统一刷新运行状态；塔间日志经 output_queue 回主线程输出（Tk 线程安全）。
+        """
+        total = len(mast_parsed_list)
+        self._append_log(f"检测到多塔 {total} 个，启动串行队列", tag="system")
+        self._mast_queue_active = True
+        self._mast_queue_stop = False
+
+        def _enqueue_log(message, tag="info"):
+            self.output_queue.put(("log", (message, tag)))
+
+        def _run_queue():
+            last_rc = 0
+            # 结果汇总：结束时按"成功/失败/跳过"播报，避免只上报一个退出码而丢失整体结果
+            done_ok = []
+            done_fail = []
+            done_skip = []
+            try:
+                for idx, parsed in enumerate(mast_parsed_list, 1):
+                    if self._mast_queue_stop:
+                        _enqueue_log("[launcher] 多塔队列已收到停止请求，中止后续塔", "warning")
+                        last_rc = -1
+                        break
+                    if not parsed:
+                        done_skip.append(f"mast{idx}")
+                        continue
+                    rc = parsed.get("runtime_config", {}) or {}
+                    mast = rc.get("mastName") or rc.get("selectedMast") or f"mast{idx}"
+                    _enqueue_log(f"[{idx}/{total}] 塔 {mast} 开始", "system")
+                    # ── 缺数据塔保护：未精确匹配到该塔气象数据时跳过，避免错塔数据入库 ──
+                    missing = rc.get("missingMastFiles") or []
+                    if missing:
+                        _enqueue_log(
+                            f"[{idx}/{total}] 塔 {mast} 缺少气象数据文件({', '.join(missing)})，跳过该塔",
+                            "warning",
+                        )
+                        last_rc = -1
+                        done_skip.append(mast)
+                        continue
+                    # 合并 runtime
+                    cur_runtime = dict(base_runtime_config)
+                    cur_runtime.update(rc)
+                    # 每塔独立跑「新建气象数据」：显式单塔，避免 mastIds 全量被下游误判为 multi
+                    cur_runtime["towerMode"] = "single"
+                    text_ovr = _inject_mast_config_xml_override(
+                        flow_definition_path, parsed.get("text_overrides", {}) or {}, rc, self._append_log
+                    )
+                    path_ovr = parsed.get("path_prefix_overrides", {}) or {}
+                    tmp_path = self._write_project_tmp_flow_for_mast(flow_definition_path, text_ovr, path_ovr, mast)
+                    if not tmp_path:
+                        tmp_path = flow_definition_path
+                    # 启动单塔子进程并等待
+                    process_env = self._apply_model_env(os.environ.copy())
+                    process_env["GM_RUNTIME_CONFIG_JSON"] = json.dumps(cur_runtime, ensure_ascii=False)
+                    process_env[FLOW_DEFINITION_ENV_KEY] = tmp_path
+                    command = [sys.executable, "-u", AUTOMATION_SCRIPT]
+                    if not self.show_monitor_var.get():
+                        command.append("--no-monitor")
+                    if not self.pre_raise_var.get():
+                        command.append("--no-pre-raise")
+                    command.extend(extra_args or [])
+                    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    try:
+                        proc = subprocess.Popen(
+                            command, cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="ignore", bufsize=1, creationflags=creationflags, env=process_env,
+                        )
+                    except Exception as exc:
+                        _enqueue_log(f"[{idx}/{total}] 塔 {mast} 启动失败: {exc}", "error")
+                        last_rc = -1
+                        done_fail.append(f"{mast}(启动失败)")
+                        continue
+                    self.process = proc
+                    # 同步读取输出到队列并等待结束（与单塔读取协议一致）
+                    for line in proc.stdout:
+                        self.output_queue.put(("line", line.rstrip()))
+                    rc2 = proc.wait()
+                    if rc2 != 0:
+                        _enqueue_log(f"[{idx}/{total}] 塔 {mast} 结束 退出码 {rc2}，继续下一塔", "warning")
+                        last_rc = rc2
+                        done_fail.append(f"{mast}(退出码 {rc2})")
+                    else:
+                        _enqueue_log(f"[{idx}/{total}] 塔 {mast} 完成", "success")
+                        done_ok.append(mast)
+                    if self._mast_queue_stop:
+                        _enqueue_log("[launcher] 多塔队列已停止", "warning")
+                        last_rc = -1
+                        break
+                    time.sleep(0.8)
+            finally:
+                self._mast_queue_active = False
+                self._mast_queue_stop = False
+                # 清理本次队列产生的临时流程文件
+                try:
+                    tmp_dir = os.path.join(BASE_DIR, "workspace")
+                    if os.path.isdir(tmp_dir):
+                        for fname in os.listdir(tmp_dir):
+                            if fname.startswith("flow_definition_project_tmp_") and fname.endswith(".json"):
+                                try:
+                                    os.remove(os.path.join(tmp_dir, fname))
+                                except OSError:
+                                    pass
+                except OSError:
+                    pass
+                if total:
+                    _enqueue_log(
+                        "多塔队列执行结束：成功 {} / 失败 {} / 跳过 {}（共 {} 塔）".format(
+                            len(done_ok), len(done_fail), len(done_skip), total
+                        ),
+                        "success" if not done_fail and not done_skip else "warning",
+                    )
+                    if done_fail:
+                        _enqueue_log("  失败塔：" + "、".join(done_fail), "warning")
+                    if done_skip:
+                        _enqueue_log("  跳过塔：" + "、".join(done_skip), "warning")
+                # 列出各塔报告路径（finalize 已按塔名落盘 logs/run_reports/run_report_<mast>.json）
+                _report_dir = os.path.join(BASE_DIR, "logs", "run_reports")
+                for _parsed in mast_parsed_list:
+                    _rc = (_parsed or {}).get("runtime_config", {}) or {}
+                    _mast = str(_rc.get("mastName", "") or "").strip()
+                    if not _mast:
+                        continue
+                    _safe = "".join(c if c.isalnum() else "_" for c in _mast) or "mast"
+                    _rpath = os.path.join(_report_dir, f"run_report_{_safe}.json")
+                    if os.path.isfile(_rpath):
+                        _enqueue_log(f"  塔 {_mast} 报告: {_rpath}", "info")
+                self.output_queue.put(("exit", last_rc))
+        threading.Thread(target=_run_queue, daemon=True).start()
+
+    def _launch_automation(self, extra_args, banner="========== 启动新的自动化流程 =========="):
+        # Simple 板块运行前设置的一次性注入标志：读取后立即清除，避免残留影响后续运行
+        self._simple_run_project_inject = bool(getattr(self, "_simple_run_project_inject", False))
+        if getattr(self, "_mast_queue_active", False):
+            messagebox.showinfo("提示", "多塔串行队列正在运行中，请先停止或等待完成。")
+            return
+        if self.process and self.process.poll() is None:
+            messagebox.showinfo("提示", "自动化流程已经在运行中。")
+            return
+
+        if not os.path.exists(AUTOMATION_SCRIPT):
+            messagebox.showerror("启动失败", f"未找到自动化脚本：\n{AUTOMATION_SCRIPT}")
+            return
+
+        _payload, flow_definition_path, _source_definition_path, validation_errors = validate_effective_flow_payload(
+            self._get_flow_definition_path()
+        )
+        if not os.path.exists(flow_definition_path):
+            messagebox.showerror("启动失败", f"未找到流程链路文件：\n{flow_definition_path}")
+            return
+        if validation_errors:
+            preview_errors = "\n".join(f"- {item}" for item in validation_errors[:8])
+            remaining_count = max(0, len(validation_errors) - 8)
+            if remaining_count:
+                preview_errors += f"\n- 其余 {remaining_count} 项请先在编辑器中修正"
+            messagebox.showerror(
+                "启动失败",
+                "当前流程链路配置存在错误，已阻止启动。\n"
+                f"读取文件：\n{flow_definition_path}\n\n"
+                f"{preview_errors}",
+            )
+            self.status_var.set("状态：流程链路配置有误，未启动")
+            return
+
+        values = self._get_model_config_values()
+        if not values["apiKey"] or not values["model"] or not values["baseURL"]:
+            should_continue = messagebox.askyesno(
+                "配置不完整",
+                "当前 API Key、模型名称或 BaseURL 未填写完整。\n是否仍然继续启动自动化流程？",
+            )
+            if not should_continue:
+                return
+
+        try:
+            self._save_launcher_state()
+        except Exception as exc:
+            self._append_log(f"保存上次使用配置失败：{exc}", tag="warning")
+
+        try:
+            if os.path.exists(LOG_FILE):
+                os.remove(LOG_FILE)
+        except OSError:
+            pass
+
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.delete("1.0", tk.END)
+        self.log_text.config(state=tk.DISABLED)
+        self._append_log(banner, tag="system")
+
+        self.status_var.set("状态：正在启动自动化流程")
+        self.current_step_var.set("当前步骤：初始化中")
+        self.process_var.set("流程进程：启动中")
+        self.run_report_summary_var.set("运行报告：等待本次流程执行完成后刷新")
+        self.run_report_meta_var.set("当前展示的仍可能是上一次结果；流程退出后会自动重新加载 `last_run_report.json`。")
+        self._set_running_state(True)
+        self._refresh_config_summary()
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        process_env = self._apply_model_env(os.environ.copy())
+        runtime_config = load_flow_runtime_config(flow_definition_path)
+        effective_flow_path = flow_definition_path
+        # ── 项目工作文件夹自动解析（仅 Simple 板块运行且指定了项目文件夹时启用，未指定不影响现有流程）──
+        if getattr(self, "_simple_run_project_inject", False):
+            self._simple_run_project_inject = False
+            project_work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+            if project_work_dir and os.path.isdir(project_work_dir):
+                # 多塔串行：若为气象流程且 CFT信息.txt 有多塔，则展开队列
+                # 判定支持流程 runtimeConfig 显式 multiMast 标记，避免依赖"气象"字符串改名后静默失效
+                _is_meteo_flow = ("气象" in flow_definition_path) or (
+                    isinstance(_payload, dict)
+                    and (
+                        "气象" in json.dumps(_payload, ensure_ascii=False)
+                        or bool((_payload.get("runtimeConfig") or {}).get("multiMast"))
+                    )
+                )
+                _mast_entries = wt_project_workdir_parser.list_mast_entries(project_work_dir)
+                if len(_mast_entries) > 1 and not _is_meteo_flow:
+                    self._append_log(
+                        "项目含多座测风塔，但当前流程未标记为多塔气象流程，仅运行默认塔",
+                        tag="warning",
+                    )
+                # 逐塔录入类流程（如"新建气象数据"）：每座塔都要完整录入一遍，
+                # project_params.mastId（测风对象编号）主要供发送综合计算等下游消费，
+                # 不应压制本类流程的多塔展开——恒按 CFT 全量塔逐塔录入。
+                _payload_text = json.dumps(_payload, ensure_ascii=False) if isinstance(_payload, dict) else ""
+                _is_meteo_entry_flow = (
+                    "新建气象数据" in flow_definition_path
+                    or "气象数据录入" in flow_definition_path
+                    or "气象数据录入" in _payload_text
+                )
+                # 用户在 project_params 指定了具体塔（mastId）时尊重单塔选择，不展开队列；
+                # 但对逐塔录入类流程不生效（录入必须覆盖全部测风塔）。
+                _want_mast = str((getattr(self, "project_params", {}) or {}).get("mastId", "") or "").strip()
+                _mast_names = {str(e.get("mastName", "")).strip() for e in _mast_entries}
+                _want_single = (not _is_meteo_entry_flow) and (_want_mast in _mast_names)
+                if _is_meteo_entry_flow and _want_mast in _mast_names and len(_mast_entries) > 1:
+                    self._append_log(
+                        "气象数据录入流程：忽略 mastId={} 的单塔选择，按 CFT 全量 {} 座测风塔逐塔录入".format(
+                            _want_mast, len(_mast_entries)
+                        ),
+                        tag="system",
+                    )
+                if _is_meteo_flow and not _want_single and len(_mast_entries) > 1:
+                    try:
+                        _all_parsed = wt_project_workdir_parser.parse_all_masts(
+                            project_work_dir,
+                            project_params=getattr(self, "project_params", {}) or {},
+                            flow_path=flow_definition_path,
+                        )
+                    except Exception as exc:
+                        self._append_log(f"多塔解析失败，按单塔运行：{exc}", tag="warning")
+                        _all_parsed = []
+                    if _all_parsed and len(_all_parsed) > 1:
+                        # 串行队列接管后续启动，当前 _launch_automation 直接返回
+                        self._launch_meteo_mast_queue(flow_definition_path, _all_parsed, runtime_config, banner, extra_args)
+                        self.status_var.set("状态：多塔队列已启动")
+                        self.process_var.set(f"流程进程：多塔队列 {len(_all_parsed)} 个")
+                        self._set_running_state(True)
+                        self._refresh_config_summary()
+                        return
+                # 单塔/非气象：原逻辑
+                try:
+                    parsed = wt_project_workdir_parser.parse_project_work_dir(
+                        project_work_dir,
+                        project_params=getattr(self, "project_params", {}) or {},
+                        flow_path=flow_definition_path,
+                    )
+                except Exception as exc:
+                    self._append_log("项目文件夹解析失败，按原流程运行：{}".format(exc), tag="warning")
+                    parsed = None
+                if parsed:
+                    parsed_rc = parsed.get("runtime_config", {}) or {}
+                    if isinstance(parsed_rc, dict):
+                        runtime_config.update(parsed_rc)
+                    # ── 单塔/多塔自动决定 + 综合描述注入 ──
+                    # 按项目解析出的测风塔数量决定 towerMode：≥2 → multi，否则 single。
+                    # 仅当确实解析到测风塔列表时才注入，避免干扰未指定项目文件夹的默认行为。
+                    try:
+                        _mast_entries = wt_project_workdir_parser.list_mast_entries(project_work_dir)
+                    except Exception:
+                        _mast_entries = []
+                    _mast_ids = runtime_config.get("mastIds")
+                    if isinstance(_mast_ids, list) and _mast_ids:
+                        _mast_count = len(_mast_ids)
+                    else:
+                        _mast_count = len(_mast_entries)
+                    if _mast_count > 0:
+                        _tower_mode = "multi" if _mast_count >= 2 else "single"
+                        runtime_config["towerMode"] = _tower_mode
+                        _turbine = str(runtime_config.get("turbineType", "") or "").strip()
+                        _tower_cn = "多塔" if _tower_mode == "multi" else "单塔"
+                        runtime_config["synthesisDesc"] = (
+                            f"{_turbine} {_tower_cn}".strip()
+                            if _turbine else _tower_cn
+                        )
+                        self._append_log(
+                            f"项目条件：测风塔 {_mast_count} 座 → {_tower_cn}，综合描述={runtime_config.get('synthesisDesc')}",
+                            tag="system",
+                        )
+                    # 生效参数汇总：把本次实际注入运行期的关键项目参数打印出来，
+                    # 避免"界面新建/选择的值是否真的生效"需要翻覆盖日志才能确认
+                    # （实测曾因未点项目参数弹窗"保存"，cpVersion 仍为旧值）。
+                    self._append_log(
+                        "项目参数生效：机型={}，Cp版本={}，测风塔={}，轮毂高度={}，空气密度={}".format(
+                            runtime_config.get("turbineType", "") or "(空)",
+                            runtime_config.get("cpVersion", "") or "(空)",
+                            runtime_config.get("mastName", "") or "(空)",
+                            runtime_config.get("hubHeight", "") or "(空)",
+                            runtime_config.get("airDensity", "") or "(空)",
+                        ),
+                        tag="system",
+                    )
+                    text_ovr = _inject_mast_config_xml_override(
+                        flow_definition_path, parsed.get("text_overrides", {}) or {}, parsed_rc, self._append_log
+                    )
+                    path_ovr = parsed.get("path_prefix_overrides", {}) or {}
+                    if text_ovr or path_ovr:
+                        tmp_path = self._write_project_tmp_flow(flow_definition_path, text_ovr, path_ovr)
+                        if tmp_path:
+                            effective_flow_path = tmp_path
+        process_env["GM_RUNTIME_CONFIG_JSON"] = json.dumps(runtime_config, ensure_ascii=False)
+        process_env[FLOW_DEFINITION_ENV_KEY] = effective_flow_path
+        # -u：python 无缓冲运行，子进程日志按行实时输出到主控台
+        # （否则对管道 stdout 默认块缓冲，Simple 等场景主控台迟迟看不到日志）。
+        command = [sys.executable, "-u", AUTOMATION_SCRIPT]
+        if not self.show_monitor_var.get():
+            command.append("--no-monitor")
+        # 运行前置顶开关（默认开启）：关闭时跳过启动前把 WT 主窗口置顶的动作。
+        if not self.pre_raise_var.get():
+            command.append("--no-pre-raise")
+        command.extend(extra_args or [])
+        self.process = subprocess.Popen(
+            command,
+            cwd=BASE_DIR,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            bufsize=1,
+            creationflags=creationflags,
+            env=process_env,
+        )
+
+        threading.Thread(target=self._read_process_output, daemon=True).start()
+        threading.Thread(target=self._wait_for_process_exit, daemon=True).start()
+
+    def _read_process_output(self):
+        if not self.process or not self.process.stdout:
+            return
+        for line in self.process.stdout:
+            self.output_queue.put(("line", line.rstrip()))
+
+    def _wait_for_process_exit(self):
+        if not self.process:
+            return
+        return_code = self.process.wait()
+        self.output_queue.put(("exit", return_code))
+
+    def _poll_output_queue(self):
+        while True:
+            try:
+                item_type, payload = self.output_queue.get_nowait()
+            except queue.Empty:
+                break
+            if item_type == "line":
+                self._handle_output_line(payload)
+            elif item_type == "log":
+                message, tag = payload
+                self._append_log(message, tag=tag)
+            elif item_type == "exit":
+                self._handle_process_exit(payload)
+        self.root.after(120, self._poll_output_queue)
+
+    def _handle_output_line(self, line):
+        line = line.strip()
+        if not line:
+            return
+        self._append_log(line, tag=self._tag_for_line(line))
+        self.process_var.set("流程进程：运行中")
+        if line.startswith("[") and "] " in line:
+            self.current_step_var.set(f"当前步骤：{line.split('] ', 1)[1]}")
+        if "错误" in line:
+            self.status_var.set("状态：流程运行异常")
+        elif "完成" in line:
+            self.status_var.set("状态：流程执行中，已完成部分步骤")
+        else:
+            self.status_var.set("状态：流程运行中")
+
+    def _handle_process_exit(self, return_code):
+        self._set_running_state(False)
+        self.process_var.set(f"流程进程：已结束（退出码 {return_code}）")
+        if return_code == 0:
+            self.status_var.set("状态：流程完成")
+            self.current_step_var.set("当前步骤：自动化流程已完成")
+            self._append_log("========== 自动化流程执行完成 ==========", tag="success")
+            self.root.bell()
+        else:
+            self.status_var.set("状态：流程失败")
+            self._append_log("========== 自动化流程执行失败 ==========", tag="error")
+            self.root.bell()
+        self._refresh_run_report_view()
+        self.process = None
+
+    def stop_automation(self):
+        process = self.process
+        queue_active = bool(getattr(self, "_mast_queue_active", False))
+        process_running = bool(process) and process.poll() is None
+        if not process_running and not queue_active:
+            messagebox.showinfo("提示", "当前没有正在运行的流程。")
+            return
+        if queue_active and not process_running:
+            # 多塔队列处于塔间隙（当前子进程已退出、下一塔未启动）：直接请求停止队列
+            self._mast_queue_stop = True
+            self._append_log("正在停止多塔串行队列...", tag="warning")
+            self.status_var.set("状态：正在停止多塔队列")
+            return
+        should_stop = messagebox.askyesno(
+            "停止流程",
+            "确定要停止当前自动化流程吗？\n停止后可能需要你手动检查目标软件当前界面状态。",
+        )
+        if not should_stop:
+            return
+        self._append_log("正在停止自动化流程...", tag="warning")
+        self.status_var.set("状态：正在停止流程")
+        self.current_step_var.set("当前步骤：等待进程退出")
+        threading.Thread(target=self._stop_process_worker, daemon=True).start()
+
+    def _stop_process_worker(self):
+        process = self.process
+        # 多塔队列：请求停止后，队列在当前塔结束后中止（不启动下一塔）
+        if getattr(self, "_mast_queue_active", False):
+            self._mast_queue_stop = True
+        if not process:
+            return
+        try:
+            process.terminate()
+        except Exception:
+            pass
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if process.poll() is not None:
+                return
+            time.sleep(0.1)
+        try:
+            process.kill()
+            self.output_queue.put(("line", "[launcher] 已强制结束自动化流程进程。"))
+        except Exception as exc:
+            self.output_queue.put(("line", f"[launcher] 强制结束进程失败：{exc}"))
+
+    def _refresh_flow_steps(self):
+        self.flow_steps = []
+        self.flow_step_display_map = {}
+        self.flow_packages = []
+        target_path = self._get_flow_definition_path()
+        effective_payload, effective_path, source_definition_path = load_effective_flow_payload(target_path)
+        if not os.path.exists(effective_path):
+            self._render_flow_step_list()
+            self._render_flow_package_list()
+            return
+        payload = effective_payload
+        if effective_path != target_path:
+            source_hint = f"（原链路：{source_definition_path}）" if source_definition_path else ""
+            self._append_log(
+                f"当前链路文件没有可读取的步骤/流程包，已回退读取流程包仓库：{effective_path}{source_hint}",
+                tag="warning",
+            )
+        raw_steps = payload.get("steps", []) if isinstance(payload, dict) else []
+        step_map = {}
+        for step in raw_steps:
+            if not isinstance(step, dict):
+                continue
+            step_id = str(step.get("id", "")).strip()
+            if step_id:
+                step_map[step_id] = step
+        seen_step_ids = set()
+        for step in raw_steps:
+            if not isinstance(step, dict):
+                continue
+            if not bool(step.get("topLevel", True)):
+                continue
+            step_id = str(step.get("id", "")).strip()
+            if not step_id:
+                continue
+            self.flow_steps.append({"id": step_id, "name": str(step.get("name", "")).strip(), "source": "top_level"})
+            seen_step_ids.add(step_id)
+        raw_packages = payload.get("flowPackages", []) if isinstance(payload, dict) else []
+        for pkg in raw_packages:
+            if not isinstance(pkg, dict):
+                continue
+            pkg_id = str(pkg.get("id", "")).strip()
+            if not pkg_id:
+                continue
+            self.flow_packages.append({
+                "id": pkg_id,
+                "name": str(pkg.get("name", pkg_id)).strip(),
+                "description": str(pkg.get("description", "")).strip(),
+                "stepIds": pkg.get("stepIds", [])
+            })
+            for child_step_id in pkg.get("stepIds", []) or []:
+                child_step_id = str(child_step_id).strip()
+                if not child_step_id or child_step_id in seen_step_ids:
+                    continue
+                child_step = step_map.get(child_step_id, {})
+                self.flow_steps.append(
+                    {
+                        "id": child_step_id,
+                        "name": str(child_step.get("name", "")).strip(),
+                        "source": "package",
+                        "packageId": pkg_id,
+                        "packageName": str(pkg.get("name", pkg_id)).strip(),
+                    }
+                )
+                seen_step_ids.add(child_step_id)
+        self._apply_saved_step_order()
+        self._render_flow_step_list()
+        self._render_flow_package_list()
+
+    def _normalize_flow_path_key(self, file_path=None):
+        target_path = file_path or self._get_flow_definition_path()
+        return os.path.normcase(os.path.normpath(str(target_path or "").strip()))
+
+    def _apply_saved_step_order(self):
+        if not self.flow_steps:
+            return
+        flow_path_key = self._normalize_flow_path_key()
+        saved_order = self.step_order_by_flow_path.get(flow_path_key, [])
+        if not isinstance(saved_order, list) or not saved_order:
+            return
+        item_map = {}
+        for item in self.flow_steps:
+            step_id = str(item.get("id", "")).strip()
+            if step_id and step_id not in item_map:
+                item_map[step_id] = item
+        reordered = []
+        seen_step_ids = set()
+        for step_id in saved_order:
+            normalized_step_id = str(step_id or "").strip()
+            if normalized_step_id and normalized_step_id in item_map and normalized_step_id not in seen_step_ids:
+                reordered.append(item_map[normalized_step_id])
+                seen_step_ids.add(normalized_step_id)
+        for item in self.flow_steps:
+            step_id = str(item.get("id", "")).strip()
+            if step_id and step_id not in seen_step_ids:
+                reordered.append(item)
+                seen_step_ids.add(step_id)
+        self.flow_steps = reordered
+
+    def _persist_current_step_order(self):
+        flow_path_key = self._normalize_flow_path_key()
+        if not flow_path_key:
+            return
+        self.step_order_by_flow_path[flow_path_key] = [
+            str(item.get("id", "")).strip()
+            for item in self.flow_steps
+            if str(item.get("id", "")).strip()
+        ]
+
+    def _move_selected_steps(self, direction):
+        selected_step_ids = self._get_selected_step_ids()
+        if not selected_step_ids:
+            messagebox.showinfo("提示", "请先勾选一个或多个步骤，再执行上移或下移。")
+            return
+        normalized_direction = -1 if int(direction or 0) < 0 else 1
+        selected_set = set(selected_step_ids)
+        moved = False
+        if normalized_direction < 0:
+            for index in range(1, len(self.flow_steps)):
+                current_id = str(self.flow_steps[index].get("id", "")).strip()
+                previous_id = str(self.flow_steps[index - 1].get("id", "")).strip()
+                if current_id in selected_set and previous_id not in selected_set:
+                    self.flow_steps[index - 1], self.flow_steps[index] = self.flow_steps[index], self.flow_steps[index - 1]
+                    moved = True
+        else:
+            for index in range(len(self.flow_steps) - 2, -1, -1):
+                current_id = str(self.flow_steps[index].get("id", "")).strip()
+                next_id = str(self.flow_steps[index + 1].get("id", "")).strip()
+                if current_id in selected_set and next_id not in selected_set:
+                    self.flow_steps[index], self.flow_steps[index + 1] = self.flow_steps[index + 1], self.flow_steps[index]
+                    moved = True
+        if not moved:
+            messagebox.showinfo("提示", "当前所选步骤已经在边界位置，无法继续移动。")
+            return
+        self._persist_current_step_order()
+        try:
+            self._save_launcher_state()
+        except Exception as exc:
+            self._append_log(f"保存步骤测试顺序失败：{exc}", tag="warning")
+        self._render_flow_step_list()
+        direction_text = "上移" if normalized_direction < 0 else "下移"
+        moved_text = "，".join(selected_step_ids[:5])
+        if len(selected_step_ids) > 5:
+            moved_text += " 等"
+        self._append_log(f"已{direction_text}步骤测试顺序：{moved_text}", tag="system")
+        self.status_var.set(f"状态：已{direction_text}步骤测试顺序")
+        self.current_step_var.set(f"当前步骤：可按新顺序执行所选步骤")
+
+    def _render_flow_step_list(self):
+        if not hasattr(self, "steps_inner"):
+            return
+        for child in self.steps_inner.winfo_children():
+            child.destroy()
+        preserved = dict(self.step_check_vars)
+        self.step_check_vars = {}
+        self.flow_step_display_map = {}
+
+        for item in self.flow_steps:
+            step_id = item["id"]
+            name = item.get("name", "")
+            if item.get("source") == "package":
+                package_name = item.get("packageName") or item.get("packageId") or "未命名流程包"
+                display = f"[流程包] {package_name} / {step_id}" + (f" | {name}" if name else "")
+            else:
+                display = f"{step_id} | {name}" if name else step_id
+            self.flow_step_display_map[display] = step_id
+            var = preserved.get(step_id) if isinstance(preserved.get(step_id), tk.BooleanVar) else tk.BooleanVar(value=False)
+            self.step_check_vars[step_id] = var
+            tk.Checkbutton(
+                self.steps_inner,
+                text=display,
+                variable=var,
+                anchor="w",
+                justify=tk.LEFT,
+                bg="#fbfdff",
+                fg=self.theme["text"],
+                activebackground="#fbfdff",
+                wraplength=340,
+            ).pack(fill=tk.X, anchor="w")
+
+    def _render_flow_package_list(self):
+        if not hasattr(self, "flow_package_combo"):
+            return
+        values = []
+        current_label = self.selected_flow_package_var.get().strip()
+        for package in self.flow_packages:
+            package_id = package["id"]
+            package_name = package.get("name", "")
+            step_count = len(package.get("stepIds", []) or [])
+            values.append(f"{package_id} | {package_name} | {step_count} steps")
+        self.flow_package_combo["values"] = values
+        if current_label in values:
+            self.selected_flow_package_var.set(current_label)
+        elif values:
+            self.selected_flow_package_var.set(values[0])
+        else:
+            self.selected_flow_package_var.set("")
+
+    def _get_selected_flow_package(self):
+        selected_label = self.selected_flow_package_var.get().strip()
+        if not selected_label:
+            return None
+        package_id = selected_label.split("|", 1)[0].strip()
+        for package in self.flow_packages:
+            if package.get("id") == package_id:
+                return package
+        return None
+
+    def _format_flow_step_display(self, item):
+        step_id = str(item.get("id", "")).strip()
+        name = str(item.get("name", "")).strip()
+        if item.get("source") == "package":
+            package_name = item.get("packageName") or item.get("packageId") or "未命名流程包"
+            return f"[流程包] {package_name} / {step_id}" + (f" | {name}" if name else "")
+        return f"{step_id} | {name}" if name else step_id
+
+    def _format_flow_package_display(self, package):
+        package_id = str(package.get("id", "")).strip()
+        package_name = str(package.get("name", package_id)).strip()
+        step_count = len(package.get("stepIds", []) or [])
+        return f"{package_id} | {package_name} | {step_count} steps"
+
+    def _prompt_export_flow_scope(self):
+        if not self.flow_steps:
+            self._refresh_flow_steps()
+        step_items = [item for item in self.flow_steps if str(item.get("id", "")).strip()]
+        if not step_items:
+            messagebox.showinfo("提示", "当前链路文件里没有可导出的步骤。")
+            return None
+
+        result = {}
+        dialog = tk.Toplevel(self.root)
+        dialog.title("选择导出范围")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=self.theme["bg"])
+        wt_dpi.geometry(dialog, 760, 560)
+        dialog.minsize(wt_dpi.scale(680), wt_dpi.scale(500))
+
+        mode_var = tk.StringVar(value="all")
+        selected_step_ids = self._get_selected_step_ids()
+        selected_package = self._get_selected_flow_package()
+
+        root_frame = tk.Frame(dialog, bg=self.theme["bg"], padx=16, pady=16)
+        root_frame.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            root_frame,
+            text="导出流程 Excel",
+            bg=self.theme["bg"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 11, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            root_frame,
+            text="选择这次要导出的范围。当前模式支持全部步骤、按流程包多选导出，以及手工勾选步骤导出。",
+            bg=self.theme["bg"],
+            fg=self.theme["muted"],
+            justify=tk.LEFT,
+            wraplength=700,
+        ).pack(anchor="w", pady=(4, 10))
+
+        mode_frame = tk.Frame(root_frame, bg=self.theme["card"], padx=12, pady=10, highlightthickness=1, highlightbackground=self.theme["border"])
+        mode_frame.pack(fill=tk.X)
+        for value, label in (
+            ("all", "全部步骤"),
+            ("package", "按流程包"),
+            ("manual", "手工勾选步骤"),
+        ):
+            tk.Radiobutton(
+                mode_frame,
+                text=label,
+                value=value,
+                variable=mode_var,
+                bg=self.theme["card"],
+                fg=self.theme["text"],
+                activebackground=self.theme["card"],
+                anchor="w",
+            ).pack(side=tk.LEFT, padx=(0, 18))
+
+        content_holder = tk.Frame(root_frame, bg=self.theme["bg"])
+        content_holder.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+
+        bottom_frame = tk.Frame(root_frame, bg=self.theme["bg"])
+        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(12, 0))
+
+        summary_var = tk.StringVar(value="将导出当前链路文件中的全部步骤。")
+        tk.Label(
+            bottom_frame,
+            textvariable=summary_var,
+            bg=self.theme["bg"],
+            fg=self.theme["muted"],
+            justify=tk.LEFT,
+            wraplength=700,
+        ).pack(anchor="w")
+
+        button_row = tk.Frame(bottom_frame, bg=self.theme["bg"])
+        button_row.pack(fill=tk.X, pady=(10, 0))
+
+        package_frame = tk.Frame(content_holder, bg=self.theme["card"], padx=12, pady=12, highlightthickness=1, highlightbackground=self.theme["border"])
+        tk.Label(
+            package_frame,
+            text="按流程包导出",
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            package_frame,
+            text="可多选流程包，导出时会按所选流程包内的 stepIds 汇总步骤。",
+            bg=self.theme["card"],
+            fg=self.theme["muted"],
+            justify=tk.LEFT,
+            wraplength=660,
+        ).pack(anchor="w", pady=(4, 8))
+        package_listbox = tk.Listbox(package_frame, selectmode=tk.EXTENDED, exportselection=False, height=8)
+        package_listbox.pack(fill=tk.BOTH, expand=False)
+        package_display_to_ids = []
+        for package in self.flow_packages:
+            package_listbox.insert(tk.END, self._format_flow_package_display(package))
+            package_display_to_ids.append(str(package.get("id", "")).strip())
+        if selected_package:
+            selected_package_id = str(selected_package.get("id", "")).strip()
+            for index, package_id in enumerate(package_display_to_ids):
+                if package_id == selected_package_id:
+                    package_listbox.selection_set(index)
+                    break
+        package_button_row = tk.Frame(package_frame, bg=self.theme["card"])
+        package_button_row.pack(fill=tk.X, pady=(8, 0))
+        tk.Button(package_button_row, text="全选流程包", command=lambda: package_listbox.selection_set(0, tk.END)).pack(side=tk.LEFT)
+        tk.Button(package_button_row, text="清空流程包", command=lambda: package_listbox.selection_clear(0, tk.END)).pack(side=tk.LEFT, padx=(8, 0))
+
+        manual_frame = tk.Frame(content_holder, bg=self.theme["card"], padx=12, pady=12, highlightthickness=1, highlightbackground=self.theme["border"])
+        tk.Label(
+            manual_frame,
+            text="手工勾选步骤导出",
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            manual_frame,
+            text="可多选步骤。若你已经在主界面的步骤区勾选了步骤，这里会自动带入当前勾选结果。",
+            bg=self.theme["card"],
+            fg=self.theme["muted"],
+            justify=tk.LEFT,
+            wraplength=660,
+        ).pack(anchor="w", pady=(4, 8))
+        manual_listbox = tk.Listbox(manual_frame, selectmode=tk.EXTENDED, exportselection=False, height=14)
+        manual_listbox.pack(fill=tk.BOTH, expand=True)
+        manual_step_ids = []
+        selected_step_id_set = set(selected_step_ids)
+        for index, item in enumerate(step_items):
+            manual_listbox.insert(tk.END, self._format_flow_step_display(item))
+            manual_step_id = str(item.get("id", "")).strip()
+            manual_step_ids.append(manual_step_id)
+            if manual_step_id in selected_step_id_set:
+                manual_listbox.selection_set(index)
+        manual_button_row = tk.Frame(manual_frame, bg=self.theme["card"])
+        manual_button_row.pack(fill=tk.X, pady=(8, 0))
+        tk.Button(manual_button_row, text="全选步骤", command=lambda: manual_listbox.selection_set(0, tk.END)).pack(side=tk.LEFT)
+        tk.Button(manual_button_row, text="清空步骤", command=lambda: manual_listbox.selection_clear(0, tk.END)).pack(side=tk.LEFT, padx=(8, 0))
+
+        def _update_scope_summary():
+            mode = mode_var.get().strip()
+            if mode == "package":
+                count = len(package_listbox.curselection())
+                summary_var.set(f"当前模式：按流程包导出，已选 {count} 个流程包。")
+            elif mode == "manual":
+                count = len(manual_listbox.curselection())
+                summary_var.set(f"当前模式：手工勾选步骤导出，已选 {count} 个步骤。")
+            else:
+                summary_var.set(f"当前模式：全部步骤导出，共 {len(step_items)} 个步骤。")
+
+        def _refresh_scope_panels(*_args):
+            for child in content_holder.winfo_children():
+                child.pack_forget()
+            current_mode = mode_var.get().strip()
+            if current_mode == "package":
+                package_frame.pack(fill=tk.BOTH, expand=True)
+            elif current_mode == "manual":
+                manual_frame.pack(fill=tk.BOTH, expand=True)
+            _update_scope_summary()
+
+        mode_var.trace_add("write", _refresh_scope_panels)
+        package_listbox.bind("<<ListboxSelect>>", lambda _event: _update_scope_summary())
+        manual_listbox.bind("<<ListboxSelect>>", lambda _event: _update_scope_summary())
+        _refresh_scope_panels()
+
+        def _confirm():
+            mode = mode_var.get().strip()
+            if mode == "all":
+                result.update({
+                    "mode": "all",
+                    "step_ids": None,
+                    "scope_label": f"全部步骤（{len(step_items)} 个）",
+                })
+            elif mode == "package":
+                selected_package_indices = list(package_listbox.curselection())
+                if not selected_package_indices:
+                    messagebox.showinfo("提示", "请先选择一个或多个流程包。", parent=dialog)
+                    return
+                ordered_step_ids = []
+                seen_step_ids = set()
+                selected_package_names = []
+                for index in selected_package_indices:
+                    package = self.flow_packages[index]
+                    package_id = str(package.get("id", "")).strip()
+                    package_name = str(package.get("name", package_id)).strip() or package_id
+                    selected_package_names.append(package_name)
+                    for step_id in package.get("stepIds", []) or []:
+                        normalized_step_id = str(step_id).strip()
+                        if normalized_step_id and normalized_step_id not in seen_step_ids:
+                            ordered_step_ids.append(normalized_step_id)
+                            seen_step_ids.add(normalized_step_id)
+                if not ordered_step_ids:
+                    messagebox.showinfo("提示", "所选流程包里没有可导出的步骤。", parent=dialog)
+                    return
+                result.update({
+                    "mode": "package",
+                    "step_ids": ordered_step_ids,
+                    "scope_label": f"流程包导出（{', '.join(selected_package_names)}）",
+                })
+            else:
+                selected_indices = list(manual_listbox.curselection())
+                if not selected_indices:
+                    messagebox.showinfo("提示", "请先勾选一个或多个步骤。", parent=dialog)
+                    return
+                ordered_step_ids = [manual_step_ids[index] for index in selected_indices if 0 <= index < len(manual_step_ids)]
+                result.update({
+                    "mode": "manual",
+                    "step_ids": ordered_step_ids,
+                    "scope_label": f"手工勾选步骤（{len(ordered_step_ids)} 个）",
+                })
+            dialog.destroy()
+
+        def _cancel():
+            result.clear()
+            dialog.destroy()
+
+        tk.Button(
+            button_row,
+            text="取消",
+            command=_cancel,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+        ).pack(side=tk.RIGHT)
+        tk.Button(
+            button_row,
+            text="确认导出",
+            command=_confirm,
+            bg=self.theme["primary"],
+            fg="white",
+            activebackground=self.theme["primary_active"],
+            activeforeground="white",
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        dialog.protocol("WM_DELETE_WINDOW", _cancel)
+        dialog.wait_window()
+        return result or None
+
+    def _prompt_import_flow_target(self, source_path):
+        current_path = self._get_flow_definition_path()
+        suggested_dir = os.path.dirname(current_path) if current_path else BASE_DIR
+        suggested_name = os.path.splitext(os.path.basename(source_path or DEFAULT_FLOW_XLSX))[0] + ".json"
+        default_package_name = self._build_default_import_package_name(source_path)
+        default_package_id = self._build_default_import_package_id(source_path)
+
+        result = {}
+        dialog = tk.Toplevel(self.root)
+        dialog.title("选择导入方式")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=self.theme["bg"])
+        wt_dpi.geometry(dialog, 760, 580)
+        dialog.minsize(wt_dpi.scale(700), wt_dpi.scale(520))
+
+        save_as_path_var = tk.StringVar(value=os.path.join(suggested_dir, suggested_name))
+        package_id_var = tk.StringVar(value=default_package_id)
+        package_name_var = tk.StringVar(value=default_package_name)
+        package_description_var = tk.StringVar(value=f"由 Excel 导入生成，来源：{os.path.basename(source_path)}")
+        summary_var = tk.StringVar(
+            value=(
+                "覆盖模式：Excel 将直接写入当前链路文件\n"
+                f"{current_path}"
+            )
+        )
+
+        root_frame = tk.Frame(dialog, bg=self.theme["bg"], padx=16, pady=16)
+        root_frame.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            root_frame,
+            text="导入流程 Excel",
+            bg=self.theme["bg"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 11, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            root_frame,
+            text=(
+                "当前导入支持三种方式：\n"
+                "1. 覆盖当前链路：直接写到当前选中的链路 JSON。\n"
+                "2. 另存为新链路：生成一个新的 JSON，并自动切换为当前链路，方便立刻测试。\n"
+                "3. 追加为流程包：把 Excel 内容合并进当前链路，并生成可直接测试的流程包。"
+            ),
+            bg=self.theme["bg"],
+            fg=self.theme["muted"],
+            justify=tk.LEFT,
+            wraplength=700,
+        ).pack(anchor="w", pady=(4, 12))
+
+        info_frame = tk.Frame(
+            root_frame,
+            bg=self.theme["card"],
+            padx=12,
+            pady=12,
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
+        info_frame.pack(fill=tk.X)
+        tk.Label(
+            info_frame,
+            text=f"Excel 文件：{source_path}",
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            justify=tk.LEFT,
+            wraplength=680,
+        ).pack(anchor="w")
+        tk.Label(
+            info_frame,
+            text=f"当前链路：{current_path}",
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            justify=tk.LEFT,
+            wraplength=680,
+        ).pack(anchor="w", pady=(6, 0))
+
+        save_as_frame = tk.Frame(
+            root_frame,
+            bg=self.theme["card"],
+            padx=12,
+            pady=12,
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
+        save_as_frame.pack(fill=tk.X, pady=(12, 0))
+        tk.Label(
+            save_as_frame,
+            text="另存为新链路文件",
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            save_as_frame,
+            text="建议用于导入新流程或试运行，避免直接覆盖现有稳定链路。",
+            bg=self.theme["card"],
+            fg=self.theme["muted"],
+            justify=tk.LEFT,
+            wraplength=680,
+        ).pack(anchor="w", pady=(4, 8))
+
+        path_row = tk.Frame(save_as_frame, bg=self.theme["card"])
+        path_row.pack(fill=tk.X)
+        tk.Entry(path_row, textvariable=save_as_path_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        def _browse_save_as():
+            selected_path = filedialog.asksaveasfilename(
+                parent=dialog,
+                title="保存为新的流程链路文件",
+                initialdir=os.path.dirname(save_as_path_var.get().strip()) or suggested_dir or BASE_DIR,
+                initialfile=os.path.basename(save_as_path_var.get().strip()) or suggested_name,
+                defaultextension=".json",
+                filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+            )
+            if selected_path:
+                save_as_path_var.set(selected_path)
+                summary_var.set(f"另存为模式：Excel 将写入新链路文件\n{selected_path}")
+
+        tk.Button(path_row, text="浏览...", command=_browse_save_as).pack(side=tk.LEFT, padx=(8, 0))
+
+        package_frame = tk.Frame(
+            root_frame,
+            bg=self.theme["card"],
+            padx=12,
+            pady=12,
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
+        package_frame.pack(fill=tk.X, pady=(12, 0))
+        tk.Label(
+            package_frame,
+            text="追加为流程包",
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            package_frame,
+            text=(
+                "会把 Excel 追加到当前链路文件中，并在步骤 / 流程包测试区域里立即可选。"
+                "如果 Excel 已自带 flow_packages，会保留导入包；若 ID 冲突会自动改名。"
+            ),
+            bg=self.theme["card"],
+            fg=self.theme["muted"],
+            justify=tk.LEFT,
+            wraplength=680,
+        ).pack(anchor="w", pady=(4, 8))
+
+        tk.Label(package_frame, text="流程包 ID", bg=self.theme["card"], fg=self.theme["text"]).pack(anchor="w")
+        tk.Entry(package_frame, textvariable=package_id_var).pack(fill=tk.X, pady=(4, 8))
+        tk.Label(package_frame, text="流程包名称", bg=self.theme["card"], fg=self.theme["text"]).pack(anchor="w")
+        tk.Entry(package_frame, textvariable=package_name_var).pack(fill=tk.X, pady=(4, 8))
+        tk.Label(package_frame, text="流程包说明", bg=self.theme["card"], fg=self.theme["text"]).pack(anchor="w")
+        tk.Entry(package_frame, textvariable=package_description_var).pack(fill=tk.X, pady=(4, 0))
+
+        tk.Label(
+            root_frame,
+            textvariable=summary_var,
+            bg=self.theme["bg"],
+            fg=self.theme["muted"],
+            justify=tk.LEFT,
+            wraplength=700,
+        ).pack(anchor="w", pady=(12, 0))
+
+        button_row = tk.Frame(root_frame, bg=self.theme["bg"])
+        button_row.pack(side=tk.BOTTOM, fill=tk.X, pady=(16, 0))
+
+        def _cancel():
+            result.clear()
+            dialog.destroy()
+
+        def _confirm_overwrite():
+            result.update({"mode": "overwrite", "target_path": current_path})
+            dialog.destroy()
+
+        def _confirm_save_as():
+            target_path = save_as_path_var.get().strip()
+            if not target_path:
+                messagebox.showinfo("提示", "请先选择新的链路文件保存位置。", parent=dialog)
+                return
+            result.update({"mode": "save_as", "target_path": target_path})
+            dialog.destroy()
+
+        def _confirm_append_package():
+            package_id = package_id_var.get().strip()
+            package_name = package_name_var.get().strip()
+            if not package_id:
+                messagebox.showinfo("提示", "请先填写流程包 ID。", parent=dialog)
+                return
+            if not package_name:
+                messagebox.showinfo("提示", "请先填写流程包名称。", parent=dialog)
+                return
+            result.update(
+                {
+                    "mode": "append_package",
+                    "target_path": current_path,
+                    "package_id": package_id,
+                    "package_name": package_name,
+                    "package_description": package_description_var.get().strip(),
+                }
+            )
+            dialog.destroy()
+
+        tk.Button(
+            button_row,
+            text="取消",
+            command=_cancel,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+        ).pack(side=tk.RIGHT)
+        tk.Button(
+            button_row,
+            text="另存为新链路",
+            command=_confirm_save_as,
+            bg=self.theme["primary"],
+            fg="white",
+            activebackground=self.theme["primary_active"],
+            activeforeground="white",
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+        tk.Button(
+            button_row,
+            text="追加为流程包",
+            command=_confirm_append_package,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+        tk.Button(
+            button_row,
+            text="覆盖当前链路",
+            command=_confirm_overwrite,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        dialog.protocol("WM_DELETE_WINDOW", _cancel)
+        dialog.wait_window()
+        return result or None
+
+    def _build_default_import_package_name(self, source_path):
+        source_name = os.path.splitext(os.path.basename(source_path or DEFAULT_FLOW_XLSX))[0].strip()
+        return source_name or "导入流程包"
+
+    def _build_default_import_package_id(self, source_path):
+        raw_name = self._build_default_import_package_name(source_path)
+        chars = []
+        last_was_separator = False
+        for char in raw_name:
+            if char.isalnum():
+                chars.append(char.lower())
+                last_was_separator = False
+                continue
+            if last_was_separator:
+                continue
+            chars.append("_")
+            last_was_separator = True
+        normalized = "".join(chars).strip("_")
+        return f"pkg_{normalized or 'imported'}"
+
+    def _ensure_unique_identifier(self, preferred_id, used_ids, fallback_prefix):
+        base_id = str(preferred_id).strip() or str(fallback_prefix).strip() or "item"
+        if base_id not in used_ids:
+            used_ids.add(base_id)
+            return base_id
+        suffix = 2
+        while True:
+            candidate = f"{base_id}_{suffix}"
+            if candidate not in used_ids:
+                used_ids.add(candidate)
+                return candidate
+            suffix += 1
+
+    def _merge_runtime_config_for_import(self, current_runtime, imported_runtime):
+        merged = dict(current_runtime or {})
+        imported_runtime = imported_runtime if isinstance(imported_runtime, dict) else {}
+        for key, value in imported_runtime.items():
+            current_value = str(merged.get(key, "")).strip()
+            imported_value = str(value).strip()
+            if not current_value and imported_value:
+                merged[key] = imported_value
+        return merged
+
+    def _prepare_imported_payload_for_package(self, imported_payload, source_path, target_payload, package_options):
+        normalized_import = _normalize_flow_payload(imported_payload)
+        imported_steps = json.loads(json.dumps(normalized_import.get("steps", []), ensure_ascii=False))
+        imported_packages = json.loads(json.dumps(normalized_import.get("flowPackages", []), ensure_ascii=False))
+        if not imported_steps:
+            raise ValueError("导入的 Excel 中没有可追加的步骤。")
+
+        package_options = package_options if isinstance(package_options, dict) else {}
+        default_package_id = str(package_options.get("package_id", "")).strip() or self._build_default_import_package_id(source_path)
+        default_package_name = str(package_options.get("package_name", "")).strip() or self._build_default_import_package_name(source_path)
+        default_package_description = (
+            str(package_options.get("package_description", "")).strip()
+            or f"由 Excel 导入生成，来源：{os.path.basename(source_path)}"
+        )
+
+        used_step_ids = {
+            str(step.get("id", "")).strip()
+            for step in target_payload.get("steps", [])
+            if isinstance(step, dict) and str(step.get("id", "")).strip()
+        }
+        used_package_ids = {
+            str(package.get("id", "")).strip()
+            for package in target_payload.get("flowPackages", [])
+            if isinstance(package, dict) and str(package.get("id", "")).strip()
+        }
+
+        step_id_map = {}
+        for index, step in enumerate(imported_steps, start=1):
+            original_step_id = str(step.get("id", "")).strip()
+            fallback_step_id = f"{default_package_id}_step_{index}"
+            unique_step_id = self._ensure_unique_identifier(original_step_id or fallback_step_id, used_step_ids, fallback_step_id)
+            step["id"] = unique_step_id
+            if original_step_id:
+                step_id_map[original_step_id] = unique_step_id
+
+        package_id_map = {}
+        prepared_packages = []
+        if imported_packages:
+            multiple_packages = len(imported_packages) > 1
+            for index, package in enumerate(imported_packages, start=1):
+                original_package_id = str(package.get("id", "")).strip()
+                fallback_package_id = f"{default_package_id}_{index}" if multiple_packages else default_package_id
+                preferred_package_id = original_package_id or fallback_package_id
+                if not multiple_packages:
+                    preferred_package_id = str(package_options.get("package_id", "")).strip() or preferred_package_id
+                unique_package_id = self._ensure_unique_identifier(preferred_package_id, used_package_ids, fallback_package_id)
+                package_id_map[original_package_id] = unique_package_id
+
+                package_name = str(package.get("name", "")).strip() or unique_package_id
+                package_description = str(package.get("description", "")).strip()
+                if not multiple_packages:
+                    package_name = str(package_options.get("package_name", "")).strip() or package_name
+                    package_description = str(package_options.get("package_description", "")).strip() or package_description
+
+                prepared_packages.append(
+                    {
+                        "id": unique_package_id,
+                        "name": package_name or unique_package_id,
+                        "description": package_description or default_package_description,
+                        "stepIds": [
+                            step_id_map.get(str(step_id).strip(), str(step_id).strip())
+                            for step_id in (package.get("stepIds") or [])
+                            if str(step_id).strip()
+                        ],
+                    }
+                )
+        else:
+            synthesized_package_id = self._ensure_unique_identifier(default_package_id, used_package_ids, default_package_id)
+            prepared_packages.append(
+                {
+                    "id": synthesized_package_id,
+                    "name": default_package_name or synthesized_package_id,
+                    "description": default_package_description,
+                    "stepIds": [str(step.get("id", "")).strip() for step in imported_steps if str(step.get("id", "")).strip()],
+                }
+            )
+
+        for step in imported_steps:
+            package_ref = str(step.get("packageRef", "")).strip()
+            if package_ref and package_ref in package_id_map:
+                step["packageRef"] = package_id_map[package_ref]
+
+        step_ids_by_package_ref = {}
+        for step in imported_steps:
+            package_ref = str(step.get("packageRef", "")).strip()
+            step_id = str(step.get("id", "")).strip()
+            if package_ref and step_id:
+                step_ids_by_package_ref.setdefault(package_ref, []).append(step_id)
+
+        for package in prepared_packages:
+            package_id = str(package.get("id", "")).strip()
+            step_ids = [str(step_id).strip() for step_id in (package.get("stepIds") or []) if str(step_id).strip()]
+            if not step_ids:
+                step_ids = step_ids_by_package_ref.get(package_id, [])
+            if not step_ids and len(prepared_packages) == 1:
+                step_ids = [str(step.get("id", "")).strip() for step in imported_steps if str(step.get("id", "")).strip()]
+            package["stepIds"] = step_ids
+
+        return {
+            "steps": imported_steps,
+            "flowPackages": prepared_packages,
+            "packageLabels": [self._format_flow_package_display(package) for package in prepared_packages],
+        }
+
+    def _append_imported_excel_as_package(self, source_path, target_path, package_options, imported_payload=None):
+        imported_payload = imported_payload if isinstance(imported_payload, dict) else load_flow_payload_from_excel(source_path)
+        target_payload, _target_error = load_json_file(target_path)
+        target_payload = target_payload if isinstance(target_payload, dict) else {}
+        normalized_target = _normalize_flow_payload(target_payload)
+        prepared_payload = self._prepare_imported_payload_for_package(
+            imported_payload,
+            source_path,
+            normalized_target,
+            package_options,
+        )
+
+        merged_payload = json.loads(json.dumps(target_payload, ensure_ascii=False)) if isinstance(target_payload, dict) else {}
+        merged_payload["version"] = str(merged_payload.get("version", "")).strip() or str(imported_payload.get("version", "")).strip() or "1.0"
+        merged_payload["project"] = str(merged_payload.get("project", "")).strip() or str(imported_payload.get("project", "")).strip() or "WT_Automation"
+        merged_payload["description"] = (
+            str(merged_payload.get("description", "")).strip()
+            or str(imported_payload.get("description", "")).strip()
+            or "WT 自动化流程定义"
+        )
+        merged_payload["lastUpdated"] = datetime.now().isoformat(timespec="seconds")
+        merged_payload["runtimeConfig"] = self._merge_runtime_config_for_import(
+            normalized_target.get("runtimeConfig", {}),
+            imported_payload.get("runtimeConfig", {}),
+        )
+        merged_payload["flowPackages"] = list(normalized_target.get("flowPackages", [])) + prepared_payload["flowPackages"]
+        merged_payload["steps"] = list(normalized_target.get("steps", [])) + prepared_payload["steps"]
+
+        validation_errors = validate_flow_definition(merged_payload)
+        if validation_errors:
+            raise ValueError("导入后的链路校验未通过：\n- " + "\n- ".join(validation_errors[:12]))
+
+        save_json_file(target_path, merged_payload)
+        return prepared_payload
+
+    def _show_text_report_dialog(self, title, summary_text, detail_text):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        wt_dpi.geometry(dialog, 860, 640)
+        dialog.minsize(wt_dpi.scale(720), wt_dpi.scale(520))
+        dialog.configure(bg=self.theme["bg"])
+        dialog.transient(self.root)
+        try:
+            dialog.grab_set()
+        except Exception:
+            pass
+
+        container = tk.Frame(dialog, bg=self.theme["bg"], padx=16, pady=16)
+        container.pack(fill=tk.BOTH, expand=True)
+        tk.Label(
+            container,
+            text=title,
+            bg=self.theme["bg"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 11, "bold"),
+            anchor="w",
+            justify=tk.LEFT,
+        ).pack(fill=tk.X)
+        tk.Label(
+            container,
+            text=summary_text,
+            bg=self.theme["bg"],
+            fg=self.theme["muted"],
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=800,
+        ).pack(fill=tk.X, pady=(6, 12))
+
+        text_frame = tk.Frame(
+            container,
+            bg=self.theme["card"],
+            highlightthickness=1,
+            highlightbackground=self.theme["border"],
+        )
+        text_frame.pack(fill=tk.BOTH, expand=True)
+        report_text = tk.Text(
+            text_frame,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            bg="#fbfdff",
+            fg=self.theme["text"],
+            relief=tk.FLAT,
+            bd=0,
+            padx=10,
+            pady=10,
+            insertbackground=self.theme["text"],
+        )
+        report_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        report_scrollbar = tk.Scrollbar(text_frame, command=report_text.yview, relief=tk.FLAT)
+        report_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        report_text.config(yscrollcommand=report_scrollbar.set)
+        report_text.insert("1.0", detail_text or "")
+        report_text.config(state=tk.DISABLED)
+
+        button_row = tk.Frame(container, bg=self.theme["bg"])
+        button_row.pack(fill=tk.X, pady=(12, 0))
+
+        def _copy_report():
+            report_body = detail_text or ""
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(report_body)
+                self._append_log("已复制回灌审计报告到剪贴板", tag="system")
+            except Exception as exc:
+                messagebox.showerror("复制失败", f"复制审计报告失败：\n{exc}", parent=dialog)
+
+        tk.Button(
+            button_row,
+            text="复制报告",
+            command=_copy_report,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        tk.Button(
+            button_row,
+            text="关闭",
+            command=dialog.destroy,
+            bg=self.theme["primary"],
+            fg="white",
+            activebackground=self.theme["primary_active"],
+            activeforeground="white",
+        ).pack(side=tk.RIGHT)
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.wait_window()
+
+    def _show_roundtrip_audit_result(self, audit_result, source_path, target_path, import_mode, mode_label):
+        if not isinstance(audit_result, dict):
+            return
+        baseline_path = str(audit_result.get("baselinePath", "")).strip()
+        candidate_label = str(audit_result.get("candidateLabel", "")).strip() or os.path.basename(source_path)
+        baseline_hint = f"\n审计基线：{baseline_path}" if baseline_path else ""
+        if not audit_result.get("available"):
+            reason = str(audit_result.get("reason", "")).strip() or "缺少基线信息，未执行关键回灌字段审计。"
+            summary_text = (
+                f"导入方式：{mode_label}\n"
+                f"Excel：{source_path}\n"
+                f"目标链路：{target_path}\n"
+                f"结果：导入已完成，但自动回灌审计未执行。{baseline_hint}"
+            )
+            report_text = str(audit_result.get("report", "")).strip() or reason
+            self._append_log(f"导入完成，但回灌审计未执行：{reason}", tag="warning")
+            self._show_text_report_dialog("导入完成：回灌审计未执行", summary_text, report_text)
+            return
+        if audit_result.get("hasIssues"):
+            issue_count = len(audit_result.get("issues", []) or [])
+            summary_text = (
+                f"导入方式：{mode_label}\n"
+                f"Excel：{source_path}\n"
+                f"目标链路：{target_path}\n"
+                f"结果：检测到 {issue_count} 项关键回灌字段差异。{baseline_hint}\n"
+                f"对比结果：{candidate_label}"
+            )
+            self._append_log(
+                f"导入完成，但回灌审计发现 {issue_count} 项差异：{source_path} -> {target_path}",
+                tag="warning",
+            )
+            self._show_text_report_dialog(
+                "导入完成：发现回灌差异",
+                summary_text,
+                str(audit_result.get("report", "")).strip(),
+            )
+            return
+        self._append_log(
+            f"导入完成，关键回灌字段检查通过：{source_path} -> {target_path}",
+            tag="success",
+        )
+        messagebox.showinfo(
+            "导入完成",
+            "导入完成，关键回灌字段检查通过。\n"
+            f"导入方式：{mode_label}\n"
+            f"Excel：{source_path}\n"
+            f"目标链路：{target_path}{baseline_hint}",
+        )
+
+    def _sync_flow_package_registry_for_definition(self, file_path):
+        payload, error = load_json_file(file_path)
+        if error:
+            raise ValueError(error)
+        if not isinstance(payload, dict):
+            raise ValueError(f"链路文件结构无效：{file_path}")
+        sync_flow_package_registry(
+            file_path,
+            payload.get("runtimeConfig", {}),
+            payload.get("flowPackages", []),
+            payload.get("steps", []),
+        )
+
+    def select_flow_definition_file(self):
+        current_path = self._get_flow_definition_path()
+        file_path = filedialog.askopenfilename(
+            title="加载流程链路文件",
+            initialdir=os.path.dirname(current_path) if current_path else BASE_DIR,
+            initialfile=os.path.basename(current_path) if current_path else os.path.basename(FLOW_DEFINITION_FILE),
+            filetypes=[("JSON 文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not file_path:
+            return
+        self.flow_definition_path_var.set(file_path)
+        try:
+            self._save_launcher_state()
+        except Exception as exc:
+            self._append_log(f"保存当前链路文件状态失败：{exc}", tag="warning")
+        self._refresh_flow_steps()
+        self._refresh_config_summary()
+        self._append_log(f"已加载流程链路文件：{file_path}", tag="system")
+        self.status_var.set("状态：流程链路文件已加载")
+        self.current_step_var.set("当前步骤：可直接测试所选链路文件中的步骤和流程包")
+
+    def _set_all_step_checks(self, value):
+        for var in self.step_check_vars.values():
+            try:
+                var.set(bool(value))
+            except Exception:
+                pass
+
+    def _get_selected_step_ids(self):
+        selected = []
+        for item in self.flow_steps:
+            step_id = item["id"]
+            var = self.step_check_vars.get(step_id)
+            if var is not None and bool(var.get()):
+                selected.append(step_id)
+        return selected
+
+    def start_selected_steps(self):
+        step_ids = self._get_selected_step_ids()
+        if not step_ids:
+            messagebox.showinfo("提示", "请先在步骤列表中选择一个或多个步骤。")
+            return
+        extra_args = ["--steps", ",".join(step_ids)]
+        if self.skip_setup_var.get():
+            extra_args.append("--skip-setup")
+        self._launch_automation(extra_args, banner=f"========== 启动步骤测试：{','.join(step_ids)} ==========")
+
+    def start_from_selected_step(self):
+        step_ids = self._get_selected_step_ids()
+        if not step_ids:
+            messagebox.showinfo("提示", "请先在步骤列表中选择一个步骤。")
+            return
+        start_step = step_ids[0]
+        extra_args = ["--from-step", start_step]
+        if self.skip_setup_var.get():
+            extra_args.append("--skip-setup")
+        self._launch_automation(extra_args, banner=f"========== 从步骤开始执行：{start_step} ==========")
+
+    def _load_fresh_flow_package(self, package_id):
+        """从磁盘实时读取流程包定义，避免使用内存中可能陈旧的 stepIds。"""
+        try:
+            payload, _effective_path, _source_definition_path = load_effective_flow_payload(
+                self._get_flow_definition_path()
+            )
+            raw_packages = payload.get("flowPackages", []) if isinstance(payload, dict) else []
+            for pkg in raw_packages:
+                if not isinstance(pkg, dict):
+                    continue
+                if str(pkg.get("id", "")).strip() == package_id:
+                    return pkg
+        except Exception as exc:
+            self._append_log(f"读取最新流程包定义失败，回退内存数据：{exc}", tag="warning")
+        return None
+
+    def start_selected_flow_package(self):
+        package = self._get_selected_flow_package()
+        if not package:
+            messagebox.showinfo("提示", "请先选择一个流程包。")
+            return
+        package_id = str(package.get("id", "")).strip()
+        fresh_package = self._load_fresh_flow_package(package_id)
+        if fresh_package is not None:
+            step_ids = [str(item).strip() for item in (fresh_package.get("stepIds") or []) if str(item).strip()]
+            if step_ids:
+                package = fresh_package
+            else:
+                self._append_log(
+                    f"最新流程包 {package_id} 的 stepIds 为空，仍使用内存数据",
+                    tag="warning",
+                )
+        else:
+            self._append_log(
+                f"未在磁盘找到流程包 {package_id}，仍使用内存数据启动",
+                tag="warning",
+            )
+        step_ids = [str(item).strip() for item in (package.get("stepIds") or []) if str(item).strip()]
+        if not step_ids:
+            messagebox.showinfo("提示", f"流程包 {package_id} 里还没有可测试的步骤。")
+            return
+        extra_args = ["--steps", ",".join(step_ids)]
+        if self.skip_setup_var.get():
+            extra_args.append("--skip-setup")
+        package_name = package.get("name") or package_id
+        self._launch_automation(
+            extra_args,
+            banner=f"========== 启动流程包测试：{package_name} ({package_id}) ==========",
+        )
+
+    def open_template_builder(self):
+        if not os.path.exists(TEMPLATE_BUILDER_SCRIPT):
+            messagebox.showerror("打开失败", f"未找到模板制作脚本：\n{TEMPLATE_BUILDER_SCRIPT}")
+            return
+        missing_modules = self._get_missing_template_builder_modules()
+        if missing_modules:
+            missing_text = "、".join(missing_modules)
+            install_hint = f'py -3.11 -m pip install {" ".join(self._map_module_to_package_name(name) for name in missing_modules)}'
+            message = (
+                "模板制作器启动失败，当前环境缺少以下依赖：\n"
+                f"{missing_text}\n\n"
+                f"建议安装命令：\n{install_hint}"
+            )
+            messagebox.showerror("依赖缺失", message)
+            self._append_log(message, tag="error")
+            self.status_var.set("状态：模板制作器启动失败")
+            self.current_step_var.set("当前步骤：缺少模板制作器依赖")
+            return
+
+        try:
+            builder_process = subprocess.Popen(
+                [sys.executable, TEMPLATE_BUILDER_SCRIPT],
+                cwd=BASE_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"启动模板制作器失败：\n{exc}")
+            self._append_log(f"启动模板制作器失败：{exc}", tag="error")
+            return
+
+        self.root.after(1200, lambda: self._check_template_builder_startup(builder_process))
+
+    def _get_missing_template_builder_modules(self):
+        required_modules = ["cv2", "numpy", "PIL"]
+        return [module_name for module_name in required_modules if importlib.util.find_spec(module_name) is None]
+
+    def _map_module_to_package_name(self, module_name):
+        package_map = {
+            "cv2": "opencv-python",
+            "PIL": "Pillow",
+        }
+        return package_map.get(module_name, module_name)
+
+    def _check_template_builder_startup(self, process):
+        return_code = process.poll()
+        if return_code is None:
+            self._append_log("已打开模板制作器。", tag="system")
+            self.status_var.set("状态：模板制作器已启动")
+            self.current_step_var.set("当前步骤：模板制作器运行中")
+            return
+
+        stdout, stderr = process.communicate()
+        error_output = (stderr or stdout or "").strip()
+        if not error_output:
+            error_output = f"模板制作器已退出，退出码：{return_code}"
+
+        messagebox.showerror("打开失败", f"模板制作器未能正常启动：\n{error_output}")
+        self._append_log(f"模板制作器启动失败：{error_output}", tag="error")
+        self.status_var.set("状态：模板制作器启动失败")
+        self.current_step_var.set("当前步骤：请检查模板制作器依赖或启动日志")
+
+    def open_control_import_standalone(self):
+        """直接打开导入控件界面（独立窗口，不加载流程编辑器）"""
+        if not os.path.exists(FLOW_EDITOR_SCRIPT):
+            messagebox.showerror("打开失败", f"未找到流程链路编辑器：\n{FLOW_EDITOR_SCRIPT}")
+            return
+
+        try:
+            if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
+                os.remove(FLOW_EDITOR_STARTUP_SIGNAL)
+        except OSError:
+            pass
+
+        try:
+            editor_process = subprocess.Popen(
+                [sys.executable, FLOW_EDITOR_SCRIPT, "--startup-ping", FLOW_EDITOR_STARTUP_SIGNAL, "--control-library-standalone"],
+                cwd=BASE_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"启动导入控件失败：\n{exc}")
+            self._append_log(f"启动导入控件失败：{exc}", tag="error")
+            return
+
+        self.root.after(1600, lambda: self._check_control_import_standalone_startup(editor_process))
+
+    def _check_control_import_standalone_startup(self, process):
+        if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
+            self._append_log("已打开导入控件。", tag="system")
+            self.status_var.set("状态：导入控件已启动")
+            self.current_step_var.set("当前步骤：可查看/导入控件库中的控件")
+            return
+
+        return_code = process.poll()
+        if return_code is None:
+            # 日志去重：进程存活期间的反复轮询不再刷屏，只提示一次"等待窗口就绪"
+            # （启动本身需扫描控件库文件，可能耗时数秒）。
+            if not getattr(self, "_control_import_wait_logged", False):
+                self._append_log("导入控件进程已启动，正在等待窗口就绪。", tag="system")
+                self._control_import_wait_logged = True
+            self.status_var.set("状态：导入控件启动中")
+            self.current_step_var.set("当前步骤：等待导入控件窗口就绪")
+            self.root.after(1000, lambda: self._check_control_import_standalone_startup(process))
+            return
+
+        error_output = ""
+        if not error_output:
+            error_output = f"导入控件已退出，退出码：{return_code}"
+
+        messagebox.showerror("打开失败", f"导入控件未能正常启动：\n{error_output}")
+        self._append_log(f"导入控件启动失败：{error_output}", tag="error")
+        self.status_var.set("状态：导入控件启动失败")
+        self.current_step_var.set("当前步骤：请检查流程编辑器启动日志")
+
+    def _new_launcher_subprocess_log_path(self, name):
+        log_dir = os.path.join(BASE_DIR, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return os.path.join(log_dir, "launcher_{}_{}.log".format(name, timestamp))
+
+    def _open_launcher_subprocess_log(self, name):
+        log_path = self._new_launcher_subprocess_log_path(name)
+        log_handle = open(log_path, "a", encoding="utf-8", errors="ignore")
+        self._launcher_subprocess_log_handles.append(log_handle)
+        return log_path, log_handle
+
+    def open_control_map_builder(self):
+        """打开控件库采集器（用于采集新窗口的控件信息）"""
+        if not os.path.exists(CONTROL_MAP_BUILDER_SCRIPT):
+            messagebox.showerror("打开失败", f"未找到控件库采集器：\n{CONTROL_MAP_BUILDER_SCRIPT}")
+            return
+
+        log_handle = None
+        try:
+            log_path, log_handle = self._open_launcher_subprocess_log("control_map_builder")
+            builder_process = subprocess.Popen(
+                [sys.executable, CONTROL_MAP_BUILDER_SCRIPT],
+                cwd=BASE_DIR,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            if log_handle is not None:
+                try:
+                    log_handle.close()
+                except OSError:
+                    pass
+                try:
+                    self._launcher_subprocess_log_handles.remove(log_handle)
+                except ValueError:
+                    pass
+            messagebox.showerror("打开失败", f"启动控件库采集器失败：\n{exc}")
+            self._append_log(f"启动控件库采集器失败：{exc}", tag="error")
+            return
+
+        self.root.after(1200, lambda: self._check_control_map_builder_startup(builder_process, log_path))
+
+    def _check_control_map_builder_startup(self, process, log_path=None):
+        return_code = process.poll()
+        if return_code is None:
+            self._append_log("已打开控件库采集器。", tag="system")
+            self.status_var.set("状态：控件库采集器已启动")
+            self.current_step_var.set("当前步骤：可扫描窗口控件树并保存控件库")
+            return
+
+        error_output = _read_log_tail(log_path)
+        if not error_output:
+            error_output = f"控件库采集器已退出，退出码：{return_code}"
+
+        messagebox.showerror("打开失败", f"控件库采集器未能正常启动：\n{error_output}")
+        self._append_log(f"控件库采集器启动失败：{error_output}", tag="error")
+        self.status_var.set("状态：控件库采集器启动失败")
+        self.current_step_var.set("当前步骤：请检查控件库采集器依赖或启动日志")
+
+    def open_live_detector(self):
+        """打开实时控件检测器 - 鼠标悬停时自动捕获控件并匹配控件库"""
+        try:
+            from control_live_detector import ControlLiveDetectorWindow
+            
+            # 创建检测器窗口
+            detector = ControlLiveDetectorWindow(self.root)
+            detector.window.protocol("WM_DELETE_WINDOW", detector.on_close)
+            self._append_log("已打开实时控件检测器。", tag="system")
+            self.status_var.set("状态：实时控件检测器已启动")
+            self.current_step_var.set("当前步骤：将鼠标移到目标软件上，自动捕获并匹配控件")
+        except ImportError as exc:
+            messagebox.showerror("打开失败", f"缺少实时检测器依赖：\n{exc}", parent=self.root)
+            self._append_log(f"打开实时控件检测器失败：{exc}", tag="error")
+        except Exception as exc:
+            # UI 构建失败（如 TclError）也要明确提示，避免只剩一个空窗口
+            messagebox.showerror("打开失败", f"实时检测器初始化失败：\n{exc}", parent=self.root)
+            self._append_log(f"实时控件检测器初始化失败：{exc}", tag="error")
+
+    def open_flow_editor(self):
+        if getattr(self, "_editor_process", None) is not None and self._editor_process.poll() is None:
+            self._append_log("流程链路编辑器已经在运行中，请勿重复打开。", tag="warning")
+            return
+
+        if not os.path.exists(FLOW_EDITOR_SCRIPT):
+            messagebox.showerror("打开失败", f"未找到流程链路编辑器：\n{FLOW_EDITOR_SCRIPT}")
+            return
+
+        try:
+            self._save_launcher_state()
+        except Exception as exc:
+            self._append_log(f"同步当前链路文件到编辑器失败：{exc}", tag="warning")
+
+        try:
+            if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
+                os.remove(FLOW_EDITOR_STARTUP_SIGNAL)
+        except OSError:
+            pass
+
+        log_handle = None
+        try:
+            log_path, log_handle = self._open_launcher_subprocess_log("flow_editor")
+            self._editor_process = subprocess.Popen(
+                [sys.executable, FLOW_EDITOR_SCRIPT, "--startup-ping", FLOW_EDITOR_STARTUP_SIGNAL],
+                cwd=BASE_DIR,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            if log_handle is not None:
+                try:
+                    log_handle.close()
+                except OSError:
+                    pass
+                try:
+                    self._launcher_subprocess_log_handles.remove(log_handle)
+                except ValueError:
+                    pass
+            messagebox.showerror("打开失败", f"启动流程链路编辑器失败：\n{exc}")
+            self._append_log(f"启动流程链路编辑器失败：{exc}", tag="error")
+            return
+
+        self.root.after(1600, lambda: self._check_flow_editor_startup(self._editor_process, log_path))
+
+    def _check_flow_editor_startup(self, process, log_path=None):
+        if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
+            self._append_log("已打开流程链路编辑器。", tag="system")
+            self.status_var.set("状态：流程链路编辑器已启动")
+            self.current_step_var.set("当前步骤：可查看/编辑项目流程链路")
+            return
+
+        return_code = process.poll()
+        if return_code is None:
+            self._append_log("流程链路编辑器进程已启动，但尚未收到窗口就绪信号，请检查是否被其他窗口遮挡。", tag="warning")
+            self.status_var.set("状态：流程链路编辑器启动中")
+            self.current_step_var.set("当前步骤：等待链路编辑器窗口就绪")
+            return
+
+        error_output = _read_log_tail(log_path)
+        if not error_output:
+            error_output = f"流程链路编辑器已退出，退出码：{return_code}"
+
+        messagebox.showerror("打开失败", f"流程链路编辑器未能正常启动：\n{error_output}")
+        self._append_log(f"流程链路编辑器启动失败：{error_output}", tag="error")
+        self.status_var.set("状态：流程链路编辑器启动失败")
+        self.current_step_var.set("当前步骤：请检查链路编辑器启动日志")
+
+    def open_control_library(self):
+        """打开流程链路编辑器并自动进入控件库维护对话框"""
+        if getattr(self, "_editor_process", None) is not None and self._editor_process.poll() is None:
+            self._append_log("流程链路编辑器/控件库已经在运行中，请勿重复打开。", tag="warning")
+            return
+
+        if not os.path.exists(FLOW_EDITOR_SCRIPT):
+            messagebox.showerror("打开失败", f"未找到流程链路编辑器：\n{FLOW_EDITOR_SCRIPT}")
+            return
+
+        try:
+            self._save_launcher_state()
+        except Exception as exc:
+            self._append_log(f"同步当前链路文件到编辑器失败：{exc}", tag="warning")
+
+        try:
+            if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
+                os.remove(FLOW_EDITOR_STARTUP_SIGNAL)
+        except OSError:
+            pass
+
+        try:
+            self._editor_process = subprocess.Popen(
+                [sys.executable, FLOW_EDITOR_SCRIPT, "--startup-ping", FLOW_EDITOR_STARTUP_SIGNAL, "--open-control-import"],
+                cwd=BASE_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"启动控件库维护失败：\n{exc}")
+            self._append_log(f"启动控件库维护失败：{exc}", tag="error")
+            return
+
+        self.root.after(1600, lambda: self._check_control_library_startup(self._editor_process))
+
+    def _check_control_library_startup(self, process):
+        if os.path.exists(FLOW_EDITOR_STARTUP_SIGNAL):
+            self._append_log("已打开控件库维护。", tag="system")
+            self.status_var.set("状态：控件库维护已启动")
+            self.current_step_var.set("当前步骤：可查看/导入/维护控件库中的控件")
+            return
+
+        return_code = process.poll()
+        if return_code is None:
+            self._append_log("控件库维护进程已启动，正在等待窗口就绪。", tag="system")
+            self.status_var.set("状态：控件库维护启动中")
+            self.current_step_var.set("当前步骤：等待控件库维护窗口就绪")
+            self.root.after(500, lambda: self._check_control_library_startup(process))
+            return
+
+        error_output = ""
+        if not error_output:
+            error_output = f"控件库维护已退出，退出码：{return_code}"
+
+        messagebox.showerror("打开失败", f"控件库维护未能正常启动：\n{error_output}")
+        self._append_log(f"控件库维护启动失败：{error_output}", tag="error")
+        self.status_var.set("状态：控件库维护启动失败")
+        self.current_step_var.set("当前步骤：请检查链路编辑器启动日志")
+
+    def open_relative_region_helper(self):
+        try:
+            RelativeRegionHelperDialog(self.root, self.theme)
+            self._append_log("已打开父窗口相对区域取点助手。", tag="system")
+            self.status_var.set("状态：相对区域取点助手已打开")
+            self.current_step_var.set("当前步骤：可抓取父窗口和输入框相对区域")
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"打开相对区域取点助手失败：\n{exc}")
+            self._append_log(f"打开相对区域取点助手失败：{exc}", tag="error")
+            self.status_var.set("状态：相对区域取点助手启动失败")
+
+    def open_external_capture(self):
+        """打开外部控件采集对话框（实验性功能）。"""
+        try:
+            from tools.external_capture.launcher_panel import ExternalCaptureDialog
+
+            ExternalCaptureDialog(self.root, self.theme, log_callback=self._append_log)
+            self._append_log("已打开外部控件采集对话框（实验性功能：uia-peek / axe-windows）。", tag="system")
+            self.status_var.set("状态：外部控件采集已打开 (实验性)")
+            self.current_step_var.set("当前步骤：实验性功能，建议优先使用原生控件采集和实时监测")
+        except ImportError as exc:
+            messagebox.showerror("打开失败", f"缺少外部采集模块：\n{exc}", parent=self.root)
+            self._append_log(f"打开外部控件采集失败：{exc}", tag="error")
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"打开外部控件采集失败：\n{exc}", parent=self.root)
+            self._append_log(f"打开外部控件采集失败：{exc}", tag="error")
+
+    def run_environment_check(self):
+        values = self._get_model_config_values()
+        runtime_config = load_flow_runtime_config(self._get_flow_definition_path())
+        lines = []
+        checks = [
+            ("自动化脚本", AUTOMATION_SCRIPT, os.path.exists(AUTOMATION_SCRIPT)),
+            ("流程链路文件", self._get_flow_definition_path(), os.path.exists(self._get_flow_definition_path())),
+            ("模板制作器", TEMPLATE_BUILDER_SCRIPT, os.path.exists(TEMPLATE_BUILDER_SCRIPT)),
+            ("模板根目录", TEMPLATE_ROOT_DIR, os.path.isdir(TEMPLATE_ROOT_DIR)),
+            ("投影模板目录", TEMPLATE_DIR, os.path.isdir(TEMPLATE_DIR)),
+            ("WT 程序", runtime_config.get("gmExe", ""), bool(runtime_config.get("gmExe", "") and os.path.exists(runtime_config.get("gmExe", "")))),
+            ("源数据文件", runtime_config.get("sourceFilePath", ""), bool(runtime_config.get("sourceFilePath", "") and os.path.exists(runtime_config.get("sourceFilePath", "")))),
+            ("输出目录", runtime_config.get("outputDir", ""), bool(runtime_config.get("outputDir", "") and os.path.isdir(runtime_config.get("outputDir", "")))),
+            ("投影文件", runtime_config.get("projectionFilePath", ""), bool(runtime_config.get("projectionFilePath", "") and os.path.exists(runtime_config.get("projectionFilePath", "")))),
+            ("UI-TARS 仓库", values["repoRoot"], bool(values["repoRoot"] and os.path.isdir(values["repoRoot"]))),
+            ("UI-TARS 配置", values["configPath"], bool(values["configPath"] and os.path.exists(values["configPath"]))),
+        ]
+        # MUP 资产目录（粗糙度索引文件选项源）—— 自动探测，缺失时仅提示增强不可用
+        try:
+            from mup_assets import configure_mup_install_dir, status
+            configure_mup_install_dir(runtime_config.get("gmExe", ""))
+            mup_status = status()
+        except Exception:
+            mup_status = {"found": False, "install_dir": "", "option_count": 0, "detect_source": ""}
+        checks.append(
+            (
+                "MUP 资产目录(粗糙度索引)",
+                mup_status.get("install_dir", "") or "未探测到",
+                bool(mup_status.get("found")),
+            )
+        )
+        ok_count = 0
+        for label, path, passed in checks:
+            lines.append((f"[{'OK' if passed else '缺失'}] {label}: {path or '未配置'}", "success" if passed else "error"))
+            if passed:
+                ok_count += 1
+        python_ok = bool(sys.executable and os.path.exists(sys.executable))
+        node_path = shutil.which("node")
+        template_modules = ["cv2", "numpy", "PIL"]
+        lines.append((f"[{'OK' if python_ok else '缺失'}] Python: {sys.executable}", "success" if python_ok else "error"))
+        lines.append((f"[{'OK' if node_path else '缺失'}] Node.js: {node_path or '未检测到 node 命令'}", "success" if node_path else "error"))
+        for module_name in template_modules:
+            installed = importlib.util.find_spec(module_name) is not None
+            package_name = self._map_module_to_package_name(module_name)
+            lines.append(
+                (
+                    f"[{'OK' if installed else '缺失'}] 模板制作依赖 {package_name}: {'已安装' if installed else '未安装'}",
+                    "success" if installed else "error",
+                )
+            )
+        self._log_block("运行环境检测", lines)
+        dependency_ok_count = sum(1 for module_name in template_modules if importlib.util.find_spec(module_name) is not None)
+        total_checks = len(checks) + 2 + len(template_modules)
+        self.status_var.set(
+            f"状态：环境检测完成（{ok_count + int(python_ok) + int(bool(node_path)) + dependency_ok_count}/{total_checks} 通过）"
+        )
+        self.current_step_var.set("当前步骤：已完成运行环境检测")
+
+    def run_model_check(self):
+        values = self._get_model_config_values()
+        config_data, error = load_json_file(values["configPath"])
+        lines = [
+            (f"仓库路径: {values['repoRoot'] or '未配置'}", "success" if values["repoRoot"] else "error"),
+            (f"配置文件: {values['configPath'] or '未配置'}", "success" if values["configPath"] else "error"),
+            (f"表单 API Key: {'已配置' if values['apiKey'] else '未配置'}", "success" if values["apiKey"] else "error"),
+            (f"表单模型名称: {values['model'] or '未配置'}", "success" if values["model"] else "error"),
+            (f"表单 BaseURL: {values['baseURL'] or '未配置'}", "success" if values["baseURL"] else "error"),
+            (f"表单 useResponsesApi: {values['useResponsesApi']}", "info"),
+        ]
+        if error:
+            lines.append((error, "warning"))
+        else:
+            lines.append((f"配置文件模型: {config_data.get('model', '') or '未配置'}", "info"))
+            lines.append((f"配置文件 BaseURL: {config_data.get('baseURL', '') or '未配置'}", "info"))
+            lines.append((f"配置文件 API Key: {'已配置' if config_data.get('apiKey') else '未配置'}", "info"))
+            lines.append((f"配置文件 useResponsesApi: {config_data.get('useResponsesApi')}", "info"))
+
+        repo_ok = bool(values["repoRoot"] and os.path.isdir(values["repoRoot"]))
+        config_ok = bool(values["configPath"])
+        model_ok = bool(values["model"])
+        base_url_ok = bool(values["baseURL"])
+        api_key_ok = bool(values["apiKey"])
+        self._apply_model_env()
+        self._refresh_config_summary()
+        self._log_block("模型配置检查", lines)
+        if all([repo_ok, config_ok, model_ok, base_url_ok, api_key_ok]):
+            self.status_var.set("状态：模型配置检查完成")
+            self.current_step_var.set("当前步骤：模型配置可用")
+        else:
+            self.status_var.set("状态：模型配置不完整")
+            self.current_step_var.set("当前步骤：请补齐模型配置")
+
+    def open_ui_tars_config(self):
+        config_path = self._get_config_path()
+        if not config_path or not os.path.exists(config_path):
+            messagebox.showerror("打开失败", f"未找到 UI-TARS 配置文件：\n{config_path}")
+            return
+        os.startfile(config_path)
+        self._append_log(f"已打开 UI-TARS 配置：{config_path}", tag="system")
+
+    def export_flow_excel(self):
+        scope_selection = self._prompt_export_flow_scope()
+        if not scope_selection:
+            return
+        default_path = os.path.join(BASE_DIR, os.path.basename(DEFAULT_FLOW_XLSX))
+        target_path = filedialog.asksaveasfilename(
+            title="导出流程 Excel",
+            defaultextension=".xlsx",
+            initialfile=os.path.basename(default_path),
+            initialdir=os.path.dirname(default_path),
+            filetypes=[("Excel 文件", "*.xlsx")],
+        )
+        if not target_path:
+            return
+        try:
+            export_flow_to_excel(
+                self._get_flow_definition_path(),
+                target_path,
+                selected_step_ids=scope_selection.get("step_ids"),
+            )
+        except Exception as exc:
+            messagebox.showerror("导出失败", f"导出流程 Excel 失败：\n{exc}")
+            self._append_log(f"导出流程 Excel 失败：{exc}", tag="error")
+            return
+        scope_label = scope_selection.get("scope_label", "全部步骤")
+        self._append_log(f"已导出流程 Excel：{target_path} | 范围：{scope_label}", tag="success")
+        self.status_var.set("状态：流程 Excel 导出完成")
+        self.current_step_var.set(f"当前步骤：已导出 {scope_label}")
+        if os.path.exists(target_path):
+            os.startfile(os.path.dirname(target_path))
+
+    def import_flow_excel(self):
+        source_path = filedialog.askopenfilename(
+            title="导入流程 Excel",
+            initialdir=BASE_DIR,
+            filetypes=[("Excel 文件", "*.xlsx")],
+        )
+        if not source_path:
+            return
+        import_target = self._prompt_import_flow_target(source_path)
+        if not import_target:
+            return
+        target_path = import_target.get("target_path", "").strip() or self._get_flow_definition_path()
+        import_mode = import_target.get("mode", "overwrite")
+        try:
+            imported_payload = load_flow_payload_from_excel(source_path)
+            audit_result = audit_flow_excel_roundtrip(
+                source_path,
+                candidate_payload=imported_payload,
+                candidate_label=os.path.basename(source_path),
+            )
+            package_result = None
+            if import_mode == "append_package":
+                package_result = self._append_imported_excel_as_package(
+                    source_path,
+                    target_path,
+                    import_target,
+                    imported_payload=imported_payload,
+                )
+            else:
+                imported_payload = validate_imported_flow_payload_or_raise(
+                    imported_payload,
+                    source_label=f"Excel 导入 {os.path.basename(source_path)}",
+                )
+                save_json_file(target_path, imported_payload)
+            try:
+                self._sync_flow_package_registry_for_definition(target_path)
+            except Exception as exc:
+                self._append_log(f"流程包仓库同步失败：{exc}", tag="warning")
+            self.flow_definition_path_var.set(target_path)
+            try:
+                self._save_launcher_state()
+            except Exception as exc:
+                self._append_log(f"保存当前链路文件状态失败：{exc}", tag="warning")
+            self._refresh_flow_steps()
+            self._refresh_config_summary()
+        except Exception as exc:
+            messagebox.showerror("导入失败", f"导入流程 Excel 失败：\n{exc}")
+            self._append_log(f"导入流程 Excel 失败：{exc}", tag="error")
+            return
+        if import_mode == "overwrite":
+            mode_label = "覆盖当前链路"
+        elif import_mode == "save_as":
+            mode_label = "另存为新链路"
+        else:
+            mode_label = "追加为流程包"
+        detail_suffix = ""
+        if import_mode == "append_package" and package_result:
+            detail_suffix = f" | 新流程包：{'；'.join(package_result.get('packageLabels', []))}"
+        self._append_log(f"已导入流程 Excel：{source_path} -> {target_path} | 方式：{mode_label}{detail_suffix}", tag="success")
+        self.status_var.set("状态：流程 Excel 导入完成")
+        if import_mode == "append_package":
+            self.current_step_var.set("当前步骤：已追加为流程包，可在流程包测试区直接选择并测试")
+        else:
+            self.current_step_var.set("当前步骤：导入结果已切换到当前链路，可直接测试步骤和流程包")
+        self._show_roundtrip_audit_result(audit_result, source_path, target_path, import_mode, mode_label)
+
+    def convert_recorder_script(self):
+        script_path = filedialog.askopenfilename(
+            title="选择 Recorder Python 脚本",
+            initialdir=BASE_DIR,
+            filetypes=[("Python 文件", "*.py")],
+        )
+        if not script_path:
+            return
+        default_name = os.path.splitext(os.path.basename(script_path))[0] + "_converted_flow.json"
+        output_path = filedialog.asksaveasfilename(
+            title="保存转换结果",
+            initialdir=BASE_DIR,
+            initialfile=default_name,
+            defaultextension=".json",
+            filetypes=[("JSON 文件", "*.json")],
+        )
+        if not output_path:
+            return
+        try:
+            # 自动检测截图目录：脚本同目录下的 screenshots 子目录
+            screenshot_dir = None
+            script_dir = os.path.dirname(script_path)
+            candidate_screenshot_dirs = [
+                os.path.join(script_dir, "screenshots"),
+                os.path.join(script_dir, "screens"),
+                os.path.join(BASE_DIR, "debug_screenshots"),
+            ]
+            for cand in candidate_screenshot_dirs:
+                if os.path.isdir(cand):
+                    screenshot_dir = cand
+                    break
+            payload = convert_recorder_script_to_flow(script_path, output_path, screenshot_dir=screenshot_dir)
+        except Exception as exc:
+            messagebox.showerror("转换失败", f"Recorder 脚本转换失败：\n{exc}")
+            self._append_log(f"Recorder 脚本转换失败：{exc}", tag="error")
+            return
+        meta = payload.get("conversionMeta", {})
+        log_msg = (
+            "已完成 Recorder 转换："
+            f"steps={meta.get('totalSteps', 0)}, "
+            f"action={meta.get('actionSteps', 0)}, "
+            f"placeholder={meta.get('placeholderSteps', 0)}"
+        )
+        screenshot_count = meta.get("screenshotLinkedCount", 0)
+        if screenshot_count:
+            log_msg += f", screenshots={screenshot_count}"
+        elif screenshot_dir:
+            log_msg += ", screenshots=0"
+        log_msg += f", output={output_path}"
+        self._append_log(log_msg, tag="success")
+        self.status_var.set("状态：Recorder 转换完成")
+        self.current_step_var.set("当前步骤：已生成 action 流程骨架")
+        if os.path.exists(output_path):
+            os.startfile(os.path.dirname(output_path))
+
+    def open_log_file(self):
+        if not os.path.exists(LOG_FILE):
+            messagebox.showinfo("提示", "当前还没有生成运行日志。")
+            return
+        os.startfile(LOG_FILE)
+
+    def start_server_monitor_service(self):
+        if not os.path.exists(SERVER_MONITOR_SCRIPT):
+            messagebox.showerror(
+                "启动失败",
+                f"未找到服务器监控脚本：\n{SERVER_MONITOR_SCRIPT}",
+            )
+            return
+        try:
+            subprocess.Popen(
+                [sys.executable, SERVER_MONITOR_SCRIPT, "--host", "0.0.0.0", "--port", str(SERVER_MONITOR_PORT)],
+                cwd=BASE_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            self._append_log("已启动服务器监控服务（只读，端口 8767）。", tag="success")
+            self.status_var.set("状态：服务器监控服务已启动")
+            self.current_step_var.set("当前步骤：可打开“任务与服务器监控”窗口查看")
+            messagebox.showinfo("服务器监控", "服务器监控服务已启动，默认监听 0.0.0.0:8767。")
+        except Exception as exc:
+            messagebox.showerror("启动失败", f"启动服务器监控服务失败：\n{exc}")
+            self._append_log(f"启动服务器监控服务失败：{exc}", tag="error")
+
+    def open_server_monitor(self):
+        existing = getattr(self, "_server_monitor_window", None)
+        if existing is not None:
+            try:
+                if existing.window.winfo_exists():
+                    existing.window.deiconify()
+                    existing.window.lift()
+                    return
+            except Exception:
+                self._server_monitor_window = None
+        self._server_monitor_window = ServerMonitorWindow(
+            self.root,
+            getattr(self, "server_monitor_url", SERVER_MONITOR_DEFAULT_URL),
+            on_url_change=self._save_server_monitor_url,
+        )
+
+    def _save_server_monitor_url(self, url):
+        url = (url or SERVER_MONITOR_DEFAULT_URL).strip().rstrip("/")
+        self.server_monitor_url = url
+        try:
+            self._save_launcher_state()
+        except Exception:
+            pass
+
+    def start_task_queue_service(self):
+        self.start_task_monitor_service("task")
+
+    def stop_task_queue_service(self):
+        self.stop_task_monitor_service("task")
+
+    def start_task_monitor_service(self, service):
+        if service == "monitor":
+            script, port, label = SERVER_MONITOR_SCRIPT, SERVER_MONITOR_PORT, "监控服务"
+        else:
+            script, port, label = TASK_SERVER_SCRIPT, TASK_SERVER_PORT, "任务队列服务"
+        if not os.path.exists(script):
+            messagebox.showerror(
+                "启动失败",
+                "未找到{}脚本：\n{}".format(label, script),
+            )
+            return
+        token = str(getattr(self, "task_queue_token", "") or "").strip()
+        if service == "task" and not token:
+            token = simpledialog.askstring(
+                "任务队列服务",
+                "请输入服务令牌（--auth-token）：",
+                parent=self.root,
+            )
+            if not token:
+                return
+            self.task_queue_token = token.strip()
+            self._save_launcher_state()
+        attr = "_task_server_process" if service == "task" else "_monitor_server_process"
+        existing = getattr(self, attr, None)
+        if existing is not None and existing.poll() is None:
+            messagebox.showinfo(label, "{}已在运行（端口 {}）。".format(label, port))
+            return
+        command = [sys.executable, script, "--host", "0.0.0.0", "--port", str(port)]
+        if service == "task":
+            command += ["--auth-token", self.task_queue_token]
+        try:
+            proc = subprocess.Popen(
+                command,
+                cwd=BASE_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            setattr(self, attr, proc)
+            self._append_log("已启动{}（端口 {}）。".format(label, port), tag="success")
+            self.status_var.set("状态：{}已启动".format(label))
+            self.current_step_var.set("当前步骤：可打开“任务与服务器监控”窗口查看")
+            messagebox.showinfo(label, "{}已启动，默认监听 0.0.0.0:{}。".format(label, port))
+        except Exception as exc:
+            setattr(self, attr, None)
+            messagebox.showerror("启动失败", "启动{}失败：\n{}".format(label, exc))
+            self._append_log("启动{}失败：{}".format(label, exc), tag="error")
+
+    def stop_task_monitor_service(self, service):
+        if service == "monitor":
+            attr, port, label = "_monitor_server_process", SERVER_MONITOR_PORT, "监控服务"
+        else:
+            attr, port, label = "_task_server_process", TASK_SERVER_PORT, "任务队列服务"
+        proc = getattr(self, attr, None)
+        if proc is None or proc.poll() is not None:
+            messagebox.showinfo("停止{}".format(label), "当前没有由本控制台启动的{}。".format(label))
+            return
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:
+            pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception as exc:
+                messagebox.showerror("停止失败", "停止{}失败：\n{}".format(label, exc))
+                self._append_log("停止{}失败：{}".format(label, exc), tag="error")
+                return
+        setattr(self, attr, None)
+        self._append_log("已停止{}（端口 {}）。".format(label, port), tag="warning")
+        self.status_var.set("状态：{}已停止".format(label))
+        messagebox.showinfo("停止{}".format(label), "{}已停止。".format(label))
+
+    def open_task_queue(self):
+        existing = getattr(self, "_task_queue_window", None)
+        if existing is not None:
+            try:
+                if existing.window.winfo_exists():
+                    existing.window.deiconify()
+                    existing.window.lift()
+                    return
+            except Exception:
+                self._task_queue_window = None
+        self._task_queue_window = wt_task_queue_window.TaskQueueWindow(
+            self.root,
+            getattr(self, "task_queue_url", TASK_SERVER_DEFAULT_URL),
+            getattr(self, "task_queue_user", ""),
+            getattr(self, "task_queue_token", ""),
+            on_settings_change=self._save_task_queue_settings,
+            initial_monitor_url=getattr(self, "server_monitor_url", SERVER_MONITOR_DEFAULT_URL),
+            on_monitor_url_change=self._save_server_monitor_url,
+            on_start_service=self.start_task_monitor_service,
+            on_stop_service=self.stop_task_monitor_service,
+        )
+
+    def _save_task_queue_settings(self, url, user, token):
+        url = (url or TASK_SERVER_DEFAULT_URL).strip().rstrip("/")
+        self.task_queue_url = url
+        self.task_queue_user = user
+        self.task_queue_token = token
+        try:
+            self._save_launcher_state()
+        except Exception:
+            pass
+
+
+    def open_wt_agent(self):
+        """启动 WT AI Agent（自然语言 → 自动化步骤的对话式 GUI）。
+
+        以独立进程运行 `python -m WT_AUTOMATION_Agent.cli --gui`，
+        GUI 服务器自动选择空闲端口并打开浏览器，不影响总控台。
+        启动前会用当前解释器探测 Agent 第三方依赖，缺失时自动 pip 安装，
+        避免因 Python 环境缺 requests 等依赖导致"测试连接/调用 LLM 失败"。
+        """
+        agent_script = os.path.join(BASE_DIR, "WT_AUTOMATION_Agent", "gui.py")
+        if not os.path.exists(agent_script):
+            messagebox.showerror(
+                "打开失败",
+                f"未找到 WT AI Agent 脚本：\n{agent_script}\n"
+                "请确认 WT_AUTOMATION_Agent 目录完整。",
+            )
+            return
+        try:
+            ok, dep_msg = self._ensure_agent_dependencies()
+            if not ok:
+                messagebox.showerror(
+                    "依赖检查失败",
+                    f"WT AI Agent 所需依赖未就绪：\n{dep_msg}\n"
+                    "请手动执行：pip install requests",
+                )
+                return
+            self._append_log(f"WT AI Agent 依赖检查：{dep_msg}", tag="success" if "就绪" in dep_msg else "system")
+            subprocess.Popen(
+                [sys.executable, "-m", "WT_AUTOMATION_Agent.cli", "--gui"],
+                cwd=BASE_DIR,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            )
+            self._append_log(
+                "已启动 WT AI Agent（自然语言流程编排 GUI），浏览器将自动打开。",
+                tag="success",
+            )
+            self.status_var.set("状态：WT AI Agent 已启动")
+            self.current_step_var.set("当前步骤：WT AI Agent 界面已打开")
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"启动 WT AI Agent 失败：\n{exc}")
+            self._append_log(f"启动 WT AI Agent 失败：{exc}", tag="error")
+
+    def _ensure_agent_dependencies(self):
+        """检查 WT AI Agent 所需第三方依赖，缺失时用当前解释器自动安装。
+
+        用与启动子进程相同的 sys.executable 探测（总控台可能跑在 py-3.11、
+        而其他方式可能用不同 Python，探测必须与最终启动一致），
+        返回 (ok, message)。
+        """
+        required = ("requests",)  # Agent 调用 LLM 的核心依赖
+        probe = (
+            "import importlib.util;"
+            "mods=%r;"
+            "miss=[m for m in mods if importlib.util.find_spec(m) is None];"
+            "print('MISSING:' + ','.join(miss))" % (list(required),)
+        )
+        try:
+            r = subprocess.run(
+                [sys.executable, "-c", probe],
+                capture_output=True, text=True, cwd=BASE_DIR, timeout=60,
+            )
+        except Exception as exc:
+            return False, f"依赖探测失败：{exc}"
+        out = (r.stdout or "").strip()
+        missing = [m for m in out.replace("MISSING:", "").split(",") if m] if out.startswith("MISSING:") else []
+        if not missing:
+            return True, "依赖就绪"
+        self._append_log(
+            f"WT AI Agent 依赖缺失：{', '.join(missing)}，正在自动安装…",
+            tag="system",
+        )
+        try:
+            inst = subprocess.run(
+                [sys.executable, "-m", "pip", "install", *missing],
+                capture_output=True, text=True, cwd=BASE_DIR, timeout=300,
+            )
+        except Exception as exc:
+            return False, f"自动安装依赖失败：{exc}"
+        if inst.returncode != 0:
+            tail = (inst.stderr or inst.stdout or "").strip().splitlines()[-3:]
+            return False, "自动安装依赖失败：\n" + "\n".join(tail)
+        self._append_log(f"已自动安装依赖：{', '.join(missing)}", tag="success")
+        return True, f"依赖已自动安装：{', '.join(missing)}"
+
+    def open_pywinauto_recorder(self):
+        recorder_dir = DEFAULT_RECORDER_DIR
+        recorder_script = os.path.join(recorder_dir, DEFAULT_RECORDER_SCRIPT)
+
+        if not os.path.exists(recorder_dir):
+            messagebox.showerror("打开失败", f"未找到 pywinauto recorder 目录：\n{recorder_dir}")
+            return
+        if not os.path.exists(recorder_script):
+            messagebox.showerror("打开失败", f"未找到 pywinauto recorder 脚本：\n{recorder_script}")
+            return
+
+        try:
+            launch_script = (
+                "@echo off\n"
+                f'cd /d "{recorder_dir}"\n'
+                f'python "{DEFAULT_RECORDER_SCRIPT}"\n'
+            )
+            with open(RECORDER_LAUNCH_CMD_FILE, "w", encoding="utf-8", newline="\r\n") as file_obj:
+                file_obj.write(launch_script)
+            subprocess.Popen(
+                [
+                    "cmd.exe",
+                    "/k",
+                    RECORDER_LAUNCH_CMD_FILE,
+                ],
+                cwd=recorder_dir,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            )
+            self._append_log(
+                "已按两条命令启动 pywinauto recorder：\n"
+                f'1. cd /d "{recorder_dir}"\n'
+                f'2. python "{DEFAULT_RECORDER_SCRIPT}"',
+                tag="system",
+            )
+            self.status_var.set("状态：pywinauto recorder 已启动")
+            self.current_step_var.set("当前步骤：录制器窗口已打开")
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"启动 pywinauto recorder 失败：\n{exc}")
+            self._append_log(f"启动 pywinauto recorder 失败：{exc}", tag="error")
+
+    def sync_recorded_scripts(self):
+        """把 pywinauto recorder 输出目录里“这次新录的那一个”增量同步到项目。
+
+        采用清单增量：已同步过的源文件即使在项目里被改名/删除，也不会被搬回。
+        """
+        try:
+            from tools import sync_recorded as _sync_mod
+            importlib.reload(_sync_mod)
+            result = _sync_mod.sync(mode="latest")
+        except Exception as exc:
+            messagebox.showerror("同步失败", f"同步录制脚本时出错：\n{exc}")
+            self._append_log(f"同步录制脚本失败：{exc}", tag="error")
+            return
+
+        log_text = result.get("log_text") or result.get("message", "")
+        if not result.get("ok", True):
+            self._append_log(f"同步录制脚本：{result.get('message', '')}", tag="error")
+            messagebox.showwarning("同步录制脚本", result.get("message", "同步未完成"))
+            return
+
+        copied = result.get("copied", [])
+        self._append_log("同步录制脚本结果：\n" + log_text, tag="success" if copied else "system")
+        self.status_var.set("状态：录制脚本已同步" if copied else "状态：无新录制脚本")
+
+        if copied:
+            newest = copied[-1]
+            self.current_step_var.set(f"当前步骤：已同步 {newest}")
+            if messagebox.askyesno(
+                "同步完成",
+                f"已同步最新录制脚本：\n{newest}\n\n是否打开收录目录查看？",
+            ):
+                dest_dir = result.get("dest", "")
+                if dest_dir and os.path.isdir(dest_dir):
+                    os.startfile(dest_dir)
+        else:
+            self.current_step_var.set("当前步骤：无新录制脚本可同步")
+            messagebox.showinfo("同步录制脚本", result.get("message", "没有新文件需要同步。"))
+
+    def open_template_root_dir(self):
+        os.makedirs(TEMPLATE_ROOT_DIR, exist_ok=True)
+        os.startfile(TEMPLATE_ROOT_DIR)
+
+    def open_control_map_dir(self):
+        os.makedirs(CONTROL_MAP_DIR, exist_ok=True)
+        os.startfile(CONTROL_MAP_DIR)
+
+    def open_template_dir(self):
+        os.makedirs(TEMPLATE_DIR, exist_ok=True)
+        os.startfile(TEMPLATE_DIR)
+
+    def package_debug_logs(self):
+        os.makedirs(LOG_ARCHIVE_DIR, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive_path = os.path.join(LOG_ARCHIVE_DIR, f"gm_debug_bundle_{timestamp}.zip")
+        candidates = []
+        for file_name in os.listdir(BASE_DIR):
+            lower_name = file_name.lower()
+            if lower_name.endswith((".log", ".xml", ".html", ".json")) and (
+                lower_name.startswith("ui_tars_")
+                or lower_name in {"wt_automation.log", "gm_automation.log", "output.xml", "log.html", "report.html", "templates_index.json"}
+            ):
+                candidates.append(os.path.join(BASE_DIR, file_name))
+        root_index = os.path.join(TEMPLATE_ROOT_DIR, "templates_index.json")
+        if os.path.exists(root_index):
+            candidates.append(root_index)
+        if os.path.exists(LAST_RUN_REPORT_FILE):
+            candidates.append(LAST_RUN_REPORT_FILE)
+        if os.path.isdir(RUN_REPORT_DIR):
+            for file_name in os.listdir(RUN_REPORT_DIR):
+                if file_name.lower().endswith(".json"):
+                    candidates.append(os.path.join(RUN_REPORT_DIR, file_name))
+        config_path = self._get_config_path()
+        if config_path and os.path.exists(config_path):
+            candidates.append(config_path)
+
+        existing_files = [path for path in candidates if os.path.isfile(path)]
+        if not existing_files:
+            messagebox.showinfo("提示", "当前没有可打包的调试日志文件。")
+            return
+
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zip_obj:
+            for file_path in existing_files:
+                try:
+                    arcname = os.path.relpath(file_path, BASE_DIR)
+                except ValueError:
+                    arcname = os.path.basename(file_path)
+                zip_obj.write(file_path, arcname)
+
+        self._append_log(f"已完成日志打包：{archive_path}", tag="success")
+        self.status_var.set("状态：日志打包完成")
+        self.current_step_var.set("当前步骤：调试归档已生成")
+        os.startfile(LOG_ARCHIVE_DIR)
+
+    def _on_close(self):
+        try:
+            self._save_launcher_state()
+        except Exception:
+            pass
+        if self.process and self.process.poll() is None:
+            should_close = messagebox.askyesno(
+                "退出总控台",
+                "当前自动化流程仍在运行中，确定退出并停止流程吗？",
+            )
+            if not should_close:
+                return
+            try:
+                self.process.terminate()
+            except OSError:
+                pass
+        for log_handle in getattr(self, "_launcher_subprocess_log_handles", []):
+            try:
+                log_handle.close()
+            except OSError:
+                pass
+        self.root.destroy()
+
+
+# ── 自动提权（UIPI 内容树隔离处置，2026-08-25）────────────────────────
+# 背景：MUP(MUPSmartClient) 以管理员/高完整性运行，普通权限 WT 对它的 UIA 内容树
+# 被 UIPI 整棵隔离（窗口能枚举到但 descendants=0，全部步骤报"未命中控件"）。
+# Launcher 启动时若检测到"MUP 高完整性 + 本进程非高完整性"，用 ShellExecute runas
+# 以管理员身份重启自身，使后续 Launcher/采集/Run 子进程继承提权令牌、能读到 MUP 内容。
+# 使用 --no-elevate 可禁用；提权后的子进程带 _ELEVATED_RELAUNCH_FLAG 防死循环。
+_ELEVATED_RELAUNCH_FLAG = "--wt-launched-elevated"
+_ELEVATION_HINT_SHOWN = False
+
+
+def _process_integrity_tier(pid):
+    """进程完整性级别：'high'/'medium'/'low'/''（未知）。读取失败按未知处理。"""
+    if not pid:
+        return ""
+    try:
+        import re as _re
+        import win32api as _wa
+        import win32security as _ws
+        h = _wa.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ""
+        try:
+            th = _ws.OpenProcessToken(h, _ws.TOKEN_QUERY)
+            info = _ws.GetTokenInformation(th, _ws.TokenIntegrityLevel)
+            sid = info[0]
+            s = _ws.ConvertSidToStringSid(sid)
+            m = _re.search(r"S-1-16-(\d+)", s or "")
+            rid = int(m.group(1)) if m else 0
+        finally:
+            try:
+                _wa.CloseHandle(h)
+            except Exception:
+                pass
+        if rid >= 0x3000:
+            return "high"
+        if rid >= 0x2000:
+            return "medium"
+        if rid > 0:
+            return "low"
+        return ""
+    except Exception:
+        return ""
+
+
+def _runs_target_elevated():
+    """是否存在以高完整性运行的 MUPSmartClient(MUP) 目标进程。"""
+    try:
+        import psutil
+    except Exception:
+        return False
+    try:
+        for p in psutil.process_iter(["pid", "name", "exe"]):
+            try:
+                name = (p.info.get("name") or "").lower()
+                exe = (p.info.get("exe") or "").lower()
+            except Exception:
+                continue
+            if "smartclient" not in name and not ("meteodyn" in exe and "universe" in exe):
+                continue
+            if _process_integrity_tier(p.info.get("pid")) == "high":
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _should_relaunch_elevated():
+    """需要自动提权的条件：未显式禁用、自身非高完整性、且存在高完整性的 MUP 目标。"""
+    if _ELEVATED_RELAUNCH_FLAG in sys.argv or "--no-elevate" in sys.argv:
+        return False
+    if _process_integrity_tier(os.getpid()) == "high":
+        return False
+    if not _runs_target_elevated():
+        return False
+    return True
+
+
+def _relaunch_elevated():
+    """ShellExecute runas 以管理员身份重启自身（保留原命令行参数），返回是否已投递。"""
+    try:
+        if getattr(sys, "frozen", False):
+            argv = subprocess.list2cmdline(sys.argv) + " " + _ELEVATED_RELAUNCH_FLAG
+            target = sys.executable
+        else:
+            args = sys.argv if sys.argv else [os.path.basename(sys.argv[0])]
+            argv = subprocess.list2cmdline(args) + " " + _ELEVATED_RELAUNCH_FLAG
+            target = sys.executable
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", target, argv, os.getcwd(), 1
+        )
+        return result > 32
+    except Exception:
+        return False
+
+
+def _show_elevation_hint():
+    """用户拒绝了提权（或提权失败）时，用 MessageBox 说明后果，避免静默失败再被误判。"""
+    ctypes.windll.user32.MessageBoxW(
+        None,
+        "检测到目标软件(MUPSmartClient/Meteodyn Universe)以管理员权限运行，"
+        "而本工具当前是普通权限。\n\n"
+        "Windows 的 UIPI 隔离会阻止普通权限进程读取 MUP 的控件内容树，"
+        "导致所有步骤报“未命中控件”。\n\n"
+        "建议：以管理员身份启动本工具，或将 MUP 改为普通权限启动。\n\n"
+        "（可先继续运行；若步骤失败，请按上述方式调整权限）",
+        "WT Automation - 权限提示",
+        0x40 | 0x1000,  # MB_ICONINFORMATION | MB_SYSTEMMODAL
+    )
+
+
+def _maybe_relaunch_elevated():
+    """启动早期的自动提权入口：需要时先弹 UAC 以管理员重启，否则返回 False 正常启动。"""
+    global _ELEVATION_HINT_SHOWN
+    if not _should_relaunch_elevated():
+        return False
+    if _relaunch_elevated():
+        return True  # 已投递提权重启，本进程退出
+    if not _ELEVATION_HINT_SHOWN:
+        _ELEVATION_HINT_SHOWN = True
+        _show_elevation_hint()
+    return False
+
+
+def main():
+    if _maybe_relaunch_elevated():
+        return
+    wt_dpi.enable_process_dpi_awareness()
+    root = tk.Tk()
+    wt_dpi.compute_scale(root)
+    LauncherApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

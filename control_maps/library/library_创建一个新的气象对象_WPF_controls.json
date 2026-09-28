@@ -1,0 +1,97 @@
+{
+  "schemaVersion": "1.0",
+  "description": "WT 自动化控件库。由链路编辑器自动沉淀常用控件，按窗口与框架分类保存。",
+  "targetWindow": {
+    "title": "创建一个新的气象对象",
+    "className": "",
+    "processId": "",
+    "handle": "",
+    "frameworkId": "WPF"
+  },
+  "scanMeta": {
+    "scanTime": "2026-07-30T11:17:55",
+    "backend": "editor",
+    "mode": "editor_library",
+    "categoryWindowTitle": "创建一个新的气象对象",
+    "categoryFrameworkId": "WPF",
+    "totalControls": 1,
+    "rawTotalControls": 1
+  },
+  "controlDefinitions": [
+    {
+      "id": "textbox_0_m_Edit_2",
+      "name": "0 m",
+      "role": "来自控件库扫描：",
+      "enabled": true,
+      "windowTitle": "创建一个新的气象对象",
+      "targetMethod": "automation_id,control_type,found_index",
+      "targetValue": "textbox,Edit,1",
+      "templateKey": "",
+      "uiPath": "Window_Main > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel > MUPMicroScaleView > MUPMicroScaleSidebarControl > MicroScale_TabControl_EditingSite > MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel > MUPSiteEditView > ScrollViewer > 位置 > MBACaseLocationView > 0 m",
+      "notes": "由控件库扫描生成，定位评分=100，策略=automation_id + control_type + found_index消歧，质量=推荐保留，说明=同行标签对应的实际操作控件（下拉框/输入框） | 可自动化风险=低 | 已自动收录到控件库分类：创建一个新的气象对象 / WPF",
+      "labelText": "",
+      "relatedLabelName": "",
+      "rawInspectText": "Name: \t \"0 m\"\nControlType: \t Edit\nLocalizedControlType: \t \"\"\nBoundingRectangle: \t [l=60,t=653,r=419,b=695]\nIsEnabled: \t True\nIsOffscreen: \t False\nIsKeyboardFocusable: \t \nHasKeyboardFocus: \t \nProcessId: \t 16812\nFrameworkId: \t \"WPF\"\nClassName: \t \"TextBox\"\nAutomationId: \t \"textbox\"\nNativeWindowHandle: \t \nProviderDescription: \t \"\"\nLegacyIAccessible.Name: \t \"\"\nLegacyIAccessible.Role: \t \nLegacyIAccessible.State:",
+      "auxChecks": [
+        "IsEnabled=True",
+        "IsOffscreen=False",
+        "FrameworkId=WPF",
+        "ClassName=TextBox"
+      ],
+      "inspectData": {
+        "howFound": "",
+        "name": "0 m",
+        "controlType": "Edit",
+        "localizedControlType": "",
+        "boundingRectangle": "[l=60,t=653,r=419,b=695]",
+        "isEnabled": "True",
+        "isOffscreen": "False",
+        "isKeyboardFocusable": "",
+        "hasKeyboardFocus": "",
+        "processId": "16812",
+        "runtimeId": "[7,41AC,6B6A9D]",
+        "frameworkId": "WPF",
+        "className": "TextBox",
+        "automationId": "textbox",
+        "nativeWindowHandle": "",
+        "providerDescription": "",
+        "legacyName": "",
+        "legacyRole": "",
+        "legacyState": "",
+        "firstChild": "",
+        "lastChild": "",
+        "next": "",
+        "previous": "",
+        "children": [
+          "PART_ContentHost | ScrollViewer | Pane"
+        ],
+        "ancestors": [
+          "Window_Main",
+          "MicroScaleMainView_View_Main",
+          "MicroScale_TabControl_Site",
+          "MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel",
+          "MUPMicroScaleView",
+          "MUPMicroScaleSidebarControl",
+          "MicroScale_TabControl_EditingSite",
+          "MUP.MSC.SmartClient.Base.ViewModel.MUPLoadableTabContentViewModel",
+          "MUPSiteEditView",
+          "ScrollViewer",
+          "位置",
+          "MBACaseLocationView"
+        ],
+        "availablePatterns": [],
+        "foundIndex": "",
+        "isControlElement": "",
+        "isContentElement": "",
+        "value": "0 m",
+        "toggleState": "",
+        "isVisible": "True",
+        "supportedPatterns": [],
+        "textContent": "",
+        "recommendedTargetMethod": "automation_id,control_type",
+        "recommendedTargetValue": "textbox,Edit"
+      }
+    }
+  ],
+  "lastUpdated": "2026-07-30T11:17:55"
+}

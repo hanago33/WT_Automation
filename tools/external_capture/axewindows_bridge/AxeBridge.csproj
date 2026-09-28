@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>AxeBridge</RootNamespace>
+    <AssemblyName>AxeBridge</AssemblyName>
+    <AssemblyTitle>AxeBridge - JSON bridge for Axe.Windows</AssemblyTitle>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Axe.Windows 官方 NuGet 包（AccessibilityInsights 底层引擎）。
+         版本可按需调整，见 https://www.nuget.org/packages/Axe.Windows -->
+    <PackageReference Include="Axe.Windows" Version="2.4.2" />
+  </ItemGroup>
+
+</Project>
