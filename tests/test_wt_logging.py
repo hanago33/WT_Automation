@@ -645,15 +645,30 @@ class JsonlRetentionTests(unittest.TestCase):
         self.assertEqual(wt_logging.jsonl_files_to_prune(""), [])
 
     def test_prune_actually_removes_files(self):
-        """真实删除路径。环境禁删（沙箱守卫）时跳过，不算失败。"""
+        """真实删除路径：返回的删除数必须与实际消失的文件数一致。
+
+        ``prune_jsonl_dir`` 的契约是「尽力删除并返回删除数，失败静默跳过」——
+        **删除数本身依赖环境是否允许删除**（沙箱守卫可能全拒、部分拒或全允许），
+        故不能断言固定值，否则测试会随环境随机红。
+        与环境无关且真正有价值的不变量是：**返回值不撒谎**。
+        精确的「该删哪些」由 ``jsonl_files_to_prune`` 的用例覆盖。
+        """
+        target = os.path.join(self.PROBE_DIR, "new.jsonl")
+        expected = wt_logging.jsonl_files_to_prune(target, keep=2)
+        self.assertEqual(len(expected), 4, "选择逻辑应挑出 4 个待清理文件")
+
+        before = set(self._names())
         try:
-            removed = wt_logging.prune_jsonl_dir(
-                os.path.join(self.PROBE_DIR, "new.jsonl"), keep=2
-            )
+            removed = wt_logging.prune_jsonl_dir(target, keep=2)
         except SystemExit:
             self.skipTest("环境禁删（沙箱批量删除守卫）")
-        self.assertEqual(removed, 4)
-        self.assertEqual(len(self._names()), 2)
+        vanished = before - set(self._names())
+
+        self.assertEqual(
+            removed, len(vanished), "返回的删除数应与实际消失的文件数一致"
+        )
+        if removed == len(expected):
+            self.assertEqual(len(self._names()), 2, "全删成功后应只剩 keep 个")
 
     def test_default_keep_is_sane(self):
         self.assertGreaterEqual(wt_logging.JSONL_KEEP_RUNS, 10)
