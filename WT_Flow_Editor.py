@@ -5168,7 +5168,13 @@ class ControlMapImportDialog:
         if not control_names:
             names_str = f"{len(resolved_indexes)} 个控件"
         
-        if not messagebox.askyesno("确认删除", f"确定从控件库中删除以下控件？\n{names_str}", parent=self.window):
+        if not messagebox.askyesno(
+            "确认删除",
+            f"确定从控件库中删除以下控件？\n{names_str}\n\n"
+            "注意：删除会立即写入当前控件库文件，并把流程定义中引用这些控件的步骤\n"
+            "标记为「来源失效」（会改写 flow_packages/flow_definition_*.json）。",
+            parent=self.window,
+        ):
             return
 
         # 收集被删控件的标识（id / automationId / name），删除后用于流程来源联动标记
@@ -5579,6 +5585,29 @@ class FlowPackageDialog:
 
 
 class FlowEditorApp:
+    # 表单「未应用改动」检测的字段清单：新增表单字段时须同步补充，
+    # 否则该字段的未应用改动不会被切步骤/关窗提示捕获（详见 _form_snapshot）。
+    _FORM_SNAPSHOT_VARS = (
+        "var_id", "var_name", "var_stage", "var_strategy", "var_action_type", "var_enabled",
+        "var_code_symbol", "var_code_reference", "var_package_ref", "var_success_log", "var_window_title",
+        "var_control_name", "var_class_name", "var_automation_id", "var_control_type", "var_ui_path",
+        "var_template_key",
+        "var_action", "var_target_control_id", "var_input_text", "var_post_input_keys",
+        "var_require_blur_submit", "var_wait_before", "var_wait_after", "var_timeout",
+        "var_continue_when_control_id", "var_continue_when_condition", "var_continue_when_timeout",
+        "var_continue_when_window_title_hint", "var_retry_count", "var_retry_interval", "var_on_error",
+        "var_fallback_template", "var_prefer_template",
+        "var_precond_condition", "var_precond_expected", "var_precond_control",
+        "var_anchor_align", "var_anchor_offset_x", "var_anchor_offset_y",
+        "var_relative_parent_title", "var_relative_parent_class", "var_relative_parent_framework",
+        "var_relative_region_x", "var_relative_region_y", "var_relative_region_width",
+        "var_relative_region_height", "var_relative_region_anchor",
+    )
+    _FORM_SNAPSHOT_TEXTS = (
+        "description_text", "aux_checks_text", "fallbacks_text", "notes_text",
+        "step_params_text", "action_config_text",
+    )
+
     def __init__(self, root):
         self.root = root
         wt_theme.get_theme_manager().init_theme(self.root, "flatly")
@@ -5594,6 +5623,8 @@ class FlowEditorApp:
         self.current_package_step_filter_id = ""
         self.dirty = False
         self._suppress_tree_select_event = False
+        # 表单「未应用改动」基线：加载/应用步骤时刷新（见 _form_snapshot）
+        self._form_baseline = None
         self._dragging_step_iid = ""
         self._drag_hover_iid = ""
         self._drag_hover_after = False
@@ -8722,7 +8753,78 @@ class FlowEditorApp:
                 self._load_step_into_form(self.steps[focus_index])
                 self.status_var.set(f"已选择 {len(selection)} 个步骤，当前编辑第一个选中步骤。")
             return
-        self._select_step(int(selection[0]))
+        target_index = int(selection[0])
+        # 用户点击切换步骤：先处理当前表单里「未应用到步骤」的修改，避免无声丢弃。
+        # 拖拽排序（_dragging_step_iid 非空）时不弹确认：模态框会打断拖拽手势。
+        if not getattr(self, "_dragging_step_iid", ""):
+            if not self._confirm_discard_form_changes():
+                self._restore_step_selection()
+                return
+        self._select_step(target_index)
+
+    def _restore_step_selection(self):
+        """把步骤树的选中项恢复到当前编辑的步骤（不重新加载表单、不丢弃输入）。"""
+        if self.selected_index is None:
+            return
+        self._suppress_tree_select_event = True
+        try:
+            self.step_tree.selection_set(str(self.selected_index))
+        finally:
+            self._suppress_tree_select_event = False
+
+    def _form_snapshot(self):
+        """收集当前表单全部可编辑字段的值，用于检测「未应用到步骤」的修改。
+
+        字段清单在 ``_FORM_SNAPSHOT_VARS`` / ``_FORM_SNAPSHOT_TEXTS``，
+        **新增表单字段时须同步补充**。防御式读取：字段尚未创建时跳过，不抛异常。
+        """
+        values = []
+        for name in self._FORM_SNAPSHOT_VARS:
+            var = getattr(self, name, None)
+            if var is None:
+                continue
+            try:
+                values.append((name, var.get()))
+            except Exception:
+                values.append((name, None))
+        for name in self._FORM_SNAPSHOT_TEXTS:
+            widget = getattr(self, name, None)
+            if widget is None:
+                continue
+            try:
+                values.append((name, _get_text(widget)))
+            except Exception:
+                values.append((name, None))
+        return tuple(values)
+
+    def _confirm_discard_form_changes(self):
+        """切步骤/关窗前处理当前表单里「未应用到步骤」的修改。
+
+        返回 True 表示可以继续（无改动 / 用户选择先应用且成功 / 用户放弃改动），
+        返回 False 表示用户取消（应留在当前步骤）。
+        """
+        if self.selected_index is None:
+            return True
+        baseline = getattr(self, "_form_baseline", None)
+        if baseline is None:
+            return True
+        if self._form_snapshot() == baseline:
+            return True
+        answer = messagebox.askyesnocancel(
+            "未应用的修改",
+            "当前表单有未应用到步骤的修改。\n\n"
+            "「是」：先应用到当前步骤，再继续\n"
+            "「否」：放弃这些修改\n"
+            "「取消」：留在当前步骤",
+            parent=self.root,
+        )
+        if answer is None:
+            return False
+        if not answer:
+            return True
+        # 「是」：先应用；失败时 cmd_apply_step 已给出提示，且基线未更新 → 阻止继续
+        self.cmd_apply_step()
+        return self._form_snapshot() == self._form_baseline
 
     def _get_selected_step_indexes(self):
         selection = self.step_tree.selection()
@@ -8853,6 +8955,8 @@ class FlowEditorApp:
         self._set_text(self.action_config_text, self._format_json_text(step.get("actionConfig", {})))
         current_index = self.selected_index if self.selected_index is not None else 0
         self.status_var.set(f"已加载步骤 #{index_to_seq(current_index)}：{step.get('name', '')}")
+        # 重新记录表单基线：此刻表单与步骤一致，之后任何未应用的改动都会被检测到
+        self._form_baseline = self._form_snapshot()
 
     def _build_step_from_form(self):
         step_params = self._parse_json_dict_text(self._get_text(self.step_params_text), "步骤参数")
@@ -10636,6 +10740,10 @@ class FlowEditorApp:
     def _on_close(self):
         # 退出前停止伴随拾取模式
         self._stop_concurrent_mode()
+
+        # 表单里未应用到步骤的修改也先确认，避免关窗无声丢弃
+        if not self._confirm_discard_form_changes():
+            return
         
         if self.dirty:
             should_close = messagebox.askyesno("确认退出", "当前流程链路有未保存修改，确定直接退出吗？")

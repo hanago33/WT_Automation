@@ -386,6 +386,15 @@ class ExternalCaptureDialog:
 
     def stop_uiapeek_service(self):
         if self._uiapeek_elevated:
+            # 提权启动的实例无法按句柄停止，只能按进程名强杀所有 UiaPeek.exe，
+            # 会连带结束手动启动的实例 —— 先确认再动手。
+            if not messagebox.askyesno(
+                "停止 UiaPeek 服务",
+                "将以管理员权限强制结束所有 UiaPeek.exe 进程\n"
+                "（包括手动启动的实例）。\n\n确定继续吗？",
+                parent=self.window,
+            ):
+                return
             _kill_uiapeek()
             self._uiapeek_elevated = False
             self._uiapeek_proc = None
@@ -393,7 +402,7 @@ class ExternalCaptureDialog:
             self._log("已停止（管理员提权启动的）UiaPeek 服务。", "system")
             messagebox.showinfo(
                 "提示",
-                "已结束 UiaPeek.exe 进程。\n若服务是手动启动的，请直接关闭 UiaPeek.exe 窗口。",
+                "已强制结束所有 UiaPeek.exe 进程（含手动启动的实例）。",
                 parent=self.window)
             return
         if self._uiapeek_proc and self._uiapeek_proc.poll() is None:
@@ -719,5 +728,10 @@ class ExternalCaptureDialog:
             pass
 
     def _on_close(self):
-        # 关闭对话框时不停 UiaPeek 服务（用户可能想继续用），仅释放窗口
+        # 关闭对话框时不停 UiaPeek 服务（用户可能想继续用），仅释放窗口；
+        # 但先把（可能手工输入的）路径/地址落盘，避免关窗即丢。
+        try:
+            self._persist_paths()
+        except Exception:
+            pass
         self.window.destroy()
