@@ -2684,30 +2684,18 @@ class LauncherApp:
         self.simple_status_label.config(fg=colors.get(kind, self.theme["muted"]))
 
     def _simple_save_state(self):
-        """将 Simple 模式配置持久化到 launcher_state.json。"""
+        """将 Simple 相关配置持久化到 launcher_state.json。
+
+        统一委托 _save_launcher_state（唯一全量写入实现）：此前两套实现
+        （本方法「读改写」+ _save_launcher_state「全量覆盖」）分别写同一文件，
+        字段集不同、异常策略不同，存在字段漂移与互相覆盖风险。
+        全量实现已覆盖本方法所需全部字段（simpleModeFlows / simpleModeEnabled /
+        simpleModeRemote / projectWorkDir / projectParams / cpVersionOptions /
+        turbineTypeOptions / uiMode）。
+        保存失败保持静默（原行为），避免打断 Simple 操作。
+        """
         try:
-            state, _ = load_json_file(LAUNCHER_STATE_FILE)
-            state = state or {}
-            simple_flows = {}
-            simple_enabled = {}
-            for sec in self.SIMPLE_SECTIONS:
-                key = sec["key"]
-                info = self.simple_section_vars.get(key, {})
-                path = info.get("path", "")
-                if path:
-                    simple_flows[key] = path
-                enabled_var = info.get("enabled")
-                if enabled_var is not None:
-                    simple_enabled[key] = bool(enabled_var.get())
-            state["simpleModeFlows"] = simple_flows
-            state["simpleModeEnabled"] = simple_enabled
-            state["simpleModeRemote"] = bool(self.simple_remote_var.get())
-            state["projectWorkDir"] = getattr(self, "project_work_dir", "")
-            state["projectParams"] = getattr(self, "project_params", {})
-            state["cpVersionOptions"] = getattr(self, "cp_version_options", [])
-            state["turbineTypeOptions"] = getattr(self, "turbine_type_options", [])
-            state["uiMode"] = self.ui_mode_var.get()
-            save_json_file(LAUNCHER_STATE_FILE, state)
+            self._save_launcher_state()
         except Exception:
             pass
 
@@ -8559,6 +8547,10 @@ class LauncherApp:
         )
 
     def open_template_builder(self):
+        existing = getattr(self, "_template_builder_process", None)
+        if existing is not None and existing.poll() is None:
+            self._append_log("模板制作器已经在运行中，请勿重复打开。", tag="warning")
+            return
         if not os.path.exists(TEMPLATE_BUILDER_SCRIPT):
             messagebox.showerror("打开失败", f"未找到模板制作脚本：\n{TEMPLATE_BUILDER_SCRIPT}")
             return
@@ -8585,6 +8577,7 @@ class LauncherApp:
                 stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            self._template_builder_process = builder_process
         except Exception as exc:
             messagebox.showerror("打开失败", f"启动模板制作器失败：\n{exc}")
             self._append_log(f"启动模板制作器失败：{exc}", tag="error")
@@ -8623,6 +8616,10 @@ class LauncherApp:
 
     def open_control_import_standalone(self):
         """直接打开导入控件界面（独立窗口，不加载流程编辑器）"""
+        existing = getattr(self, "_control_import_process", None)
+        if existing is not None and existing.poll() is None:
+            self._append_log("导入控件窗口已经在运行中，请勿重复打开。", tag="warning")
+            return
         if not os.path.exists(FLOW_EDITOR_SCRIPT):
             messagebox.showerror("打开失败", f"未找到流程链路编辑器：\n{FLOW_EDITOR_SCRIPT}")
             return
@@ -8641,6 +8638,7 @@ class LauncherApp:
                 stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            self._control_import_process = editor_process
         except Exception as exc:
             messagebox.showerror("打开失败", f"启动导入控件失败：\n{exc}")
             self._append_log(f"启动导入控件失败：{exc}", tag="error")
@@ -8690,6 +8688,10 @@ class LauncherApp:
 
     def open_control_map_builder(self):
         """打开控件库采集器（用于采集新窗口的控件信息）"""
+        existing = getattr(self, "_control_map_builder_process", None)
+        if existing is not None and existing.poll() is None:
+            self._append_log("控件库采集器已经在运行中，请勿重复打开。", tag="warning")
+            return
         if not os.path.exists(CONTROL_MAP_BUILDER_SCRIPT):
             messagebox.showerror("打开失败", f"未找到控件库采集器：\n{CONTROL_MAP_BUILDER_SCRIPT}")
             return
@@ -8704,6 +8706,7 @@ class LauncherApp:
                 stderr=subprocess.STDOUT,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            self._control_map_builder_process = builder_process
         except Exception as exc:
             if log_handle is not None:
                 try:
@@ -8739,11 +8742,21 @@ class LauncherApp:
 
     def open_live_detector(self):
         """打开实时控件检测器 - 鼠标悬停时自动捕获控件并匹配控件库"""
+        existing = getattr(self, "_live_detector_window", None)
+        if existing is not None:
+            try:
+                if existing.window.winfo_exists():
+                    existing.window.deiconify()
+                    existing.window.lift()
+                    return
+            except Exception:
+                self._live_detector_window = None
         try:
             from control_live_detector import ControlLiveDetectorWindow
             
             # 创建检测器窗口
             detector = ControlLiveDetectorWindow(self.root)
+            self._live_detector_window = detector
             detector.window.protocol("WM_DELETE_WINDOW", detector.on_close)
             self._append_log("已打开实时控件检测器。", tag="system")
             self.status_var.set("状态：实时控件检测器已启动")
@@ -8886,8 +8899,17 @@ class LauncherApp:
         self.current_step_var.set("当前步骤：请检查链路编辑器启动日志")
 
     def open_relative_region_helper(self):
+        existing = getattr(self, "_relative_region_helper", None)
+        if existing is not None:
+            try:
+                if existing.window.winfo_exists():
+                    existing.window.deiconify()
+                    existing.window.lift()
+                    return
+            except Exception:
+                self._relative_region_helper = None
         try:
-            RelativeRegionHelperDialog(self.root, self.theme)
+            self._relative_region_helper = RelativeRegionHelperDialog(self.root, self.theme)
             self._append_log("已打开父窗口相对区域取点助手。", tag="system")
             self.status_var.set("状态：相对区域取点助手已打开")
             self.current_step_var.set("当前步骤：可抓取父窗口和输入框相对区域")
@@ -8898,10 +8920,19 @@ class LauncherApp:
 
     def open_external_capture(self):
         """打开外部控件采集对话框（实验性功能）。"""
+        existing = getattr(self, "_external_capture_dialog", None)
+        if existing is not None:
+            try:
+                if existing.window.winfo_exists():
+                    existing.window.deiconify()
+                    existing.window.lift()
+                    return
+            except Exception:
+                self._external_capture_dialog = None
         try:
             from tools.external_capture.launcher_panel import ExternalCaptureDialog
 
-            ExternalCaptureDialog(self.root, self.theme, log_callback=self._append_log)
+            self._external_capture_dialog = ExternalCaptureDialog(self.root, self.theme, log_callback=self._append_log)
             self._append_log("已打开外部控件采集对话框（实验性功能：uia-peek / axe-windows）。", tag="system")
             self.status_var.set("状态：外部控件采集已打开 (实验性)")
             self.current_step_var.set("当前步骤：实验性功能，建议优先使用原生控件采集和实时监测")
@@ -9212,10 +9243,7 @@ class LauncherApp:
     def _save_server_monitor_url(self, url):
         url = (url or SERVER_MONITOR_DEFAULT_URL).strip().rstrip("/")
         self.server_monitor_url = url
-        try:
-            self._save_launcher_state()
-        except Exception:
-            pass
+        self._schedule_launcher_state_save()
 
     def start_task_queue_service(self):
         self.start_task_monitor_service("task")
@@ -9324,15 +9352,39 @@ class LauncherApp:
             on_stop_service=self.stop_task_monitor_service,
         )
 
+    def _schedule_launcher_state_save(self, delay_ms=400):
+        """去抖保存统一入口：高频调用（设置逐键变化等）合并为一次写盘。
+
+        任务队列地址/用户名/令牌与监控地址输入框均为逐键触发保存回调，原先每敲
+        一键就全量构造并写一次 launcher_state.json；改为 400ms 去抖，连续输入只
+        落盘最后一次。关窗时 _on_close 会先取消防抖定时器并立即 flush。
+        """
+        pending = getattr(self, "_state_save_after_id", None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except Exception:
+                pass
+        try:
+            self._state_save_after_id = self.root.after(delay_ms, self._flush_launcher_state_save)
+        except Exception:
+            # 根窗口不可用（如退出过程中）：改为同步保存，保证改动不丢
+            self._state_save_after_id = None
+            self._flush_launcher_state_save()
+
+    def _flush_launcher_state_save(self):
+        self._state_save_after_id = None
+        try:
+            self._save_launcher_state()
+        except Exception:
+            pass
+
     def _save_task_queue_settings(self, url, user, token):
         url = (url or TASK_SERVER_DEFAULT_URL).strip().rstrip("/")
         self.task_queue_url = url
         self.task_queue_user = user
         self.task_queue_token = token
-        try:
-            self._save_launcher_state()
-        except Exception:
-            pass
+        self._schedule_launcher_state_save()
 
 
     def open_wt_agent(self):
@@ -9552,6 +9604,14 @@ class LauncherApp:
         os.startfile(LOG_ARCHIVE_DIR)
 
     def _on_close(self):
+        # 先取消挂起的去抖保存并立即 flush，避免退出时丢最后一次设置改动
+        pending = getattr(self, "_state_save_after_id", None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except Exception:
+                pass
+            self._state_save_after_id = None
         try:
             self._save_launcher_state()
         except Exception:
