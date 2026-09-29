@@ -11,6 +11,11 @@
 6. 外部采集对话框：按进程名强杀所有 UiaPeek 实例前二次确认；
 7. 运行记录：流程异常最后一行按 error 级着色（kind="error"）。
 
+跟进修复（2026-09-29，ai/session-16）：
+- 缺陷 1 的三选确认原在按压期靠 `_dragging_step_iid` 跳过，但该标志在按下任意行时
+  即被置位，所有鼠标点击切步都被绕过 → 改为按压期推迟、`_finish_step_drag` 松开时
+  未重排再走完整确认（见 StepSwitchOnReleaseTests）。
+
 被测对象是真实方法（轻量宿主/替身绑定），不实例化窗口、无需 Tk 交互环境。
 """
 import ast
@@ -172,8 +177,9 @@ class FormDirtyGuardTests(unittest.TestCase):
         ask.assert_called_once()
         self.assertEqual(switched, [])  # 用户取消 → 不切步骤
 
-    def test_drag_in_progress_skips_confirm(self):
-        """拖拽排序时按行会先触发行选择，模态确认框会打断拖拽手势 —— 须跳过。"""
+    def test_drag_in_progress_defers_switch(self):
+        """按压/拖拽期间选中事件不切表单也不弹窗（模态框会打断拖拽手势），
+        切换统一推迟到 _finish_step_drag 松开时处理。"""
         app = self._make_app()
         app.var_name.set("步骤一（改）")
         app._dragging_step_iid = "0"
@@ -191,7 +197,7 @@ class FormDirtyGuardTests(unittest.TestCase):
         with patch.object(E.messagebox, "askyesnocancel") as ask:
             app._on_tree_select()
         ask.assert_not_called()
-        self.assertEqual(switched, [1])
+        self.assertEqual(switched, [])  # 按压期推迟：此处既不弹窗也不切换
 
     def test_restore_step_selection_keeps_form(self):
         app = self._make_app()
@@ -208,6 +214,119 @@ class FormDirtyGuardTests(unittest.TestCase):
         app._restore_step_selection()
         self.assertEqual(app.step_tree.selected, "2")
         self.assertFalse(app._suppress_tree_select_event)
+
+
+class _FakeEvent:
+    def __init__(self, y=30):
+        self.y = y
+
+
+class _FakeStepTree:
+    """步骤树替身：identify_row 模拟松开位置，selection 模拟按压后的选中。"""
+
+    def __init__(self, row_under_cursor, selection=("1",)):
+        self.row_under_cursor = row_under_cursor
+        self.selection_value = tuple(selection)
+        self.selection_sets = []
+
+    def identify_row(self, _y):
+        return self.row_under_cursor
+
+    def selection(self):
+        return self.selection_value
+
+    def selection_set(self, value):
+        self.selection_sets.append(value)
+        self.selection_value = (value,)
+
+
+class StepSwitchOnReleaseTests(unittest.TestCase):
+    """点击切步的确认在松开鼠标时执行（按压期会打断手势，e08c182 曾因此整体绕过）。"""
+
+    def _make_release_app(self, pressed_row="1"):
+        app = FormDirtyGuardTests._make_app(self)
+        app.steps = [
+            {"id": "s1", "name": "步骤一"},
+            {"id": "s2", "name": "步骤二"},
+        ]
+        app.selected_index = 0
+        app._dragging_step_iid = pressed_row
+        app._drag_hover_iid = ""
+        app._drag_hover_after = False
+        app.step_tree = _FakeStepTree(pressed_row, selection=(pressed_row,))
+        return app
+
+    def test_release_plain_click_asks_and_blocks_on_cancel(self):
+        app = self._make_release_app()
+        app.var_name.set("步骤一（改）")  # 表单有未应用改动
+        switched = []
+        app._select_step = lambda index, preserve_selection=False: switched.append(index)
+        with patch.object(E.messagebox, "askyesnocancel", return_value=None) as ask:
+            app._finish_step_drag(_FakeEvent())
+        ask.assert_called_once()  # 松开时手势已结束，确认必须执行
+        self.assertEqual(switched, [])  # 用户取消 → 不切步骤
+        self.assertEqual(app.step_tree.selection_sets, ["0"])  # 选中恢复到当前步骤
+        self.assertEqual(app.selected_index, 0)
+
+    def test_release_plain_click_proceeds_on_discard(self):
+        app = self._make_release_app()
+        app.var_name.set("步骤一（改）")
+        switched = []
+        app._select_step = lambda index, preserve_selection=False: switched.append(index)
+        with patch.object(E.messagebox, "askyesnocancel", return_value=False) as ask:
+            app._finish_step_drag(_FakeEvent())
+        ask.assert_called_once()
+        self.assertEqual(switched, [1])  # 放弃改动 → 切到点击的步骤
+
+    def test_release_clean_click_skips_dialog(self):
+        app = self._make_release_app()
+        switched = []
+        app._select_step = lambda index, preserve_selection=False: switched.append(index)
+        with patch.object(E.messagebox, "askyesnocancel") as ask:
+            app._finish_step_drag(_FakeEvent())
+        ask.assert_not_called()  # 表单与基线一致 → 不弹窗直接切
+        self.assertEqual(switched, [1])
+
+    def test_release_click_on_current_step_skips_dialog(self):
+        app = self._make_release_app(pressed_row="0")
+        switched = []
+        app._select_step = lambda index, preserve_selection=False: switched.append(index)
+        with patch.object(E.messagebox, "askyesnocancel") as ask:
+            app._finish_step_drag(_FakeEvent())
+        ask.assert_not_called()  # 点击当前步骤 → 无切换语义，不弹窗
+        self.assertEqual(switched, [0])
+
+    def test_release_real_drag_reorders_without_confirm(self):
+        app = self._make_release_app(pressed_row="0")
+        app.var_name.set("步骤一（改）")  # 重排路径保持既有取舍：不弹窗
+        app.step_tree.row_under_cursor = "1"
+        app._drag_hover_after = True  # 悬停在行 1 下半部 → 移到行 1 之后
+        dirty_marked = []
+        app._mark_dirty = lambda message="": dirty_marked.append(message)
+        app._refresh_steps_tree = lambda: None
+        app._refresh_overview = lambda: None
+        switched = []
+        app._select_step = lambda index, preserve_selection=False: switched.append(index)
+        with patch.object(E.messagebox, "askyesnocancel") as ask:
+            app._finish_step_drag(_FakeEvent())
+        ask.assert_not_called()
+        self.assertEqual([s["id"] for s in app.steps], ["s2", "s1"])  # 重排生效
+        self.assertEqual(app.selected_index, 1)
+        self.assertTrue(dirty_marked)
+        self.assertEqual(switched, [1])
+
+    def test_release_outside_rows_restores_selection(self):
+        app = self._make_release_app()
+        app.step_tree.row_under_cursor = ""  # 拖出树外松开
+        app._drag_hover_iid = ""
+        switched = []
+        app._select_step = lambda index, preserve_selection=False: switched.append(index)
+        with patch.object(E.messagebox, "askyesnocancel") as ask:
+            app._finish_step_drag(_FakeEvent(y=999))
+        ask.assert_not_called()
+        self.assertEqual(switched, [])
+        self.assertEqual(app.step_tree.selection_sets, ["0"])  # 恢复选中与表单一致
+        self.assertEqual(app._dragging_step_iid, "")  # 拖拽状态已清理
 
 
 # ── 2. 控件库删除影响范围文案 ────────────────────────────────────────────
