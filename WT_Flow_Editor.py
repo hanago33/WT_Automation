@@ -8916,9 +8916,11 @@ class FlowEditorApp:
         except Exception:
             return
         if not self._move_step_to_position(source_index, target_index, place_after=place_after):
-            # 未发生重排（普通点击/原地松开）：手势已结束，此刻弹模态确认是安全的，
-            # 走 _on_tree_select 的完整切步流程（含未应用改动三选确认）。
-            self._on_tree_select()
+            # 未发生重排（普通点击/原地松开）：手势已结束，此刻弹模态确认是安全的。
+            # 仅当选中项与当前编辑步骤不一致（存在被推迟的切步）时才走确认流程；
+            # 点在当前已选行上时无事发生，避免误弹「未应用改动」确认。
+            if list(self.step_tree.selection()) != [str(self.selected_index)]:
+                self._on_tree_select()
             return
         self._mark_dirty("已拖拽调整步骤顺序")
         self._refresh_steps_tree()

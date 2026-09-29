@@ -290,13 +290,18 @@ class StepSwitchOnReleaseTests(unittest.TestCase):
         self.assertEqual(switched, [1])
 
     def test_release_click_on_current_step_skips_dialog(self):
+        """点击当前已选行：即使表单有未应用改动也不弹确认（无切步语义，原样保留）。"""
         app = self._make_release_app(pressed_row="0")
+        app.var_name.set("步骤一（改）")  # 脏表单：回归点，修正前会误弹确认
         switched = []
+        reloaded = []
         app._select_step = lambda index, preserve_selection=False: switched.append(index)
+        app._load_step_into_form = lambda step: reloaded.append(step)
         with patch.object(E.messagebox, "askyesnocancel") as ask:
             app._finish_step_drag(_FakeEvent())
-        ask.assert_not_called()  # 点击当前步骤 → 无切换语义，不弹窗
-        self.assertEqual(switched, [0])
+        ask.assert_not_called()
+        self.assertEqual(switched, [])
+        self.assertEqual(reloaded, [])  # 点当前行无事发生，表单与输入原样保留
 
     def test_release_real_drag_reorders_without_confirm(self):
         app = self._make_release_app(pressed_row="0")
