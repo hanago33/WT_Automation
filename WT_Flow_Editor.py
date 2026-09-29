@@ -8740,6 +8740,13 @@ class FlowEditorApp:
     def _on_tree_select(self, _event=None):
         if self._suppress_tree_select_event:
             return
+        # 按压/拖拽进行中（ButtonPress-1 绑定的 _start_step_drag 在按下任意行时就会
+        # 置位 _dragging_step_iid，而选中事件恰在按压期间同步触发）：此刻既不能弹
+        # 模态确认（会吞掉 release、打断拖拽手势），也不能直接重载表单（未应用改动
+        # 会无声丢失）——统一推迟到 _finish_step_drag：未发生重排时手势已结束，
+        # 再走本方法的完整确认流程；键盘方向键切步无按压，仍在此处直接确认。
+        if getattr(self, "_dragging_step_iid", ""):
+            return
         selection = self.step_tree.selection()
         if not selection:
             return
@@ -8749,17 +8756,20 @@ class FlowEditorApp:
             except Exception:
                 return
             if 0 <= focus_index < len(self.steps):
+                # 多选加载第一个选中步骤：与单击切步同样先确认「未应用改动」，
+                # 否则 Ctrl/Shift 多选时表单里的修改同样无声丢失。
+                if not self._confirm_discard_form_changes():
+                    self._restore_step_selection()
+                    return
                 self.selected_index = focus_index
                 self._load_step_into_form(self.steps[focus_index])
                 self.status_var.set(f"已选择 {len(selection)} 个步骤，当前编辑第一个选中步骤。")
             return
         target_index = int(selection[0])
         # 用户点击切换步骤：先处理当前表单里「未应用到步骤」的修改，避免无声丢弃。
-        # 拖拽排序（_dragging_step_iid 非空）时不弹确认：模态框会打断拖拽手势。
-        if not getattr(self, "_dragging_step_iid", ""):
-            if not self._confirm_discard_form_changes():
-                self._restore_step_selection()
-                return
+        if not self._confirm_discard_form_changes():
+            self._restore_step_selection()
+            return
         self._select_step(target_index)
 
     def _restore_step_selection(self):
@@ -8896,6 +8906,9 @@ class FlowEditorApp:
         self._drag_hover_iid = ""
         self._drag_hover_after = False
         if not source_iid or not target_iid:
+            # 松开时不在任何行上（如拖出树外）：按压期间选中可能已移到其他行，
+            # 而表单仍停在原步骤（见 _on_tree_select 的按压期推迟）——恢复选中保持一致。
+            self._restore_step_selection()
             return
         try:
             source_index = int(source_iid)
@@ -8903,6 +8916,11 @@ class FlowEditorApp:
         except Exception:
             return
         if not self._move_step_to_position(source_index, target_index, place_after=place_after):
+            # 未发生重排（普通点击/原地松开）：手势已结束，此刻弹模态确认是安全的。
+            # 仅当选中项与当前编辑步骤不一致（存在被推迟的切步）时才走确认流程；
+            # 点在当前已选行上时无事发生，避免误弹「未应用改动」确认。
+            if list(self.step_tree.selection()) != [str(self.selected_index)]:
+                self._on_tree_select()
             return
         self._mark_dirty("已拖拽调整步骤顺序")
         self._refresh_steps_tree()
