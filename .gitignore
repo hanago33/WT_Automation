@@ -92,8 +92,8 @@ vendor/
 # Axe Windows output
 AxeWindowsOutputFiles/
 
-# Live detector scripts
-control_live_detector.py
+# Live detector scripts（control_live_detector.py 已于 2026-09-30 纳入版本控制，
+# 不再忽略——它是 WT_Launcher 功能依赖 + 测试依赖；其余采集辅助件维持忽略）
 test_detector.py
 external_capture_config.json
 tools/external_capture/axewindows_bridge/bin/
