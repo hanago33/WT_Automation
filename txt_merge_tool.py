@@ -32,8 +32,8 @@ except Exception:
     wt_theme = None
     _HAS_WT_THEME = False
 
-# 常见文本编码，按优先级尝试解码
-_ENCODINGS = ["utf-8", "gbk", "gb18030", "utf-16", "big5", "latin-1"]
+# 合并核心统一到 wt_txt_merge_core（待修改清单 #5）：本模块与 text_tools 共用唯一实现
+from wt_txt_merge_core import merge_txt_files, read_text_file
 
 # 拖拽支持：优先用 tkinterdnd2，否则用 pywin32 的 OLE 拖拽
 _HAS_DND = False
@@ -192,66 +192,6 @@ def _create_card_frame(parent, padx=12, pady=12, border=True, **kwargs):
 
 
 # ── 业务核心逻辑（纯函数，保持 100% 格式与编码原样） ────────────────────────────
-
-def read_text_file(path):
-    """读取文本文件内容，自动探测编码，返回 (内容, 编码)。"""
-    with open(path, "rb") as f:
-        raw = f.read()
-    # 优先尝试 utf-8-sig（兼容带 BOM 的 utf-8）
-    for enc in ["utf-8-sig"] + _ENCODINGS:
-        try:
-            return raw.decode(enc), enc
-        except (UnicodeDecodeError, LookupError):
-            continue
-    # 兜底：latin-1 永不失败，保证不丢字节
-    return raw.decode("latin-1"), "latin-1"
-
-
-def merge_txt_files(
-    file_paths,
-    output_path,
-    newline_between=True,
-    add_headers=False,
-    separator="",
-    remove_empty_lines=False,
-    output_encoding="utf-8-sig",
-):
-    """按顺序合并多个 txt 文件到输出文件，保持内容原样。
-
-    参数：
-      newline_between    : True 时在每个文件之间插入一个换行（新起一行再接）
-      add_headers        : True 时在每个文件内容前插入一行文件名作为章节标题
-      separator          : 非空时在每个文件之间插入该自定义分隔行
-      remove_empty_lines : True 时删除所有空行
-      output_encoding    : 输出编码（utf-8-sig / gbk 等）
-    """
-    parts = []
-    for i, path in enumerate(file_paths):
-        content, _ = read_text_file(path)
-
-        # 文件之间的衔接（换行 / 分隔符）
-        if i > 0:
-            if separator:
-                parts.append(separator + "\n")
-            elif newline_between:
-                parts.append("\n")
-
-        # 章节标题
-        if add_headers:
-            parts.append(os.path.basename(path) + "\n")
-
-        parts.append(content)
-
-    merged = "".join(parts)
-
-    # 去重空行
-    if remove_empty_lines:
-        merged = "\n".join(line for line in merged.split("\n") if line.strip() != "")
-
-    with open(output_path, "w", encoding=output_encoding, newline="") as f:
-        f.write(merged)
-    return len(file_paths), len(merged)
-
 
 class OleDropTarget:
     """基于 pywin32 的 OLE 文件拖拽目标（IDropTarget 实现）。"""

@@ -31,8 +31,15 @@ from tkinter import filedialog, messagebox, ttk
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-# 常见文本编码，按优先级尝试解码
-_ENCODINGS = ["utf-8", "gbk", "gb18030", "utf-16", "big5", "latin-1"]
+# TXT 合并/读取核心统一到 wt_txt_merge_core（待修改清单 #5）：本模块与 txt_merge_tool
+# 共用唯一实现，下方仅保留 text_tools 历史默认值（newline_between=False）的差异适配。
+# 注意经由模块属性调用（而非 from-import 按值绑定），保证测试可以 patch 核心。
+import wt_txt_merge_core
+
+
+def read_text_file(path):
+    """读取文本文件内容，自动探测编码，返回 (内容, 编码)。实现统一委托核心。"""
+    return wt_txt_merge_core.read_text_file(path)
 
 # 拖拽支持：优先用 tkinterdnd2，否则用 pywin32 的 OLE 拖拽
 _HAS_DND = False
@@ -109,18 +116,6 @@ class OleDropTarget:
         return 0
 
 
-def read_text_file(path):
-    """读取文本文件内容，自动探测编码，返回 (内容, 编码)。"""
-    with open(path, "rb") as f:
-        raw = f.read()
-    for enc in ["utf-8-sig"] + _ENCODINGS:
-        try:
-            return raw.decode(enc), enc
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return raw.decode("latin-1"), "latin-1"
-
-
 def merge_txt_files(
     file_paths,
     output_path,
@@ -130,24 +125,21 @@ def merge_txt_files(
     remove_empty_lines=False,
     output_encoding="utf-8-sig",
 ):
-    """按顺序合并多个 txt 文件到输出文件，保持内容原样。"""
-    parts = []
-    for i, path in enumerate(file_paths):
-        content, _ = read_text_file(path)
-        if i > 0:
-            if separator:
-                parts.append(separator + "\n")
-            elif newline_between:
-                parts.append("\n")
-        if add_headers:
-            parts.append(os.path.basename(path) + "\n")
-        parts.append(content)
-    merged = "".join(parts)
-    if remove_empty_lines:
-        merged = "\n".join(line for line in merged.split("\n") if line.strip() != "")
-    with open(output_path, "w", encoding=output_encoding, newline="") as f:
-        f.write(merged)
-    return len(file_paths), len(merged)
+    """按顺序合并多个 txt 文件到输出文件，保持内容原样。
+
+    实现统一委托 wt_txt_merge_core（待修改清单 #5）；保留本模块历史默认值
+    newline_between=False（txt_merge_tool 侧为 True，两个 UI 调用均显式传参，
+    默认值从不参与实际行为——此处仅为兼容外部潜在调用方）。
+    """
+    return wt_txt_merge_core.merge_txt_files(
+        file_paths,
+        output_path,
+        newline_between=newline_between,
+        add_headers=add_headers,
+        separator=separator,
+        remove_empty_lines=remove_empty_lines,
+        output_encoding=output_encoding,
+    )
 
 
 class TxtMergeCard(ttk.Frame):
