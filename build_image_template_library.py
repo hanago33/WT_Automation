@@ -1280,6 +1280,12 @@ class TemplateBuilderApp:
     def on_listbox_select(self, _event):
         selected = self.listbox.curselection()
         if selected:
+            # 先把输入框里未提交的改名提交给【原选中候选】再切换：
+            # 实测（tk 8.6 真实事件流）点击列表时 <<ListboxSelect>> 先于
+            # <FocusOut> 触发 —— 若只靠失焦提交，此处 file_name_var 已被新
+            # 候选的名字覆盖，手工改名仍会静默丢失（session-21 实证修正）。
+            # _commit_file_name_entry 幂等：无未提交改动时为空操作。
+            self._commit_file_name_entry()
             self.selected_indices = set(selected)
             self.selected_index = selected[-1]
             self.file_name_var.set(self.template_names[self.selected_index])
