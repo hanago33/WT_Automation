@@ -8756,6 +8756,11 @@ class FlowEditorApp:
             except Exception:
                 return
             if 0 <= focus_index < len(self.steps):
+                # 多选加载第一个选中步骤：与单击切步同样先确认「未应用改动」，
+                # 否则 Ctrl/Shift 多选时表单里的修改同样无声丢失。
+                if not self._confirm_discard_form_changes():
+                    self._restore_step_selection()
+                    return
                 self.selected_index = focus_index
                 self._load_step_into_form(self.steps[focus_index])
                 self.status_var.set(f"已选择 {len(selection)} 个步骤，当前编辑第一个选中步骤。")

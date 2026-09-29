@@ -15,6 +15,8 @@
 - 缺陷 1 的三选确认原在按压期靠 `_dragging_step_iid` 跳过，但该标志在按下任意行时
   即被置位，所有鼠标点击切步都被绕过 → 改为按压期推迟、`_finish_step_drag` 松开时
   未重排再走完整确认（见 StepSwitchOnReleaseTests）。
+- 多选加载第一个选中步骤原先直接重载表单、同样绕过确认 → 补上三选确认
+  （取消则恢复原选中）。
 
 被测对象是真实方法（轻量宿主/替身绑定），不实例化窗口、无需 Tk 交互环境。
 """
@@ -327,6 +329,50 @@ class StepSwitchOnReleaseTests(unittest.TestCase):
         self.assertEqual(switched, [])
         self.assertEqual(app.step_tree.selection_sets, ["0"])  # 恢复选中与表单一致
         self.assertEqual(app._dragging_step_iid, "")  # 拖拽状态已清理
+
+    def test_multi_select_asks_and_blocks_on_cancel(self):
+        """多选加载第一个选中步骤，同样先确认未应用改动（原先直接重载、绕过确认）。"""
+        app = FormDirtyGuardTests._make_app(self)
+        app.var_name.set("步骤一（改）")
+        app.steps = [{"id": "s1"}, {"id": "s2"}]
+        app.status_var = FakeVar("")
+
+        class _Tree:
+            def selection(self):
+                return ("0", "1")
+
+            def selection_set(self, value):
+                pass
+
+        app.step_tree = _Tree()
+        loaded = []
+        app._load_step_into_form = lambda step: loaded.append(step)
+        with patch.object(E.messagebox, "askyesnocancel", return_value=None) as ask:
+            app._on_tree_select()
+        ask.assert_called_once()
+        self.assertEqual(loaded, [])  # 用户取消 → 不加载、不丢改动
+
+    def test_multi_select_proceeds_on_discard(self):
+        app = FormDirtyGuardTests._make_app(self)
+        app.var_name.set("步骤一（改）")
+        app.steps = [{"id": "s1", "name": "步骤一"}, {"id": "s2", "name": "步骤二"}]
+        app.status_var = FakeVar("")
+
+        class _Tree:
+            def selection(self):
+                return ("0", "1")
+
+            def selection_set(self, value):
+                pass
+
+        app.step_tree = _Tree()
+        loaded = []
+        app._load_step_into_form = lambda step: loaded.append(step)
+        with patch.object(E.messagebox, "askyesnocancel", return_value=False) as ask:
+            app._on_tree_select()
+        ask.assert_called_once()
+        self.assertEqual(loaded, [app.steps[0]])  # 放弃改动 → 加载第一个选中步骤
+        self.assertEqual(app.selected_index, 0)
 
 
 # ── 2. 控件库删除影响范围文案 ────────────────────────────────────────────
