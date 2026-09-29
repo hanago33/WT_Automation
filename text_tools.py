@@ -515,6 +515,23 @@ class CsvConvertCard(ttk.Frame):
             self.out_dir = d
             self.var_out.set(d)
 
+    def _confirm_overwrite(self, dst):
+        """同名输出文件覆盖确认：首次冲突询问一次，之后沿用同一选择（覆盖/跳过）。
+
+        返回 True=允许写盘；False=跳过该输出。（每次 run() 开始时重置策略。）
+        """
+        if not os.path.exists(dst):
+            return True
+        policy = getattr(self, "_overwrite_policy", None)
+        if policy is not None:
+            return policy
+        answer = messagebox.askyesno(
+            "同名文件已存在",
+            "{}\n\n是否覆盖？\n（「否」将跳过本次转换中所有同名文件）".format(dst),
+        )
+        self._overwrite_policy = bool(answer)
+        return bool(answer)
+
     def run(self):
         if not self.csv_files:
             messagebox.showwarning("提示", "请先选择 CSV 文件或文件夹。")
@@ -524,6 +541,7 @@ class CsvConvertCard(ttk.Frame):
 
         self.btn_run.configure(state="disabled")
         self.progress["value"] = 0
+        self._overwrite_policy = None  # 本次转换的覆盖策略在首次冲突时决定
         self.log("开始转换...")
 
         def progress(cur, total):
@@ -555,14 +573,17 @@ class CsvConvertCard(ttk.Frame):
         total = len(self.csv_files)
         for idx, src in enumerate(self.csv_files, start=1):
             try:
-                wb = Workbook()
-                ws = wb.active
-                ws.title = "Sheet1"
                 name = os.path.splitext(os.path.basename(src))[0]
-                rows = convert_csv_to_sheet(ws, src)
                 dst = os.path.join(out_dir, name + ".xlsx")
-                wb.save(dst)
-                self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
+                if not self._confirm_overwrite(dst):
+                    self.log(f"[跳过] 已存在同名文件: {os.path.basename(dst)}")
+                else:
+                    wb = Workbook()
+                    ws = wb.active
+                    ws.title = "Sheet1"
+                    rows = convert_csv_to_sheet(ws, src)
+                    wb.save(dst)
+                    self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
             except Exception as e:  # noqa: BLE001
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
@@ -584,8 +605,11 @@ class CsvConvertCard(ttk.Frame):
             progress(idx, total)
         if wb.sheetnames:
             dst = os.path.join(out_dir, "merged.xlsx")
-            wb.save(dst)
-            self.log(f"已合并保存到 {dst}")
+            if self._confirm_overwrite(dst):
+                wb.save(dst)
+                self.log(f"已合并保存到 {dst}")
+            else:
+                self.log(f"[跳过] 已存在同名文件: {dst}")
         else:
             self.log("没有可转换的文件。")
 
@@ -619,8 +643,11 @@ class CsvConvertCard(ttk.Frame):
             ws.column_dimensions[letter].width = width
         if current_row > 1:
             dst = os.path.join(out_dir, "merged_single.xlsx")
-            wb.save(dst)
-            self.log(f"已合并保存到 {dst}")
+            if self._confirm_overwrite(dst):
+                wb.save(dst)
+                self.log(f"已合并保存到 {dst}")
+            else:
+                self.log(f"[跳过] 已存在同名文件: {dst}")
         else:
             self.log("没有可转换的文件。")
 
@@ -631,8 +658,11 @@ class CsvConvertCard(ttk.Frame):
             try:
                 name = os.path.splitext(os.path.basename(src))[0]
                 dst = os.path.join(out_dir, name + ".txt")
-                rows = csv_to_txt(src, dst, output_encoding=enc)
-                self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
+                if self._confirm_overwrite(dst):
+                    rows = csv_to_txt(src, dst, output_encoding=enc)
+                    self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
+                else:
+                    self.log(f"[跳过] 已存在同名文件: {os.path.basename(dst)}")
             except Exception as e:  # noqa: BLE001
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
