@@ -10749,6 +10749,12 @@ class FlowEditorApp:
             should_close = messagebox.askyesno("确认退出", "当前流程链路有未保存修改，确定直接退出吗？")
             if not should_close:
                 return
+        # 关窗前停掉定位探针：其周期 after 与子进程在窗口销毁后仍会驻留/触发
+        if getattr(self, "_probe_proc", None) is not None or getattr(self, "_probe_elapsed_timer", None) is not None:
+            try:
+                self._stop_probe()
+            except Exception:
+                pass
         self.root.destroy()
 
     @staticmethod
