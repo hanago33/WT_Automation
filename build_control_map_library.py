@@ -7193,7 +7193,8 @@ class ControlMapBuilderApp:
         try:
             returncode = proc.wait()
         except Exception as exc:
-            self.root.after(0, lambda: self._handle_probe_result(output_path, -1, start, seq, str(exc)))
+            err_text = str(exc)
+            self.root.after(0, lambda t=err_text: self._handle_probe_result(output_path, -1, start, seq, t))
             return
         self.root.after(0, lambda: self._handle_probe_result(output_path, returncode, start, seq))
 
@@ -8363,6 +8364,10 @@ class ControlMapBuilderApp:
 
         interactive=False 为悬停跟踪模式：不弹窗打断跟踪，错误/空结果只写状态栏。
         """
+        if not isinstance(self.current_payload, dict):
+            # 清空结果后残留的补采回调：无目标 payload 可用，安静丢弃
+            # （否则下一行 len(self.current_payload.get(...)) 抛 AttributeError 被 Tk 吞）
+            return
         if error:
             if interactive:
                 messagebox.showwarning("定点补采", f"补采失败：{error}")
@@ -8476,6 +8481,10 @@ class ControlMapBuilderApp:
             return
         if not messagebox.askyesno("确认清空", "确定要清空当前采集结果吗？\n未保存的修改将丢失。"):
             return
+        # 悬停跟踪必须先停：否则其补采回调在 payload 置空后读 None 抛异常（被 Tk 吞掉），
+        # 且按钮文案/红框状态与实际不符（对照「加载控件库」路径，8671-8672）。
+        if getattr(self, "_hover_mode_active", False):
+            self._stop_hover_supplement("已清空采集结果，停止悬停跟踪。")
         self.current_payload = None
         self.current_output_path = ""
         self.current_region_rect = None
@@ -8743,7 +8752,10 @@ class ControlMapBuilderApp:
                 stats = msl.run_merge(CONTROL_MAP_DIR, catalog_path, report_path,
                                       master_path, progress_callback=_progress)
             except Exception as exc:  # noqa: BLE001 - 失败需完整反馈到状态栏
-                self.root.after(0, lambda: self._on_auto_merge_done(None, exc, backup_path))
+                # 先落为普通字符串再进延迟回调：except-as 变量在块外被 del，
+                # 直接引用会 NameError 被 Tk 吞掉 → 回调不执行 → _auto_merge_running 永不复位
+                err_text = str(exc)
+                self.root.after(0, lambda t=err_text: self._on_auto_merge_done(None, t, backup_path))
             else:
                 self.root.after(0, lambda: self._on_auto_merge_done(stats, None, backup_path))
 
@@ -8779,21 +8791,25 @@ class ControlMapBuilderApp:
                 pass
 
     def _on_auto_merge_done(self, stats, error, backup_path):
-        self._auto_merge_running = False
-        if error is not None:
-            self.var_status.set("自动合并入库失败：%s" % error)
-            return
-        self.var_status.set(
-            "自动合并入库完成：%d个控件（high %d / medium %d / low %d），待复核%d项%s"
-            % (
-                stats.get("totalControls", 0),
-                stats.get("high", 0),
-                stats.get("medium", 0),
-                stats.get("lowOrUnknown", 0),
-                stats.get("needsReview", 0),
-                ("；已备份：" + backup_path) if backup_path else "",
+        try:
+            if error is not None:
+                self.var_status.set("自动合并入库失败：%s" % error)
+                return
+            self.var_status.set(
+                "自动合并入库完成：%d个控件（high %d / medium %d / low %d），待复核%d项%s"
+                % (
+                    stats.get("totalControls", 0),
+                    stats.get("high", 0),
+                    stats.get("medium", 0),
+                    stats.get("lowOrUnknown", 0),
+                    stats.get("needsReview", 0),
+                    ("；已备份：" + backup_path) if backup_path else "",
+                )
             )
-        )
+        finally:
+            # 兜底复位：无论格式化/回调是否异常，防重入标志都必须释放，
+            # 否则此后每次「保存后自动合并入库」都被静默跳过。
+            self._auto_merge_running = False
 
     def cmd_open_control_map_dir(self):
         ensure_directory(CONTROL_MAP_DIR)

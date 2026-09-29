@@ -229,6 +229,10 @@ class GenericLauncherUI:
         base = os.path.basename(exe).lower()
         kw = base[:-4] if base.endswith(".exe") else base
         title_re = self.title_var.get().strip() or None
+        # 提权检测（UIPI 内容树隔离处置）依赖本模块级关键词；此前恒为空串，
+        # 导致 _runs_target_elevated 永远 False、管理员场景静默全失败。
+        global _TARGET_PROCESS_KEYWORD
+        _TARGET_PROCESS_KEYWORD = kw
 
         # 注入通用目标配置
         generic_automation.config_generic_target_app(
