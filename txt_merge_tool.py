@@ -13,7 +13,6 @@ txt_merge_tool.py —— 多个 txt 文档合并工具（现代化 UI 版本）
 """
 
 import os
-import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -573,8 +572,21 @@ class TxtMergeApp:
 
     def _append_paths(self, paths):
         added = 0
+
+        def _clean(p):
+            """清洗拖拽路径：仅剥去成对的 Tk 花括号包裹。
+
+            tk.splitlist 已正确处理带空格路径；这里只需兜底「splitlist 失败时
+            整串带 {…}」的情况。此前 str.strip("{}'\"") 会把名称首尾本身含
+            {}'/\" 字符的合法目录/文件截断（如 Data{2024} → Data{2024）。
+            """
+            text = str(p or "").strip()
+            if len(text) >= 2 and text.startswith("{") and text.endswith("}"):
+                text = text[1:-1].strip()
+            return text
+
         for p in paths:
-            clean_p = str(p or "").strip("{}'\"")
+            clean_p = _clean(p)
             if os.path.isfile(clean_p) and clean_p not in self.files:
                 self.files.append(clean_p)
                 added += 1

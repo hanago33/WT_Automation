@@ -140,3 +140,6 @@ uia_tree_dumper/**/obj/
 
 # 生成物（make_power_template.py 产物，运行即重新生成）
 /逐时功率计算模板.xlsx
+
+# 工具运行时配置（GUI 自动记忆项，不随版本控制）
+txt2wtg/txt2wtg_gui_config.json

@@ -20,11 +20,23 @@ import txt2wtg_core as core
 class TestTxt2WtgGuiHeadless(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # 配置路径重定向到临时目录：转换成功路径会 save_config()，若不重定向
+        # 每轮测试都会把测试参数写进源码树 txt2wtg/txt2wtg_gui_config.json
+        # （且该文件未被 gitignore，弄脏工作区状态）
+        cls._cfg_tmp = tempfile.TemporaryDirectory()
+        cls._orig_config_path = twg.CONFIG_PATH
+        twg.CONFIG_PATH = os.path.join(cls._cfg_tmp.name, "txt2wtg_gui_config.json")
         # App 是 tk.Tk 子类，无法挂 tests/_tk_support.py 的共享根；改为类级别
         # 只建一次、绝不 destroy —— 同样消灭「创建→销毁→再创建」循环，
         # 否则多文件子集运行时后续 Tk() 会稳定失败
         cls.app = twg.App()
         cls.app.withdraw()
+
+    @classmethod
+    def tearDownClass(cls):
+        # App 不 destroy（见上）；仅恢复配置路径常量并清理临时目录
+        twg.CONFIG_PATH = cls._orig_config_path
+        cls._cfg_tmp.cleanup()
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
