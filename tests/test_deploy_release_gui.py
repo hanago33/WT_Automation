@@ -10,6 +10,7 @@ import tkinter as tk
 from unittest.mock import patch
 
 import deploy_release as dr
+from _tk_support import shared_tk_root
 
 
 class TestDeployReleaseLogic(unittest.TestCase):
@@ -57,15 +58,18 @@ class TestDeployReleaseLogic(unittest.TestCase):
 
 
 class TestDeployReleaseAppHeadless(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # 共享 Tk 根窗口（见 tests/_tk_support.py）：进程内只建一次、绝不 destroy，
+        # 「创建→销毁→再创建」循环会让后续 Tk() 稳定失败（多文件子集运行必踩）
+        cls.tk, cls.root = shared_tk_root()
+
     def setUp(self):
-        self.root = tk.Tk()
-        self.root.withdraw()
         self.app = dr.DeployApp(self.root)
         self.temp_dir = tempfile.TemporaryDirectory()
 
     def tearDown(self):
         self.temp_dir.cleanup()
-        self.root.destroy()
 
     def test_app_widgets_and_preview(self):
         self.assertIsNotNone(self.app.var_root)

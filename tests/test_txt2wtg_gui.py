@@ -18,14 +18,19 @@ import txt2wtg_core as core
 
 
 class TestTxt2WtgGuiHeadless(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # App 是 tk.Tk 子类，无法挂 tests/_tk_support.py 的共享根；改为类级别
+        # 只建一次、绝不 destroy —— 同样消灭「创建→销毁→再创建」循环，
+        # 否则多文件子集运行时后续 Tk() 会稳定失败
+        cls.app = twg.App()
+        cls.app.withdraw()
+
     def setUp(self):
-        self.app = twg.App()
-        self.app.withdraw()
         self.temp_dir = tempfile.TemporaryDirectory()
 
     def tearDown(self):
         self.temp_dir.cleanup()
-        self.app.destroy()
 
     def test_app_initialization(self):
         self.assertIsNotNone(self.app.input_path)
