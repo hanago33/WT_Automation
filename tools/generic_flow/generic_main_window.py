@@ -10,7 +10,9 @@ except Exception:  # pragma: no cover
 
 
 def _pid_of(process_name):
-    pname = process_name.lower()
+    # 调用方可能传 exe 完整路径（浏览选择），只取映像名比较；
+    # 此前全串精确比较 → 传路径时恒不命中，兜底查找整条链路失效（审计 P2）
+    pname = os.path.basename(process_name or "").lower()
     pids = []
     for p in psutil.process_iter(["pid", "name"]):
         try:

@@ -443,6 +443,17 @@ class MonitorWindow:
             self.root.focus_force()
         except Exception:
             pass
+        # 提示性置顶 3 秒后自动回退：此前设置后永不撤销，监视窗长期压在
+        # 其他窗口之上并抢焦点（审计 P2）
+        def _release_notice_topmost():
+            try:
+                self._set_topmost(False)
+            except Exception:
+                pass
+        try:
+            self.root.after(3000, _release_notice_topmost)
+        except Exception:
+            pass
 
     def log(self, message, kind="info"):
         if kind not in ("info", "success", "error", "warning"):
@@ -455,6 +466,13 @@ class MonitorWindow:
         else:
             self.text_widget.insert(tk.END, message, kind)
         self.text_widget.insert(tk.END, "\n")
+        # 行数上限：长流程日志持续膨胀会拖慢滚动与重绘（审计 P2）
+        try:
+            total_lines = int(self.text_widget.index("end-1c").split(".")[0])
+            if total_lines > 1000:
+                self.text_widget.delete("1.0", "{}.0".format(total_lines - 1000 + 1))
+        except Exception:
+            pass
         self.text_widget.see(tk.END)
         self.text_widget.config(state=tk.DISABLED)
         # 注意：不再调用 self.root.update()。本方法可能被后台自动化线程调用，
@@ -523,12 +541,16 @@ def log_step(step_name):
     log_line = f"[{timestamp}] {step_name}"
     print(log_line, end="\n")
 
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(log_line + "\n")
-        try:
-            wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
-        except Exception:
-            pass
+    # 写日志文件失败（被占用/只读/磁盘满）不应让整轮流程跟着失败（审计 P2）
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(log_line + "\n")
+    except OSError:
+        pass
+    try:
+        wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
+    except Exception:
+        pass
 
     if monitor_window:
         if any(k in step_name for k in ("失败", "错误")):

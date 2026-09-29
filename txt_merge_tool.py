@@ -313,6 +313,10 @@ class TxtMergeApp:
         self.refresh_list()
 
     def clear_list(self):
+        if self.files and not messagebox.askyesno(
+            "确认清空", "确定清空列表中的 {} 个文件吗？".format(len(self.files))
+        ):
+            return
         self.files = []
         self.refresh_list()
 

@@ -6967,6 +6967,15 @@ class ControlMapBuilderApp:
         except Exception:
             return False
 
+        # 取消上一次的延时销毁并销毁旧 overlay：否则旧定时器到点后仍会
+        # 打到已销毁窗口（TclError 噪声，审计 P2）
+        old_after_id = getattr(self, "_locator_highlight_after_id", None)
+        if old_after_id is not None:
+            try:
+                self.root.after_cancel(old_after_id)
+            except Exception:
+                pass
+            self._locator_highlight_after_id = None
         try:
             old_overlay = getattr(self, "_locator_highlight_window", None)
             if old_overlay is not None and old_overlay.winfo_exists():
@@ -6991,7 +7000,8 @@ class ControlMapBuilderApp:
                 canvas.pack(fill=tk.BOTH, expand=True)
             overlay.protocol("WM_DELETE_WINDOW", overlay.destroy)
             self._locator_highlight_window = overlay
-            overlay.after(duration_ms, overlay.destroy)
+            # 记录延时销毁 id：下次高亮/窗口关闭时可取消，避免回调打到已销毁窗口
+            self._locator_highlight_after_id = overlay.after(duration_ms, overlay.destroy)
             return True
         except Exception:
             return False
@@ -7580,8 +7590,9 @@ class ControlMapBuilderApp:
             _hover_log(f"hover exception ({self._hover_consecutive_errors}): {exc}\n{traceback.format_exc()}")
             self.var_status.set(f"悬停补采异常：{exc}")
             if self._hover_consecutive_errors >= 5:
-                _hover_log("连续错误过多，自动禁用悬停模式")
-                self._hover_mode_active = False
+                # 走完整停止流程（回退置顶/停全局热键/销毁高亮 overlay）；
+                # 此前只置标志 → 主窗永久置顶、overlay 泄漏（审计 P2）
+                self._stop_hover_supplement("悬停补采连续异常，已自动停止。")
                 return
         finally:
             if self._hover_mode_active:
@@ -8225,11 +8236,12 @@ class ControlMapBuilderApp:
                 except Exception:
                     pass
 
-    def _on_subtree_collected(self, result):
+    def _on_subtree_collected(self, result, interactive=False):
         """Worker 线程完成子树采集后的 UI 回调。
 
         参数 result 为 collect_subtree_at_point 的返回值：
-        (sub_flats, target_window, error) 三元组，或 None（异常时）。
+        (sub_flats, target_window, error) 三元组，或 None（异常时）；
+        interactive=True 用于定点/选中补采（保留弹窗反馈），悬停跟踪保持 False。
         """
         if result is None:
             _hover_log(f"supplement done, total_elements=0 (result=None)")
@@ -8242,8 +8254,12 @@ class ControlMapBuilderApp:
         self._finish_supplement(
             sub_flats, target_window, error,
             source=self._worker_last_source,
-            interactive=False,
+            interactive=interactive,
         )
+
+    def _supplement_worker_done(self, result):
+        """定点/选中补采的 worker 完成回调（保留 interactive 弹窗反馈）。"""
+        self._on_subtree_collected(result, interactive=True)
         # 采完后重置查看层 key：下个 tick 重新评估当前悬停元素，层级树自动聚焦
         # 到刚入库的控件（采集层去重靠 _hover_last_collect_key，不会重复入队）
         self._hover_last_hit_key = ""
@@ -8289,19 +8305,23 @@ class ControlMapBuilderApp:
     def _do_point_supplement(self):
         point = wintypes.POINT()
         user32.GetCursorPos(ctypes.byref(point))
-        try:
-            sub_flats, target_window, error = collect_subtree_at_point(
-                point.x,
-                point.y,
-                climb_levels=int(self.var_supplement_climb.get() or 0),
-                excluded_process_ids=[str(os.getpid())],
-                status_callback=self._update_scan_progress,
-            )
-        except Exception as exc:
-            sub_flats, target_window, error = [], {}, str(exc)
-        finally:
-            self._bring_to_front_temporarily()
-        self._finish_supplement(sub_flats, target_window, error, source=f"定点({point.x},{point.y})")
+        # 秒级 UIA 遍历卸载到 worker 线程：此前在 UI 线程同步执行，目标进程
+        # 卡顿时最长冻结 45 秒（默认 18 层 / 45s 超时，进度回调也要等采集结束
+        # 才刷新）。结果经 _on_subtree_collected → _finish_supplement 回主线程。
+        self._start_worker_thread()
+        self._worker_last_source = f"定点({point.x},{point.y})"
+        self._collect_t0 = time.time()
+        self._worker_queue.put((
+            collect_subtree_at_point,
+            (point.x, point.y),
+            {
+                "climb_levels": int(self.var_supplement_climb.get() or 0),
+                "excluded_process_ids": [str(os.getpid())],
+                "status_callback": self._update_scan_progress,
+            },
+            self._supplement_worker_done,
+        ))
+        self._bring_to_front_temporarily()
 
     def cmd_selected_supplement(self):
         """补采选中控件：按已采控件的屏幕位置与 identity 重新锚定活元素，实时采其子树。"""
@@ -8332,21 +8352,25 @@ class ControlMapBuilderApp:
         expected = self._pending_supplement_expected or {}
         self._pending_supplement_expected = None
         center = _rect_center(expected.get("boundingBox"))
-        try:
-            if not center:
-                raise RuntimeError("选中控件矩形无效。")
-            sub_flats, target_window, error = collect_subtree_at_point(
-                int(center[0]),
-                int(center[1]),
-                expected=expected,
-                excluded_process_ids=[str(os.getpid())],
-                status_callback=self._update_scan_progress,
-            )
-        except Exception as exc:
-            sub_flats, target_window, error = [], {}, str(exc)
-        finally:
+        # 与定点补采一致：秒级遍历卸载到 worker 线程（原 UI 线程同步执行会冻结界面）
+        if not center:
             self._bring_to_front_temporarily()
-        self._finish_supplement(sub_flats, target_window, error, source="选中控件")
+            self._finish_supplement([], {}, "选中控件矩形无效。", source="选中控件")
+            return
+        self._start_worker_thread()
+        self._worker_last_source = "选中控件"
+        self._collect_t0 = time.time()
+        self._worker_queue.put((
+            collect_subtree_at_point,
+            (int(center[0]), int(center[1])),
+            {
+                "expected": expected,
+                "excluded_process_ids": [str(os.getpid())],
+                "status_callback": self._update_scan_progress,
+            },
+            self._supplement_worker_done,
+        ))
+        self._bring_to_front_temporarily()
 
     def _get_selected_flat_item_or_node(self):
         """取当前选中的控件实体：层级树节点优先，否则按扁平视图下标取 flatControls。"""
@@ -8419,7 +8443,9 @@ class ControlMapBuilderApp:
             groups = getattr(self, "control_groups", []) or []
             if groups:
                 last_group = groups[-1]
-                last_iid = f"group:{last_group.get('id', '')}"
+                # 组字典的键是 key（group_iid 同源，见 _refresh_flat_tree），
+                # 此前误用 'id' → 兜底展开恒空转（审计 P2）
+                last_iid = f"group:{last_group.get('key', '')}"
                 if self.control_tree.exists(last_iid):
                     self.control_tree.item(last_iid, open=True)
                     self.control_tree.see(last_iid)
@@ -8435,6 +8461,12 @@ class ControlMapBuilderApp:
             self.var_status.set(
                 f"补采完成{source_note}：实时采集 {len(sub_flats)} 个，新增 {added} 个控件{anchor_note}，已自动勾选，当前结果尚未保存。"
             )
+            # 补采复用扫描进度回调改写了窗口标题/扫描进度：结束即恢复（审计 P2）
+            try:
+                self.root.title("WT 控件库采集器")
+                self.var_scan_progress.set("")
+            except Exception:
+                pass
 
     def cmd_region_scan_and_save(self):
         self._start_region_pick(auto_save=True)
@@ -8675,6 +8707,13 @@ class ControlMapBuilderApp:
         definitions = payload.get("controlDefinitions")
         if not isinstance(flat_controls, list) or not isinstance(definitions, list):
             messagebox.showerror("加载失败", "文件缺少 flatControls / controlDefinitions 数组，不是有效的控件库文件。")
+            return
+        # 覆盖当前未保存结果前先确认（与「清空当前结果」同级的破坏性操作；
+        # 此前直接覆盖，误点即丢全部未保存工作，审计 P2）
+        if isinstance(self.current_payload, dict) and not messagebox.askyesno(
+            "确认加载",
+            "加载控件库文件会覆盖当前采集结果（未保存的修改将丢失）。\n\n是否继续？",
+        ):
             return
         # 悬停跟踪若在运行，先停止并清空探测/去重状态，避免旧 key 干扰新库
         if self._hover_mode_active:

@@ -275,6 +275,10 @@ class TxtMergeCard(ttk.Frame):
         self.refresh_list()
 
     def clear_list(self):
+        if self.files and not messagebox.askyesno(
+            "确认清空", "确定清空列表中的 {} 个文件吗？".format(len(self.files))
+        ):
+            return
         self.files = []
         self.refresh_list()
 
@@ -487,6 +491,13 @@ class CsvConvertCard(ttk.Frame):
     def log(self, msg):
         self.log_text.configure(state="normal")
         self.log_text.insert("end", msg + "\n")
+        # 行数上限：批量转换的长日志持续膨胀会拖慢滚动与重绘（审计 P2）
+        try:
+            total_lines = int(self.log_text.index("end-1c").split(".")[0])
+            if total_lines > 500:
+                self.log_text.delete("1.0", "{}.0".format(total_lines - 500 + 1))
+        except Exception:
+            pass
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
         self.update_idletasks()
@@ -907,6 +918,13 @@ class TextToolsCard(ttk.Frame):
     def log(self, msg):
         self.log_text.configure(state="normal")
         self.log_text.insert("end", msg + "\n")
+        # 行数上限：批量处理的长日志持续膨胀会拖慢滚动与重绘（审计 P2）
+        try:
+            total_lines = int(self.log_text.index("end-1c").split(".")[0])
+            if total_lines > 500:
+                self.log_text.delete("1.0", "{}.0".format(total_lines - 500 + 1))
+        except Exception:
+            pass
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
         self.update_idletasks()
@@ -980,6 +998,8 @@ class TextToolsCard(ttk.Frame):
                 n = int(self.split_var.get())
             except ValueError:
                 raise ValueError("每个文件行数必须是整数")
+            if n <= 0:
+                raise ValueError("每个文件行数必须是正整数")
             created = split_file_by_lines(src, out_dir, n, output_encoding=enc)
             self.log(f"[拆分] {os.path.basename(src)} -> {len(created)} 个文件")
         elif op == "filter":

@@ -303,8 +303,12 @@ def save_template_index(output_root, index_data):
     os.makedirs(output_root, exist_ok=True)
     index_path = os.path.join(output_root, INDEX_FILE_NAME)
     normalized = rebuild_template_index(output_root, index_data)
-    with open(index_path, "w", encoding="utf-8") as file_obj:
+    # 原子写：先写临时文件再替换 —— 直接 open(w) 先截断，写盘中途失败会把
+    # 索引损坏成半截 JSON（下次打开被 load 静默当成空索引，审计 P2）
+    tmp_path = index_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as file_obj:
         json.dump(normalized, file_obj, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, index_path)
     return normalized
 
 
@@ -929,7 +933,15 @@ class TemplateBuilderApp:
 
     def add_candidate_region(self, region, select_new=True):
         self.candidates.append(region)
-        self.template_names.append(f"{DEFAULT_TEMPLATE_PREFIX}_{len(self.candidates):03d}")
+        # 命名避重：直接取 len 会与"删框后残留的序号"撞名（删掉 #2 后新框又叫 _003），
+        # 批量保存时同名截图互相覆盖、索引只剩一条，却仍报"全部保存成功"（审计 P1-8）。
+        used_names = set(self.template_names)
+        seq = len(self.candidates)
+        candidate_name = "{}_{:03d}".format(DEFAULT_TEMPLATE_PREFIX, seq)
+        while candidate_name in used_names:
+            seq += 1
+            candidate_name = "{}_{:03d}".format(DEFAULT_TEMPLATE_PREFIX, seq)
+        self.template_names.append(candidate_name)
         new_index = len(self.candidates) - 1
         if select_new:
             self.selected_index = new_index
@@ -1439,6 +1451,21 @@ class TemplateBuilderApp:
             messagebox.showerror("OCR 批量命名失败", f"OCR 命名选中失败：\n{exc}")
             self.status_var.set(f"OCR 批量命名失败: {exc}")
 
+    def _confirm_overwrite_template(self, output_path):
+        """同名模板 PNG 覆盖确认：首次冲突询问一次，之后沿用（覆盖/跳过）。
+
+        返回 True=允许写盘；False=跳过。（每次保存动作开始时重置策略。）
+        """
+        policy = getattr(self, "_overwrite_policy", None)
+        if policy is not None:
+            return policy
+        answer = messagebox.askyesno(
+            "同名模板已存在",
+            "{}\n\n是否覆盖？\n（「否」将跳过本次保存中所有同名模板）".format(output_path),
+        )
+        self._overwrite_policy = bool(answer)
+        return bool(answer)
+
     def save_region_by_index(self, index, file_name):
         if index < 0 or index >= len(self.candidates):
             return None
@@ -1453,11 +1480,14 @@ class TemplateBuilderApp:
         os.makedirs(output_dir, exist_ok=True)
 
         output_path = os.path.join(output_dir, f"{file_name}.png")
+        if os.path.exists(output_path) and not self._confirm_overwrite_template(output_path):
+            return None
         crop_image.save(output_path)
         self._update_index_file(output_root, category, file_name, region, output_path)
         return output_path
 
     def save_current_template(self):
+        self._overwrite_policy = None  # 本次保存的覆盖策略在首次冲突时决定
         region, crop_image = self.get_selected_crop()
         if region is None or crop_image is None:
             messagebox.showwarning("提示", "请先选择一个候选区域")
@@ -1485,6 +1515,7 @@ class TemplateBuilderApp:
             self.select_next()
 
     def save_selected_templates(self):
+        self._overwrite_policy = None  # 本次批量保存的覆盖策略在首次冲突时决定
         if not self.selected_indices:
             messagebox.showwarning("提示", "请先在右侧列表中选择一个或多个候选区域")
             return
@@ -1779,9 +1810,15 @@ class TemplateBuilderApp:
         self.delete_indices(set(self.selected_indices))
         self.status_var.set("已删除选中框")
 
-    def on_delete_key(self, _event):
+    def on_delete_key(self, event):
+        # 焦点在文本输入类控件（文件名 Entry、批量前缀等）或下拉框时，
+        # Del 只应作用于该输入控件，不误删候选框（审计 P2）。
+        widget_name = type(getattr(event, "widget", None)).__name__
+        if widget_name in ("Entry", "TEntry", "Text", "Combobox", "TCombobox", "Spinbox", "TSpinbox"):
+            return None
         if self.selected_indices:
             self.delete_selected_regions()
+        return None
 
     def _update_index_file(self, output_root, category, file_name, region, output_path):
         category = normalize_template_category(category)
