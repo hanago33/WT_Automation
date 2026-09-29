@@ -2804,9 +2804,14 @@ def main():
 	# 这里提前在主线程创建一次，run_automation 内 _init_taskbar_progress() 发现已存在会跳过。
 	_init_taskbar_progress()
 
+	_stop_requested_at = {"t": None}
+	_force_prompt_state = {"pending": False}
+
 	def _request_stop():
 		# 拦截关闭按钮：先请求自动化优雅停止并落盘运行报告，而不是销毁窗口硬杀 daemon 线程
 		_STOP_REQUESTED.set()
+		if _stop_requested_at["t"] is None:
+			_stop_requested_at["t"] = time.time()
 		monitor_window.log("关闭请求已收到：当前步骤完成后停止并落盘报告", kind="warning")
 
 	run_finished = threading.Event()
@@ -2846,6 +2851,32 @@ def main():
 			except Exception:
 				pass
 			return
+		# 强退兜底：请求停止后线程长时间无响应（步骤卡在目标软件调用中）时，
+		# 周期提供"强制退出"选择，避免窗口永远关不掉（审计 P2）
+		if _STOP_REQUESTED.is_set() and not _force_prompt_state["pending"]:
+			waited = time.time() - (_stop_requested_at["t"] or time.time())
+			if waited >= 15:
+				_force_prompt_state["pending"] = True
+				try:
+					from tkinter import messagebox
+					force = messagebox.askyesno(
+						"流程未响应",
+						"已请求停止，但流程在 {:.0f} 秒内仍未退出（可能卡在目标软件的调用中）。\n\n"
+						"是否强制退出？强制退出会跳过收尾，运行报告可能不完整。".format(waited),
+						parent=monitor_window.root,
+					)
+				except Exception:
+					force = False
+				if force:
+					print("[force-exit] 用户选择强制退出（流程未响应）")
+					try:
+						monitor_window.root.destroy()
+					except Exception:
+						pass
+					os._exit(_automation_exit_code["code"] or 1)
+				# 用户选择继续等待：10 秒后再询问一次
+				_force_prompt_state["pending"] = False
+				_stop_requested_at["t"] = time.time() - 5.0
 		monitor_window.root.after(200, _poll_exit)
 
 	monitor_window.root.protocol("WM_DELETE_WINDOW", _request_stop)

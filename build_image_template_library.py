@@ -22,6 +22,7 @@ from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
 import wt_dpi
+import wt_wheel_router
 import wt_theme
 import cv2
 import numpy as np
@@ -535,8 +536,10 @@ class TemplateBuilderApp:
         self.right_canvas_window = self.right_canvas.create_window((0, 0), window=right_frame, anchor=tk.NW)
         right_frame.bind("<Configure>", self.on_right_frame_configure)
         self.right_canvas.bind("<Configure>", self.on_right_canvas_configure)
-        # add="+"：不覆盖应用其它位置注册的全局滚轮处理，避免互相拆绑
-        self.right_canvas.bind_all("<MouseWheel>", self.on_mousewheel, add="+")
+        # 统一滚轮路由（wt_wheel_router）：高精度触控板 delta 余数累积，
+        # 消除 int(delta/120) 截断为 0 的零响应（审计 P2）
+        wt_wheel_router.register(self.right_canvas)
+        wt_wheel_router.bind_root(self.root)
 
         tk.Label(right_frame, text="候选区域", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10, "bold")).pack(anchor="w")
         self.listbox = tk.Listbox(right_frame, width=45, height=12, selectmode=tk.EXTENDED, exportselection=False, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], selectbackground=TEMPLATE_THEME["primary"], selectforeground="#ffffff", highlightbackground=TEMPLATE_THEME["border"], highlightcolor=TEMPLATE_THEME["primary"], highlightthickness=1, relief="flat", bd=0, font=(TEMPLATE_THEME["font"], 10))
@@ -652,17 +655,6 @@ class TemplateBuilderApp:
     def on_right_canvas_configure(self, event):
         self.right_canvas.itemconfigure(self.right_canvas_window, width=event.width)
 
-    def on_mousewheel(self, event):
-        widget = self.root.winfo_containing(event.x_root, event.y_root)
-        if widget is None:
-            return
-        parent = widget
-        while parent is not None:
-            if parent == self.right_canvas:
-                self.right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-                return
-            parent = parent.master
-
     def capture_state(self):
         return {
             "candidates": [candidate.as_dict() for candidate in self.candidates],
@@ -726,26 +718,42 @@ class TemplateBuilderApp:
         return "break"
 
     def take_screenshot(self):
+        """截屏（3 秒后倒计时）。
+
+        倒计时用 after 链实现：原实现 update()+sleep(1)×3 阻塞主循环
+        （期间界面完全无响应），且按钮在倒计时中可重复点击叠加多轮
+        倒计时（审计 P2）。
+        """
+        if getattr(self, "_screenshot_countdown_running", False):
+            return  # 倒计时进行中：忽略重复点击
+        self._screenshot_countdown_running = True
+        self._screenshot_countdown = 3
         self.status_var.set("3秒后开始截屏，请切换到目标窗口...")
-        self.root.update()
-        for i in range(3, 0, -1):
-            self.status_var.set(f"{i}秒后开始截屏...")
-            self.root.update()
-            time.sleep(1)
-        
+        self.root.after(1000, self._screenshot_countdown_tick)
+
+    def _screenshot_countdown_tick(self):
+        self._screenshot_countdown -= 1
+        if self._screenshot_countdown <= 0:
+            self._screenshot_countdown_running = False
+            self._do_take_screenshot()
+            return
+        self.status_var.set(f"{self._screenshot_countdown}秒后开始截屏...")
+        self.root.after(1000, self._screenshot_countdown_tick)
+
+    def _do_take_screenshot(self):
         try:
             screenshot = ImageGrab.grab()
             if screenshot is None:
                 messagebox.showerror("错误", "截屏失败")
                 return
-            
+
             output_root = self.output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR
             os.makedirs(output_root, exist_ok=True)
-            
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             screenshot_path = os.path.join(output_root, f"screenshot_{timestamp}.png")
             screenshot.save(screenshot_path)
-            
+
             self.screenshot_path_var.set(screenshot_path)
             self.load_screenshot(screenshot_path)
             self.status_var.set(f"截屏已保存并加载: {screenshot_path}")

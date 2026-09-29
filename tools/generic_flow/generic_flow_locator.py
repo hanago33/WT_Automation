@@ -20,6 +20,7 @@ except ImportError:
     fuzz = None
 
 from wt_flow_editor_utils import uipath_is_main_window_root
+import wt_logging
 
 
 FLOW_WINDOW_CACHE_TTL_SECONDS = 60.0
@@ -27,11 +28,38 @@ FLOW_CONTROL_CACHE_TTL_SECONDS = 12.0
 FLOW_PARENT_CACHE_TTL_SECONDS = 20.0
 FLOW_UIPI_BLOCK_CACHE_TTL_SECONDS = 3.0
 
+# 定位耗时分级阈值（秒）。
+# 改造前统一用 0.8s 单阈值触发「流程控件定位耗时较长」，实测 0.83s 也报警：
+# 样本 9 次告警中 8 次 < 5s，属误报，且把真正需要关注的长耗时淹没。
+SLOW_LOCATE_DEBUG_SECONDS = 0.8
+SLOW_LOCATE_INFO_SECONDS = 3.0
+SLOW_LOCATE_WARN_SECONDS = 8.0
+
 FLOW_WINDOW_CACHE = {}
 FLOW_CONTROL_CACHE = {}
 FLOW_PARENT_CACHE = {}
 _UIPI_BLOCK_CACHE = {}
 _UIPI_BLOCK_DETECTED = {"timestamp": 0.0, "diagnostic": None}
+# 气象弹窗诊断（dump 480+ Text 节点并回溯父链，约 9 秒/次）限流标记：
+# step_id -> 已 dump 标记（值非空即本步已 dump 过）。步骤结束由
+# clear_step_diagnostic_state(step_id) 清除，保证"每步一次"语义；
+# 防字典无限增长：超 256 个条目时整体清空（正常流程单塔步数远小于此）。
+_CLIM_DIAG_LAST = {}
+
+
+def clear_step_diagnostic_state(step_id):
+    """步骤结束时清除该步的诊断限流标记（执行器在每步收尾时调用）。
+
+    诊断 dump 成本高（实-measured 26-36s/次），限流语义为"同一步骤生命周期
+    只 dump 一次"；但失败重试轮之间可能相隔 40s+，按墙钟窗口限流会被绕过，
+    故用标记位。步骤结束后清除，避免对下一次同 id 步骤（远程队列复跑）失效。
+    """
+    try:
+        if len(_CLIM_DIAG_LAST) > 256:
+            _CLIM_DIAG_LAST.clear()
+        _CLIM_DIAG_LAST.pop(str(step_id), None)
+    except Exception:
+        pass
 # UIPI 锁存有效时长：一次误检（UIA 瞬时枚举失败/辅助进程窗口）不应影响后续所有迭代
 _UIPI_BLOCK_TTL_SECONDS = 30.0
 
@@ -49,9 +77,76 @@ _control_map_cache = {}
 
 _GET_STEP_DEFINITION = lambda step_id: {}
 _LOG_STEP = lambda message: None
+# 可选的级别感知记录器：签名 (level, message) -> None。
+# 未注入时 _log_at() 按 wt_logging 阈值门控后回退到 _LOG_STEP，保持既有
+# 单参数 _LOG_STEP 契约不变（大量测试与 tools/generic_flow 依赖该签名）。
+_LOG_AT = None
 # 目标软件主窗口候选提供者：运行时注入（使用方用 find_main_windows 按进程名找目标软件主窗）。
 # fallback 用它的 hwnd 包装成 UIA wrapper，比枚举解析进程名可靠。
 _GET_MAIN_WINDOW_CANDIDATES = lambda: []
+
+
+def _log_at(level, message):
+    """按级别输出日志（级别感知）。"""
+    if _LOG_AT is not None:
+        try:
+            _LOG_AT(level, message)
+            return
+        except Exception:
+            pass
+    if wt_logging.is_enabled(level):
+        _LOG_STEP(message)
+
+
+def _log_debug(message):
+    """DEBUG 级日志：默认不输出，需 WT_LOG_LEVEL=DEBUG 或 WT_DEBUG_EVENTS=1。"""
+    _log_at(wt_logging.DEBUG, message)
+
+
+def _locate_elapsed_level(elapsed):
+    """定位耗时档位：>=8s WARN / >=3s INFO / >=0.8s DEBUG / 否则 None（不输出）。"""
+    if elapsed >= SLOW_LOCATE_WARN_SECONDS:
+        return wt_logging.WARN
+    if elapsed >= SLOW_LOCATE_INFO_SECONDS:
+        return wt_logging.INFO
+    if elapsed >= SLOW_LOCATE_DEBUG_SECONDS:
+        return wt_logging.DEBUG
+    return None
+
+
+def _log_locate_elapsed(message, elapsed):
+    """按档位输出定位耗时告警，避免 0.8s 级误报稀释真实告警。"""
+    level = _locate_elapsed_level(elapsed)
+    if level is None:
+        return
+    _log_at(level, message)
+
+
+def _log_window_fallback_source(source, count):
+    """窗口严格过滤无命中后的回退来源，收敛为一行。
+
+    改造前同一路径连发两行（「采用运行时主窗口候选 N 个」+「回退候选窗口 N 个」），
+    且因 MUP 主窗标题为空而每步必触发。
+
+    三种来源的级别约定：
+    - ``main_window_candidates`` / ``win32_enumeration``：正常降级 → DEBUG
+    - ``foreground_window``：可能命中错误窗口（调试知识库模式 C）→ INFO
+    - ``blocked_by_self_window``：前台是自动化自身的进度/监视窗，**无法回退** →
+      INFO。这是「窗口错位」类 bug 的关键指纹，必须显式留下 ——
+      早期版本把它合并进本函数后，因该分支的候选恒为空而再未走到这里，
+      导致这行诊断信息被静默丢弃。
+    """
+    if source == "blocked_by_self_window":
+        _LOG_STEP(
+            "[FlowLocator] 窗口过滤严格：前台为自动化自身窗口，"
+            "放弃本次窗口回退（不把自身进度窗当目标）"
+        )
+        return
+    message = "[FlowLocator] 窗口严格过滤无命中，回退来源={}，候选 {} 个".format(source, count)
+    if source == "foreground_window":
+        _LOG_STEP(message)
+    else:
+        _log_debug(message)
 
 
 # #region debug-point fan-type-create-error:report
@@ -255,14 +350,16 @@ def get_generic_target_config():
     }
 
 
-def configure_flow_locator(get_step_definition=None, log_step=None, get_main_window_candidates=None):
-    global _GET_STEP_DEFINITION, _LOG_STEP, _GET_MAIN_WINDOW_CANDIDATES
+def configure_flow_locator(get_step_definition=None, log_step=None, get_main_window_candidates=None, log_at=None):
+    global _GET_STEP_DEFINITION, _LOG_STEP, _GET_MAIN_WINDOW_CANDIDATES, _LOG_AT
     if callable(get_step_definition):
         _GET_STEP_DEFINITION = get_step_definition
     if callable(log_step):
         _LOG_STEP = log_step
     if callable(get_main_window_candidates):
         _GET_MAIN_WINDOW_CANDIDATES = get_main_window_candidates
+    if callable(log_at):
+        _LOG_AT = log_at
 
 
 # #region self-healing selector (#4)
@@ -583,6 +680,19 @@ def get_wrapper_class_name(wrapper):
     return normalize_match_text(_safe_get_value(lambda: wrapper.class_name(), ""))
 
 
+def _is_terminal_like_window(wrapper):
+    """判断是否为 Windows Terminal（Cascadia）类窗口。
+
+    这类窗口标题常被设为目标软件名而混入候选，但其 XAML Island 子树做 UIA
+    descendants 会触发 0x80040155 原生崩溃（Python except 抓不住，直接终止流程），
+    必须在任何 UIA 遍历前剔除。判定异常时保守返回 False（不放行也不误杀）。
+    """
+    try:
+        return "cascadia_hosting_window_class" in str(get_wrapper_class_name(wrapper) or "").lower()
+    except Exception:
+        return False
+
+
 def get_wrapper_control_type(wrapper):
     return normalize_control_type_name(
         _safe_get_value(lambda: getattr(wrapper.element_info, "control_type", ""), ""),
@@ -814,15 +924,31 @@ def _find_label_rects_for_wrapper(wrapper, label_text):
             if gc_was_enabled:
                 gc.disable()
             for scope in scopes:
-                # 存活校验（崩溃防护）：MUP 窗口销毁/重启后对失效 UIA 元素调用
-                # descendants() 可能触发 C 层致命异常（实测 0x80040155 直接终止
-                # 整个 Python 进程，try/except 拦不住）。探活失败即跳过该 scope。
+                # 存活校验（崩溃防护）：MUP 窗口销毁/重启后，对已失效的 UIA 元素调用
+                # descendants() 可能触发 provider 的 C 层致命异常（实测
+                # "Windows fatal exception: code 0x80040155" 直接终止整个 Python
+                # 进程——Python 侧 try/except 拦不住 C 层异常）。调用前先用
+                # IsWindow/轻量矩形探活，失效则跳过该 scope：宁可本轮拿不到标签
+                # 矩形（打分降级），也不能让整个流程崩掉。
                 try:
                     if not is_wrapper_alive(scope):
+                        _record_silent_exception(
+                            "label_rects_scope_dead",
+                            RuntimeError("scope wrapper not alive, skip descendants"),
+                        )
                         continue
                 except Exception:
                     continue
-                for candidate in scope.descendants():
+                # 提速：巨大 WPF 窗口全量 descendants 实测 15-36s（step_14『步长』
+                # 定位卡死的主因）。文本标签在 WPF 中几乎全为 Text(TextBlock)，
+                # 先用原生 control_type 条件过滤（毫秒级），异常时回退全量遍历；
+                # 候选仍过下方类型白名单，行为与全量遍历等价。
+                try:
+                    scope_candidates = scope.descendants(control_type="Text")
+                except Exception as exc:
+                    _record_silent_exception("find_label_rects_text", exc)
+                    scope_candidates = scope.descendants()
+                for candidate in scope_candidates:
                     if get_wrapper_control_type(candidate) not in {"Text", "Static", "Label", "Document"}:
                         continue
                     if normalize_match_text(get_wrapper_text(candidate)) != expected:
@@ -1759,13 +1885,57 @@ def score_dropdown_runtime_candidate(
 
 
 def _collect_dropdown_windows():
-    """收集用于下拉候选枚举的顶层窗口（含 WPF Popup 等未过滤顶层窗口）。"""
+    """收集用于下拉候选枚举的顶层窗口（含 WPF Popup 等未过滤顶层窗口）。
+
+    并集（按句柄去重），MUP 场景跳过慢速全桌面 UIA 枚举：
+      1. find_flow_control 同源窗口候选（优先，快）—— _enum_visible_mup_win32_windows() +
+         _GET_MAIN_WINDOW_CANDIDATES() 按句柄包装，覆盖主窗/"导入时间序列文件"对话框/
+         WPF Popup（均有 HWND）；非 MUP 场景或未注入时为空，回退全桌面 Desktop.windows()；
+      2. Desktop 原始 children —— 补 UIA 可见但无独立 HWND 的顶层元素。
+
+    性能：全桌面 Desktop.windows() 对巨大 MUP 主窗口单次可达数秒（下拉步骤 ~9s 耗时
+    大头）；Win32 EnumWindows + 进程名过滤毫秒级，ElementFromHandle 仅对目标进程
+    窗口（4~8 个）执行。
+    """
     windows = []
+    # 第一路（优先，快）：Win32 枚举目标进程窗口 + 运行时主窗口候选提供者。
     try:
-        windows = Desktop(backend="uia").windows()
+        _collected_handles = set()
+        for info in list(_enum_visible_mup_win32_windows() or []):
+            hwnd = info.get("hwnd")
+            if not hwnd:
+                continue
+            win = _try_get_window_by_handle(hwnd)
+            if win is None:
+                continue
+            handle = get_wrapper_handle(win)
+            if handle and handle in _collected_handles:
+                continue
+            windows.append(win)
+            if handle:
+                _collected_handles.add(handle)
+        for cand in list(_GET_MAIN_WINDOW_CANDIDATES() or []):
+            hwnd = cand.get("hwnd") if isinstance(cand, dict) else cand
+            if not hwnd:
+                continue
+            win = _try_get_window_by_handle(hwnd)
+            if win is None:
+                continue
+            handle = get_wrapper_handle(win)
+            if handle and handle in _collected_handles:
+                continue
+            windows.append(win)
+            if handle:
+                _collected_handles.add(handle)
     except Exception:
-        windows = []
-    # 补上 Desktop.windows() 默认过滤漏掉的 WPF Popup 等未过滤顶层窗口。
+        pass
+    # 回退：非 MUP 场景 / 未注入主窗口候选提供者时，才做全桌面 UIA 枚举（慢）。
+    if not windows:
+        try:
+            windows = Desktop(backend="uia").windows()
+        except Exception:
+            windows = []
+    # 第二路：补 UIA 可见但无独立 HWND 的 WPF Popup 等未过滤顶层元素。
     try:
         desktop = Desktop(backend="uia")
         raw_children = desktop.element_info.children() if hasattr(desktop.element_info, "children") else []
@@ -1784,9 +1954,38 @@ def _collect_dropdown_windows():
     return windows
 
 
+def _filter_dropdown_windows_by_process(windows, expected_process_id):
+    """按目标进程过滤下拉候选窗口；进程 id 为空/0 的窗口保留。
+
+    WPF Popup 等独立顶层元素经 get_wrapper_process_id 常返回空/0（无独立 HWND 或
+    读取受限），若被过滤会漏掉已展开的下拉选项（症状：候选窗口=1、raw探针=0，
+    下拉明明展开却选不中）。
+    """
+    if not expected_process_id:
+        return list(windows)
+    filtered = []
+    for w in windows:
+        try:
+            w_pid = get_wrapper_process_id(w)
+        except Exception:
+            w_pid = None
+        if not w_pid or w_pid == expected_process_id:
+            filtered.append(w)
+    return filtered or list(windows)
+
+
 def iter_dropdown_runtime_candidates(windows=None):
     if windows is None:
         windows = _collect_dropdown_windows()
+    else:
+        windows = list(windows)
+    # 前台窗口优先：展开的下拉 Popup 通常在前台且树小，先扫它可避免一上来就
+    # 遍历巨大的主窗口 descendants（Meteodyn 主窗口整树可达数万元素）。
+    foreground_handle = get_foreground_window_handle()
+    try:
+        windows.sort(key=lambda w: 0 if str(get_wrapper_handle(w)) == str(foreground_handle) else 1)
+    except Exception:
+        pass
     seen = set()
     for window in windows:
         if is_automation_window(window):
@@ -1871,7 +2070,9 @@ def _iter_dropdown_raw_view_candidates(windows=None, max_elements=40000):
         while index < len(queue) and index < max_elements:
             element = queue[index]
             index += 1
-            # 原始属性预过滤：非 ListBoxItem/MenuItem 类元素直接跳过
+            # 原始属性预过滤：非 ListBoxItem/MenuItem 类元素不作为候选（不 yield），
+            # 但仍须深入其子树——选项可能嵌套在 ScrollViewer/ListBox 等容器内，
+            # 若剪枝中间容器，其内部选项永远遍历不到（症状：raw探针=0）。
             if props:
                 is_candidate = False
                 try:
@@ -1889,18 +2090,20 @@ def _iter_dropdown_raw_view_candidates(windows=None, max_elements=40000):
                         )
                     except Exception:
                         is_candidate = True
-                if not is_candidate:
-                    continue
-            try:
-                wrapper = UIAWrapper(UIAElementInfo(element))
-            except Exception:
-                continue
-            handle_key = get_wrapper_handle(wrapper) or id(wrapper)
-            if handle_key in seen:
-                continue
-            seen.add(handle_key)
-            if is_dropdown_like_wrapper(wrapper):
-                yield wrapper
+            else:
+                is_candidate = True
+            if is_candidate:
+                try:
+                    wrapper = UIAWrapper(UIAElementInfo(element))
+                except Exception:
+                    wrapper = None
+                if wrapper is not None:
+                    handle_key = get_wrapper_handle(wrapper) or id(wrapper)
+                    if handle_key not in seen:
+                        seen.add(handle_key)
+                        if is_dropdown_like_wrapper(wrapper):
+                            yield wrapper
+            # 无论是否候选都深入子树：选项可能嵌套在非 ListItem 的容器内
             try:
                 child = walker.GetFirstChildElement(element)
                 while child:
@@ -1908,6 +2111,271 @@ def _iter_dropdown_raw_view_candidates(windows=None, max_elements=40000):
                     child = walker.GetNextSiblingElement(child)
             except Exception:
                 pass
+
+
+def _iter_dropdown_win32_text_candidates(windows=None, target_texts=None, max_elements=20000):
+    """win32/MSAA 兜底：Telerik 虚拟化下拉选项在 UIA 中不可见，但采集
+    （scanMeta.mergedBackends 含 win32，totalControls=424 vs rawTotalControls=4）
+    证明 win32/MSAA 能枚举到选项。用 win32 后端遍历窗口子树，按文本匹配目标
+    选项（生成器），供 select_dropdown_item_runtime 兜底坐标点击。
+
+    不经过 is_dropdown_like_wrapper（win32 元素无 UIA control_type/class 会被
+    误过滤），改用运行时文本候选与目标文本直接匹配。
+    """
+    try:
+        from pywinauto import Desktop
+    except Exception:
+        return
+    if windows is None:
+        windows = _collect_dropdown_windows()
+    else:
+        windows = list(windows)
+    foreground_handle = get_foreground_window_handle()
+    try:
+        windows.sort(key=lambda w: 0 if str(get_wrapper_handle(w)) == str(foreground_handle) else 1)
+    except Exception:
+        pass
+    target_texts = [normalize_match_text(t) for t in (target_texts or []) if normalize_match_text(t)]
+    seen = set()
+    for window in windows:
+        if is_automation_window(window):
+            continue
+        hwnd = get_wrapper_handle(window)
+        if not hwnd:
+            continue
+        try:
+            win32_win = Desktop(backend="win32").window(handle=hwnd)
+        except Exception:
+            continue
+        wrappers = [win32_win]
+        try:
+            wrappers.extend(win32_win.descendants())
+        except Exception:
+            pass
+        count = 0
+        for wrapper in wrappers:
+            if count >= max_elements:
+                break
+            count += 1
+            try:
+                handle_key = get_wrapper_handle(wrapper) or id(wrapper)
+            except Exception:
+                handle_key = id(wrapper)
+            if handle_key in seen:
+                continue
+            seen.add(handle_key)
+            texts = get_wrapper_runtime_text_candidates(wrapper)
+            if not texts:
+                continue
+            if target_texts:
+                if not any(tt in txt or txt in tt for tt in target_texts for txt in texts):
+                    continue
+            yield wrapper
+
+
+def _looks_like_type_name(text):
+    """判断文本是否形如 WPF 绑定对象的类型全名（如 MTD.Xxx.Yyy），此类值非用户可读选项。"""
+    text = str(text or "").strip()
+    if not text:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+", text))
+
+
+def _nearest_dropdown_option_wrapper(wrapper, max_up=5):
+    """从命中点元素向上寻找最近的下拉选项容器（ListItem/RadComboBoxItem）。
+
+    Desktop.from_point 命中的往往是选项内部 TextBlock 或选项本身，需向上回溯到
+    选项容器再提取文本，同时过滤滚动条/边框等非选项命中。
+    """
+    current = wrapper
+    for _ in range(max_up + 1):
+        if current is None:
+            return None
+        if is_dropdown_like_wrapper(current):
+            return current
+        current = _safe_get_value(lambda c=current: c.parent(), None)
+    return None
+
+
+def _extract_dropdown_option_text(wrapper, max_depth=3):
+    """提取下拉选项的可读文本：选项自身 name 若是类型全名（如 MTDLocalizedEnumValue
+    的 ToString），则下钻到子级 TextBlock 取真正显示文本（如"组"/"日期时间"）。"""
+    text = normalize_match_text(
+        _safe_get_value(lambda: wrapper.window_text(), "")
+        or _safe_get_value(lambda: getattr(wrapper.element_info, "name", ""), "")
+    )
+    if text and not _looks_like_type_name(text):
+        return text
+    found = [""]
+
+    def _walk(w, depth):
+        if found[0] or w is None or depth > max_depth:
+            return
+        for child in _safe_get_value(lambda: w.children(), []) or []:
+            candidate = normalize_match_text(
+                _safe_get_value(lambda: child.window_text(), "")
+                or _safe_get_value(lambda: getattr(child.element_info, "name", ""), "")
+            )
+            if candidate and not _looks_like_type_name(candidate):
+                found[0] = candidate
+                return
+            _walk(child, depth + 1)
+
+    _walk(wrapper, 0)
+    return found[0]
+
+
+def _get_dropdown_sweep_anchor(dropdown_wrapper, dropdown_windows):
+    """确定点扫掠锚点 rect：优先收集到的 Popup 窗口/下拉框包装器的 HWND 矩形
+    （GetWindowRect 对 WPF Popup 恒有效），其次 UIA bounding box。
+    返回 dict（left/top/right/bottom/width/height）或 None。"""
+    candidates = []
+    if dropdown_wrapper is not None:
+        candidates.append(dropdown_wrapper)
+    for w in dropdown_windows or []:
+        try:
+            _cls = str(get_wrapper_class_name(w) or "").lower()
+            _type = str(get_wrapper_control_type(w) or "").lower()
+        except Exception:
+            _cls, _type = "", ""
+        if "popup" in _cls or "popup" in _type:
+            candidates.append(w)
+    for w in candidates:
+        if w is None:
+            continue
+        # 优先 HWND + GetWindowRect：WPF Popup 的 UIA boundingBox 常为空/离屏，
+        # 但 GetWindowRect 对真实 HWND 恒能拿到屏幕矩形。
+        try:
+            handle = get_wrapper_handle(w)
+            if handle:
+                _rect = wintypes.RECT()
+                if ctypes.windll.user32.GetWindowRect(int(handle), ctypes.byref(_rect)):
+                    _width = max(0, int(_rect.right) - int(_rect.left))
+                    _height = max(0, int(_rect.bottom) - int(_rect.top))
+                    if _width > 0 and _height > 0:
+                        return {
+                            "left": int(_rect.left),
+                            "top": int(_rect.top),
+                            "right": int(_rect.right),
+                            "bottom": int(_rect.bottom),
+                            "width": _width,
+                            "height": _height,
+                        }
+        except Exception:
+            pass
+        rect = get_wrapper_rectangle(w)
+        if not rect:
+            continue
+        try:
+            width = int(rect.get("width", 0) or 0)
+            height = int(rect.get("height", 0) or 0)
+        except Exception:
+            width = height = 0
+        if width > 0 and height > 0:
+            return rect
+    return None
+
+
+def _sweep_dropdown_option_by_point(anchor_rect, target_texts, step=22, max_span=640,
+                                    max_probes=15, dwell_seconds=0.08, move_cursor=True):
+    """复刻采集器 _realize_options_by_point_sweep：Telerik 虚拟化下拉选项不在
+    UIA/MSAA 树中（普通遍历取不到），需物理移动鼠标到候选点并短暂停留触发 WPF
+    实体化，再用 Desktop.from_point 命中读取选项文本；匹配目标后直接左键点击
+    （鼠标已在选项上）。返回 (option_wrapper, matched_text, stats)。"""
+    stats = {"probes": 0, "hits": 0, "hitTexts": []}
+    if not anchor_rect:
+        return None, "", stats
+    try:
+        from pywinauto import Desktop
+    except Exception:
+        return None, "", stats
+    try:
+        left = int(anchor_rect.get("left", 0) or 0)
+        right = int(anchor_rect.get("right", 0) or 0)
+        top = int(anchor_rect.get("top", 0) or 0)
+        bottom = int(anchor_rect.get("bottom", 0) or 0)
+    except Exception:
+        return None, "", stats
+    if right <= left or bottom <= top:
+        return None, "", stats
+    x = (left + right) // 2
+    target_texts = [normalize_match_text(t).lower() for t in (target_texts or []) if normalize_match_text(t)]
+    if not target_texts:
+        return None, "", stats
+    import ctypes
+    user32 = ctypes.windll.user32
+    original_pos = None
+    if move_cursor:
+        try:
+            pt = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(pt))
+            original_pos = (pt.x, pt.y)
+        except Exception:
+            original_pos = None
+    try:
+        desktop = Desktop(backend="uia")
+    except Exception:
+        return None, "", stats
+    # 锚点是 Popup（选项列表本身）时，选项位于 Popup 内部：从 anchor 顶部向下扫
+    # 覆盖 Popup 内部及可能的向下溢出；若锚点是下拉框按钮，从按钮顶部向下扫同样
+    # 能覆盖下方展开的选项列表。
+    try:
+        y = top + 2
+        misses = 0
+        probes = 0
+        while y <= top + max_span and misses < 6 and probes < max_probes:
+            probes += 1
+            stats["probes"] += 1
+            if move_cursor:
+                try:
+                    user32.SetCursorPos(x, y)
+                except Exception:
+                    pass
+                if dwell_seconds:
+                    time.sleep(dwell_seconds)
+            wrapper = None
+            try:
+                wrapper = desktop.from_point(x, y)
+            except Exception:
+                wrapper = None
+            if wrapper is not None:
+                option = _nearest_dropdown_option_wrapper(wrapper)
+                if option is not None:
+                    text = _extract_dropdown_option_text(option)
+                    if text:
+                        stats["hits"] += 1
+                        if len(stats["hitTexts"]) < 5 and text not in stats["hitTexts"]:
+                            stats["hitTexts"].append(text)
+                        text_norm = normalize_match_text(text).lower()
+                        if any(tt and (tt in text_norm or text_norm in tt) for tt in target_texts):
+                            # 鼠标已在选项上，直接左键点击选中
+                            if move_cursor:
+                                try:
+                                    user32.SetCursorPos(x, y)
+                                except Exception:
+                                    pass
+                                time.sleep(0.05)
+                            try:
+                                user32.mouse_event(0x0002, 0, 0, 0, 0)  # LEFTDOWN
+                                user32.mouse_event(0x0004, 0, 0, 0, 0)  # LEFTUP
+                            except Exception:
+                                pass
+                            return option, text, stats
+                        misses = 0
+                    else:
+                        misses += 1
+                else:
+                    misses += 1
+            else:
+                misses += 1
+            y += step
+    finally:
+        if move_cursor and original_pos is not None:
+            try:
+                user32.SetCursorPos(original_pos[0], original_pos[1])
+            except Exception:
+                pass
+    return None, "", stats
 
 
 def get_wrapper_toggle_state(wrapper):
@@ -2056,11 +2524,10 @@ def click_dropdown_runtime_candidate(wrapper):
         wrapper.set_focus()
     except Exception:
         pass
-    try:
-        wrapper.click_input()
-        return True, {"method": "click_input", "point": click_point}
-    except Exception:
-        pass
+    _clicked, _invoked, _reason = _safe_click_input(wrapper)
+    if _clicked:
+        return True, {"method": "invoke" if _invoked else "click_input",
+                      "point": click_point, "reason": _reason}
     ok, click_point = click_wrapper_center(wrapper, click_kind="left")
     if ok:
         return True, {"method": "center_click", "point": click_point}
@@ -2230,10 +2697,8 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
     # 预收集目标进程窗口：仅枚举一次并复用，避免每轮循环重复枚举所有桌面窗口，
     # 且大幅减少无关窗口的遍历开销（Meteodyn 主窗口 Raw View 树很大）。
     dropdown_windows = _collect_dropdown_windows()
-    if expected_process_id:
-        dropdown_windows = [
-            w for w in dropdown_windows if get_wrapper_process_id(w) == expected_process_id
-        ] or dropdown_windows
+    # 进程过滤：WPF Popup 顶层窗口 pid 常为空/0，需保留（否则展开的下拉选项枚举不到）。
+    dropdown_windows = _filter_dropdown_windows_by_process(dropdown_windows, expected_process_id)
 
     # 提前检测 optionValues：若控件定义已包含可选项列表（如 MTD PART_DropDownButton），
     # 说明选项依赖 WPF 虚拟化渲染，UIA 弹窗枚举几乎不可能命中。此时将弹窗搜索
@@ -2269,140 +2734,244 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
     # 诊断探针：记录 Raw View 枚举到的下拉类候选数量与文本样例，失败时可定位
     # "没枚举到"还是"枚举到但文本/分数不匹配"。
     raw_probe = {"count": 0, "samples": []}
+    # 诊断探针：win32/MSAA 兜底枚举到的候选数量与文本样例。
+    win32_probe = {"count": 0, "samples": []}
+    # 诊断探针：点扫掠（from_point 实体化）探测次数/命中次数/匹配文本/命中样例。
+    sweep_probe = {"count": 0, "hits": 0, "matched": "", "samples": []}
+    # 分段计时：预收集(窗口枚举/资产注入) / 展开(自愈点击+等渲染+重收集) / 枚举。
+    # 本函数不经过 _finalize_step_timing（那是 find+动作两段式的记账），且共有
+    # 10 个 return 出口，逐点埋点必漏；用 try/finally 统一在出口打一条耗时汇总，
+    # 填补内网日志中下拉步骤（step_10 实测 48.6s 无任何阶段耗时记录）的观测空洞。
+    _dd_t_total = time.perf_counter()
+    _dd_t_precoll = 0.0
+    _dd_t_expand = 0.0
+    _dd_phase = "预收集"
+    _dd_result = ""
     _loop_started = time.time()
     _progress_log_at = 0.0
-    while time.time() < deadline:
-        # 进度日志：枚举过程（FindAll/树遍历/展开重试）可能耗时数十秒且无任何输出，
-        # 每 ≥4 秒打一条进度，便于定位"卡在枚举"还是"命中但值校验失败"。
-        _loop_now = time.time()
-        if _loop_now - _progress_log_at >= 4.0:
-            _progress_log_at = _loop_now
-            _LOG_STEP(
-                "下拉选项枚举进度: step={step_id}, control={control_id}, "
-                "elapsed={elapsed:.1f}s, 候选窗口={windows}, raw探针={raw}, 已剔除错误项={failed}".format(
-                    step_id=step_id,
-                    control_id=control_id,
-                    elapsed=_loop_now - _loop_started,
-                    windows=len(dropdown_windows),
-                    raw=raw_probe["count"],
-                    failed=len(failed_option_keys),
+    # 预收集阶段结束（窗口枚举+资产注入），结算耗时
+    _dd_t_precoll = time.perf_counter() - _dd_t_total
+    try:
+        while time.time() < deadline:
+            # 进度日志：枚举过程（FindAll/树遍历/展开重试）可能耗时数十秒且无任何输出，
+            # 每 ≥4 秒打一条进度，便于定位"卡在枚举"还是"命中但值校验失败"。
+            _loop_now = time.time()
+            if _loop_now - _progress_log_at >= 4.0:
+                _progress_log_at = _loop_now
+                _LOG_STEP(
+                    "下拉选项枚举进度: step={step_id}, control={control_id}, "
+                    "elapsed={elapsed:.1f}s, 候选窗口={windows}, raw探针={raw}, win32探针={win32}, sweep探针={sweep}, 已剔除错误项={failed}".format(
+                        step_id=step_id,
+                        control_id=control_id,
+                        elapsed=_loop_now - _loop_started,
+                        windows=len(dropdown_windows),
+                        raw=raw_probe["count"],
+                        win32=win32_probe["count"],
+                        sweep=sweep_probe["count"],
+                        failed=len(failed_option_keys),
+                    )
                 )
-            )
-        # 第一次迭代先确保下拉框展开：展开后的选项才可见/可操作，且避免误点
-        # 收起状态下枚举到的离屏选项（UIA-to-MSAA bridge 选项无矩形、点击不可验证）。
-        if not expanded_attempted:
-            dropdown_wrapper = find_flow_control(
-                step_id, control_id, timeout_seconds=2.0, window_title_hint=window_title_hint, control_map_path=control_map_path
-            )
-            if dropdown_wrapper is not None:
-                # 值检查捷径：若下拉框当前值已等于目标选项（此前可能已选中），
-                # 无需展开/枚举，直接判定成功。读取父级 ComboBox 的 ValuePattern。
-                if search_text and not is_placeholder_text(search_text):
-                    current_value = get_wrapper_value(dropdown_wrapper)
-                    if current_value and normalize_match_text(current_value) == normalize_match_text(search_text):
-                        _LOG_STEP(
-                            "下拉框当前值已匹配目标: step={step_id}, control={control_id}, value={value}".format(
-                                step_id=step_id, control_id=control_id, value=current_value
+            # 第一次迭代先确保下拉框展开：展开后的选项才可见/可操作，且避免误点
+            # 收起状态下枚举到的离屏选项（UIA-to-MSAA bridge 选项无矩形、点击不可验证）。
+            if not expanded_attempted:
+                _dd_phase = "展开(自愈点击+等渲染+重收集)"
+                _dd_t_expand_start = time.perf_counter()
+                dropdown_wrapper = find_flow_control(
+                    step_id, control_id, timeout_seconds=2.0, window_title_hint=window_title_hint, control_map_path=control_map_path
+                )
+                if dropdown_wrapper is not None:
+                    # 值检查捷径：若下拉框当前值已等于目标选项（此前可能已选中），
+                    # 无需展开/枚举，直接判定成功。读取父级 ComboBox 的 ValuePattern。
+                    if search_text and not is_placeholder_text(search_text):
+                        current_value = get_wrapper_value(dropdown_wrapper)
+                        if current_value and normalize_match_text(current_value) == normalize_match_text(search_text):
+                            _LOG_STEP(
+                                "下拉框当前值已匹配目标: step={step_id}, control={control_id}, value={value}".format(
+                                    step_id=step_id, control_id=control_id, value=current_value
+                                )
                             )
-                        )
-                        return True, {
-                            "method": "value_already_matched",
-                            "value": current_value,
-                            "targetTexts": target_texts,
-                        }
-                toggle_state = get_wrapper_toggle_state(dropdown_wrapper)
-                should_click = toggle_state in {"", "0", "Off", "off", "0.0", "Indeterminate"}
-                # 若步骤目标控件本身是"下拉选项 ListItem"（targetValue 含 ListItem/ListBoxItem/MenuItem），
-                # 说明下拉已由前置步骤展开、dropdown_wrapper 是可见选项而非下拉框本体：再点击它会
-                # 直接选中该项并收起下拉，导致后续枚举 0 命中（症状：raw探针=0、误选中非目标选项，
-                # 如三个下拉都选中"气压"）。跳过"自愈点击展开"，直接进入枚举命中目标选项。
-                # 用配置判断而非运行时类型：find_flow_control fallback 阶段返回的 wrapper 类型不可靠。
-                _dropdown_target_value = str((control_definition or {}).get("targetValue", "") or "")
-                if should_click and any(
-                    _key in _dropdown_target_value
-                    for _key in ("ListBoxItem", "ListItem", "MenuItem")
-                ):
-                    should_click = False
-                # 无论本次是否点击展开，都重新收集下拉窗口列表：step_16 之类的前置
-                # 步骤可能已把下拉展开（toggle=On），此时 Popup 窗口已存在但不在旧的
-                # dropdown_windows 里，不重新收集会导致后续枚举漏掉 RadComboBoxItem。
-                try:
-                    popup_windows = _collect_dropdown_windows()
-                    if expected_process_id:
-                        popup_windows = [
-                            w for w in popup_windows
-                            if get_wrapper_process_id(w) == expected_process_id
-                        ]
-                    for w in popup_windows:
-                        if not any(
-                            get_wrapper_handle(x) == get_wrapper_handle(w)
-                            for x in dropdown_windows
-                        ):
-                            dropdown_windows.append(w)
-                except Exception:
-                    pass
-                if should_click:
-                    clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
-                    if clicked:
-                        _LOG_STEP(
-                            "下拉框未展开，已自愈点击展开: step={step_id}, control={control_id}, toggle={toggle}".format(
-                                step_id=step_id, control_id=control_id, toggle=toggle_state or "(unknown)"
+                            return True, {
+                                "method": "value_already_matched",
+                                "value": current_value,
+                                "targetTexts": target_texts,
+                            }
+                    # 防御：find_flow_control 定位到的 wrapper 若是 WPF Popup 窗口（下拉
+                    # 已展开时的弹出层，class/type 常为 Popup/Window），确保它进入枚举窗口
+                    # 列表——枚举阶段直接扫 Popup 子树即可命中选项，避免它只存在于
+                    # find_flow_control 的窗口遍历而 _collect_dropdown_windows 漏收。
+                    _wrapper_class = get_wrapper_class_name(dropdown_wrapper) or ""
+                    _wrapper_type = get_wrapper_control_type(dropdown_wrapper) or ""
+                    if "popup" in _wrapper_class.lower() or "popup" in _wrapper_type.lower():
+                        _popup_handle = get_wrapper_handle(dropdown_wrapper)
+                        if not any(get_wrapper_handle(w) == _popup_handle for w in dropdown_windows):
+                            dropdown_windows.append(dropdown_wrapper)
+                    toggle_state = get_wrapper_toggle_state(dropdown_wrapper)
+                    should_click = toggle_state in {"", "0", "Off", "off", "0.0", "Indeterminate"}
+                    # 若步骤目标控件本身是"下拉选项 ListItem"（targetValue 含 ListItem/ListBoxItem/MenuItem），
+                    # 说明下拉已由前置步骤展开、dropdown_wrapper 是可见选项而非下拉框本体：再点击它会
+                    # 直接选中该项并收起下拉，导致后续枚举 0 命中（症状：raw探针=0、误选中非目标选项，
+                    # 如三个下拉都选中"气压"）。跳过"自愈点击展开"，直接进入枚举命中目标选项。
+                    # 用配置判断而非运行时类型：find_flow_control fallback 阶段返回的 wrapper 类型不可靠。
+                    _dropdown_target_value = str((control_definition or {}).get("targetValue", "") or "")
+                    if should_click and any(
+                        _key in _dropdown_target_value
+                        for _key in ("ListBoxItem", "ListItem", "MenuItem")
+                    ):
+                        should_click = False
+                    # 阶段3 直点快捷：目标控件本身就是下拉选项（targetValue 含
+                    # ListItem/ListBoxItem/MenuItem）时，若定位到的选项已有可见矩形，
+                    # 说明下拉已由前置步骤（如相对区域点击）展开——直接点击该选项并
+                    # 校验即完成选择，不再依赖 Popup 窗口枚举（WPF Popup 是独立顶层
+                    # HWND，_collect_dropdown_windows 可能漏收，导致 raw探针=0）。
+                    if any(
+                        _key in _dropdown_target_value
+                        for _key in ("ListBoxItem", "ListItem", "MenuItem")
+                    ):
+                        if _candidate_has_visible_rect(dropdown_wrapper):
+                            _opt_score = score_dropdown_runtime_candidate(
+                                dropdown_wrapper,
+                                target_texts,
+                                expected_window_titles=expected_window_titles,
+                                expected_process_id=expected_process_id,
                             )
-                        )
-                        time.sleep(0.4)
-                        # 等待展开动画完成：轮询 ToggleState 直到 On（最多约 1.2 秒），
-                        # 避免展开尚未渲染完就枚举导致选项不可见。
-                        for _wait in range(4):
-                            if get_wrapper_toggle_state(dropdown_wrapper) in {"1", "On", "on", "1.0"}:
-                                break
-                            time.sleep(0.2)
-                        _LOG_STEP(
-                            "下拉框展开状态: step={step_id}, control={control_id}, toggleAfter={toggle}".format(
-                                step_id=step_id,
-                                control_id=control_id,
-                                toggle=get_wrapper_toggle_state(dropdown_wrapper) or "(unknown)",
+                            if _opt_score >= 0:
+                                _opt_clicked, _opt_click_meta = click_dropdown_runtime_candidate(dropdown_wrapper)
+                                if _opt_clicked:
+                                    time.sleep(0.15)
+                                    _opt_snapshot = get_wrapper_debug_snapshot(dropdown_wrapper)
+                                    _opt_text = get_wrapper_text(dropdown_wrapper) or ""
+                                    _LOG_STEP(
+                                        "已直接点击下拉选项（目标控件即选项本身）: step={step_id}, control={control_id}, text={text}, click={method}".format(
+                                            step_id=step_id,
+                                            control_id=control_id,
+                                            text=_opt_text,
+                                            method=_opt_click_meta.get("method", ""),
+                                        )
+                                    )
+                                    return True, {
+                                        "method": "direct_option_click",
+                                        "targetTexts": target_texts,
+                                        "clickMeta": _opt_click_meta,
+                                        "bestCandidate": _opt_snapshot,
+                                        "valueVerified": _opt_text,
+                                    }
+                            _LOG_STEP(
+                                "直接点击下拉选项路径未命中（无可见矩形/评分未过/点击失败），转枚举路径: step={step_id}, control={control_id}".format(
+                                    step_id=step_id, control_id=control_id
+                                )
                             )
-                        )
-                        # 展开后下拉选项所在的 Popup 窗口才创建（上面的窗口收集已覆盖），
-                        # 此处只需为枚举选项续时：定位可能已耗掉大部分预算。
-                        remaining = deadline - time.time()
-                        if remaining < 2.0:
-                            deadline = time.time() + 2.0
-            expanded_attempted = True
-            continue
-        # 已展开：Control View 枚举可见选项
-        ranked_candidates = []
-        for candidate in iter_dropdown_runtime_candidates(dropdown_windows):
-            # 内层超时退出：枚举目标窗口 UIA 子树可能较慢，超时提前中断
-            if time.time() > deadline:
-                break
-            if failed_option_keys and _wrapper_identity_key(candidate) in failed_option_keys:
+                        else:
+                            # 阶段1c 诊断：目标选项无可见矩形 = 下拉很可能未展开（前置展开
+                            # 步骤 click_relative_region 假成功 / 坐标漂移），记录关键证据。
+                            _LOG_STEP(
+                                "疑似下拉未展开: 目标选项无可见矩形 step={step_id}, control={control_id}, "
+                                "wrapper={class_name}/{control_type}, toggle={toggle}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    class_name=get_wrapper_class_name(dropdown_wrapper) or "(empty)",
+                                    control_type=get_wrapper_control_type(dropdown_wrapper) or "(empty)",
+                                    toggle=toggle_state or "(unknown)",
+                                )
+                            )
+                    # 无论本次是否点击展开，都尽量让 Popup 窗口进入枚举列表：前置步骤
+                    # 可能已把下拉展开（toggle=On），此时 Popup 已存在但不在旧的
+                    # dropdown_windows 里，不补会让后续枚举漏掉 RadComboBoxItem。
+                    # 性能：三路全量收集含全桌面 UIA 枚举 + 多次 ElementFromHandle，
+                    # 单次数秒；预收集已含 Popup（下拉已展开）时无需重收，直接复用。
+                    _has_popup_window = any(
+                        "popup" in (get_wrapper_class_name(w) or "").lower()
+                        or "popup" in (get_wrapper_control_type(w) or "").lower()
+                        for w in dropdown_windows
+                    )
+                    if not _has_popup_window:
+                        try:
+                            popup_windows = _collect_dropdown_windows()
+                            popup_windows = _filter_dropdown_windows_by_process(popup_windows, expected_process_id)
+                            for w in popup_windows:
+                                if not any(
+                                    get_wrapper_handle(x) == get_wrapper_handle(w)
+                                    for x in dropdown_windows
+                                ):
+                                    dropdown_windows.append(w)
+                        except Exception:
+                            pass
+                    if should_click:
+                        clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
+                        if clicked:
+                            _LOG_STEP(
+                                "下拉框未展开，已自愈点击展开: step={step_id}, control={control_id}, toggle={toggle}".format(
+                                    step_id=step_id, control_id=control_id, toggle=toggle_state or "(unknown)"
+                                )
+                            )
+                            time.sleep(0.4)
+                            # 等待展开动画完成：轮询 ToggleState 直到 On（最多约 1.2 秒），
+                            # 避免展开尚未渲染完就枚举导致选项不可见。
+                            for _wait in range(4):
+                                if get_wrapper_toggle_state(dropdown_wrapper) in {"1", "On", "on", "1.0"}:
+                                    break
+                                time.sleep(0.2)
+                            _LOG_STEP(
+                                "下拉框展开状态: step={step_id}, control={control_id}, toggleAfter={toggle}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    toggle=get_wrapper_toggle_state(dropdown_wrapper) or "(unknown)",
+                                )
+                            )
+                            # 展开后下拉选项所在的 Popup 窗口**才创建**，必须在此重新收集并
+                            # 合并候选窗口——上面的窗口收集发生在"点击展开"之前，覆盖不到新
+                            # Popup。实测 step_10 版本下拉展开后仍"候选窗口=1"（无 Popup）→
+                            # raw/win32/sweep 三路探针全 0 → 只能走不可验证的盲点击。这里同时
+                            # 给 Telerik 虚拟化选项树的异步实体化留出时间（立即枚举必为 0）。
+                            for _exp_round in range(8):
+                                time.sleep(0.3)
+                                try:
+                                    _new_popups = _filter_dropdown_windows_by_process(
+                                        _collect_dropdown_windows(), expected_process_id
+                                    )
+                                except Exception:
+                                    _new_popups = []
+                                _added_popup = 0
+                                for _w in _new_popups:
+                                    try:
+                                        if not any(
+                                            get_wrapper_handle(x) == get_wrapper_handle(_w)
+                                            for x in dropdown_windows
+                                        ):
+                                            dropdown_windows.append(_w)
+                                            _added_popup += 1
+                                    except Exception:
+                                        continue
+                                _now_has_popup = any(
+                                    "popup" in (get_wrapper_class_name(w) or "").lower()
+                                    or "popup" in (get_wrapper_control_type(w) or "").lower()
+                                    for w in dropdown_windows
+                                )
+                                if _now_has_popup:
+                                    # Popup 已入列：再等一轮让选项实体化，交给后续枚举
+                                    time.sleep(0.3)
+                                    break
+                                if _added_popup:
+                                    break
+                            _LOG_STEP(
+                                "下拉展开后重新收集候选窗口: step={step_id}, control={control_id}, 候选窗口={count}".format(
+                                    step_id=step_id, control_id=control_id, count=len(dropdown_windows)
+                                )
+                            )
+                            remaining = deadline - time.time()
+                            if remaining < 3.0:
+                                deadline = time.time() + 3.0
+                expanded_attempted = True
+                _dd_t_expand += time.perf_counter() - _dd_t_expand_start
+                _dd_phase = "枚举"
                 continue
-            score = score_dropdown_runtime_candidate(
-                candidate,
-                target_texts,
-                expected_window_titles=expected_window_titles,
-                expected_process_id=expected_process_id,
-            )
-            if score < 0:
-                continue
-            ranked_candidates.append((score, candidate))
-        # Control View 无候选时补一轮 Raw View 枚举（Telerik 虚拟化选项）
-        if not ranked_candidates:
-            for candidate in _iter_dropdown_raw_view_candidates(dropdown_windows):
+            # 已展开：Control View 枚举可见选项
+            ranked_candidates = []
+            for candidate in iter_dropdown_runtime_candidates(dropdown_windows):
+                # 内层超时退出：枚举目标窗口 UIA 子树可能较慢，超时提前中断
                 if time.time() > deadline:
                     break
                 if failed_option_keys and _wrapper_identity_key(candidate) in failed_option_keys:
                     continue
-                raw_probe["count"] += 1
-                if len(raw_probe["samples"]) < 5:
-                    raw_probe["samples"].append(
-                        "{}|{}|{}".format(
-                            get_wrapper_text(candidate) or "(empty)",
-                            get_wrapper_class_name(candidate) or "",
-                            get_wrapper_control_type(candidate) or "",
-                        )
-                    )
                 score = score_dropdown_runtime_candidate(
                     candidate,
                     target_texts,
@@ -2412,117 +2981,210 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                 if score < 0:
                     continue
                 ranked_candidates.append((score, candidate))
+            # Control View 无候选时补一轮 Raw View 枚举（Telerik 虚拟化选项）
             if not ranked_candidates:
-                continue
-        ranked_candidates.sort(key=lambda item: item[0], reverse=True)
-        last_ranked_candidates = ranked_candidates[:5]
-        if ranked_candidates and ranked_candidates[0][0] >= 70:
-            best_candidate = ranked_candidates[0][1]
-            # 仅当下拉框确已展开时才点击选项：收起状态下点击 bridge 离屏选项无效。
-            # TogglePattern 在 Telerik 上常挂在 PART_DropDownButton 子元素，ComboBox 根
-            # 读取失败返回 ""——此时不再简单禁用整条"枚举+点击"路径：
-            #   1) 用 Toggle / ExpandCollapse 状态判定（_dropdown_currently_expanded）；
-            #   2) 状态未知且候选已有可见矩形时，视为已展开可点（离屏/未渲染选项矩形为空）；
-            #   3) 状态未知且候选无可见矩形时，补一次幂等展开点击后重判。
-            dropdown_expanded = _dropdown_currently_expanded(dropdown_wrapper)
-            if dropdown_expanded is None and dropdown_wrapper is not None:
-                if _candidate_has_visible_rect(best_candidate):
-                    dropdown_expanded = True
-                else:
-                    _exp_clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
-                    if _exp_clicked:
-                        time.sleep(0.3)
-                        dropdown_expanded = _dropdown_currently_expanded(dropdown_wrapper)
-                        if dropdown_expanded is not True and _candidate_has_visible_rect(best_candidate):
-                            dropdown_expanded = True
-            if dropdown_expanded is not True and dropdown_wrapper is None and _candidate_has_visible_rect(best_candidate):
-                # 下拉框本体不可得但选项已渲染在屏（如焦点已在下拉内）：同样允许点击
-                dropdown_expanded = True
-            if dropdown_expanded is not True:
-                time.sleep(0.15)
-                continue
-            best_score, best_candidate = ranked_candidates[0]
-            best_candidate_snapshot = get_wrapper_debug_snapshot(best_candidate)
-            # 候选自身文本与目标不符 → 不点击、剔除该候选、继续枚举（与主定位器同款：
-            # 目标文本明确时，防止只渲染出无关项时被盲点击选中并因显示值不可读而误报成功）。
-            _pre_target_norm = ""
-            if explicit_target and not is_placeholder_text(explicit_target):
-                _pre_target_norm = normalize_match_text(explicit_target).lower()
-            if not _pre_target_norm:
-                for _t in target_texts:
-                    if _t and not is_placeholder_text(_t):
-                        _pre_target_norm = normalize_match_text(_t).lower()
+                for candidate in _iter_dropdown_raw_view_candidates(dropdown_windows):
+                    if time.time() > deadline:
                         break
-            if _pre_target_norm:
-                _cand_tokens = []
-                try:
-                    _cand_tokens = [
-                        str(_tk).strip().lower()
-                        for _tk in (get_wrapper_runtime_text_candidates(best_candidate) or [])
-                        if str(_tk).strip()
-                    ]
-                except Exception:
-                    _cand_tokens = []
-                if _cand_tokens:
-                    _any_match = False
-                    for _tk in _cand_tokens:
-                        if _pre_target_norm in _tk or _tk in _pre_target_norm:
-                            _any_match = True
+                    if failed_option_keys and _wrapper_identity_key(candidate) in failed_option_keys:
+                        continue
+                    raw_probe["count"] += 1
+                    if len(raw_probe["samples"]) < 5:
+                        raw_probe["samples"].append(
+                            "{}|{}|{}".format(
+                                get_wrapper_text(candidate) or "(empty)",
+                                get_wrapper_class_name(candidate) or "",
+                                get_wrapper_control_type(candidate) or "",
+                            )
+                        )
+                    score = score_dropdown_runtime_candidate(
+                        candidate,
+                        target_texts,
+                        expected_window_titles=expected_window_titles,
+                        expected_process_id=expected_process_id,
+                    )
+                    if score < 0:
+                        continue
+                    ranked_candidates.append((score, candidate))
+                # win32/MSAA 兜底：Telerik 虚拟化下拉选项 UIA 不可见（rawTotalControls=4），
+                # 采集靠 win32 才能枚举到（totalControls=424）。按文本匹配目标选项后坐标点击。
+                if not ranked_candidates:
+                    for candidate in _iter_dropdown_win32_text_candidates(dropdown_windows, target_texts):
+                        if time.time() > deadline:
                             break
-                    if not _any_match:
-                        _LOG_STEP(
-                            "候选文本与目标不符，剔除并继续枚举: step={step_id}, control={control_id}, target={target}, candidate={candidate}".format(
-                                step_id=step_id,
-                                control_id=control_id,
-                                target=_pre_target_norm,
-                                candidate="|".join(_cand_tokens)[:80],
+                        if failed_option_keys and _wrapper_identity_key(candidate) in failed_option_keys:
+                            continue
+                        win32_probe["count"] += 1
+                        if len(win32_probe["samples"]) < 5:
+                            win32_probe["samples"].append(
+                                "{}|{}|{}".format(
+                                    get_wrapper_text(candidate) or "(empty)",
+                                    get_wrapper_class_name(candidate) or "",
+                                    get_wrapper_control_type(candidate) or "",
+                                )
                             )
+                        ranked_candidates.append((75, candidate))
+                # 点扫掠兜底：Telerik 虚拟化下拉选项不在任何 UIA/MSAA 树中（枚举均取不到），
+                # 复刻采集器 _realize_options_by_point_sweep：物理移动鼠标触发 WPF 实体化 +
+                # Desktop.from_point 命中读取，匹配目标后直接点击。
+                if not ranked_candidates:
+                    _sweep_anchor = _get_dropdown_sweep_anchor(dropdown_wrapper, dropdown_windows)
+                    if _sweep_anchor:
+                        _opt_wrapper, _opt_text, _sweep_stats = _sweep_dropdown_option_by_point(
+                            _sweep_anchor, target_texts
                         )
-                        _fk = _wrapper_identity_key(best_candidate)
-                        if _fk:
-                            failed_option_keys.add(_fk)
-                        time.sleep(0.15)
-                        continue
-            clicked, click_meta = click_dropdown_runtime_candidate(best_candidate)
-            if clicked:
-                time.sleep(0.12)
-                verify_value = ""
-                if dropdown_wrapper is not None:
+                        sweep_probe["count"] += _sweep_stats["probes"]
+                        sweep_probe["hits"] += _sweep_stats["hits"]
+                        if _sweep_stats.get("hitTexts"):
+                            sweep_probe["samples"] = list(_sweep_stats["hitTexts"][:5])
+                        if _opt_wrapper is not None and _opt_text:
+                            sweep_probe["matched"] = _opt_text
+                            _LOG_STEP(
+                                "已通过点扫掠命中并点击下拉选项: step={step_id}, control={control_id}, text={text}, probes={probes}, hits={hits}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    text=_opt_text,
+                                    probes=_sweep_stats["probes"],
+                                    hits=_sweep_stats["hits"],
+                                )
+                            )
+                            return True, {
+                                "method": "point_sweep",
+                                "targetTexts": target_texts,
+                                "bestCandidate": get_wrapper_debug_snapshot(_opt_wrapper),
+                                "valueVerified": _opt_text,
+                            }
+                if not ranked_candidates:
+                    continue
+            ranked_candidates.sort(key=lambda item: item[0], reverse=True)
+            last_ranked_candidates = ranked_candidates[:5]
+            if ranked_candidates and ranked_candidates[0][0] >= 70:
+                best_candidate = ranked_candidates[0][1]
+                # 仅当下拉框确已展开时才点击选项：收起状态下点击 bridge 离屏选项无效。
+                # TogglePattern 在 Telerik 上常挂在 PART_DropDownButton 子元素，ComboBox 根
+                # 读取失败返回 ""——此时不再简单禁用整条"枚举+点击"路径：
+                #   1) 用 Toggle / ExpandCollapse 状态判定（_dropdown_currently_expanded）；
+                #   2) 状态未知且候选已有可见矩形时，视为已展开可点（离屏/未渲染选项矩形为空）；
+                #   3) 状态未知且候选无可见矩形时，补一次幂等展开点击后重判。
+                dropdown_expanded = _dropdown_currently_expanded(dropdown_wrapper)
+                if dropdown_expanded is None and dropdown_wrapper is not None:
+                    if _candidate_has_visible_rect(best_candidate):
+                        dropdown_expanded = True
+                    else:
+                        _exp_clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
+                        if _exp_clicked:
+                            time.sleep(0.3)
+                            dropdown_expanded = _dropdown_currently_expanded(dropdown_wrapper)
+                            if dropdown_expanded is not True and _candidate_has_visible_rect(best_candidate):
+                                dropdown_expanded = True
+                if dropdown_expanded is not True and dropdown_wrapper is None and _candidate_has_visible_rect(best_candidate):
+                    # 下拉框本体不可得但选项已渲染在屏（如焦点已在下拉内）：同样允许点击
+                    dropdown_expanded = True
+                if dropdown_expanded is not True:
+                    time.sleep(0.15)
+                    continue
+                best_score, best_candidate = ranked_candidates[0]
+                best_candidate_snapshot = get_wrapper_debug_snapshot(best_candidate)
+                # 候选自身文本与目标文本不符 → 不点击、剔除该候选、继续枚举。
+                # 背景：下拉展开初期可能只渲染出无关项（实测 IEC 参考只渲染出首项
+                # "默认"），它评分达标成为 best_candidate 被盲点击；若显示值又不可读
+                # （无 ValuePattern），下方原逻辑会直接报成功——结果把目标"组合"点成了
+                # "默认"且流程毫不知情。目标文本明确时（actionConfig.text/value），
+                # 以候选自身文本做一次前置否决：剔除后由枚举继续找正确项，最终自然落到
+                # 键盘键入过滤兜底（该类下拉已被实机证明可靠）。
+                _pre_target_norm = ""
+                if explicit_target and not is_placeholder_text(explicit_target):
+                    _pre_target_norm = normalize_match_text(explicit_target).lower()
+                if not _pre_target_norm:
+                    for _t in target_texts:
+                        if _t and not is_placeholder_text(_t):
+                            _pre_target_norm = normalize_match_text(_t).lower()
+                            break
+                if _pre_target_norm:
+                    _cand_tokens = []
                     try:
-                        verify_value = _read_dropdown_display_text(dropdown_wrapper)
+                        _cand_tokens = [
+                            str(_tk).strip().lower()
+                            for _tk in (get_wrapper_runtime_text_candidates(best_candidate) or [])
+                            if str(_tk).strip()
+                        ]
                     except Exception:
-                        verify_value = ""
-                if verify_value:
-                    verify_norm = normalize_match_text(verify_value).lower()
-                    matched_target = False
-                    if explicit_target and not is_placeholder_text(explicit_target):
-                        matched_target = normalize_match_text(explicit_target).lower() == verify_norm
-                    if not matched_target:
-                        for target in target_texts:
-                            if target and normalize_match_text(target).lower() == verify_norm:
-                                matched_target = True
+                        _cand_tokens = []
+                    if _cand_tokens:
+                        _any_match = False
+                        for _tk in _cand_tokens:
+                            if _pre_target_norm in _tk or _tk in _pre_target_norm:
+                                _any_match = True
                                 break
-                    if not matched_target:
+                        if not _any_match:
+                            _LOG_STEP(
+                                "候选文本与目标不符，剔除并继续枚举: step={step_id}, control={control_id}, target={target}, candidate={candidate}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    target=_pre_target_norm,
+                                    candidate="|".join(_cand_tokens)[:80],
+                                )
+                            )
+                            _fk = _wrapper_identity_key(best_candidate)
+                            if _fk:
+                                failed_option_keys.add(_fk)
+                            time.sleep(0.15)
+                            continue
+                clicked, click_meta = click_dropdown_runtime_candidate(best_candidate)
+                if clicked:
+                    time.sleep(0.12)
+                    verify_value = ""
+                    if dropdown_wrapper is not None:
+                        try:
+                            verify_value = _read_dropdown_display_text(dropdown_wrapper)
+                        except Exception:
+                            verify_value = ""
+                    if verify_value:
+                        verify_norm = normalize_match_text(verify_value).lower()
+                        matched_target = False
+                        if explicit_target and not is_placeholder_text(explicit_target):
+                            matched_target = normalize_match_text(explicit_target).lower() == verify_norm
+                        if not matched_target:
+                            for target in target_texts:
+                                if target and normalize_match_text(target).lower() == verify_norm:
+                                    matched_target = True
+                                    break
+                        if not matched_target:
+                            _LOG_STEP(
+                                "候选点击后显示值未确认: step={step_id}, control={control_id}, expected={expected}, actual={actual}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    expected=" / ".join(target_texts) or "(empty)",
+                                    actual=verify_value,
+                                )
+                            )
+                            # 该候选已确认点错：剔除后重新展开，避免下一轮重复点击同一个错误项
+                            failed_key = _wrapper_identity_key(best_candidate)
+                            if failed_key:
+                                failed_option_keys.add(failed_key)
+                            expanded_attempted = False
+                            continue
                         _LOG_STEP(
-                            "候选点击后显示值未确认: step={step_id}, control={control_id}, expected={expected}, actual={actual}".format(
+                            "已通过运行时下拉候选点击控件并校验显示值: step={step_id}, control={control_id}, score={score}, value={value}".format(
                                 step_id=step_id,
                                 control_id=control_id,
-                                expected=" / ".join(target_texts) or "(empty)",
-                                actual=verify_value,
+                                score=best_score,
+                                value=verify_value,
                             )
                         )
-                        # 该候选已确认点错：剔除后重新展开，避免下一轮重复点击同一个错误项
-                        failed_key = _wrapper_identity_key(best_candidate)
-                        if failed_key:
-                            failed_option_keys.add(failed_key)
-                        expanded_attempted = False
-                        continue
+                        return True, {
+                            "score": best_score,
+                            "targetTexts": target_texts,
+                            "clickMeta": click_meta,
+                            "bestCandidate": best_candidate_snapshot,
+                            "valueVerified": verify_value,
+                        }
                     _LOG_STEP(
-                        "已通过运行时下拉候选点击控件并校验显示值: step={step_id}, control={control_id}, score={score}, value={value}".format(
+                        "已通过运行时下拉候选点击控件（显示值不可读，保留点击证据）: step={step_id}, control={control_id}, score={score}, texts={texts}".format(
                             step_id=step_id,
                             control_id=control_id,
                             score=best_score,
-                            value=verify_value,
+                            texts=" / ".join(target_texts) or "(empty)",
                         )
                     )
                     return True, {
@@ -2530,244 +3192,208 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                         "targetTexts": target_texts,
                         "clickMeta": click_meta,
                         "bestCandidate": best_candidate_snapshot,
-                        "valueVerified": verify_value,
+                        "valueVerification": "unreadable",
                     }
-                _LOG_STEP(
-                    "已通过运行时下拉候选点击控件（显示值不可读，保留点击证据）: step={step_id}, control={control_id}, score={score}, texts={texts}".format(
-                        step_id=step_id,
-                        control_id=control_id,
-                        score=best_score,
-                        texts=" / ".join(target_texts) or "(empty)",
-                    )
-                )
-                return True, {
-                    "score": best_score,
-                    "targetTexts": target_texts,
-                    "clickMeta": click_meta,
-                    "bestCandidate": best_candidate_snapshot,
-                    "valueVerification": "unreadable",
-                }
-        time.sleep(0.15)
+            time.sleep(0.15)
 
-    # ---- 键盘导航兜底 ----
-    _LOG_STEP(
-        "运行时下拉枚举未命中，进入键盘导航兜底: step={step_id}, control={control_id}, "
-        "elapsed={elapsed:.1f}s, raw探针={raw}, 已剔除错误项={failed}".format(
-            step_id=step_id,
-            control_id=control_id,
-            elapsed=time.time() - _loop_started,
-            raw=raw_probe["count"],
-            failed=len(failed_option_keys),
-        )
-    )
-    # 虚拟化下拉列表（如 MTD PART_DropDownButton）的选项在弹出窗口枚举和
-    # 子树遍历中均不可见，仅当鼠标悬停时才实体化。若枚举阶段未命中，尝试用
-    # 键盘方向键导航定位目标选项。
-    option_values = []
-    inspect_data = control_definition.get("inspectData", {}) or {}
-    if isinstance(inspect_data, dict):
-        option_values = [str(v).strip() for v in (inspect_data.get("optionValues", []) or []) if str(v).strip()]
-    if not option_values and isinstance(control_definition, dict):
-        option_values = [str(v).strip() for v in (control_definition.get("optionValues", []) or []) if str(v).strip()]
-    option_values_injected = False
-    if not option_values:
-        try:
-            from mup_assets import inject_dropdown_option_values
-            option_values, option_values_injected = inject_dropdown_option_values(
-                control_definition, option_values
+        # ---- 键盘导航兜底 ----
+        _LOG_STEP(
+            "运行时下拉枚举未命中，进入键盘导航兜底: step={step_id}, control={control_id}, "
+            "elapsed={elapsed:.1f}s, raw探针={raw}, 已剔除错误项={failed}".format(
+                step_id=step_id,
+                control_id=control_id,
+                elapsed=time.time() - _loop_started,
+                raw=raw_probe["count"],
+                failed=len(failed_option_keys),
             )
-        except Exception:
-            pass
-    if option_values:
-        # 在 optionValues 中查找目标文本的索引（精确或包含匹配）。
-        target_index = -1
-        search_texts = [explicit_target] if explicit_target else target_texts
-        for search in search_texts:
-            if not search:
-                continue
-            normalized_search = normalize_match_text(search).lower()
-            for idx, opt in enumerate(option_values):
-                if normalize_match_text(opt).lower() == normalized_search:
-                    target_index = idx
-                    break
-            if target_index < 0:
+        )
+        # 虚拟化下拉列表（如 MTD PART_DropDownButton）的选项在弹出窗口枚举和
+        # 子树遍历中均不可见，仅当鼠标悬停时才实体化。若枚举阶段未命中，尝试用
+        # 键盘方向键导航定位目标选项。
+        option_values = []
+        inspect_data = control_definition.get("inspectData", {}) or {}
+        if isinstance(inspect_data, dict):
+            option_values = [str(v).strip() for v in (inspect_data.get("optionValues", []) or []) if str(v).strip()]
+        if not option_values and isinstance(control_definition, dict):
+            option_values = [str(v).strip() for v in (control_definition.get("optionValues", []) or []) if str(v).strip()]
+        option_values_injected = False
+        if not option_values:
+            try:
+                from mup_assets import inject_dropdown_option_values
+                option_values, option_values_injected = inject_dropdown_option_values(
+                    control_definition, option_values
+                )
+            except Exception:
+                pass
+        if option_values:
+            # 在 optionValues 中查找目标文本的索引（精确或包含匹配）。
+            target_index = -1
+            search_texts = [explicit_target] if explicit_target else target_texts
+            for search in search_texts:
+                if not search:
+                    continue
+                normalized_search = normalize_match_text(search).lower()
                 for idx, opt in enumerate(option_values):
-                    if normalized_search in normalize_match_text(opt).lower():
+                    if normalize_match_text(opt).lower() == normalized_search:
                         target_index = idx
                         break
+                if target_index < 0:
+                    for idx, opt in enumerate(option_values):
+                        if normalized_search in normalize_match_text(opt).lower():
+                            target_index = idx
+                            break
+                if target_index >= 0:
+                    break
             if target_index >= 0:
-                break
-        if target_index >= 0:
-            # 防错位前置：发方向键/回车前确保下拉框确已展开且获得键盘焦点。
-            # 未展开/未定位到下拉框时会盲发按键、落到当前焦点控件，可能误触发无关按钮。
-            nav_ready = dropdown_wrapper is not None
-            downs = target_index
-            if nav_ready:
-                if _dropdown_currently_expanded(dropdown_wrapper) is not True:
-                    _exp_clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
-                    if _exp_clicked:
-                        time.sleep(0.3)
-                        for _wait_t in range(4):
-                            if _dropdown_currently_expanded(dropdown_wrapper) is True:
-                                break
-                            time.sleep(0.2)
-                try:
-                    dropdown_wrapper.set_focus()
-                except Exception:
-                    pass
-                if _dropdown_currently_expanded(dropdown_wrapper) is not True:
-                    _LOG_STEP(
-                        "键盘导航前置：下拉框未确认展开，跳过盲发按键转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
-                            step_id=step_id,
-                            control_id=control_id,
-                            option=option_values[target_index],
-                        )
-                    )
-                    nav_ready = False
-                else:
-                    # 从当前选中项出发做相对导航：重跑流程时下拉框当前值可能已落在目标
-                    # 之前的某项，若每次都从固定起点 DOWN N 次会选到第 2N 项导致错位。
+                # 防错位前置：发方向键/回车前确保下拉框确已展开且获得键盘焦点。
+                # 未展开/未定位到下拉框时会盲发按键、落到当前焦点控件，可能误触发无关按钮。
+                nav_ready = dropdown_wrapper is not None
+                downs = target_index
+                if nav_ready:
+                    if _dropdown_currently_expanded(dropdown_wrapper) is not True:
+                        _exp_clicked, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
+                        if _exp_clicked:
+                            time.sleep(0.3)
+                            for _wait_t in range(4):
+                                if _dropdown_currently_expanded(dropdown_wrapper) is True:
+                                    break
+                                time.sleep(0.2)
                     try:
-                        current_display = _read_dropdown_display_text(dropdown_wrapper)
+                        dropdown_wrapper.set_focus()
                     except Exception:
-                        current_display = ""
-                    downs, needs_home = _dropdown_nav_delta(option_values, current_display, target_index)
-                    if needs_home:
-                        # 当前值无法在候选列表中解析：先 HOME 归零再绝对导航
-                        send_keys("{HOME}")
-                        time.sleep(0.08)
-            if nav_ready:
-                if downs > 0:
-                    for _ in range(downs):
-                        send_keys("{DOWN}")
-                        time.sleep(0.06)
-                elif downs < 0:
-                    for _ in range(-downs):
-                        send_keys("{UP}")
-                        time.sleep(0.06)
-                send_keys("{ENTER}")
-                time.sleep(0.15)
-                # 键盘导航后统一读显示值验证（对全部选项来源生效，不限于注入的安装目录
-                # 名单）：读到且不匹配，或读不到（不可验证），都不判定成功，转键入搜索，
-                # 避免"防错位"被绕过导致点错。
-                navigate_ok = False
-                try:
-                    display = _read_dropdown_display_text(dropdown_wrapper) if dropdown_wrapper is not None else ""
-                except Exception:
-                    display = ""
-                if display:
-                    display_norm = normalize_match_text(display).lower()
-                    navigate_ok = any(
-                        normalize_match_text(s).lower() and normalize_match_text(s).lower() in display_norm
-                        for s in search_texts if s
-                    )
-                if not navigate_ok:
-                    _LOG_STEP(
-                        "键盘导航后显示值未确认，转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
-                            step_id=step_id,
-                            control_id=control_id,
-                            option=option_values[target_index],
+                        pass
+                    if _dropdown_currently_expanded(dropdown_wrapper) is not True:
+                        _LOG_STEP(
+                            "键盘导航前置：下拉框未确认展开，跳过盲发按键转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
+                                step_id=step_id,
+                                control_id=control_id,
+                                option=option_values[target_index],
+                            )
                         )
-                    )
-                else:
+                        nav_ready = False
+                    else:
+                        # 从当前选中项出发做相对导航：重跑流程时下拉框当前值可能已落在目标
+                        # 之前的某项，若每次都从固定起点 DOWN N 次会选到第 2N 项导致错位。
+                        try:
+                            current_display = _read_dropdown_display_text(dropdown_wrapper)
+                        except Exception:
+                            current_display = ""
+                        downs, needs_home = _dropdown_nav_delta(option_values, current_display, target_index)
+                        if needs_home:
+                            # 当前值无法在候选列表中解析：先 HOME 归零再绝对导航
+                            send_keys("{HOME}")
+                            time.sleep(0.08)
+                if nav_ready:
+                    if downs > 0:
+                        for _ in range(downs):
+                            send_keys("{DOWN}")
+                            time.sleep(0.06)
+                    elif downs < 0:
+                        for _ in range(-downs):
+                            send_keys("{UP}")
+                            time.sleep(0.06)
+                    send_keys("{ENTER}")
+                    time.sleep(0.15)
+                    # 键盘导航后统一读显示值验证（对全部选项来源生效，不限于注入的安装目录
+                    # 名单）：读到且不匹配，或读不到（不可验证），都不判定成功，转键入搜索，
+                    # 避免"防错位"被绕过导致点错。
+                    navigate_ok = False
+                    try:
+                        display = _read_dropdown_display_text(dropdown_wrapper) if dropdown_wrapper is not None else ""
+                    except Exception:
+                        display = ""
+                    if display:
+                        display_norm = normalize_match_text(display).lower()
+                        navigate_ok = any(
+                            normalize_match_text(s).lower() and normalize_match_text(s).lower() in display_norm
+                            for s in search_texts if s
+                        )
+                    if not navigate_ok:
+                        _LOG_STEP(
+                            "键盘导航后显示值未确认，转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
+                                step_id=step_id,
+                                control_id=control_id,
+                                option=option_values[target_index],
+                            )
+                        )
+                    else:
+                        _LOG_STEP(
+                            "键盘导航选中下拉项并通过显示值校验: step={step_id}, control={control_id}, option={option}, index={idx}, totalOptions={total}".format(
+                                step_id=step_id,
+                                control_id=control_id,
+                                option=option_values[target_index],
+                                idx=target_index,
+                                total=len(option_values),
+                            )
+                        )
+                        return True, {
+                            "method": "keyboard_navigate",
+                            "targetIndex": target_index,
+                            "targetOption": option_values[target_index],
+                            "optionValues": option_values,
+                            "targetTexts": target_texts,
+                            "valueVerified": display,
+                        }
+        # ---- 键盘导航兜底结束 ----
+
+        # ---- 值检查 + 键入搜索兜底（不依赖 optionValues / 下拉项 UIA 可见性）----
+        # Telerik RadComboBox 的虚拟化选项在 UIA 中不可枚举，但支持键入过滤：
+        # 展开后键入目标文本会自动跳转/过滤，ENTER 即选中。仅当调用方显式指定了
+        # 目标选项文本（actionConfig.value）时才启用，避免误把控件名当键入内容。
+        if search_text and not is_placeholder_text(search_text):
+            # 复用循环前已定位的下拉框，避免在键入兜底里重复整树 FindAll
+            # （实测 step_24a 测风对象 9.5s 二次定位）；仅当未定位/已失效时才重找。
+            if dropdown_wrapper is None or not is_wrapper_alive(dropdown_wrapper):
+                dropdown_wrapper = find_flow_control(
+                    step_id, control_id, timeout_seconds=2.0, window_title_hint=window_title_hint, control_map_path=control_map_path
+                )
+            if dropdown_wrapper is not None:
+                current_value = get_wrapper_value(dropdown_wrapper)
+                # 1) 当前值已等于目标：无需展开选择，直接成功
+                if current_value and normalize_match_text(current_value) == normalize_match_text(search_text):
                     _LOG_STEP(
-                        "键盘导航选中下拉项并通过显示值校验: step={step_id}, control={control_id}, option={option}, index={idx}, totalOptions={total}".format(
-                            step_id=step_id,
-                            control_id=control_id,
-                            option=option_values[target_index],
-                            idx=target_index,
-                            total=len(option_values),
+                        "下拉框当前值已匹配目标: step={step_id}, control={control_id}, value={value}".format(
+                            step_id=step_id, control_id=control_id, value=current_value
                         )
                     )
                     return True, {
-                        "method": "keyboard_navigate",
-                        "targetIndex": target_index,
-                        "targetOption": option_values[target_index],
-                        "optionValues": option_values,
+                        "method": "value_already_matched",
+                        "value": current_value,
                         "targetTexts": target_texts,
-                        "valueVerified": display,
                     }
-    # ---- 键盘导航兜底结束 ----
+                # 2) 确保下拉框处于展开状态后键入目标文本 + ENTER
+                #    Telerik RadComboBox 展开后键盘焦点自动落到列表，键入目标文本会
+                #    自动过滤/跳转，ENTER 即选中（选项经 UIA-to-MSAA bridge 暴露，
+                #    无法通过 UIA 枚举/坐标点击操作，键入是唯一可靠路径）。
+                expanded_confirmed = False
+                toggle_state = get_wrapper_toggle_state(dropdown_wrapper)
+                if toggle_state in {"1", "On", "on", "1.0"}:
+                    expanded_confirmed = True
+                else:
+                    ok_click, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
+                    if ok_click:
+                        time.sleep(0.4)
+                        for _wait in range(4):
+                            if get_wrapper_toggle_state(dropdown_wrapper) in {"1", "On", "on", "1.0"}:
+                                expanded_confirmed = True
+                                break
+                            time.sleep(0.2)
+                if expanded_confirmed:
+                    try:
+                        dropdown_wrapper.set_focus()
+                    except Exception:
+                        pass
+                    try:
+                        send_keys(_escape_send_keys_text(search_text))
+                        time.sleep(0.35)
 
-    # ---- 值检查 + 键入搜索兜底（不依赖 optionValues / 下拉项 UIA 可见性）----
-    # Telerik RadComboBox 的虚拟化选项在 UIA 中不可枚举，但支持键入过滤：
-    # 展开后键入目标文本会自动跳转/过滤，ENTER 即选中。仅当调用方显式指定了
-    # 目标选项文本（actionConfig.value）时才启用，避免误把控件名当键入内容。
-    if search_text and not is_placeholder_text(search_text):
-        # 复用循环前已定位的下拉框，避免在键入兜底里重复整树 FindAll
-        # （实测 step_24a 测风对象 9.5s 二次定位）；仅当未定位/已失效时才重找。
-        if dropdown_wrapper is None or not is_wrapper_alive(dropdown_wrapper):
-            dropdown_wrapper = find_flow_control(
-                step_id, control_id, timeout_seconds=2.0, window_title_hint=window_title_hint, control_map_path=control_map_path
-            )
-        if dropdown_wrapper is not None:
-            current_value = get_wrapper_value(dropdown_wrapper)
-            # 1) 当前值已等于目标：无需展开选择，直接成功
-            if current_value and normalize_match_text(current_value) == normalize_match_text(search_text):
-                _LOG_STEP(
-                    "下拉框当前值已匹配目标: step={step_id}, control={control_id}, value={value}".format(
-                        step_id=step_id, control_id=control_id, value=current_value
-                    )
-                )
-                return True, {
-                    "method": "value_already_matched",
-                    "value": current_value,
-                    "targetTexts": target_texts,
-                }
-            # 2) 确保下拉框处于展开状态后键入目标文本 + ENTER
-            #    Telerik RadComboBox 展开后键盘焦点自动落到列表，键入目标文本会
-            #    自动过滤/跳转，ENTER 即选中（选项经 UIA-to-MSAA bridge 暴露，
-            #    无法通过 UIA 枚举/坐标点击操作，键入是唯一可靠路径）。
-            expanded_confirmed = False
-            toggle_state = get_wrapper_toggle_state(dropdown_wrapper)
-            if toggle_state in {"1", "On", "on", "1.0"}:
-                expanded_confirmed = True
-            else:
-                ok_click, _ = click_wrapper_center(dropdown_wrapper, click_kind="left")
-                if ok_click:
-                    time.sleep(0.4)
-                    for _wait in range(4):
-                        if get_wrapper_toggle_state(dropdown_wrapper) in {"1", "On", "on", "1.0"}:
-                            expanded_confirmed = True
-                            break
-                        time.sleep(0.2)
-            if expanded_confirmed:
-                try:
-                    dropdown_wrapper.set_focus()
-                except Exception:
-                    pass
-                try:
-                    send_keys(_escape_send_keys_text(search_text))
-                    time.sleep(0.35)
-
-                    # Telerik 键入过滤只是"高亮/过滤"，直接 ENTER 常只收起不选中
-                    # （实测：选项可见但收起后框内无选中内容）。键入后目标项已
-                    # 实体化可见，首选重试"枚举+点击"真实选中；均未命中再补
-                    # DOWN/UP 提交 selection + ENTER 确认。
-                    typed_clicked = False
-                    retry_deadline = time.time() + 3.0
-                    for candidate in iter_dropdown_runtime_candidates(dropdown_windows):
-                        if time.time() > retry_deadline:
-                            break
-                        score = score_dropdown_runtime_candidate(
-                            candidate,
-                            target_texts,
-                            expected_window_titles=expected_window_titles,
-                            expected_process_id=expected_process_id,
-                        )
-                        if score < 70:
-                            continue
-                        if dropdown_wrapper is None or get_wrapper_toggle_state(
-                            dropdown_wrapper
-                        ) not in {"1", "On", "on", "1.0"}:
-                            break  # 下拉框已收起，停止补点
-                        clicked_cand, _click_meta = click_dropdown_runtime_candidate(candidate)
-                        if clicked_cand:
-                            typed_clicked = True
-                            break
-                    if not typed_clicked:
+                        # Telerik 键入过滤只是"高亮/过滤"，直接 ENTER 常只收起不选中
+                        # （实测：选项可见但收起后框内无选中内容）。键入后目标项已
+                        # 实体化可见，首选重试"枚举+点击"真实选中；均未命中再补
+                        # DOWN/UP 提交 selection + ENTER 确认。
+                        typed_clicked = False
                         retry_deadline = time.time() + 3.0
-                        for candidate in _iter_dropdown_raw_view_candidates(dropdown_windows):
+                        for candidate in iter_dropdown_runtime_candidates(dropdown_windows):
                             if time.time() > retry_deadline:
                                 break
                             score = score_dropdown_runtime_candidate(
@@ -2781,151 +3407,214 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                             if dropdown_wrapper is None or get_wrapper_toggle_state(
                                 dropdown_wrapper
                             ) not in {"1", "On", "on", "1.0"}:
-                                break
+                                break  # 下拉框已收起，停止补点
                             clicked_cand, _click_meta = click_dropdown_runtime_candidate(candidate)
                             if clicked_cand:
                                 typed_clicked = True
                                 break
+                        if not typed_clicked:
+                            retry_deadline = time.time() + 3.0
+                            for candidate in _iter_dropdown_raw_view_candidates(dropdown_windows):
+                                if time.time() > retry_deadline:
+                                    break
+                                score = score_dropdown_runtime_candidate(
+                                    candidate,
+                                    target_texts,
+                                    expected_window_titles=expected_window_titles,
+                                    expected_process_id=expected_process_id,
+                                )
+                                if score < 70:
+                                    continue
+                                if dropdown_wrapper is None or get_wrapper_toggle_state(
+                                    dropdown_wrapper
+                                ) not in {"1", "On", "on", "1.0"}:
+                                    break
+                                clicked_cand, _click_meta = click_dropdown_runtime_candidate(candidate)
+                                if clicked_cand:
+                                    typed_clicked = True
+                                    break
 
-                    if typed_clicked:
-                        time.sleep(0.25)
-                        _LOG_STEP(
-                            "键入过滤后点击选中下拉项(候选命中): step={step_id}, control={control_id}, option={option}".format(
-                                step_id=step_id, control_id=control_id, option=search_text
-                            )
-                        )
-                    else:
-                        # 键入已高亮第一个匹配项；DOWN/UP 提交 selection 后再 ENTER 确认
-                        send_keys("{DOWN}")
-                        time.sleep(0.12)
-                        send_keys("{UP}")
-                        time.sleep(0.12)
-                        send_keys("{ENTER}")
-                        time.sleep(0.3)
-                except Exception as exc:
-                    _LOG_STEP(
-                        "键入搜索失败: step={step_id}, control={control_id}, error={error}".format(
-                            step_id=step_id, control_id=control_id, error=exc
-                        )
-                    )
-                else:
-                    verify_value = _read_dropdown_display_text(dropdown_wrapper)
-                    if verify_value and normalize_match_text(verify_value) == normalize_match_text(search_text):
-                        _LOG_STEP(
-                            "键盘键入搜索选中下拉项: step={step_id}, control={control_id}, option={option}".format(
-                                step_id=step_id, control_id=control_id, option=verify_value
-                            )
-                        )
-                        return True, {
-                            "method": "keyboard_type_search",
-                            "targetOption": verify_value,
-                            "targetTexts": target_texts,
-                        }
-                    if verify_value:
-                        # 读到了值但不同于目标 → 确认未选中（如键入文本不匹配任何选项），
-                        # 不靠"收起"兜底，避免误判成功。
-                        _LOG_STEP(
-                            "键盘键入搜索后值不匹配: step={step_id}, control={control_id}, expected={expected}, actual={actual}".format(
-                                step_id=step_id,
-                                control_id=control_id,
-                                expected=search_text,
-                                actual=verify_value,
-                            )
-                        )
-                    else:
-                        # 读不到值（无 ValuePattern 的 bridge 控件）时，收起状态作为间接证据：
-                        # 键入+ENTER 后下拉框自动收起 = 已选中目标（Telerik 选中后收起）。
-                        if get_wrapper_toggle_state(dropdown_wrapper) in {"0", "Off", "off", "0.0"}:
+                        if typed_clicked:
+                            time.sleep(0.25)
                             _LOG_STEP(
-                                "键盘键入搜索后下拉框已收起（视为选中）: step={step_id}, control={control_id}, option={option}".format(
+                                "键入过滤后点击选中下拉项(候选命中): step={step_id}, control={control_id}, option={option}".format(
                                     step_id=step_id, control_id=control_id, option=search_text
                                 )
                             )
+                        else:
+                            # 键入已高亮第一个匹配项；DOWN/UP 提交 selection 后再 ENTER 确认
+                            send_keys("{DOWN}")
+                            time.sleep(0.12)
+                            send_keys("{UP}")
+                            time.sleep(0.12)
+                            send_keys("{ENTER}")
+                            time.sleep(0.3)
+                    except Exception as exc:
+                        _LOG_STEP(
+                            "键入搜索失败: step={step_id}, control={control_id}, error={error}".format(
+                                step_id=step_id, control_id=control_id, error=exc
+                            )
+                        )
+                    else:
+                        verify_value = _read_dropdown_display_text(dropdown_wrapper)
+                        if verify_value and normalize_match_text(verify_value) == normalize_match_text(search_text):
+                            _LOG_STEP(
+                                "键盘键入搜索选中下拉项: step={step_id}, control={control_id}, option={option}".format(
+                                    step_id=step_id, control_id=control_id, option=verify_value
+                                )
+                            )
                             return True, {
-                                "method": "keyboard_type_search_collapsed",
-                                "targetOption": search_text,
+                                "method": "keyboard_type_search",
+                                "targetOption": verify_value,
                                 "targetTexts": target_texts,
                             }
-    # ---- 值检查 + 键入搜索兜底结束 ----
+                        if verify_value:
+                            # 读到了值但不同于目标 → 确认未选中（如键入文本不匹配任何选项），
+                            # 不靠"收起"兜底，避免误判成功。
+                            _LOG_STEP(
+                                "键盘键入搜索后值不匹配: step={step_id}, control={control_id}, expected={expected}, actual={actual}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    expected=search_text,
+                                    actual=verify_value,
+                                )
+                            )
+                        else:
+                            # 读不到值（无 ValuePattern 的 bridge 控件）时，收起状态作为间接证据：
+                            # 键入+ENTER 后下拉框自动收起 = 已选中目标（Telerik 选中后收起）。
+                            if get_wrapper_toggle_state(dropdown_wrapper) in {"0", "Off", "off", "0.0"}:
+                                _LOG_STEP(
+                                    "键盘键入搜索后下拉框已收起（视为选中）: step={step_id}, control={control_id}, option={option}".format(
+                                        step_id=step_id, control_id=control_id, option=search_text
+                                    )
+                                )
+                                return True, {
+                                    "method": "keyboard_type_search_collapsed",
+                                    "targetOption": search_text,
+                                    "targetTexts": target_texts,
+                                }
+        # ---- 值检查 + 键入搜索兜底结束 ----
 
-    if last_ranked_candidates:
-        candidate_text = "; ".join(
-            "#{index} score={score} title={title} class={class_name} control={control_type} rect={rect}".format(
-                index=index + 1,
-                score=item[0],
-                title=get_wrapper_text(item[1]) or "(empty)",
-                class_name=get_wrapper_class_name(item[1]) or "(empty)",
-                control_type=get_wrapper_control_type(item[1]) or "(empty)",
-                rect=get_wrapper_rectangle(item[1]) or {},
+        if last_ranked_candidates:
+            candidate_text = "; ".join(
+                "#{index} score={score} title={title} class={class_name} control={control_type} rect={rect}".format(
+                    index=index + 1,
+                    score=item[0],
+                    title=get_wrapper_text(item[1]) or "(empty)",
+                    class_name=get_wrapper_class_name(item[1]) or "(empty)",
+                    control_type=get_wrapper_control_type(item[1]) or "(empty)",
+                    rect=get_wrapper_rectangle(item[1]) or {},
+                )
+                for index, item in enumerate(last_ranked_candidates)
             )
-            for index, item in enumerate(last_ranked_candidates)
-        )
-        _LOG_STEP(
-            "运行时下拉项未命中: step={step_id}, control={control_id}, targets={targets}, expectedTitles={titles}, foreground={foreground}, candidates={candidates}".format(
-                step_id=step_id,
-                control_id=control_id,
-                targets=" / ".join(target_texts) or "(empty)",
-                titles=" / ".join(expected_window_titles) or "(empty)",
-                foreground=get_wrapper_text(foreground_before) or "(empty)",
-                candidates=candidate_text,
+            _LOG_STEP(
+                "运行时下拉项未命中: step={step_id}, control={control_id}, targets={targets}, expectedTitles={titles}, foreground={foreground}, candidates={candidates}".format(
+                    step_id=step_id,
+                    control_id=control_id,
+                    targets=" / ".join(target_texts) or "(empty)",
+                    titles=" / ".join(expected_window_titles) or "(empty)",
+                    foreground=get_wrapper_text(foreground_before) or "(empty)",
+                    candidates=candidate_text,
+                )
             )
-        )
-    else:
-        _LOG_STEP(
-            "运行时下拉项未命中且未枚举到候选项: step={step_id}, control={control_id}, targets={targets}, expectedTitles={titles}, foreground={foreground}, rawProbe={probe}".format(
-                step_id=step_id,
-                control_id=control_id,
-                targets=" / ".join(target_texts) or "(empty)",
-                titles=" / ".join(expected_window_titles) or "(empty)",
-                foreground=get_wrapper_text(foreground_before) or "(empty)",
-                probe=json.dumps(raw_probe, ensure_ascii=False),
+        else:
+            # 阶段0 诊断：未枚举到候选项时，列出实际收集到的窗口（标题|pid|类名）与
+            # 定位到的下拉控件身份，用于区分"下拉未展开"（无 Popup 窗口）vs
+            # "Popup 被漏收/被进程过滤"（有 Popup 但不在枚举窗口列表）。
+            _window_desc = []
+            for _w in dropdown_windows[:10]:
+                try:
+                    _w_pid = get_wrapper_process_id(_w)
+                except Exception:
+                    _w_pid = "?"
+                _window_desc.append(
+                    "{title}|pid={pid}|{class_name}".format(
+                        title=get_wrapper_text(_w) or "(no-title)",
+                        pid=_w_pid,
+                        class_name=get_wrapper_class_name(_w) or "",
+                    )
+                )
+            _wrapper_desc = "(none)"
+            if dropdown_wrapper is not None:
+                _wrapper_desc = "{}|{}|{}".format(
+                    get_wrapper_class_name(dropdown_wrapper) or "(empty)",
+                    get_wrapper_control_type(dropdown_wrapper) or "(empty)",
+                    get_wrapper_toggle_state(dropdown_wrapper) or "(empty)",
+                )
+            _LOG_STEP(
+                "运行时下拉项未命中且未枚举到候选项: step={step_id}, control={control_id}, targets={targets}, "
+                "expectedTitles={titles}, foreground={foreground}, rawProbe={probe}, win32Probe={win32}, sweepProbe={sweep}, "
+                "windows={windows}, wrapper={wrapper}".format(
+                    step_id=step_id,
+                    control_id=control_id,
+                    targets=" / ".join(target_texts) or "(empty)",
+                    titles=" / ".join(expected_window_titles) or "(empty)",
+                    foreground=get_wrapper_text(foreground_before) or "(empty)",
+                    probe=json.dumps(raw_probe, ensure_ascii=False),
+                    win32=json.dumps(win32_probe, ensure_ascii=False),
+                    sweep=json.dumps(sweep_probe, ensure_ascii=False),
+                    windows="; ".join(_window_desc) or "(none)",
+                    wrapper=_wrapper_desc,
+                )
             )
-        )
-    # 失败止血：失败前可能已"自愈点击展开"下拉，失败返回前收起残留 Popup 弹层，
-    # 避免残留弹层拦截后续步骤物理点击（与 wt_flow_locator 同款修复）。
-    # 发 ESC 前实时复查弹层仍在（枚举快照不可作发送依据）；期望进程 id 优先取
-    # 已定位下拉框自身，前台进程兜底。
-    try:
-        _dismiss_pids = set()
-        if expected_process_id:
-            _dismiss_pids.add(str(expected_process_id))
+        # 失败止血：本函数失败前可能已"自愈点击展开"下拉，失败路径原逻辑不收起残留的
+        # Popup 弹层。残留弹层会拦截后续步骤对该位置控件的物理点击——实测多塔"点"下拉
+        # (step_mt_refpoint) 失败后，下一步"参考气象"锚点点击 (443,186) 正好落入残留弹层
+        # 候选 rect (48,168)-(481,189) 内，导致"点击报成功但弹窗未开"的假成功连锁。
+        # 发 ESC 前由 _dismiss_expanded_dropdown 实时复查弹层仍在（枚举阶段快照不可作
+        # 发送依据）；期望进程 id 优先取已定位下拉框自身（比前台推断更可靠），前台进程兜底。
         try:
-            _dropdown_pid = get_wrapper_process_id(dropdown_wrapper) if dropdown_wrapper is not None else None
+            _dismiss_pids = set()
+            if expected_process_id:
+                _dismiss_pids.add(str(expected_process_id))
+            try:
+                _dropdown_pid = get_wrapper_process_id(dropdown_wrapper) if dropdown_wrapper is not None else None
+            except Exception:
+                _dropdown_pid = None
+            if _dropdown_pid:
+                _dismiss_pids.add(str(_dropdown_pid))
+            _dismiss_expanded_dropdown(step_id=step_id, control_id=control_id, expected_process_ids=_dismiss_pids)
         except Exception:
-            _dropdown_pid = None
-        if _dropdown_pid:
-            _dismiss_pids.add(str(_dropdown_pid))
-        _dismiss_expanded_dropdown(step_id=step_id, control_id=control_id, expected_process_ids=_dismiss_pids)
-    except Exception:
-        pass
-    return False, {"targetTexts": target_texts}
+            pass
+        _dd_result = "失败(枚举/兜底未命中)"
+        return False, {"targetTexts": target_texts}
+    finally:
+        # 统一出口耗时汇总：预收集 / 展开 / 枚举+兜底 三段 + 结果标记。
+        # finally 保证 10 个 return 出口（含 value_already_matched 捷径、候选点击、
+        # 键盘导航、键入过滤、超时失败）全部覆盖，且异常路径同样记账。
+        _dd_total_s = time.perf_counter() - _dd_t_total
+        _dd_enum_s = max(0.0, _dd_total_s - _dd_t_precoll - _dd_t_expand)
+        try:
+            _LOG_STEP(
+                "[下拉运行时耗时] step={sid}, ctrl={cid}, 结果={result}, "
+                "预收集={pre:.2f}s, 展开={exp:.2f}s, 枚举与兜底={enum:.2f}s, 总计={total:.2f}s".format(
+                    sid=step_id, cid=control_id, result=(_dd_result or "成功"),
+                    pre=_dd_t_precoll, exp=_dd_t_expand, enum=_dd_enum_s, total=_dd_total_s,
+                )
+            )
+        except Exception:
+            pass
 
 
 def _dismiss_expanded_dropdown(step_id="", control_id="", expected_process_ids=None):
     """下拉选择失败后收起残留弹层：实时复查确认弹层仍在才发 ESC，防误伤。
 
-    枚举阶段快照不可作为发送依据——从枚举到失败返回可能已隔数十秒，候选点击/
-    键盘 ENTER 早已把弹层关掉；此时全局 ESC（pywinauto.keyboard 发往当前前台焦点
-    窗口）会落到主窗口或用户其他应用。安全链路与 wt_flow_locator 同款：
-      1. 纯 win32 枚举并按目标关键词收窄到目标进程；注意目标窗口的 win32 注册类是
-         HwndWrapper[<进程>;;<GUID>]，不含 "popup"，弹层识别必须走下一步 UIA 类名；
-      2. 逐句柄限定范围 UIA 读取类名/控件类型（不做全桌面枚举），识别依据
-         UIA 类名/控件类型含 "popup"（WPF PopupAutomationPeer 上报 className="Popup"）；
-      3. 前台核对（尽力而为）：能确定前台窗口且确定不属于目标进程时跳过；
-         确定不了不阻断（以实时弹层为准）。
-    通用化场景下 _TARGET_WINDOW_KEYWORDS 为空时枚举不限定进程——此时必须拿到
-    期望进程 id 才允许继续，否则无法锚定弹层归属，宁可留着弹层也不误伤。
+    枚举阶段快照（dropdown_windows 等）不可作为发送依据——从枚举到失败返回可能已隔
+    数十秒，候选点击/键盘 ENTER 早已把弹层关掉；此时全局 ESC（pywinauto.keyboard 发往
+    当前前台焦点窗口）会落到 MUP 主窗口或用户其他应用。安全链路：
+      1. 纯 win32 枚举可见顶层窗口并按 _MUP_WINDOW_KEYWORDS 收窄到目标进程（毫秒级、
+         零 COM）。注意 MUP 窗口的 win32 注册类是 HwndWrapper[<进程>;;<GUID>]，不含
+         "popup"，不能拿 win32 类名识别弹层（识别必须走下一步的 UIA 类名）；
+      2. 逐句柄限定范围 UIA 读取类名/控件类型（与 _collect_dropdown_windows 首路同款
+         安全模式，不做全桌面枚举）。弹层识别依据 UIA 类名/控件类型含 "popup"——WPF
+         PopupAutomationPeer 上报 className="Popup"（控件库实测捕获 frameworkId=WPF
+         + className=Popup，见 control_maps standard 目录）；
+      3. 前台核对（尽力而为）：能确定前台窗口且确定不属于目标进程时跳过；确定不了
+         不阻断（以实时弹层为准——实测事故中前台读取返回空，硬性要求会让止血失效）。
     """
     expected = {str(p).strip() for p in (expected_process_ids or []) if str(p or "").strip()}
-    if not expected and not _TARGET_WINDOW_KEYWORDS:
-        _LOG_STEP(
-            "[下拉止血] 无期望进程 id 且未配置目标窗口关键词，无法锚定弹层归属，跳过 ESC: step={}, control={}".format(
-                step_id, control_id
-            )
-        )
-        return
     try:
-        live_infos = _enum_target_win32_windows()
+        live_infos = _enum_visible_mup_win32_windows()
     except Exception:
         live_infos = []
     live_popup = None
@@ -2949,7 +3638,7 @@ def _dismiss_expanded_dropdown(step_id="", control_id="", expected_process_ids=N
             break
     if live_popup is None:
         _LOG_STEP(
-            "[下拉止血] 实时复查未见目标进程 Popup 残留，跳过 ESC: step={}, control={}".format(
+            "[下拉止血] 实时复查未见 MUP Popup 残留，跳过 ESC: step={}, control={}".format(
                 step_id, control_id
             )
         )
@@ -3772,7 +4461,49 @@ def _recover_pyautogui_failsafe(exc):
     return recovered is not None
 
 
+def _rect_is_degenerate(rect):
+    """矩形是否为退化（不可点击）矩形：宽或高 <= 0。
+
+    WPF 控件未渲染/未实例化、窗口最小化或 UIA 尚未完成布局时，boundingRect 常
+    返回 (0,0,0,0)。此时由矩形中心推导出的点击坐标必然是屏幕 (0,0)（左上角），
+    形成"点击报成功、实际什么也没点"的假成功。所有由矩形推导点击点的地方都
+    必须先过本校验。
+    """
+    if not isinstance(rect, dict):
+        return True
+    try:
+        width = int(rect.get("width", 0) or 0)
+        height = int(rect.get("height", 0) or 0)
+    except (TypeError, ValueError):
+        return True
+    return width <= 0 or height <= 0
+
+
+def _click_point_is_degenerate(center):
+    """点击点是否为退化点：空值或屏幕左上角盲点 (0,0)。
+
+    屏幕左上角 (0,0) 不是任何流程的合法点击意图：它只可能来自退化矩形（0x0）
+    的中心推导，或坐标读取失败后的默认 0 值。一旦把鼠标点到 (0,0)，光标就停在
+    屏幕角落，pyautogui 失效保护（FAILSAFE=True）会让其后每一次 pyautogui 调用
+    在动作发出前直接抛 FailSafeException，症状是后续步骤瞬间失败、日志无点击记录。
+    故在所有物理点击出口兜底拦截。
+    """
+    if not center:
+        return True
+    try:
+        x = int(center[0])
+        y = int(center[1])
+    except (TypeError, ValueError, IndexError):
+        return True
+    return x <= 0 and y <= 0
+
+
 def _perform_relative_region_click(center, click_kind):
+    if _click_point_is_degenerate(center):
+        # 盲点 (0,0) 直接拒绝：不派发物理点击（否则会把鼠标停在屏幕角落，触发
+        # pyautogui 失效保护，导致后续步骤连锁失败），抛异常交调用方失败路径处理。
+        raise ValueError("refused degenerate click point: {!r}".format(center))
+
     def _dispatch():
         if click_kind == "double":
             pyautogui.doubleClick(center[0], center[1])
@@ -3803,7 +4534,7 @@ def is_text_like_wrapper(wrapper):
 
 def click_wrapper_center(wrapper, click_kind="left"):
     center = get_wrapper_center(wrapper)
-    if not center:
+    if _click_point_is_degenerate(center):
         return False, None
     try:
         _perform_relative_region_click(center, click_kind)
@@ -3907,7 +4638,49 @@ def make_flow_control_cache_key(step_id, control_definition, window_title_hint="
     )
 
 
-def get_cached_flow_control(step_id, control_definition, window_title_hint=""):
+def _cached_wrapper_loose_match(wrapper, control_definition):
+    """缓存宽松校验：无"完全符合"时，允许目标名是控件实际文本的前缀/子串。
+
+    场景：气象列表项选中后 MUP 会给名称加运行期后缀（实测 'W2512960_140_Auto0'
+    vs target 'W2512960_140_Auto'），严格的 wrapper_matches_control_definition 失败
+    → 缓存被丢弃 → 动作阶段重复整树定位+诊断+唤醒（多付约 19 秒）。仅当以下三条
+    同时满足才放行，否则仍按严格校验失败处理，不会跨控件误命中：
+      ① targetMethod 含 name/label_text/ui_path（文本类定位，非纯 automation_id）；
+      ② 控件类型与定义一致；
+      ③ 目标名是实际文本的前缀或子串。
+    """
+    try:
+        if not isinstance(control_definition, dict):
+            return False
+        methods = [m.strip() for m in split_locator_parts(str(control_definition.get("targetMethod", "")))]
+        if not any(m in {"name", "label_text", "ui_path"} for m in methods):
+            return False
+        vals = [v.strip() for v in split_locator_parts(str(control_definition.get("targetValue", "")))]
+        exp_name = ""
+        for _m, _v in zip(methods, vals):
+            if _m in {"name", "label_text"}:
+                exp_name = normalize_match_text(_v)
+                break
+        if not exp_name:
+            return False
+        inspect_data = control_definition.get("inspectData") or {}
+        expected_type = normalize_control_type_name(
+            str(control_definition.get("controlType", "") or ""),
+            str((inspect_data or {}).get("controlType", "") or ""),
+        )
+        if expected_type:
+            actual_type = normalize_control_type_name(str(get_wrapper_control_type(wrapper) or ""))
+            if actual_type != expected_type:
+                return False
+        actual_text = normalize_match_text(get_wrapper_text(wrapper))
+        if not actual_text:
+            return False
+        return actual_text.startswith(exp_name) or exp_name in actual_text
+    except Exception:
+        return False
+
+
+def _get_cached_flow_control_exact(step_id, control_definition, window_title_hint=""):
     cache_key = make_flow_control_cache_key(step_id, control_definition, window_title_hint)
     entry = FLOW_CONTROL_CACHE.get(cache_key)
     if not entry:
@@ -3920,8 +4693,10 @@ def get_cached_flow_control(step_id, control_definition, window_title_hint=""):
         FLOW_CONTROL_CACHE.pop(cache_key, None)
         return None
     if not wrapper_matches_control_definition(wrapper, control_definition):
-        FLOW_CONTROL_CACHE.pop(cache_key, None)
-        return None
+        # 无"完全符合"时放宽（如名称带运行期后缀）：见 _cached_wrapper_loose_match。
+        if not _cached_wrapper_loose_match(wrapper, control_definition):
+            FLOW_CONTROL_CACHE.pop(cache_key, None)
+            return None
     expected_window_title = (
         normalize_match_text(control_definition.get("windowTitle", ""))
         or normalize_match_text(((_GET_STEP_DEFINITION(step_id) or {}).get("windowTitle", "")))
@@ -3933,11 +4708,30 @@ def get_cached_flow_control(step_id, control_definition, window_title_hint=""):
     return wrapper
 
 
+def get_cached_flow_control(step_id, control_definition, window_title_hint=""):
+    """取控件定位缓存；指定 hint 未命中时回退"空 hint"共享缓存。
+
+    动作阶段与续跑校验/唤醒阶段的 window_title_hint 常不相同（缓存键含 hint），
+    导致同一控件被反复整树定位——实测气象列表"唤醒命中后，动作阶段又重新诊断+
+    唤醒"，多付约 19 秒。空 hint 键作为跨 hint 的共享缓存回退；命中后仍会经过
+    wrapper 存活 / 控件定义匹配 / 期望窗口标题校验，不会跨窗口误命中。
+    """
+    wrapper = _get_cached_flow_control_exact(step_id, control_definition, window_title_hint)
+    if wrapper is None and str(window_title_hint or "").strip():
+        wrapper = _get_cached_flow_control_exact(step_id, control_definition, "")
+    return wrapper
+
+
 def cache_flow_control(step_id, control_definition, wrapper, window_title_hint=""):
     if wrapper is None or not is_wrapper_alive(wrapper):
         return
     cache_key = make_flow_control_cache_key(step_id, control_definition, window_title_hint)
     FLOW_CONTROL_CACHE[cache_key] = {"timestamp": time.time(), "wrapper": wrapper}
+    # 同时写"空 hint"共享键（不覆盖已有条目）：让不同 hint 的后续调用也能复用，
+    # 与 get_cached_flow_control 的空 hint 回退配对，避免同一控件重复定位。
+    if str(window_title_hint or "").strip():
+        empty_key = make_flow_control_cache_key(step_id, control_definition, "")
+        FLOW_CONTROL_CACHE.setdefault(empty_key, {"timestamp": time.time(), "wrapper": wrapper})
 
 
 def get_wrapper_handle(wrapper):
@@ -4476,7 +5270,11 @@ def _iter_uia_findall_by_automation_id(window, automation_id, max_results=256, l
     # 保留少量候选交给 Control View 兄弟 TextBlock 匹配兜底，避免 fast 阶段空转
     # 掉进整树扫描 9.5s；见下方循环注释）。
     plain_fallback = []
-    PLAIN_FALLBACK_LIMIT = 16
+    # 预过滤失败候选的保留上限：全窗口同名 automationId 候选常有几十个且其它视图的
+    # 框排在前面，16 太小会把目标框挤掉（如绘图视图『步长』框），fast 空转掉进整树
+    # 全量 descendants（巨大 WPF 窗口分钟级，表现为"卡住"）。评分侧 label 全树扫描
+    # 已改为 Text 类型条件过滤（毫秒级），64 上限内逐候选评分成本可控。
+    PLAIN_FALLBACK_LIMIT = 64
     try:
         root_element = window.element_info.element
         iuia = IUIA().iuia
@@ -4571,14 +5369,28 @@ def _fast_locator_label_hint(control_definition):
         if not isinstance(control_definition, dict):
             return ""
         methods = split_locator_parts(control_definition.get("targetMethod", ""))
-        if "label_text" not in {m.strip() for m in methods}:
+        method_set = {m.strip() for m in methods}
+        if "label_text" not in method_set:
             return ""
-        return (
+        hint = (
             control_definition.get("labelText", "")
             or (control_definition.get("inspectData", {}) or {}).get("labelText", "")
             or control_definition.get("relatedLabelName", "")
             or (control_definition.get("inspectData", {}) or {}).get("relatedLabelName", "")
         )
+        if hint:
+            return str(hint)
+        # 显式 labelText 字段缺失时，按 targetMethod 位置配对解析 targetValue
+        # 中 label_text 段（采集端把控件库条目写成 targetValue=...,Edit,Wohler 指数
+        # 的第三段形式，control_map_55 等即此形态；此前只认显式字段导致快查
+        # 剪枝与 FindAll label 预过滤对该类定义全部失效）。
+        values = split_locator_parts(control_definition.get("targetValue", ""))
+        for method, value in zip(methods, values):
+            if method.strip() == "label_text":
+                value = str(value).strip()
+                if value:
+                    return value
+        return ""
     except Exception:
         return ""
 
@@ -4619,6 +5431,59 @@ def iter_fast_locator_candidates(window, control_definition):
             break  # 只跑一次 automation_id FindAll（两个 query 等价，合并）
     if automation_id_hits and len(automation_id_hits) <= 4:
         return result
+    # 泛化 automationId 剪枝（>4 命中）：WPF 每个 TextBox/PART_ContentHost 都叫
+    # 同名 automationId，FindAll 常返回几十个候选，早退失效后要么在 fast 阶段
+    # 对全部候选做完整评分（每个都触发 label 全树扫描），要么掉进 name/descendants
+    # 全树遍历（巨大 WPF 窗口 2-13s，内网 step_11 快查 13.7s / step_3 整树 35s 主因）。
+    # 控件定义带 label_text 时，用 Raw 兄弟标签预过滤（毫秒级，与
+    # _iter_uia_findall_by_automation_id 内部同款）把候选剪到标签命中的少数几个：
+    #   - 剪后非空 → 直接返回（后续评分侧 wrapper_matches_control_definition 仍
+    #     完整校验，剪错目标时评分不过 → 上层回退整树扫描，行为不差于现状）；
+    #   - 剪后为空（标签离屏/结构差异）→ 放弃剪枝、保留原候选，交给评分兜底。
+    # 定义无 label_text 时不剪（无判据），维持原 name/descendants 路径。
+    if (
+        automation_id_hits
+        and len(automation_id_hits) > 4
+        and _fast_locator_label_hint(control_definition)
+    ):
+        try:
+            from pywinauto.uia_defines import IUIA
+            from pywinauto.uia_element_info import UIAElementInfo
+            from pywinauto.controls.uiawrapper import UIAWrapper as _UIAWrap
+            _walker = IUIA().iuia.RawViewWalker
+            _props = _raw_view_filter_props()
+            _prune_label = _fast_locator_label_hint(control_definition)
+            _pruned = []
+            for _cand in automation_id_hits:
+                try:
+                    _el = _cand.element_info.element
+                    _ok = _raw_sibling_label_matches(_el, _prune_label, _walker, _props)
+                    if not _ok:
+                        # Telerik 多选下拉等级文本在子节点而非兄弟，与 FindAll
+                        # 迭代器内同款回退，防真实候选被误剪。
+                        _ok = _raw_element_child_text_matches(_el, _prune_label, _walker, _props)
+                    if _ok:
+                        _pruned.append(_cand)
+                except Exception:
+                    _pruned.append(_cand)  # 单候选判断异常时保守保留，交评分侧裁决
+            if _pruned:
+                # 剪枝计数属内部算法细节（占样本 3.7%），降 DEBUG；
+                # 下方「0 命中回退全量候选」保留 INFO —— 那是 label_text 预过滤
+                # 失效的降级信号，可能指向定位器配置问题（知识库模式 M）。
+                _log_debug(
+                    "[快查剪枝] 泛化 automationId 候选 {}→{}（label_text 预过滤）".format(
+                        len(automation_id_hits), len(_pruned)
+                    )
+                )
+                return _pruned
+            # 剪枝全空 → 掉回原路径（不 return，继续走 name/descendants）
+            _LOG_STEP(
+                "[快查剪枝] label_text 预过滤 0 命中，回退全量候选: 候选数={}".format(
+                    len(automation_id_hits)
+                )
+            )
+        except Exception as exc:
+            _record_silent_exception("fast_locator_generic_prune", exc)
     for query in build_fast_locator_queries(control_definition):
         if query.get("automation_id"):
             continue  # 已在上方处理
@@ -5281,6 +6146,15 @@ def iter_flow_search_windows(step_definition, window_title_hint="", control_defi
                     wrapped = _try_get_window_by_handle(hwnd)
                     if wrapped is None or is_automation_window(wrapped):
                         continue
+                    # 第二道防线：剔除 Windows Terminal 等终端类窗口。其标题常被设为
+                    # 目标软件名而混入候选，但对其 XAML Island 子树做 descendants 会触发
+                    # 0x80040155 原生崩溃（Python except 抓不住，直接终止流程），必须在
+                    # 任何 UIA 遍历前剔除。
+                    if _is_terminal_like_window(wrapped):
+                        _LOG_STEP(
+                            "[FlowLocator] 候选窗口排除终端类窗口: hwnd={}".format(hex(int(hwnd)))
+                        )
+                        continue
                     handle = _safe_get_value(lambda: getattr(wrapped.element_info, "handle", 0), 0)
                     if handle in seen:
                         continue
@@ -5300,26 +6174,25 @@ def iter_flow_search_windows(step_definition, window_title_hint="", control_defi
                         find_main_windows_by_process(_TARGET_MAIN_WINDOW_PROCESS))
                 except Exception:
                     result = []
-            if result:
-                _LOG_STEP("[FlowLocator] 窗口过滤严格无命中，采用运行时主窗口候选 {} 个".format(len(result)))
+            source = "main_window_candidates" if result else ""
             if not result:
                 result = _wrap_hwnd_candidates(_enum_target_win32_windows())
+                if result:
+                    source = "win32_enumeration"
             if not result:
                 # 前台仅当是真实应用窗（非自动化自身 Tk 进度/监视窗）才回退；绝不把
                 # 自动化自己"WT自动化 …"进度窗当作目标定位（必然"未找到匹配控件"）。
                 fg_wrapper = _try_get_window_by_handle(foreground_handle)
                 if fg_wrapper is not None and not is_automation_window(fg_wrapper):
-                    _LOG_STEP("[FlowLocator] 窗口过滤严格无命中，回退前置窗口单候选")
                     result = [fg_wrapper]
+                    source = "foreground_window"
                 else:
-                    _LOG_STEP(
-                        "[FlowLocator] 窗口过滤严格无命中且前置为自动化自身窗口，"
-                        "放弃本次窗口回退（不把自身进度窗当目标）"
-                    )
+                    source = "blocked_by_self_window"
+            if source:
+                # 无论是否拿到候选都要记来源：blocked_by_self_window 时候选恒为空，
+                # 早期把它放在 `if result:` 内导致该分支的诊断行永不输出。
+                _log_window_fallback_source(source, len(result))
             if result:
-                _LOG_STEP(
-                    "[FlowLocator] 窗口过滤严格无命中，回退候选窗口 {} 个".format(len(result))
-                )
                 if use_window_cache:
                     cache_flow_windows(cache_key, result)
                 return result
@@ -7243,6 +8116,20 @@ def _find_by_bbox_fallback(candidates, expected_pos, window_title_hint=""):
 # }
 _step_timing = {}
 
+# 自诊断/唤醒阶段累计耗时（毫秒）：key 同上。
+# 气象弹窗诊断、Raw 诊断、唤醒点击这几段排查代码夹在 Phase3(整树结束) 与最终 t4
+# 之间，会被整段计入 t_json_ms（实测单步 108s，导致"JSON 匹配慢"的错误归因）。
+# 各段用 _add_debug_phase_ms 累加，_record_locator_timing 再从 JSON 列中扣除。
+_DEBUG_PHASE_MS = {}
+
+# 诊断明细开关：默认只输出摘要（计数 + 少量样例），避免 dump 480+ Text 节点并回溯
+# 父链（约 9 秒/次）成为流程自伤。排查"可见但定位不到"时设环境变量
+# WT_DIAG_VERBOSE=1 恢复全量明细。
+try:
+    _DIAG_VERBOSE = str(os.environ.get("WT_DIAG_VERBOSE", "")).strip().lower() in {"1", "true", "yes", "on"}
+except Exception:
+    _DIAG_VERBOSE = False
+
 
 def get_step_timing(step_id, control_id=""):
     """获取并清除指定步骤的分阶段耗时记录，供 executor 汇总日志。"""
@@ -7250,19 +8137,29 @@ def get_step_timing(step_id, control_id=""):
     return _step_timing.pop(key, None)
 
 
-def _record_locator_timing(step_id, control_id, t0, t1, t2, t3, t4):
-    """记录 find_flow_control 四个阶段的耗时（毫秒），供下游汇总。
+def _add_debug_phase_ms(step_id, control_id, delta_ms):
+    """累加"自诊断/唤醒"耗时（毫秒），供 _record_locator_timing 从 JSON 列中剔除。"""
+    try:
+        key = f"{step_id}|{control_id}"
+        _DEBUG_PHASE_MS[key] = float(_DEBUG_PHASE_MS.get(key, 0.0)) + float(delta_ms or 0.0)
+    except Exception:
+        pass
 
-    t_debug_ms 保留字段（与主定位器日志格式对齐）：本副本无气象弹窗自诊断段，
-    恒为 0；主定位器用它承载诊断/唤醒自耗时并从 JSON 列中剔除。
-    """
+
+def _record_locator_timing(step_id, control_id, t0, t1, t2, t3, t4):
+    """记录 find_flow_control 四个阶段的耗时（毫秒），供下游汇总。"""
     key = f"{step_id}|{control_id}"
+    _json_raw_ms = round((t4 - t3) * 1000, 2)
+    # 诊断/唤醒自耗时剔除：t4 在"唤醒命中(9287 附近)/失败退出"路径下被推迟到诊断段
+    # 之后，会把自诊断耗时混进 JSON 匹配列。单独记为 t_debug_ms 并从 JSON 列扣除，
+    # 保证 t_json_ms 只反映真正的定位兜底耗时（t_total_ms 口径不变，仍等于各段之和）。
+    _debug_ms = round(float(_DEBUG_PHASE_MS.pop(key, 0.0)), 2)
     _step_timing[key] = {
         "t_windows_ms": round((t1 - t0) * 1000, 2),
         "t_fast_ms": round((t2 - t1) * 1000, 2),
         "t_descendants_ms": round((t3 - t2) * 1000, 2),
-        "t_json_ms": round((t4 - t3) * 1000, 2),
-        "t_debug_ms": 0.0,
+        "t_json_ms": round(max(0.0, _json_raw_ms - _debug_ms), 2),
+        "t_debug_ms": _debug_ms,
         "t_action_ms": 0.0,
         "t_total_ms": 0.0,
     }
@@ -7378,10 +8275,16 @@ def _scroll_flow_control_into_view(control, step_id="", control_id="", force_top
                 after_rect = _rect_xy(control.rectangle())
             except Exception:
                 after_rect = None
-            if not _is_offscreen(after_rect):
+            # 最小滚动可能只滚到"刚好可见"（仍贴底、被固定按钮栏遮挡）——额外校验
+            # 是否脱离底部遮挡区，未脱离则继续走 ScrollViewer/滚轮兜底把控件移到中部。
+            _win2 = _get_window_rect()
+            _still_near_bottom = bool(
+                after_rect and _win2 and _win2[3] - 240 <= after_rect[3] <= _win2[3] + 240
+            )
+            if not _is_offscreen(after_rect) and not _still_near_bottom:
                 _log(f"[滚动] ScrollItemPattern 滚动成功: {_label}, rect={after_rect}")
                 return True
-            _log(f"[滚动] ScrollItemPattern 滚动后仍离屏: {_label}, rect={after_rect}")
+            _log(f"[滚动] ScrollItemPattern 滚动后仍贴底/离屏: {_label}, rect={after_rect}")
         except Exception:
             pass
 
@@ -7413,7 +8316,13 @@ def _scroll_flow_control_into_view(control, step_id="", control_id="", force_top
                     )
                     try:
                         if below:
-                            scroll_if.SetScrollPercent(-1, 100.0)  # 直接滚到底
+                            if force_bottom:
+                                scroll_if.SetScrollPercent(-1, 100.0)  # 强制滚到底（并行核数等）
+                            else:
+                                # 贴底遮挡场景（海拔/空气密度等）：滚到 70% 让控件
+                                # 脱离底部固定按钮栏遮挡区，但不过头（100% 会把
+                                # 中部控件滚出窗口上方）。
+                                scroll_if.SetScrollPercent(-1, 70.0)
                         elif above:
                             scroll_if.SetScrollPercent(-1, 0.0)    # 滚到顶
                         else:
@@ -7434,10 +8343,14 @@ def _scroll_flow_control_into_view(control, step_id="", control_id="", force_top
                         after_rect = _rect_xy(control.rectangle())
                     except Exception:
                         after_rect = None
-                    if not _is_offscreen(after_rect):
+                    _win3 = _get_window_rect()
+                    _still_near_bottom2 = bool(
+                        after_rect and _win3 and _win3[3] - 240 <= after_rect[3] <= _win3[3] + 240
+                    )
+                    if not _is_offscreen(after_rect) and not _still_near_bottom2:
                         _log(f"[滚动] ScrollViewer 祖先滚动到底/顶成功: {_label}, rect={after_rect}")
                         return True
-                    _log(f"[滚动] ScrollViewer 祖先滚动后仍离屏: {_label}, rect={after_rect}")
+                    _log(f"[滚动] ScrollViewer 祖先滚动后仍贴底/离屏: {_label}, rect={after_rect}")
             except Exception:
                 pass
             ancestor = ancestor.parent()
@@ -7461,6 +8374,11 @@ def _scroll_flow_control_into_view(control, step_id="", control_id="", force_top
                     # 光标落点在窗口内部（避免滚到其它窗口）
                     cx = max(win_rect[0] + 20, min(cx, win_rect[2] - 20))
                     cy = max(win_rect[1] + 40, min(cy, win_rect[3] - 20))
+                if _click_point_is_degenerate((cx, cy)):
+                    # 控件矩形退化(0x0)且窗口矩形不可用：滚轮落点会是屏幕角落，
+                    # 跳过（不把鼠标停在 (0,0)，避免触发后续 pyautogui 失效保护）
+                    _log(f"[滚动] 控件矩形退化且无窗口落点，跳过鼠标滚轮兜底: {_label}")
+                    return False
                 pyautogui.moveTo(cx, cy, duration=0.05)
                 pyautogui.scroll(-8, x=cx, y=cy)
                 time.sleep(0.3)
@@ -7487,11 +8405,12 @@ def _finalize_step_timing(step_id, control_id, t_act_start):
     t_act_ms = round((time.perf_counter() - t_act_start) * 1000, 2)
     timing["t_action_ms"] = t_act_ms
     _debug_ms = float(timing.get("t_debug_ms", 0.0) or 0.0)
+    # 总计口径不变：等于 各段之和（JSON 已剔除诊断，诊断单独计入），与拆分前一致。
     timing["t_total_ms"] = round(
         timing["t_windows_ms"] + timing["t_fast_ms"] + timing["t_descendants_ms"]
         + timing["t_json_ms"] + _debug_ms + t_act_ms, 2
     )
-    _LOG_STEP(
+    message = (
         "[定位耗时] step={}, ctrl={}, 窗枚举={:.1f}ms, 快查={:.1f}ms, "
         "整树={:.1f}ms, JSON={:.1f}ms, 诊断={:.1f}ms, 动作={:.1f}ms, 总计={:.1f}ms".format(
             step_id, control_id,
@@ -7499,6 +8418,12 @@ def _finalize_step_timing(step_id, control_id, t_act_start):
             timing["t_json_ms"], _debug_ms, t_act_ms, timing["t_total_ms"],
         )
     )
+    # 全量分段计时默认只进 DEBUG：正常运行时是纯噪音（占样本 8.2%），
+    # 仅当总计达到 INFO 档（>=3s）才在常规视图中输出，便于直接定位瓶颈段。
+    if timing["t_total_ms"] >= SLOW_LOCATE_INFO_SECONDS * 1000:
+        _LOG_STEP(message)
+    else:
+        _log_debug(message)
     _step_timing.pop(key, None)
 
 
@@ -7567,10 +8492,389 @@ def _window_is_responsive(hwnd, timeout_ms=500):
         return True
 
 
+# 模块级：preScrollToTop 聚焦定位进行中标志（防止 _prescroll_top_once 内调
+# find_flow_control 重新进入 _find_flow_control_impl 时再次触发 preScrollToTop 递归）。
+_PRESCROLL_FOCUSING = False
+# 模块级：preScrollToTop 已执行标志（跨 find_flow_control 调用保持）——同一 step 的
+# precondition wait 与动作阶段会多次调用 find_flow_control，局部 _prescroll_top_done
+# 每次重置导致重复点击 Expander；用模块级标志保证整个 step 只 preScrollToTop 一次。
+_PRESCROLL_TOP_DONE_GLOBAL = {}
+
+
+def _prescroll_top_once(windows, step_id):
+    """步骤配置 preScrollToTop 时，聚焦到"风电场参数"Expander 或滚动到顶。
+
+    编辑器/面板停在底部滚动位置时（如复制综合2后停在"核数"处），顶部卡片
+    （"风电场参数"）内控件未实例化，UIA 遍历既慢又找不到；先用定位器聚焦
+    "风电场参数"Expander 标题（WPF 点击离屏元素坐标会自动 BringIntoView 滚动聚焦），
+    失败再降级滚动容器/滚轮。返回 True 表示已执行（无论成败，只执行一次）。
+    """
+    try:
+        if not _step_config_bool(step_id, "preScrollToTop"):
+            return False
+    except Exception:
+        return False
+    # 模块级"已执行"：同一 step 的多次 find_flow_control 调用只 preScrollToTop 一次
+    if _PRESCROLL_TOP_DONE_GLOBAL.get(step_id):
+        return True
+    # 防字典无限增长：超过 200 个 step 记录时清空（正常流程 step 数远小于此）
+    if len(_PRESCROLL_TOP_DONE_GLOBAL) > 200:
+        _PRESCROLL_TOP_DONE_GLOBAL.clear()
+    _PRESCROLL_TOP_DONE_GLOBAL[step_id] = True
+    global _PRESCROLL_FOCUSING
+    if _PRESCROLL_FOCUSING:
+        return True
+    _PRESCROLL_FOCUSING = True
+    try:
+        # 前台激活：复制/切换后 MUP 可能失焦，点击离屏坐标会落到别的窗口上，导致
+        # 唤醒点击无效（preScrollToTop 之前不激活前台，曾让唤醒静默失败）。用 win32
+        # 激活 MUP 主窗口（毫秒级、不依赖 UIA COM），确保下面的唤醒点击真正落在编辑器。
+        try:
+            _activate_process_main_window(_TARGET_ACTIVATE_PROCESS_NAME)
+        except Exception:
+            pass
+        # 首选：UIA 原生 FindAll(AutomationId=Expander_Item) 找"风电场参数"Expander，
+        # 点击其"风电场参数"标题文字（而非 Expander 中心空白区——中心可能落在
+        # 折叠箭头/空白处，点击无效）。WPF 点击离屏标题会自动 BringIntoView 滚动聚焦。
+        # 注意：pywinauto descendants(automation_id=) 不支持该参数会抛 TypeError 被吞
+        # （fast 定位空），必须用 _iter_uia_findall_by_automation_id（wait 步骤命中它的方式）。
+        _expander = None
+        for _win_cand in (windows or []):
+            if _win_cand is None:
+                continue
+            try:
+                _exp_cands = _iter_uia_findall_by_automation_id(_win_cand, "Expander_Item")
+            except Exception:
+                _exp_cands = []
+            for _wrap_e in (_exp_cands or []):
+                try:
+                    _r_e = get_wrapper_rectangle(_wrap_e) or {}
+                    _w_e = int(_r_e.get("width", 0) or 0)
+                    _h_e = int(_r_e.get("height", 0) or 0)
+                    if _w_e > 20 and _h_e > 10:
+                        _expander = _wrap_e
+                        break
+                except Exception:
+                    continue
+            if _expander is not None:
+                break
+        if _expander is not None:
+            _click_point = None
+            # 优先：Expander 内找 name="风电场参数" 的标题 Text，点击标题
+            try:
+                for _child in (_expander.descendants() or []):
+                    try:
+                        if normalize_match_text(get_wrapper_text(_child)) == "风电场参数":
+                            _rc = get_wrapper_rectangle(_child) or {}
+                            _wc = int(_rc.get("width", 0) or 0)
+                            _hc = int(_rc.get("height", 0) or 0)
+                            if _wc > 5 and _hc > 5:
+                                _click_point = (
+                                    (int(_rc.get("left", 0)) + int(_rc.get("right", 0))) // 2,
+                                    (int(_rc.get("top", 0)) + int(_rc.get("bottom", 0))) // 2,
+                                )
+                                break
+                    except Exception:
+                        continue
+            except Exception:
+                _click_point = None
+            if _click_point is None:
+                # 兜底：点击 Expander 头部左侧（标题通常在左侧，x=left+1/4 宽）
+                _rect_e = get_wrapper_rectangle(_expander) or {}
+                _cx_e = int(_rect_e.get("left", 0)) + max(30, int((int(_rect_e.get("right", 0)) - int(_rect_e.get("left", 0))) * 0.25))
+                _cy_e = (int(_rect_e.get("top", 0)) + int(_rect_e.get("bottom", 0))) // 2
+                _click_point = (_cx_e, _cy_e)
+            try:
+                import pyautogui as _pg_e
+                _pg_e.click(_click_point[0], _click_point[1])
+                time.sleep(0.8)
+                _LOG_STEP("[FlowLocator][preScrollToTop] step={} 已点击'风电场参数'标题 ({},{})".format(
+                    step_id, _click_point[0], _click_point[1]))
+                return True
+            except Exception as _ece:
+                _LOG_STEP("[FlowLocator][preScrollToTop] step={} 点击Expander失败: {}".format(
+                    step_id, repr(_ece)[:150]))
+        else:
+            _LOG_STEP("[FlowLocator][preScrollToTop] step={} 未找到'风电场参数'Expander (FindAll=0)".format(step_id))
+    finally:
+        _PRESCROLL_FOCUSING = False
+    # [唤醒兜底] Expander 不在 UIA 树（新副本编辑器内容未实体化）时，对编辑器可视区做
+    # 一次物理空白点击：激活编辑器 Tab / 触发 WPF 布局实体化，使目标控件可被探测。
+    # 实证：整树遍历 200s+ 找不到时，人工在编辑器区域点一下即恢复（快查 3s 命中）。
+    _prescroll_wake_blank_click(windows, step_id)
+    # 降级：滚动容器 / 滚轮（原有逻辑）
+    _scroll_windows = list(windows or [])
+    if not _scroll_windows:
+        return True
+    _scroll_win = None
+    _expander_target = None
+    try:
+        from pywinauto.uia_defines import IUIA as _IUIA_S
+        _uia_dll_s = _IUIA_S().UIA_dll
+        _aid_prop = getattr(_uia_dll_s, "UIA_AutomationIdPropertyId", 30011)
+        _name_prop = getattr(_uia_dll_s, "UIA_NamePropertyId", 30005)
+        for _win_cand in _scroll_windows:
+            if _win_cand is None:
+                continue
+            try:
+                _exp_cands = _win_cand.descendants(automation_id="Expander_Item")
+            except Exception:
+                _exp_cands = []
+            for _wrap_e in (_exp_cands or []):
+                try:
+                    _r_e = get_wrapper_rectangle(_wrap_e) or {}
+                    _w_e = int(_r_e.get("width", 0) or 0)
+                    _h_e = int(_r_e.get("height", 0) or 0)
+                    _ct_e = normalize_match_text(get_wrapper_control_type(_wrap_e))
+                    if _w_e > 20 and _h_e > 10 and _ct_e in ("group", "custom"):
+                        _expander_target = _wrap_e
+                        _scroll_win = _win_cand
+                        break
+                except Exception:
+                    continue
+            if _expander_target is not None:
+                break
+        _exp_cond = None
+        try:
+            _ct_prop = getattr(_uia_dll_s, "UIA_ControlTypePropertyId", 30003)
+            _ct_group = getattr(_uia_dll_s, "UIA_GroupControlTypeId", 50026)
+            _cond_aid = _IUIA_S().iuia.CreatePropertyCondition(_aid_prop, "Expander_Item")
+            _cond_ct = _IUIA_S().iuia.CreatePropertyCondition(_ct_prop, _ct_group)
+            _exp_cond = _IUIA_S().iuia.CreateAndCondition(_cond_aid, _cond_ct)
+        except Exception:
+            _exp_cond = None
+    except Exception:
+        _expander_target = None
+        _scroll_win = None
+    if _scroll_win is None and _expander_target is None:
+        try:
+            _scroll_win = windows[-1] if windows else None
+        except Exception:
+            _scroll_win = None
+    if _scroll_win is None:
+        return True
+    try:
+        if _expander_target is None:
+            # 诊断：找不到"风电场参数"Expander（可能 name 不同/FindAll 受限）
+            try:
+                _n_exp_debug = 0
+                if _exp_cond is not None:
+                    try:
+                        _exp_found2 = _scroll_win.element_info.element.FindAll(5, _exp_cond)
+                        _n_exp_debug = int(_exp_found2.Length) if _exp_found2 else 0
+                    except Exception:
+                        _n_exp_debug = -1
+                _LOG_STEP("[FlowLocator][preScrollToTop] step={} 未找到'风电场参数'Expander (FindAll={})".format(
+                    step_id, _n_exp_debug))
+            except Exception:
+                _LOG_STEP("[FlowLocator][preScrollToTop] step={} Expander 诊断异常".format(step_id))
+        if _expander_target is not None:
+            try:
+                _rect_e = get_wrapper_rectangle(_expander_target) or {}
+                _cx_e = (int(_rect_e.get("left", 0)) + int(_rect_e.get("right", 0))) // 2
+                _cy_e = (int(_rect_e.get("top", 0)) + int(_rect_e.get("bottom", 0))) // 2
+                import pyautogui as _pg_e
+                _pg_e.click(_cx_e, _cy_e)
+                time.sleep(0.8)
+                _LOG_STEP("[FlowLocator][preScrollToTop] step={} 已点击'风电场参数'Expander ({},{})".format(
+                    step_id, _cx_e, _cy_e))
+                return True
+            except Exception as _ece:
+                _LOG_STEP("[FlowLocator][preScrollToTop] step={} 点击Expander失败: {}".format(
+                    step_id, repr(_ece)[:150]))
+        # 方案二：按 automationId 找编辑器滚动容器滚到顶
+        _scroll_target = None
+        for _aid_candidate in ("WRAAnalysisEditorView_ScrollViewer_Edition", "PART_ItemsScrollViewer"):
+            try:
+                _scroll_cond = _IUIA_S().iuia.CreatePropertyCondition(_aid_prop, _aid_candidate)
+                _found_els = _scroll_win.element_info.element.FindAll(5, _scroll_cond)
+                try:
+                    _n_scroll = int(_found_els.Length) if _found_els else 0
+                except Exception:
+                    _n_scroll = 0
+                if _n_scroll > 0:
+                    from pywinauto.uia_element_info import UIAElementInfo as _UEI_S
+                    from pywinauto.controls.uiawrapper import UIAWrapper as _UW_S
+                    for _si in range(_n_scroll):
+                        try:
+                            _el0 = _found_els.GetElement(_si)
+                            _wrap0 = _UW_S(_UEI_S(_el0))
+                            _sc_if = _wrap0.iface_scroll
+                            if _sc_if is not None and _sc_if.CurrentVerticallyScrollable:
+                                _scroll_target = _wrap0
+                                break
+                        except Exception:
+                            continue
+                if _scroll_target is not None:
+                    break
+            except Exception:
+                continue
+        if _scroll_target is None:
+            # 兜底：遍历窗口内所有 ScrollViewer 类控件找可滚动者
+            try:
+                for _cand in (_scroll_win.descendants(class_name="ScrollViewer") or []):
+                    try:
+                        _sc_if = _cand.iface_scroll
+                        if _sc_if is not None and _sc_if.CurrentVerticallyScrollable:
+                            _scroll_target = _cand
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        if _scroll_target is not None:
+            try:
+                _scroll_target.iface_scroll.SetScrollPercent(-1, 0.0)
+                time.sleep(0.5)
+                _LOG_STEP("[FlowLocator][preScrollToTop] step={} 已滚动容器到顶".format(step_id))
+            except Exception as _sce:
+                _LOG_STEP("[FlowLocator][preScrollToTop] step={} SetScrollPercent 失败: {}".format(
+                    step_id, repr(_sce)[:150]))
+                _wheel_scroll_top(_scroll_win, step_id)
+        else:
+            _LOG_STEP("[FlowLocator][preScrollToTop] step={} 未找到可滚动 ScrollViewer".format(step_id))
+            _wheel_scroll_top(_scroll_win, step_id)
+    except Exception as _swe:
+        _LOG_STEP("[FlowLocator][preScrollToTop] step={} 滚动异常: {}".format(
+            step_id, repr(_swe)[:150]))
+        try:
+            _wheel_scroll_top(_scroll_win, step_id)
+        except Exception:
+            pass
+    return True
+
+
+def _prescroll_wake_blank_click(windows, step_id):
+    """preScrollToTop 找不到"风电场参数"Expander 时的唤醒兜底：对编辑器可视区做一次
+    物理点击，激活新副本编辑器 Tab / 触发 WPF 布局实体化，使 UIA 树中目标控件可探测。
+
+    背景：复制综合后新编辑器可能处于未激活/内容未实体化状态，UIA 遍历既慢又找不到
+    （整树单次可达 200s+，且无法被 Python 侧超时中断）。实测"人工在编辑器区域点一下
+    即恢复"——这里用坐标在编辑器内容区右侧空白处点一次，等效人工唤醒且尽量不落在
+    具体按钮/输入框上（右侧空白带，避开左侧表单控件列）。
+    """
+    try:
+        _target_rect = None
+        # 优先定位编辑器滚动容器（内容实体化后即出现），其次退到整窗右下空白。
+        for _win_cand in (windows or []):
+            if _win_cand is None:
+                continue
+            try:
+                _hits = _iter_uia_findall_by_automation_id(_win_cand, "WRAAnalysisEditorView_ScrollViewer_Edition")
+            except Exception:
+                _hits = []
+            for _sc in (_hits or []):
+                try:
+                    _rc = get_wrapper_rectangle(_sc) or {}
+                    if int(_rc.get("width", 0) or 0) > 100 and int(_rc.get("height", 0) or 0) > 100:
+                        _target_rect = _rc
+                        break
+                except Exception:
+                    continue
+            if _target_rect:
+                break
+        if _target_rect is None:
+            # 编辑器滚动容器尚未实体化：退到候选主窗口右下区域（内容区空白带）
+            for _win_cand in (windows or []):
+                if _win_cand is None:
+                    continue
+                try:
+                    _rc = get_wrapper_rectangle(_win_cand) or {}
+                    if int(_rc.get("width", 0) or 0) > 300 and int(_rc.get("height", 0) or 0) > 300:
+                        _target_rect = _rc
+                        break
+                except Exception:
+                    continue
+        if _target_rect is None:
+            return
+        # 前台校验：点击坐标来自 MUP 候选窗口矩形，若 MUP 不在前台，物理点击会落在
+        # 其它应用上（多显示器/失焦场景）。比对前台窗口进程与候选窗口进程：不一致时
+        # 先激活 MUP；激活后仍不一致则放弃本次点击（由上层/下一轮再尝试）。
+        try:
+            _fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            _fg_pid = ctypes.c_ulong()
+            if _fg_hwnd:
+                ctypes.windll.user32.GetWindowThreadProcessId(_fg_hwnd, ctypes.byref(_fg_pid))
+            _exp_pid = 0
+            for _win_cand in (windows or []):
+                if _win_cand is None:
+                    continue
+                try:
+                    _exp_pid = int(get_wrapper_process_id(_win_cand) or 0)
+                except Exception:
+                    _exp_pid = 0
+                if _exp_pid:
+                    break
+            if _fg_hwnd and _exp_pid and int(_fg_pid.value or 0) != _exp_pid:
+                _activated = _activate_process_main_window("MUPSmartClient")
+                _fg2 = ctypes.windll.user32.GetForegroundWindow()
+                _fg2_pid = ctypes.c_ulong()
+                if _fg2:
+                    ctypes.windll.user32.GetWindowThreadProcessId(_fg2, ctypes.byref(_fg2_pid))
+                if not _fg2 or not _activated or int(_fg2_pid.value or 0) != _exp_pid:
+                    _LOG_STEP(
+                        "[FlowLocator][preScrollToTop] step={} 前台非 MUP，跳过空白唤醒点击".format(step_id)
+                    )
+                    return
+        except Exception:
+            pass
+        _l = int(_target_rect.get("left", 0) or 0)
+        _t = int(_target_rect.get("top", 0) or 0)
+        _w = int(_target_rect.get("width", 0) or 0)
+        _h = int(_target_rect.get("height", 0) or 0)
+        if _w <= 0 or _h <= 0:
+            return
+        # 内容区右侧空白带（x=0.9 宽），避开左侧表单控件列；y 取上部 1/4（卡片区
+        # 上方的空白标题带，非底部固定按钮栏）。
+        _px = _l + int(_w * 0.9)
+        _py = _t + int(_h * 0.25)
+        import pyautogui as _pg_w
+        _pg_w.click(_px, _py)
+        time.sleep(0.6)
+        _LOG_STEP("[FlowLocator][preScrollToTop] step={} 编辑器空白唤醒点击 ({},{})".format(
+            step_id, _px, _py))
+    except Exception as _wexc:
+        _LOG_STEP("[FlowLocator][preScrollToTop] step={} 空白唤醒点击失败(忽略): {}".format(
+            step_id, repr(_wexc)[:120]))
+
+
+def _wheel_scroll_top(window, step_id):
+    """鼠标滚轮兜底：把光标移到编辑器区域（左侧，非地图），向上大幅滚动（滚到顶）。
+
+    WPF 滚动容器对滚轮敏感；SetScrollPercent 不可用时用滚轮多滚几次，
+    把顶部内容（如"风电场参数"卡片）带回可视区。光标必须落在编辑器滚动区域
+    （左侧），否则滚轮会作用到右侧地图的放大/缩小功能。
+    """
+    try:
+        import pyautogui as _pg
+        _rect = get_wrapper_rectangle(window) or {}
+        _win_w = int(_rect.get("right", 2560) or 2560) - int(_rect.get("left", 0) or 0)
+        _win_h = int(_rect.get("bottom", 1516) or 1516) - int(_rect.get("top", 0) or 0)
+        # 编辑器在窗口左侧（step_7 控件 x≈295-772 推断，编辑器约 x=0-900）。
+        # 光标落在编辑器滚动区域：x 取左 1/4 处、y 取窗口中部偏上。
+        _cx = int(_rect.get("left", 0) or 0) + max(200, int(_win_w * 0.2))
+        _cy = int(_rect.get("top", 0) or 0) + max(300, int(_win_h * 0.45))
+        if _cx <= 0 or _cy <= 0:
+            _cx, _cy = 500, 800
+        _pg.moveTo(_cx, _cy, duration=0.1)
+        time.sleep(0.2)
+        for _i in range(20):
+            _pg.scroll(6)  # 向上滚
+            time.sleep(0.12)
+        time.sleep(0.5)
+        _LOG_STEP("[FlowLocator][preScrollToTop] step={} 鼠标滚轮滚到顶 (光标={},{})".format(
+            step_id, _cx, _cy))
+    except Exception as _we:
+        _LOG_STEP("[FlowLocator][preScrollToTop] step={} 滚轮兜底失败: {}".format(
+            step_id, repr(_we)[:150]))
+
+
 def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_title_hint="", control_map_path=None):
     # ── 阶段计时初始化 ──────────────────────────────────────────────────────
     _t0 = time.perf_counter()
     _reset_silent_exception_counts()
+    # 气象数据列表面板"唤醒"标志：键入过滤后 UIA 树行消失时，只触发一次物理单击唤醒
+    _clim_wakeup_done = False
     # label 矩形缓存带 TTL 跨调用保留：同一目标窗口在几十秒内的连续步骤共享
     # 一次全树 label 扫描结果，避免每个步骤重复支付 20-36 秒的全树扫描。
     # （缓存 get/put 内部按 _LABEL_RECT_CACHE_TTL 自动过期，无需硬清空。）
@@ -7709,6 +9013,12 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                     _uipi_short_circuit = True
                     break
                 _t1 = time.perf_counter()  # Phase 1: 窗口枚举完成
+                # [preScrollToTop] 遍历前先滚动/聚焦：步骤配置该标志且未执行过时，
+                # 点击"风电场参数"Expander 标题或滚动容器到顶，避免顶部卡片控件
+                # 因滚动位置残留未实例化（如复制综合2后停在底部"核数"处）。
+                # _prescroll_top_once 内部用模块级 _PRESCROLL_TOP_DONE_GLOBAL 保证
+                # 同一 step 的多次 find_flow_control 调用（precondition+动作）只执行一次。
+                _prescroll_top_once(windows, step_id)
                 # IsControlElement=False 的控件在 Control View 中必然不可见，
                 # fast 与整树扫描必定空转（WPF 大树下可达数秒），直接走 Raw View。
                 expects_raw = control_definition_expects_raw_view(control_definition)
@@ -7740,11 +9050,11 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         cache_wrapper_parent_chain(window, best_match)
                         cache_flow_control(step_id, control_definition, best_match, window_title_hint=window_title_hint)
                         elapsed = time.time() - search_started
-                        if elapsed >= 0.8:
-                            _LOG_STEP(
-                                f"流程控件定位耗时较长: step={step_id}, control={control_id or '(first)'}, "
-                                f"seconds={elapsed:.2f}, score={best_score}, phase=fast"
-                            )
+                        _log_locate_elapsed(
+                            f"流程控件定位耗时较长: step={step_id}, control={control_id or '(first)'}, "
+                            f"seconds={elapsed:.2f}, score={best_score}, phase=fast",
+                            elapsed,
+                        )
                         if str(step_id).strip() == "step_2":
                             _emit_fan_type_create_debug_event("B", "wt_flow_locator.py:find_flow_control:fast-hit", "step_2 control matched", {"window": get_wrapper_debug_snapshot(window), "control": get_wrapper_debug_snapshot(best_match), "score": best_score})
                         _t2 = _t3 = _t4 = time.perf_counter()
@@ -7756,6 +9066,9 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                             _low_confidence_match = best_match
                             _low_confidence_score = best_score
                 _t2 = time.perf_counter()  # Phase 2: 快速查询结束
+                # 快速探测标记：本轮的"整树预算守卫"命中时为 True，用于随后跳过
+                # label→输入框 / Tab 导航 / JSON 模糊匹配等分钟级兜底（见下方守卫注释）。
+                _fast_probe_skipped = False
                 for window in windows:
                     if expects_raw:
                         break
@@ -7774,14 +9087,26 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         cache_wrapper_parent_chain(window, best_match)
                         cache_flow_control(step_id, control_definition, best_match, window_title_hint=window_title_hint)
                         elapsed = time.time() - search_started
-                        if elapsed >= 0.8:
-                            _LOG_STEP(
-                                f"流程控件定位命中(FindAll): step={step_id}, control={control_id or '(first)'}, "
-                                f"seconds={elapsed:.2f}, score={best_score}"
-                            )
+                        _log_locate_elapsed(
+                            f"流程控件定位命中(FindAll): step={step_id}, control={control_id or '(first)'}, "
+                            f"seconds={elapsed:.2f}, score={best_score}",
+                            elapsed,
+                        )
                         _t3 = _t4 = time.perf_counter()
                         _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
                         return best_match
+                    # 整树预算守卫：调用方传极小 timeout（<=1s，如 wait_for_control 每轮
+                    # 0.4s 快速探测）时语义是"探测一下就交给上层轮询"，快查/Raw-FindAll
+                    # 未命中即应快速失败，而不是在此做分钟级 descendants 全量遍历（复制
+                    # 后编辑器未唤醒时实测整树单轮 200s+，且单次调用无法被 Python 超时
+                    # 中断）。正常步骤 timeout>=2.5s 不受影响，整树兜底保留。
+                    if float(timeout_seconds or 0) <= 1.0:
+                        _LOG_STEP(
+                            "[FlowLocator] 快速探测(预算≤1s)跳过整树遍历: step={}, control={}, budget={}s".format(
+                                step_id, control_id or "(first)", timeout_seconds)
+                        )
+                        _fast_probe_skipped = True
+                        continue
                     candidates = [window]
                     expected_type = normalize_control_type_name(
                         control_definition.get("controlType", ""),
@@ -7806,11 +9131,11 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         cache_wrapper_parent_chain(window, best_match)
                         cache_flow_control(step_id, control_definition, best_match, window_title_hint=window_title_hint)
                         elapsed = time.time() - search_started
-                        if elapsed >= 0.8:
-                            _LOG_STEP(
-                                f"流程控件定位耗时较长: step={step_id}, control={control_id or '(first)'}, "
-                                f"seconds={elapsed:.2f}, score={best_score}, phase=fallback"
-                            )
+                        _log_locate_elapsed(
+                            f"流程控件定位耗时较长: step={step_id}, control={control_id or '(first)'}, "
+                            f"seconds={elapsed:.2f}, score={best_score}, phase=fallback",
+                            elapsed,
+                        )
                         if str(step_id).strip() == "step_2":
                             _emit_fan_type_create_debug_event("B", "wt_flow_locator.py:find_flow_control:descendant-hit", "step_2 control matched by descendants", {"window": get_wrapper_debug_snapshot(window), "control": get_wrapper_debug_snapshot(best_match), "score": best_score})
                         _t3 = _t4 = time.perf_counter()
@@ -7821,6 +9146,14 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         if best_score > _low_confidence_score:
                             _low_confidence_match = best_match
                             _low_confidence_score = best_score
+                # 快速探测收口：wait 轮询等极小预算场景下，快查/Raw-FindAll 未命中即返回，
+                # 跳过 label→输入框、Tab 导航、JSON 模糊匹配等兜底——这些阶段对巨大 WPF
+                # 树单轮可静默数百秒（实测复制综合后 wait 单轮 478s 全耗在此），而 wait
+                # 语义本就应快速失败交上层轮询，无需在此深度兜底。
+                if _fast_probe_skipped:
+                    _t3 = _t4 = time.perf_counter()
+                    _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
+                    return None
                 # --- 阈值放宽：fast+descendants 不足自适应阈值时，取最高正分 ---
                 # 仅 mid/low 丰富度允许放宽；high（阈值 100，有 automationId/uiPath 可精确定位）
                 # 必须维持精确匹配，任何正分低置信命中都不得当作成功。
@@ -7993,11 +9326,11 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                     cache_flow_control(step_id, control_definition, best_match, window_title_hint=window_title_hint)
                 _maybe_report_self_heal(step_id, control_id, best_match, controls)
                 elapsed = time.time() - search_started
-                if elapsed >= 0.8:
-                    _LOG_STEP(
-                        f"流程控件定位耗时较长：step={step_id}, control={control_id or '(first)'}, "
-                        f"seconds={elapsed:.2f}, score={best_score}"
-                    )
+                _log_locate_elapsed(
+                    f"流程控件定位耗时较长：step={step_id}, control={control_id or '(first)'}, "
+                    f"seconds={elapsed:.2f}, score={best_score}",
+                    elapsed,
+                )
                 _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
                 return best_match
             if len(windows) <= 2:
@@ -8049,6 +9382,229 @@ def _find_flow_control_impl(step_id, control_id=None, timeout_seconds=3, window_
                         len(_diag_snap), json.dumps(_diag_snap, ensure_ascii=False)))
             except Exception as _diag_outer_exc:
                 _LOG_STEP("[FlowLocator][候选] 诊断失败: " + repr(_diag_outer_exc)[:200])
+            # [诊断] 气象弹窗列表项定位失败时（step_15/step_mt_refclim_select），
+            # dump MTDClimatologySelectorControl 子树内所有 Text 节点，确认运行时
+            # 树里 M1/Mast1 到底是否存在、rect/offscreen 如何（排查"可见但定位不到"）。
+            # 诊断限流：同一步骤整个生命周期只 dump 一次。旧实现按 30s 墙钟窗口限流，
+            # 内网实测失败重试轮间隔 41-46s 恰好绕过窗口，step_mt_refclim_select 连 dump
+            # 三次（每次 26-36s，共 ~100s 纯诊断开销）。改为"步内一次"：步骤结束由
+            # clear_step_diagnostic_state(step_id) 清除标记，下一塔的展开步骤
+            # （step_mt_refclim_select_scan2_23 等带序号后缀）是不同 step_id，不受影响。
+            _clim_diag_allowed = True
+            if str(step_id).startswith("step_15") or str(step_id).startswith("step_mt_refclim_select"):
+                if _CLIM_DIAG_LAST.get(str(step_id)):
+                    _clim_diag_allowed = False
+                else:
+                    _CLIM_DIAG_LAST[str(step_id)] = time.time()
+            if _clim_diag_allowed and (
+                    str(step_id).startswith("step_15") or str(step_id).startswith("step_mt_refclim_select")):
+                _dbg_t0 = time.perf_counter()
+                try:
+                    _clim_diag_windows = windows or [w for w in iter_flow_search_windows(
+                        step_definition, window_title_hint=window_title_hint,
+                        control_definition=controls[0],
+                    )]
+                    _clim_win = _clim_diag_windows[-1] if _clim_diag_windows else None
+                    if _clim_win is not None:
+                        _clim_texts = []
+                        try:
+                            _clim_desc = _clim_win.descendants(control_type="Text")
+                        except Exception:
+                            _clim_desc = []
+                        # 降噪：默认只回溯前 30 个节点（回溯父链是主要耗时源），全量明细
+                        # 仅在 WT_DIAG_VERBOSE=1 时采集/打印（全量约 9s/次，属流程自伤）。
+                        _clim_probe = list(_clim_desc or [])
+                        if not _DIAG_VERBOSE:
+                            _clim_probe = _clim_probe[:30]
+                        for _t in _clim_probe:
+                            try:
+                                _clim_chain = []
+                                _cur = _t
+                                for _ in range(10):
+                                    if _cur is None:
+                                        break
+                                    _nm = get_wrapper_text(_cur) or get_wrapper_class_name(_cur)
+                                    _clim_chain.append(_nm)
+                                    _cur = _safe_get_value(lambda: _cur.parent(), None)
+                                _clim_texts.append({
+                                    "name": get_wrapper_text(_t),
+                                    "rect": str(get_wrapper_rectangle(_t) or {}),
+                                    "offscreen": get_wrapper_is_offscreen(_t),
+                                    "chain": " > ".join(reversed(_clim_chain))[-200:],
+                                })
+                            except Exception:
+                                continue
+                        if _DIAG_VERBOSE:
+                            _clim_detail = json.dumps(_clim_texts, ensure_ascii=False)[:4000]
+                        else:
+                            _clim_detail = json.dumps(_clim_texts[:5], ensure_ascii=False)[:600]
+                        _LOG_STEP("[FlowLocator][气象弹窗诊断] step={} Text节点数={} verbose={} 明细={}".format(
+                            step_id, len(_clim_desc or []), _DIAG_VERBOSE, _clim_detail))
+                        # Raw View 补充诊断：用 RawViewWalker 从窗口根枚举，专找
+                        # M1/Mast1/全文检索/PART_ItemsScrollViewer 相关节点——验证
+                        # "键入后列表项是否落入 Raw View（isControlElement=False）"。
+                        try:
+                            from pywinauto.uia_defines import IUIA as _IUIA
+                            from pywinauto.uia_element_info import UIAElementInfo as _UIAElemInfo
+                            from pywinauto.controls.uiawrapper import UIAWrapper as _UIAWrap
+                            _walker = _IUIA().iuia.RawViewWalker
+                            _raw_props = _raw_view_filter_props()
+                            _raw_hits = []
+                            _root_el = _clim_win.element_info.element
+                            _queue = []
+                            _child = _walker.GetFirstChildElement(_root_el)
+                            while _child:
+                                _queue.append(_child)
+                                _child = _walker.GetNextSiblingElement(_child)
+                            _visited = 0
+                            _idx = 0
+                            # 降噪：默认 BFS 上限 3000 元素（WT_DIAG_VERBOSE=1 时恢复
+                            # 30000）；深层遍历收益递减且是秒级开销来源。
+                            _raw_visit_cap = 30000 if _DIAG_VERBOSE else 3000
+                            while _idx < len(_queue) and _visited < _raw_visit_cap and _idx < _raw_visit_cap:
+                                _el = _queue[_idx]
+                                _idx += 1
+                                _visited += 1
+                                try:
+                                    _gc = _walker.GetFirstChildElement(_el)
+                                    while _gc:
+                                        _queue.append(_gc)
+                                        _gc = _walker.GetNextSiblingElement(_gc)
+                                except Exception:
+                                    pass
+                                try:
+                                    _nm = str(_el.GetCurrentPropertyValue(_raw_props["name"]) or "").strip()
+                                except Exception:
+                                    _nm = ""
+                                _nm_n = normalize_match_text(_nm)
+                                if not _nm_n:
+                                    continue
+                                if any(k in _nm_n for k in ("m1", "mast1", "mast", "climatology", "items", "检索", "全文")):
+                                    try:
+                                        _ct = str(_el.GetCurrentPropertyValue(_raw_props["control_type"]) or "")
+                                    except Exception:
+                                        _ct = ""
+                                    _raw_hits.append({"name": _nm[:60], "ct": _ct})
+                            if _DIAG_VERBOSE:
+                                _raw_detail = json.dumps(_raw_hits, ensure_ascii=False)[:2500]
+                            else:
+                                _raw_detail = json.dumps(_raw_hits[:10], ensure_ascii=False)[:400]
+                            _LOG_STEP("[FlowLocator][气象弹窗Raw诊断] step={} Raw命中数={} verbose={} 明细={}".format(
+                                step_id, len(_raw_hits), _DIAG_VERBOSE, _raw_detail))
+                        except Exception as _raw_exc:
+                            _LOG_STEP("[FlowLocator][气象弹窗Raw诊断] 异常: " + repr(_raw_exc)[:200])
+                except Exception as _clim_exc:
+                    _LOG_STEP("[FlowLocator][气象弹窗诊断] 异常: " + repr(_clim_exc)[:200])
+                finally:
+                    _add_debug_phase_ms(step_id, control_id, (time.perf_counter() - _dbg_t0) * 1000)
+            # [唤醒] 气象数据列表面板：键入过滤后 UIA 树里列表行消失（MUP/Telerik
+            # 虚拟化回收，视觉仍显示、手动单击可高亮选中）。此时向列表首行坐标发
+            # 一次物理单击，强制 RadGridView 重新实例化行，再重试枚举目标项。
+            # 适用范围扩展到"打开气象弹窗后、弹窗内控件尚未实体化"的全部相关步骤：
+            # step_14 / step_mt_refclim_search 定位"全文检索"输入框，与列表项同理，
+            # 都可能因 Telerik 虚拟化延迟而暂时不在 UIA 树——实测 step_mt_refclim_search
+            # 在弹窗已打开（Text 节点数由 475 增至 877）的情况下仍找不到"全文检索"，
+            # 而紧随其后的 select 步骤靠唤醒才命中。故一并纳入唤醒兜底。
+            _clim_wake_steps = ("step_14", "step_15",
+                                "step_mt_refclim_search", "step_mt_refclim_select")
+            if any(str(step_id).startswith(_p) for _p in _clim_wake_steps) \
+                    and not _clim_wakeup_done:
+                _clim_wakeup_done = True
+                _dbg_t0 = time.perf_counter()
+                _dbg_accounted = False
+                try:
+                    _target_name = ""
+                    _cd0 = controls[0] if controls else {}
+                    _tv0 = str(_cd0.get("targetValue", "") or "")
+                    _tparts = split_locator_parts(_tv0)
+                    if _tparts:
+                        _target_name = _tparts[0]
+                    _wake_win = None
+                    try:
+                        _wake_win = windows[-1] if windows else None
+                    except Exception:
+                        _wake_win = None
+                    if _wake_win is None:
+                        _wake_win = locals().get("_clim_diag_windows") or None
+                    if _wake_win is not None and isinstance(_wake_win, list) and _wake_win:
+                        _wake_win = _wake_win[-1]
+                    # 1) 找"全文检索"标签 rect（Raw View 仍在树里），推导列表首行坐标
+                    _search_rect = None
+                    try:
+                        _wake_desc = _wake_win.descendants(control_type="Text") if _wake_win is not None else []
+                    except Exception:
+                        _wake_desc = []
+                    for _t in (_wake_desc or []):
+                        try:
+                            if normalize_match_text(get_wrapper_text(_t)) == "全文检索":
+                                _r = get_wrapper_rectangle(_t)
+                                if _r and int(_r.get("height", 0) or 0) > 0 and int(_r.get("width", 0) or 0) > 100:
+                                    _search_rect = _r
+                                    break
+                        except Exception:
+                            continue
+                    if _search_rect is None:
+                        # 兜底：用采集文件已知的全文检索坐标（935,292,2498,320）
+                        _search_rect = {"left": 935, "top": 292, "right": 2498, "bottom": 320}
+                    _click_x = (int(_search_rect.get("left", 935)) + int(_search_rect.get("right", 2498))) // 2
+                    # 列表首行 ≈ 搜索框下方 130px（采集文件 M1 行 y=450 vs 搜索框 y=292）
+                    _click_y = int(_search_rect.get("bottom", 320)) + 130
+                    _LOG_STEP("[FlowLocator][气象弹窗唤醒] step={} 单击列表首行坐标=({},{}) target={}".format(
+                        step_id, _click_x, _click_y, _target_name or ""))
+                    pyautogui.click(_click_x, _click_y)
+                    time.sleep(0.8)
+                    # 2) 重新枚举 Text，找目标项
+                    _woken = None
+                    try:
+                        _wake_desc2 = _wake_win.descendants(control_type="Text") if _wake_win is not None else []
+                    except Exception:
+                        _wake_desc2 = []
+                    for _t in (_wake_desc2 or []):
+                        try:
+                            _tn = normalize_match_text(get_wrapper_text(_t))
+                            if not (_target_name and (_tn == _target_name or _target_name in _tn)):
+                                continue
+                            # 定义校验：同名控件可能有多个（实测主窗内另有一个宽 1856
+                            # 的"全文检索"TextBlock，被先命中 → rect 跨窗口 → type_text
+                            # 点击/输入失败）。优先返回与控件定义（类型/ui_path）完全匹配者；
+                            # 找不到完全匹配时，回退首个同名候选取保持旧行为。
+                            _cd_here = controls[0] if controls else {}
+                            _full_match = False
+                            try:
+                                _full_match = bool(
+                                    _cd_here and wrapper_matches_control_definition(_t, _cd_here)
+                                )
+                            except Exception:
+                                _full_match = False
+                            if _full_match:
+                                _woken = _t
+                                break
+                            if _woken is None:
+                                _woken = _t
+                        except Exception:
+                            continue
+                    if _woken is not None:
+                        _LOG_STEP("[FlowLocator][气象弹窗唤醒] step={} 唤醒后命中目标 {} rect={}".format(
+                            step_id, _target_name or "", get_wrapper_rectangle(_woken)))
+                        cache_wrapper_parent_chain(_wake_win, _woken)
+                        for _cd in controls:
+                            cache_flow_control(step_id, _cd, _woken, window_title_hint=window_title_hint)
+                        # 先把本段自耗时入账再 record：record 在此 return 之前执行，
+                        # finally 来不及累加，若不入账则 JSON 列剔除失效。
+                        _add_debug_phase_ms(step_id, control_id, (time.perf_counter() - _dbg_t0) * 1000)
+                        _dbg_accounted = True
+                        _t4 = time.perf_counter()
+                        _record_locator_timing(step_id, control_id, _t0, _t1, _t2, _t3, _t4)
+                        return _woken
+                    _LOG_STEP("[FlowLocator][气象弹窗唤醒] step={} 唤醒后仍未命中 {}".format(
+                        step_id, _target_name or ""))
+                except Exception as _wake_exc:
+                    _LOG_STEP("[FlowLocator][气象弹窗唤醒] 异常: " + repr(_wake_exc)[:200])
+                finally:
+                    if not _dbg_accounted:
+                        _add_debug_phase_ms(step_id, control_id, (time.perf_counter() - _dbg_t0) * 1000)
+            # [preScrollToTop] 失败兜底：遍历前已由 _prescroll_top_once 处理过
+            # （点击 Expander/滚动/滚轮），若仍定位不到，直接报未命中。
             last_error = RuntimeError(
                 f"step={step_id}, control={control_id or '(first)'}, windows={len(windows)} 未找到匹配控件"
             )
@@ -8242,6 +9798,8 @@ def wait_for_flow_control_condition(
                 held_control = get_cached_flow_control(step_id, control_definition, window_title_hint="")
         except Exception:
             held_control = None
+    # 周期性补唤醒时间戳（见循环尾）：仅对配置了 preScrollToTop 的等待步骤生效
+    _wait_wake_last = 0.0
     while time.time() < deadline:
         control = held_control
         if control is None:
@@ -8278,6 +9836,67 @@ def wait_for_flow_control_condition(
                         return True
                 elif _values_match_loose(actual_value, expected):
                     return True
+                # UIA ValuePattern 滞后/缓存兜底：动作阶段持有的旧 wrapper 可能缓存
+                # 旧值（type_text 设值后 ValuePattern 未刷新），重新定位拿新 wrapper
+                # 再读一次（wohler 等数字框 evidence 证明值已是目标但校验误判）。
+                if not _values_match_loose(actual_value, expected):
+                    _fresh_control = None
+                    try:
+                        _fresh_control = find_flow_control(
+                            step_id, control_id=control_id,
+                            timeout_seconds=min(max(0.1, float(poll_interval_seconds)),
+                                                max(0.1, float(timeout_seconds))),
+                            window_title_hint=window_title_hint,
+                            control_map_path=control_map_path,
+                        )
+                    except Exception:
+                        _fresh_control = None
+                    if _fresh_control is not None:
+                        _fresh_value = _safe_get_value(lambda: get_wrapper_value(_fresh_control), "")
+                        if _values_match_loose(_fresh_value, expected):
+                            _LOG_STEP("[续跑校验] value_equals 重定位命中: step={}, control={}, "
+                                      "旧值={!r} 新值={!r} expected={!r}".format(
+                                          step_id, control_id, actual_value, _fresh_value, expected))
+                            return True
+                        # 新 wrapper 也不匹配 → 用新 wrapper 的渲染文本再比较
+                        _render_texts = []
+                        try:
+                            _render_texts = list(_fresh_control.texts() or [])
+                        except Exception:
+                            pass
+                        if not _render_texts:
+                            try:
+                                _wt = _fresh_control.window_text()
+                                if _wt:
+                                    _render_texts = [_wt]
+                            except Exception:
+                                pass
+                        for _rt in _render_texts:
+                            if _values_match_loose(_rt, expected):
+                                _LOG_STEP("[续跑校验] value_equals 渲染文本命中: step={}, control={}, "
+                                          "ValuePattern={!r} texts={!r} expected={!r}".format(
+                                              step_id, control_id, _fresh_value, _render_texts, expected))
+                                return True
+                    else:
+                        # 重定位失败：用旧 wrapper 的渲染文本兜底
+                        _render_texts = []
+                        try:
+                            _render_texts = list(control.texts() or [])
+                        except Exception:
+                            pass
+                        if not _render_texts:
+                            try:
+                                _wt = control.window_text()
+                                if _wt:
+                                    _render_texts = [_wt]
+                            except Exception:
+                                pass
+                        for _rt in _render_texts:
+                            if _values_match_loose(_rt, expected):
+                                _LOG_STEP("[续跑校验] value_equals 渲染文本命中(旧wrapper): step={}, control={}, "
+                                          "ValuePattern={!r} texts={!r} expected={!r}".format(
+                                              step_id, control_id, actual_value, _render_texts, expected))
+                                return True
         elif target_condition in {"toggle", "checked", "toggle_state"}:
             # 仅对实现 TogglePattern 的控件有意义（CheckBox / ToggleButton /
             # RadioButton / Expander 头 / 分扇区开关等）。非切换控件
@@ -8303,6 +9922,22 @@ def wait_for_flow_control_condition(
                     held_control = None
             except Exception:
                 held_control = None
+        # 周期性补唤醒：preScrollToTop 的"点击'风电场参数'标题"只执行一次
+        # （_PRESCROLL_TOP_DONE_GLOBAL 保证），若新副本编辑器始终未实体化则会一直
+        # 找不到目标控件（实测 wait 空转至超时）。人工在编辑器区域点一下即恢复，
+        # 故按 ~4 秒间隔补一次"编辑器空白点击"强制唤醒；仅对配置了 preScrollToTop
+        # 的等待步骤生效（如 step_copy_wait_editor），不影响普通等待步骤。
+        try:
+            if _step_config_bool(step_id, "preScrollToTop") and (time.time() - _wait_wake_last) >= 4.0:
+                _wait_wake_last = time.time()
+                _wk_windows = list(iter_flow_search_windows(
+                    _GET_STEP_DEFINITION(step_id) or {},
+                    window_title_hint=window_title_hint,
+                    control_definition=control_definition,
+                ))
+                _prescroll_wake_blank_click(_wk_windows, step_id)
+        except Exception:
+            pass
         time.sleep(max(0.1, float(poll_interval_seconds)))
     return False
 
@@ -8434,6 +10069,12 @@ def click_relative_anchor(
     offset_x = int(round(float(offset[0]) if len(offset) > 0 else 0))
     offset_y = int(round(float(offset[1]) if len(offset) > 1 else 0))
 
+    # 出口耗时汇总：锚点点击不经过 _finalize_step_timing（无 find+动作两段式
+    # 记账），内网日志里 step_7/step_13 这类锚点步骤只有一句"已通过锚点相对点击"，
+    # 前面 10-15 秒花在锚点定位/激活/滚动上完全没有记录。主线程侧统一计时，
+    # 覆盖看门狗内的全部活动（含守护线程中的定位与点击）。
+    _anc_t0 = time.perf_counter()
+
     result_box = {}
     done_evt = threading.Event()
     # 看门狗超时共享标志：线程解除挂起后必须检查，超时则跳过点击（防幽灵点击）
@@ -8481,6 +10122,24 @@ def click_relative_anchor(
             except Exception:
                 result_box["reason"] = "anchor_rect_failed"
                 return
+            _anchor_rect_dict = {
+                "left": rect.left, "top": rect.top,
+                "right": rect.right, "bottom": rect.bottom,
+                "width": int(rect.right) - int(rect.left),
+                "height": int(rect.bottom) - int(rect.top),
+            }
+            if _rect_is_degenerate(_anchor_rect_dict):
+                # 锚点矩形退化(0x0)：中心即 (0,0)，点击会落到屏幕左上角制造假成功
+                result_box["reason"] = "anchor_rect_degenerate"
+                _LOG_STEP(
+                    "锚点矩形退化(0x0)，放弃锚点点击防盲点(0,0): step={step_id}, "
+                    "anchor={anchor_control_id}, rect=({left},{top},{right},{bottom})".format(
+                        step_id=step_id,
+                        anchor_control_id=anchor_control_id,
+                        left=rect.left, top=rect.top, right=rect.right, bottom=rect.bottom,
+                    )
+                )
+                return
             if _wrapper_rect_offscreen(anchor):
                 # 滚动后仍离屏：显式失败（交由上层重试），不再盲点屏幕外坐标
                 result_box["reason"] = "anchor_offscreen_after_scroll"
@@ -8520,6 +10179,14 @@ def click_relative_anchor(
                     f"锚点相对点击看门狗已超时，跳过延迟点击: step={step_id}, anchor={anchor_control_id}"
                 )
                 return
+            # 先移动到位并短暂停顿，再执行点击：实测多塔"参考气象"下拉的右侧配置
+            # 图标需先 hover 进入可点击态（用户观察到"鼠标悬停在配置按钮上但没执行
+            # 点击"），pyautogui.click 的"瞬时移动+点击"会让图标来不及响应。分两步。
+            try:
+                pyautogui.moveTo(px, py, duration=0.12)
+                time.sleep(0.18)
+            except Exception:
+                pass
             if kind == "double":
                 pyautogui.doubleClick(px, py)
             else:
@@ -8569,7 +10236,15 @@ def click_relative_anchor(
         _LOG_STEP(f"锚点相对点击异常: step={step_id}, anchor={anchor_control_id}, error={result_box['error']}")
         return False, {"reason": "error", "error": result_box["error"]}
 
-    return bool(result_box.get("ok")), result_box.get("meta", {})
+    _ok = bool(result_box.get("ok"))
+    _LOG_STEP(
+        "[锚点点击耗时] step={sid}, anchor={cid}, 结果={result}, 总计={total:.2f}s".format(
+            sid=step_id, cid=anchor_control_id,
+            result="成功" if _ok else (result_box.get("reason") or "失败"),
+            total=time.perf_counter() - _anc_t0,
+        )
+    )
+    return _ok, result_box.get("meta", {})
 
 
 def _is_list_item_wrapper(wrapper):
@@ -8717,6 +10392,64 @@ def _find_list_item_ancestor(wrapper, max_depth=6):
     return None
 
 
+def _try_programmatic_invoke(control):
+    """尝试用 UIA InvokePattern 程序化触发控件（不依赖屏幕坐标）。
+
+    用于控件矩形为 0x0（未渲染/未实例化）时替代物理点击：Button 等支持 Invoke 的
+    控件即使无可点击矩形也能被程序化触发；返回 True 表示已成功派发 Invoke。
+    不支持 Invoke / 派发异常时返回 False，由调用方判定未就绪并放弃（不盲点 (0,0)）。
+    """
+    if control is None:
+        return False
+    try:
+        if hasattr(control, "invoke"):
+            control.invoke()
+            return True
+        control.patterns.Invoke.Invoke()
+        return True
+    except Exception:
+        return False
+
+
+def _safe_click_input(control, click_kind="left", step_id="", control_id=""):
+    """带退化矩形守卫的物理点击，返回 (ok, via_pattern, reason)。
+
+    矩形 0x0 说明控件未渲染/未实例化：pywinauto 的 click_input 会用矩形中心
+    （0x0 时即 (0,0)）派发点击，落到屏幕左上角却报 success，是典型"假成功"，
+    并把鼠标停在角落触发后续 pyautogui 失效保护、导致全线连锁失败。
+    因此 0x0 时优先改用 UIA Invoke 程序化触发（Button 等不依赖屏幕坐标），
+    不支持 Invoke 则显式判未就绪返回失败，交由上层重试/等待，绝不盲点 (0,0)。
+    """
+    if control is None:
+        return False, False, "control-is-none"
+    rect = get_wrapper_rectangle(control) or {}
+    if _rect_is_degenerate(rect):
+        if _try_programmatic_invoke(control):
+            _LOG_STEP(
+                "控件矩形为空(0x0)，已改用 UIA Invoke 程序化点击: "
+                "step={}, control={}".format(step_id, control_id)
+            )
+            return True, True, "invoke-on-degenerate-rect"
+        _LOG_STEP(
+            "控件矩形为空(0x0)且 Invoke 不可用，判定未就绪放弃点击: "
+            "step={}, control={}, rect={}".format(step_id, control_id, rect)
+        )
+        return False, False, "degenerate-rect-no-invoke"
+    try:
+        if click_kind == "right":
+            control.right_click_input()
+        elif click_kind == "double":
+            try:
+                control.double_click_input()
+            except Exception:
+                control.click_input(double=True)
+        else:
+            control.click_input()
+    except Exception as exc:
+        return False, False, "click-exception:{!r}".format(exc)
+    return True, False, ""
+
+
 def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint="", click_kind="left", control_map_path=None):
     control = find_flow_control(
         step_id,
@@ -8836,12 +10569,27 @@ def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
     # 若目标控件位于 ListBoxItem 内（如卡片标题文本），向上找父级 ListItem，
     # 用 SelectionItemPattern 程序化选中（物理点击常只触发悬停不触发选中）。
     _list_item_target = control if _is_list_item else _find_list_item_ancestor(control)
-    _LOG_STEP(
+    _log_debug(
         f"[DEBUG] click_flow_control 判定: step={step_id}, control={control_id}, "
         f"is_list_item={_is_list_item}, list_item_target={_list_item_target is not None}, "
         f"control_type={get_wrapper_control_type(control)}, class={get_wrapper_class_name(control)}, "
         f"name={get_wrapper_text(control)!r}, rect={get_wrapper_rectangle(control)}"
     )
+    # 目标禁用时明确判失败：禁用控件的点击必然无效，但旧逻辑会静默报"点击成功"
+    # （假成功）。实测 step_28 保存后若 HPC 按钮因机型/版本未选全而处于禁用态，
+    # 定位器照样点击并报 success，导致后续步骤全部误判。此处打印显著日志并中止，
+    # 便于一眼区分"没点到"与"点了但控件被禁用"。
+    try:
+        _enabled_now = str(get_wrapper_is_enabled(control) or "").strip().lower()
+    except Exception:
+        _enabled_now = ""
+    if _enabled_now in {"false", "0"}:
+        _LOG_STEP(
+            "目标控件处于禁用状态(IsEnabled=False)，放弃点击（避免假成功）: "
+            "step={}, control={}, name={!r}".format(step_id, control_id, get_wrapper_text(control))
+        )
+        _finalize_step_timing(step_id, control_id, _t_act)
+        return False
     if click_kind in ("left", "single", "") and _list_item_target is not None:
         # ListBoxItem 物理点击常只触发悬停不选中（Telerik/WPF 卡片列表，如综合卡片），
         # 改用 SelectionItemPattern.Select() 程序化选中，可靠且不依赖屏幕坐标/分辨率。
@@ -8906,22 +10654,44 @@ def click_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
                 f"SelectionItemPattern 选中失败，回退物理点击: step={step_id}, control={control_id}, error={sel_exc}"
             )
             _selected_via_pattern = False
+    # 物理点击前置校验：矩形 0x0 说明控件未渲染/未实例化，物理点击会落到屏幕 (0,0)
+    # "看似成功实则无效"（实测 step_28 保存后 HPC 按钮 rect=(0,0,0,0) 被 click_input
+    # 报 success 但计算未触发）。优先改用 UIA Invoke 程序化点击（Button 等支持 Invoke
+    # 的控件不依赖屏幕坐标，0x0 矩形也能触发）；不支持 Invoke 时显式失败交由上层
+    # 重试/等待，禁止盲点 (0,0) 制造假成功。
     if not _selected_via_pattern:
-        try:
-            if click_kind == "right":
-                control.right_click_input()
-            elif click_kind == "double":
-                try:
-                    control.double_click_input()
-                except Exception:
-                    control.click_input(double=True)
+        _click_rect = get_wrapper_rectangle(control) or {}
+        if int(_click_rect.get("width", 0) or 0) <= 0 or int(_click_rect.get("height", 0) or 0) <= 0:
+            if _try_programmatic_invoke(control):
+                _selected_via_pattern = True
+                _LOG_STEP(
+                    "控件矩形为空(0x0)，已改用 UIA Invoke 程序化点击: step={}, control={}".format(
+                        step_id, control_id)
+                )
             else:
-                control.click_input()
-        except Exception as click_exc:
+                _LOG_STEP(
+                    "控件矩形为空(0x0)且 Invoke 不可用，判定未就绪放弃点击: "
+                    "step={}, control={}, rect={}".format(step_id, control_id, _click_rect)
+                )
+                _finalize_step_timing(step_id, control_id, _t_act)
+                return False
+    if not _selected_via_pattern:
+        # 退化矩形（0x0）守卫：0x0 时 click_input 会用矩形中心（即 (0,0)）派发点击，
+        # 落到屏幕左上角却报 success（假成功），并把鼠标停在角落触发后续 pyautogui
+        # 失效保护、导致全线连锁失败。_safe_click_input：0x0 → 优先 UIA Invoke；
+        # 不支持 Invoke → 判未就绪直接放弃，绝不盲点 (0,0)。
+        click_ok, _invoked_via_pattern, _click_reason = _safe_click_input(
+            control, click_kind=click_kind, step_id=step_id, control_id=control_id
+        )
+        if _invoked_via_pattern:
+            _selected_via_pattern = True
+        elif not click_ok:
+            if _click_reason == "degenerate-rect-no-invoke":
+                _finalize_step_timing(step_id, control_id, _t_act)
+                return False
             # 点击瞬间控件销毁/窗口无响应：改用坐标点击兜底，避免步骤以"崩溃"收场
-            click_ok = False
             _LOG_STEP(
-                f"控件点击异常，尝试坐标兜底: step={step_id}, control={control_id}, error={click_exc}"
+                f"控件点击异常，尝试坐标兜底: step={step_id}, control={control_id}, error={_click_reason}"
             )
     if not click_ok:
         fallback_ok, fallback_point = click_wrapper_center(control, click_kind=click_kind)
@@ -9134,9 +10904,8 @@ def check_all_unchecked_toggle_controls(
                 wrapper.set_focus()
             except Exception:
                 pass
-            try:
-                wrapper.click_input()
-            except Exception:
+            _toggle_clicked, _toggle_invoked, _toggle_reason = _safe_click_input(wrapper)
+            if not _toggle_clicked:
                 try:
                     click_wrapper_center(wrapper, click_kind="left")
                 except Exception:
@@ -9176,7 +10945,9 @@ def check_all_unchecked_toggle_controls(
                 step=step_id, control=control_id, result=summary
             )
         )
-    # 全部候选被禁用、一个都没勾上：界面未就绪/上一步未生效的典型症状，不得静默成功。
+    # 全部候选被禁用、一个都没勾上：这是"界面未就绪/上一步未生效"的典型症状
+    # （实测 CFD 结果选择页 skipped_disabled=16 却报 success，热稳定度实际一个
+    # 都没勾）。不得静默成功，否则下游计算配置错误且流程毫不知情。
     if total > 0 and skipped_disabled == total:
         raise RuntimeError(
             "check_all_toggles 全部候选被禁用，未勾选任何项（界面可能未就绪）: "
@@ -9185,6 +10956,288 @@ def check_all_unchecked_toggle_controls(
             )
         )
     return summary
+
+
+    return summary
+
+
+def select_list_items_runtime(step_id, control_id, timeout_seconds=3, window_title_hint="", target_items="", control_map_path=None):
+    """批量选中 MBAElementConfigurationView 展开类别的可选元素。
+
+    map8/9 实录：候选项为 ElementConfigurationView_Label_Item(TextBlock，如 C1831/JWD1-3)，
+    无任何 UIA 选择模式，唯一语义是物理点击。容器为 PanelBarItem_ScrollViewer
+    (IsControlElement=False，须 Raw View, aid/name 完全相同)，按 MBAElementConfigurationView
+    直接子层中 紧跟对应 Category+ItemCount 三元组 的位置来区分测风点/风机/绘图。
+
+    target_items: 逗号分隔名单；空或 "ALL"(大小写不敏感) 为全选（逐项点击，首项单击、后续 Ctrl+单击）。
+    名单内精确匹配(name 全等)，若名单非空但一条都未命中则抛 RuntimeError(显式失败而非假成功)。
+    """
+    desired = [t.strip() for t in str(target_items or "").split(",") if t.strip()]
+    # 兜底：未解析的占位符（如运行未注入项目参数而残留 ${runtime.xxx}）按空白处理 → 全选，
+    # 避免"名单未命中"误失败；流程侧已为 mastIdsJoined/turbineIdsJoined 提供默认空键，
+    # 此处再防编辑器单步预览等任何不注入 runtime_config 的运行方式。
+    if any(str(x).startswith("${") for x in desired):
+        _LOG_STEP(
+            "select_list_items 检测到未解析占位符，按全选处理: step={step}, control={control}, raw={raw}".format(
+                step=step_id, control=control_id, raw=str(target_items or "")))
+        desired = []
+    all_select = (not desired) or (len(desired) == 1 and desired[0].lower() == "all")
+
+    # 1) 锚：control 定义即 Category（ElementConfigurationView_Label_Category,Text,<类别名>）
+    category_wrapper = find_flow_control(step_id, control_id=control_id, timeout_seconds=timeout_seconds,
+                                         window_title_hint=window_title_hint, control_map_path=control_map_path)
+    if category_wrapper is None:
+        raise ValueError(
+            "select_list_items 未命中类别锚: step={step}, control={control}".format(step=step_id, control=control_id)
+        )
+    category_name = str(get_wrapper_text(category_wrapper) or "").strip()
+
+    # 2) 从 Category 向上找 MBAElementConfigurationView
+    anchor = category_wrapper
+    anchor_view = None
+    for _ in range(10):
+        parent = _safe_get_value(lambda: anchor.parent(), None)
+        if parent is None:
+            break
+        if normalize_match_text(get_wrapper_class_name(parent)) == "MBAElementConfigurationView":
+            anchor_view = parent
+            break
+        anchor = parent
+    if anchor_view is None:
+        raise RuntimeError(
+            "select_list_items 未找到 MBAElementConfigurationView 锚: step={step}, category={cat}".format(
+                step=step_id, cat=category_name))
+    # 3) 在锚视图直接子层中，找位于 Category 之后的最近 PanelBarItem_ScrollViewer
+    try:
+        kids = _safe_get_value(lambda: anchor_view.children(), None)
+    except Exception:
+        kids = None
+    # Control View 中 IsControlElement=False 的 ScrollViewer 不在 children 里，fallback 到 Raw View
+    if not kids or not any(normalize_match_text(get_wrapper_automation_id(k)) == "PanelBarItem_ScrollViewer" for k in kids):
+        try:
+            kind = _safe_get_value(lambda: anchor_view.element_info.element.GetCurrentPatternAvailabilityProperty(10000), None)
+        except Exception:
+            pass
+        try:
+            from pywinauto.uia_defines import IUIA
+            from pywinauto.controls.uiawrapper import UIAWrapper
+            from pywinauto.uia_element_info import UIAElementInfo
+            root_el = anchor_view.element_info.element
+            walker = IUIA().iuia.RawViewWalker
+            kids = []
+            cur = _safe_get_value(lambda: walker.GetFirstChildElement(root_el), None)
+            idx = 0
+            while cur is not None and idx < 80:
+                cl = ""
+                try:
+                    cl = str(cur.GetCurrentPropertyValue(getattr(IUIA().UIA_dll,
+                        "UIA_ClassNamePropertyId", 30012)) or "").strip()
+                except Exception:
+                    pass
+                aid = ""
+                try:
+                    aid = str(cur.GetCurrentPropertyValue(getattr(IUIA().UIA_dll,
+                        "UIA_AutomationIdPropertyId", 30011)) or "").strip()
+                except Exception:
+                    pass
+                nm = ""
+                try:
+                    nm = str(cur.GetCurrentPropertyValue(getattr(IUIA().UIA_dll,
+                        "UIA_NamePropertyId", 30005)) or "").strip()
+                except Exception:
+                    pass
+                if cl or aid or nm:
+                    kids.append(UIAWrapper(UIAElementInfo(cur)))
+                try:
+                    cur = walker.GetNextSiblingElement(cur)
+                except Exception:
+                    break
+                idx += 1
+        except Exception as exc:
+            _record_silent_exception("select_list_items_raw_anchor_children", exc)
+
+    target_scrollviewer = None
+    cat_idx = -1
+    for idx, kid in enumerate(kids or []):
+        if _is_same_wrapper(kid, category_wrapper):
+            cat_idx = idx
+            break
+    if cat_idx < 0:
+        # 防御：category 是 boundary. 仍按名称定位序号
+        for idx, kid in enumerate(kids or []):
+            if normalize_match_text(get_wrapper_text(kid)) == normalize_match_text(category_name):
+                cat_idx = idx
+                break
+    if cat_idx >= 0:
+        for idx in range(cat_idx + 1, len(kids or [])):
+            if normalize_match_text(get_wrapper_automation_id(kids[idx])) == "PanelBarItem_ScrollViewer":
+                target_scrollviewer = kids[idx]
+                break
+    if target_scrollviewer is None:
+        raise RuntimeError(
+            "select_list_items 未找到类别 {cat} 对应的候选容器: step={step}".format(cat=category_name, step=step_id))
+
+    # 4) 容器内枚举全部 ElementConfigurationView_Label_Item 项(按 y 升序)
+    items = []
+    try:
+        from pywinauto.controls.uiawrapper import UIAWrapper as _UIAWrapper
+        from pywinauto.uia_element_info import UIAElementInfo as _UIAElementInfo
+    except Exception:
+        pass
+    raw_added = False
+    try:
+        from pywinauto.uia_defines import IUIA as _IUIA
+        el = target_scrollviewer.element_info.element
+        walker = _IUIA().iuia.RawViewWalker
+        seen = set()
+        stack = []
+        # 先把容器的全部直接子节点入栈（含兄弟），避免只遍历第一棵子树漏掉其余项
+        try:
+            first_child = _safe_get_value(lambda: walker.GetFirstChildElement(el), None)
+            sibling = first_child
+            while sibling is not None and len(stack) < 200:
+                stack.append(sibling)
+                try:
+                    sibling = walker.GetNextSiblingElement(sibling)
+                except Exception:
+                    break
+        except Exception:
+            pass
+        while stack and len(items) < 80:
+            cur = stack.pop()
+            if cur is None:
+                continue
+            aid2 = ""
+            try:
+                aid2 = str(cur.GetCurrentPropertyValue(getattr(_IUIA().UIA_dll,
+                    "UIA_AutomationIdPropertyId", 30011)) or "").strip()
+            except Exception:
+                pass
+            if aid2 == "ElementConfigurationView_Label_Item":
+                try:
+                    w = _UIAWrapper(_UIAElementInfo(cur))
+                    key = get_wrapper_handle(w) or normalize_match_text(
+                        _safe_get_value(lambda: str(w.element_info.runtime_id), "")) or id(w)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rect = get_wrapper_rectangle(w) or {}
+                    items.append((w, rect.get("top", 0)))
+                except Exception:
+                    pass
+            else:
+                try:
+                    ch = walker.GetFirstChildElement(cur)
+                    while ch is not None:
+                        stack.append(ch)
+                        try:
+                            ch = walker.GetNextSiblingElement(ch)
+                        except Exception:
+                            break
+                except Exception:
+                    pass
+        raw_added = len(items) > 0
+    except Exception as exc:
+        _record_silent_exception("select_list_items_raw_items", exc)
+    if not raw_added:
+        for cand in _safe_get_value(lambda: target_scrollviewer.descendants(), []) or []:
+            if normalize_match_text(get_wrapper_automation_id(cand)) != "ElementConfigurationView_Label_Item":
+                continue
+            rect = get_wrapper_rectangle(cand) or {}
+            items.append((cand, rect.get("top", 0)))
+    if not items:
+        raise RuntimeError(
+            "select_list_items 候选为空: step={step}, category={cat}".format(step=step_id, cat=category_name))
+    items.sort(key=lambda t: t[1])
+    # resolved wrappers
+    wrappers = [w for w, _ in items]
+    names = [str(get_wrapper_text(w) or "").strip() for w in wrappers]
+    _LOG_STEP(
+        "候选项枚举: step={step}, category={cat}, count={n}, items={items}".format(
+            step=step_id, cat=category_name, n=len(names), items=json.dumps(names, ensure_ascii=False)))
+
+    # 5) 过滤目标名单 + 点击
+    if all_select:
+        targets = wrappers
+        target_names = names
+    else:
+        wanted = set(normalize_match_text(x) for x in desired)
+        targets = [w for w, n in zip(wrappers, names) if normalize_match_text(n) in wanted]
+        target_names = [n for n in names if normalize_match_text(n) in wanted]
+        if not targets:
+            raise RuntimeError(
+                "select_list_items 名单未命中任一项: step={step}, category={cat}, wanted={wanted}, available={avail}".format(
+                    step=step_id, cat=category_name, wanted=json.dumps(desired, ensure_ascii=False),
+                    avail=json.dumps(names, ensure_ascii=False)))
+        missing = [x for x in desired if normalize_match_text(x) not in set(normalize_match_text(n) for n in names)]
+        if missing:
+            _LOG_STEP(
+                "select_list_items 名单部分未命中(将跳过): step={step}, missing={miss}".format(
+                    step=step_id, miss=json.dumps(missing, ensure_ascii=False)))
+
+    try:
+        import pyautogui as _pg
+    except Exception:
+        _pg = None
+    for idx, w in enumerate(targets):
+        # 候选项可能在滚动容器深处（风机数量多时）：点击前先滚动到视口可见，
+        # 复用既有三级滚动（ScrollItemPattern→ScrollPattern→滚轮兜底）。
+        try:
+            _scroll_flow_control_into_view(w, step_id=step_id, control_id=control_id)
+            time.sleep(0.15)
+        except Exception:
+            pass
+        rect = get_wrapper_rectangle(w) or {}
+        if not rect.get("width") or not rect.get("height"):
+            _LOG_STEP(
+                "候选项无有效矩形，跳过: step={step}, name={name}".format(
+                    step=step_id, name=get_wrapper_text(w)))
+            continue
+        # 滚动后仍离屏（如容器视口外未滚到）→ 跳过该项并记录，避免点到屏幕外坐标
+        try:
+            if _wrapper_rect_offscreen(w):
+                _LOG_STEP(
+                    "候选项滚动后仍离屏，跳过: step={step}, name={name}".format(
+                        step=step_id, name=get_wrapper_text(w)))
+                continue
+        except Exception:
+            pass
+        cx = int(rect["left"] + rect["width"] // 2)
+        cy = int(rect["top"] + rect["height"] // 2)
+        if anchor_view is not None:
+            try:
+                win_rect = get_wrapper_rectangle(anchor_view)
+                if win_rect:
+                    cx = max(win_rect["left"] + 5, min(cx, win_rect["right"] - 5))
+                    cy = max(win_rect["top"] + 10, min(cy, win_rect["bottom"] - 10))
+            except Exception:
+                pass
+        hold_ctrl = (idx > 0)
+        if hold_ctrl and _pg is not None:
+            try:
+                _pg.keyDown("ctrl")
+            except Exception:
+                pass
+        try:
+            if _pg is not None:
+                _pg.moveTo(cx, cy, duration=0.05)
+                _pg.click(cx, cy)
+            else:
+                click_wrapper_center(w, click_kind="left")
+            _LOG_STEP(
+                "候选项选择: step={step}, idx={idx}/{total}, name={name}, rect={rect}, ctrl={hold}".format(
+                    step=step_id, idx=idx + 1, total=len(targets), name=get_wrapper_text(w),
+                    rect=rect, hold=hold_ctrl))
+            time.sleep(0.12)
+        finally:
+            if hold_ctrl and _pg is not None:
+                try:
+                    _pg.keyUp("ctrl")
+                except Exception:
+                    pass
+
+    return {"found": len(wrappers), "clicked": len(targets), "names": target_names,
+            "skipped": len(wrappers) - len(targets)}
 
 
 def click_menu_candidate_by_text(step_id, control_id):
@@ -9214,13 +11267,14 @@ def click_menu_candidate_by_text(step_id, control_id):
             name = get_wrapper_text(candidate)
             if not value_matches(name, target_name):
                 continue
-            try:
-                candidate.click_input()
+            _menu_clicked, _menu_invoked, _ = _safe_click_input(
+                candidate, step_id=step_id, control_id=control_id
+            )
+            if _menu_clicked:
                 time.sleep(0.12)
                 _LOG_STEP(f"已通过菜单候选直点控件: step={step_id}, control={control_id}, name={target_name}")
                 return True
-            except Exception:
-                continue
+            continue
     return False
 
 
@@ -9268,7 +11322,11 @@ def focus_flow_control(step_id, control_id, timeout_seconds=3, window_title_hint
             time.sleep(0.2)
             _finalize_step_timing(step_id, control_id, _t_act)
             return True
-        control.click_input()
+        _focus_clicked, _focus_invoked, _focus_reason = _safe_click_input(
+            control, step_id=step_id, control_id=control_id
+        )
+        if not _focus_clicked:
+            raise RuntimeError("focus click not dispatched: {}".format(_focus_reason))
         time.sleep(0.3)
         _finalize_step_timing(step_id, control_id, _t_act)
         return True
@@ -9400,7 +11458,10 @@ def _type_via_screen_keyboard(control, text):
     if get_wrapper_center(control) is None:
         return False
     try:
-        control.click_input()
+        _typing_clicked, _typing_invoked, _typing_reason = _safe_click_input(control)
+        if not _typing_clicked:
+            # 退化矩形且无 Invoke：无法聚焦宿主，直接判失败（不盲点 (0,0)）
+            return False
         time.sleep(0.25)
         send_keys(text)
         time.sleep(0.1)
@@ -9438,7 +11499,9 @@ def type_text_into_wrapper(control, text, force_top=False, force_bottom=False):
             pass
     else:
         try:
-            control.click_input()
+            _input_clicked, _input_invoked, _input_reason = _safe_click_input(control)
+            if not _input_clicked:
+                raise RuntimeError("input click not dispatched: {}".format(_input_reason))
             time.sleep(0.2)
         except Exception:
             try:
@@ -9597,7 +11660,7 @@ def type_text_into_flow_control(step_id, control_id, text, timeout_seconds=3, wi
             # #endregion
         return False
     _t_act = time.perf_counter()  # 动作执行阶段计时开始
-    _LOG_STEP(
+    _log_debug(
         f"[DEBUG] type_text_into_flow_control 判定: step={step_id}, control={control_id}, "
         f"control_type={get_wrapper_control_type(control)}, class={get_wrapper_class_name(control)}, "
         f"name={get_wrapper_text(control)!r}, rect={get_wrapper_rectangle(control)}"
@@ -9668,11 +11731,21 @@ def type_text_into_flow_control(step_id, control_id, text, timeout_seconds=3, wi
 
 
 def get_wrapper_center(control):
+    """取控件中心点；矩形退化（宽或高 <= 0）时返回 None 而非 (0,0)。
+
+    返回 None 使调用方的 `if not center` 判空生效；若返回 (0,0)，该值是 truthy，
+    判空失效，物理点击会落到屏幕左上角并触发 pyautogui 失效保护，导致后续步骤
+    连锁失败（这正是"点击 (0,0)"漏检的根源）。
+    """
     try:
         rect = control.rectangle()
-        return int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2)
+        width = int(rect.right) - int(rect.left)
+        height = int(rect.bottom) - int(rect.top)
     except Exception:
         return None
+    if width <= 0 or height <= 0:
+        return None
+    return int((rect.left + rect.right) / 2), int((rect.top + rect.bottom) / 2)
 
 
 def drag_between_flow_controls(
