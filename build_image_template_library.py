@@ -22,6 +22,7 @@ from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
 import wt_dpi
+import wt_wheel_router
 import wt_theme
 import cv2
 import numpy as np
@@ -303,8 +304,12 @@ def save_template_index(output_root, index_data):
     os.makedirs(output_root, exist_ok=True)
     index_path = os.path.join(output_root, INDEX_FILE_NAME)
     normalized = rebuild_template_index(output_root, index_data)
-    with open(index_path, "w", encoding="utf-8") as file_obj:
+    # 原子写：先写临时文件再替换 —— 直接 open(w) 先截断，写盘中途失败会把
+    # 索引损坏成半截 JSON（下次打开被 load 静默当成空索引，审计 P2）
+    tmp_path = index_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as file_obj:
         json.dump(normalized, file_obj, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, index_path)
     return normalized
 
 
@@ -531,8 +536,10 @@ class TemplateBuilderApp:
         self.right_canvas_window = self.right_canvas.create_window((0, 0), window=right_frame, anchor=tk.NW)
         right_frame.bind("<Configure>", self.on_right_frame_configure)
         self.right_canvas.bind("<Configure>", self.on_right_canvas_configure)
-        # add="+"：不覆盖应用其它位置注册的全局滚轮处理，避免互相拆绑
-        self.right_canvas.bind_all("<MouseWheel>", self.on_mousewheel, add="+")
+        # 统一滚轮路由（wt_wheel_router）：高精度触控板 delta 余数累积，
+        # 消除 int(delta/120) 截断为 0 的零响应（审计 P2）
+        wt_wheel_router.register(self.right_canvas)
+        wt_wheel_router.bind_root(self.root)
 
         tk.Label(right_frame, text="候选区域", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10, "bold")).pack(anchor="w")
         self.listbox = tk.Listbox(right_frame, width=45, height=12, selectmode=tk.EXTENDED, exportselection=False, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], selectbackground=TEMPLATE_THEME["primary"], selectforeground="#ffffff", highlightbackground=TEMPLATE_THEME["border"], highlightcolor=TEMPLATE_THEME["primary"], highlightthickness=1, relief="flat", bd=0, font=(TEMPLATE_THEME["font"], 10))
@@ -575,6 +582,10 @@ class TemplateBuilderApp:
         tk.Label(form_frame, text="文件名", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=0, sticky="w")
         self.file_name_entry = tk.Entry(form_frame, textvariable=self.file_name_var, width=28, bg=TEMPLATE_THEME["panel"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10))
         self.file_name_entry.grid(row=0, column=1, sticky="ew", padx=4)
+        # 失焦/回车即提交文件名到当前候选：此前手工改名不点"应用"就切换候选框
+        # 会被静默丢弃（审计 P1◐）。FocusOut 先于列表选择变更触发，时序天然正确。
+        self.file_name_entry.bind("<FocusOut>", self._commit_file_name_entry)
+        self.file_name_entry.bind("<Return>", self._commit_file_name_entry)
         tk.Label(form_frame, text=".png", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["muted"], font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=2, sticky="w")
         tk.Label(form_frame, text="批量前缀", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=0, sticky="w", pady=(6, 0))
         tk.Entry(form_frame, textvariable=self.batch_prefix_var, width=28, bg=TEMPLATE_THEME["panel"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=1, sticky="ew", padx=4, pady=(6, 0))
@@ -644,17 +655,6 @@ class TemplateBuilderApp:
     def on_right_canvas_configure(self, event):
         self.right_canvas.itemconfigure(self.right_canvas_window, width=event.width)
 
-    def on_mousewheel(self, event):
-        widget = self.root.winfo_containing(event.x_root, event.y_root)
-        if widget is None:
-            return
-        parent = widget
-        while parent is not None:
-            if parent == self.right_canvas:
-                self.right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-                return
-            parent = parent.master
-
     def capture_state(self):
         return {
             "candidates": [candidate.as_dict() for candidate in self.candidates],
@@ -718,29 +718,48 @@ class TemplateBuilderApp:
         return "break"
 
     def take_screenshot(self):
+        """截屏（3 秒后倒计时）。
+
+        倒计时用 after 链实现：原实现 update()+sleep(1)×3 阻塞主循环
+        （期间界面完全无响应），且按钮在倒计时中可重复点击叠加多轮
+        倒计时（审计 P2）。
+        """
+        if getattr(self, "_screenshot_countdown_running", False):
+            return  # 倒计时进行中：忽略重复点击
+        self._screenshot_countdown_running = True
+        self._screenshot_countdown = 3
         self.status_var.set("3秒后开始截屏，请切换到目标窗口...")
-        self.root.update()
-        for i in range(3, 0, -1):
-            self.status_var.set(f"{i}秒后开始截屏...")
-            self.root.update()
-            time.sleep(1)
-        
+        self.root.after(1000, self._screenshot_countdown_tick)
+
+    def _screenshot_countdown_tick(self):
+        self._screenshot_countdown -= 1
+        if self._screenshot_countdown <= 0:
+            self._screenshot_countdown_running = False
+            self._do_take_screenshot()
+            return
+        self.status_var.set(f"{self._screenshot_countdown}秒后开始截屏...")
+        self.root.after(1000, self._screenshot_countdown_tick)
+
+    def _do_take_screenshot(self):
         try:
             screenshot = ImageGrab.grab()
             if screenshot is None:
                 messagebox.showerror("错误", "截屏失败")
                 return
-            
+
             output_root = self.output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR
             os.makedirs(output_root, exist_ok=True)
-            
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             screenshot_path = os.path.join(output_root, f"screenshot_{timestamp}.png")
             screenshot.save(screenshot_path)
-            
+
             self.screenshot_path_var.set(screenshot_path)
-            self.load_screenshot(screenshot_path)
-            self.status_var.set(f"截屏已保存并加载: {screenshot_path}")
+            if self.load_screenshot(screenshot_path):
+                self.status_var.set(f"截屏已保存并加载: {screenshot_path}")
+            else:
+                # 用户在确认框取消（保留当前候选）或读取失败时不得谎报“已加载”
+                self.status_var.set(f"截图已保存但未加载: {screenshot_path}")
         except Exception as exc:
             messagebox.showerror("错误", f"截屏失败: {exc}")
     
@@ -823,10 +842,23 @@ class TemplateBuilderApp:
         os.startfile(target_dir)
 
     def load_screenshot(self, file_path):
+        """加载截图并重置工作区。返回是否真正加载成功。
+
+        两种失败路径：用户在确认框取消（保留当前候选）、文件读取失败。
+        调用方（如截屏保存后的状态提示）须按返回值区分“已加载/未加载”。
+        """
+        # 重新加载会清空当前候选框与撤回栈（不可恢复）：有内容时先确认（审计 P1◐）
+        if self.candidates and not messagebox.askyesno(
+            "确认重新加载",
+            "加载新截图将清空当前的 {} 个候选区域与撤回记录（不可恢复）。\n\n是否继续？".format(
+                len(self.candidates)
+            ),
+        ):
+            return False
         self.source_image_bgr = cv2.imread(file_path)
         if self.source_image_bgr is None:
             messagebox.showerror("读取失败", f"无法读取截图: {file_path}")
-            return
+            return False
 
         self.source_image_rgb = cv2.cvtColor(self.source_image_bgr, cv2.COLOR_BGR2RGB)
         self.candidates = []
@@ -840,6 +872,7 @@ class TemplateBuilderApp:
         self.status_var.set("截图已加载，点击“自动检测”开始切分")
         self.root.update_idletasks()
         self.refresh_canvas()
+        return True
 
     def detect_regions(self):
         if self.source_image_bgr is None:
@@ -929,7 +962,15 @@ class TemplateBuilderApp:
 
     def add_candidate_region(self, region, select_new=True):
         self.candidates.append(region)
-        self.template_names.append(f"{DEFAULT_TEMPLATE_PREFIX}_{len(self.candidates):03d}")
+        # 命名避重：直接取 len 会与"删框后残留的序号"撞名（删掉 #2 后新框又叫 _003），
+        # 批量保存时同名截图互相覆盖、索引只剩一条，却仍报"全部保存成功"（审计 P1-8）。
+        used_names = set(self.template_names)
+        seq = len(self.candidates)
+        candidate_name = "{}_{:03d}".format(DEFAULT_TEMPLATE_PREFIX, seq)
+        while candidate_name in used_names:
+            seq += 1
+            candidate_name = "{}_{:03d}".format(DEFAULT_TEMPLATE_PREFIX, seq)
+        self.template_names.append(candidate_name)
         new_index = len(self.candidates) - 1
         if select_new:
             self.selected_index = new_index
@@ -1243,9 +1284,25 @@ class TemplateBuilderApp:
         self.selection_additive = False
         self.pre_drag_snapshot = None
 
+    def _commit_file_name_entry(self, _event=None):
+        """把输入框中的文件名提交给当前选中候选（Entry 失焦/回车时触发）。"""
+        if self.selected_index is None or not (0 <= self.selected_index < len(self.template_names)):
+            return
+        typed = sanitize_template_name(self.file_name_var.get().strip(), "")
+        if not typed or typed == self.template_names[self.selected_index]:
+            return
+        self.template_names[self.selected_index] = typed
+        self.refresh_listbox()
+
     def on_listbox_select(self, _event):
         selected = self.listbox.curselection()
         if selected:
+            # 先把输入框里未提交的改名提交给【原选中候选】再切换：
+            # 实测（tk 8.6 真实事件流）点击列表时 <<ListboxSelect>> 先于
+            # <FocusOut> 触发 —— 若只靠失焦提交，此处 file_name_var 已被新
+            # 候选的名字覆盖，手工改名仍会静默丢失（session-21 实证修正）。
+            # _commit_file_name_entry 幂等：无未提交改动时为空操作。
+            self._commit_file_name_entry()
             self.selected_indices = set(selected)
             self.selected_index = selected[-1]
             self.file_name_var.set(self.template_names[self.selected_index])
@@ -1439,6 +1496,21 @@ class TemplateBuilderApp:
             messagebox.showerror("OCR 批量命名失败", f"OCR 命名选中失败：\n{exc}")
             self.status_var.set(f"OCR 批量命名失败: {exc}")
 
+    def _confirm_overwrite_template(self, output_path):
+        """同名模板 PNG 覆盖确认：首次冲突询问一次，之后沿用（覆盖/跳过）。
+
+        返回 True=允许写盘；False=跳过。（每次保存动作开始时重置策略。）
+        """
+        policy = getattr(self, "_overwrite_policy", None)
+        if policy is not None:
+            return policy
+        answer = messagebox.askyesno(
+            "同名模板已存在",
+            "{}\n\n是否覆盖？\n（「否」将跳过本次保存中所有同名模板）".format(output_path),
+        )
+        self._overwrite_policy = bool(answer)
+        return bool(answer)
+
     def save_region_by_index(self, index, file_name):
         if index < 0 or index >= len(self.candidates):
             return None
@@ -1453,11 +1525,23 @@ class TemplateBuilderApp:
         os.makedirs(output_dir, exist_ok=True)
 
         output_path = os.path.join(output_dir, f"{file_name}.png")
+        if os.path.exists(output_path) and not self._confirm_overwrite_template(output_path):
+            return None
         crop_image.save(output_path)
-        self._update_index_file(output_root, category, file_name, region, output_path)
+        try:
+            self._update_index_file(output_root, category, file_name, region, output_path)
+        except Exception as exc:
+            # 索引写失败：回滚刚落盘的图片，避免"有图无索引"的半成品静默存在（审计 P1◐）
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
+            messagebox.showerror("保存失败", "图片已回滚（索引写入失败）：\n{}".format(exc))
+            return None
         return output_path
 
     def save_current_template(self):
+        self._overwrite_policy = None  # 本次保存的覆盖策略在首次冲突时决定
         region, crop_image = self.get_selected_crop()
         if region is None or crop_image is None:
             messagebox.showwarning("提示", "请先选择一个候选区域")
@@ -1485,6 +1569,7 @@ class TemplateBuilderApp:
             self.select_next()
 
     def save_selected_templates(self):
+        self._overwrite_policy = None  # 本次批量保存的覆盖策略在首次冲突时决定
         if not self.selected_indices:
             messagebox.showwarning("提示", "请先在右侧列表中选择一个或多个候选区域")
             return
@@ -1779,9 +1864,15 @@ class TemplateBuilderApp:
         self.delete_indices(set(self.selected_indices))
         self.status_var.set("已删除选中框")
 
-    def on_delete_key(self, _event):
+    def on_delete_key(self, event):
+        # 焦点在文本输入类控件（文件名 Entry、批量前缀等）或下拉框时，
+        # Del 只应作用于该输入控件，不误删候选框（审计 P2）。
+        widget_name = type(getattr(event, "widget", None)).__name__
+        if widget_name in ("Entry", "TEntry", "Text", "Combobox", "TCombobox", "Spinbox", "TSpinbox"):
+            return None
         if self.selected_indices:
             self.delete_selected_regions()
+        return None
 
     def _update_index_file(self, output_root, category, file_name, region, output_path):
         category = normalize_template_category(category)
@@ -1817,8 +1908,12 @@ class TemplateBuilderApp:
 
     def open_output_dir(self):
         output_root = self.output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR
-        os.makedirs(output_root, exist_ok=True)
-        os.startfile(output_root)
+        try:
+            os.makedirs(output_root, exist_ok=True)
+            os.startfile(output_root)
+        except Exception as exc:
+            # 路径异常/无关联程序时此前静默失效（"点了没反应"，审计 P1◐）
+            messagebox.showerror("打开目录失败", "{}\n\n{}".format(output_root, exc))
 
 
 def main():

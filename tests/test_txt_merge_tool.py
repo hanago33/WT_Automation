@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 import tkinter as tk
+from unittest.mock import patch
 
 import txt_merge_tool as tmt
 from _tk_support import shared_tk_root
@@ -106,8 +107,9 @@ class TestTxtMergeAppHeadless(unittest.TestCase):
         self.app.remove_selected()
         self.assertEqual(len(self.app.files), 1)
 
-        # Clear
-        self.app.clear_list()
+        # Clear（合并后 clear_list 带确认对话框，测试中 mock 掉避免模态弹窗）
+        with patch("txt_merge_tool.messagebox.askyesno", return_value=True):
+            self.app.clear_list()
         self.assertEqual(len(self.app.files), 0)
 
     def test_ui_components(self):

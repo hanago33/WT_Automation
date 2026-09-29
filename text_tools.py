@@ -248,11 +248,16 @@ class TxtMergeCard(ttk.Frame):
         folder = filedialog.askdirectory(title="选择包含文本文件的文件夹")
         if not folder:
             return
-        paths = [
-            os.path.join(folder, name)
-            for name in sorted(os.listdir(folder))
-            if name.lower().endswith(".txt")
-        ]
+        try:
+            paths = [
+                os.path.join(folder, name)
+                for name in sorted(os.listdir(folder))
+                if name.lower().endswith(".txt")
+            ]
+        except OSError as exc:
+            # 目录不可读/已删除时此前异常被 Tk 吞掉（"点了没反应"，审计 P2）
+            messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
+            return
         if not paths:
             messagebox.showinfo("提示", "该文件夹内没有找到 .txt 文件。")
             return
@@ -275,6 +280,10 @@ class TxtMergeCard(ttk.Frame):
         self.refresh_list()
 
     def clear_list(self):
+        if self.files and not messagebox.askyesno(
+            "确认清空", "确定清空列表中的 {} 个文件吗？".format(len(self.files))
+        ):
+            return
         self.files = []
         self.refresh_list()
 
@@ -451,9 +460,11 @@ class CsvConvertCard(ttk.Frame):
         frm_merge.pack(fill="x", pady=2)
         ttk.Label(frm_merge, text="XLSX 输出方式：").pack(side="left")
         self.merge_var = tk.StringVar(value="single")
-        ttk.Radiobutton(frm_merge, text="每个文件单独一个工作簿", variable=self.merge_var, value="single").pack(side="left", padx=4)
-        ttk.Radiobutton(frm_merge, text="合并为多工作表", variable=self.merge_var, value="multi").pack(side="left", padx=4)
-        ttk.Radiobutton(frm_merge, text="合并为单工作表", variable=self.merge_var, value="one").pack(side="left", padx=4)
+        self._merge_rb_list = []
+        for value, label in (("single", "每个文件单独一个工作簿"), ("multi", "合并为多工作表"), ("one", "合并为单工作表")):
+            rb = ttk.Radiobutton(frm_merge, text=label, variable=self.merge_var, value=value)
+            rb.pack(side="left", padx=4)
+            self._merge_rb_list.append(rb)
 
         # 单工作表合并选项（仅合并为单工作表时有效）
         self.merge_single_header = tk.BooleanVar(value=True)
@@ -467,8 +478,11 @@ class CsvConvertCard(ttk.Frame):
         frm4.pack(fill="x", pady=2)
         ttk.Label(frm4, text="TXT 输出编码：").pack(side="left")
         self.txt_enc_var = tk.StringVar(value="utf-8-sig")
+        self._txt_enc_rb_list = []
         for enc, label in [("utf-8-sig", "UTF-8(带BOM)"), ("utf-8", "UTF-8"), ("gbk", "GBK")]:
-            ttk.Radiobutton(frm4, text=label, variable=self.txt_enc_var, value=enc).pack(side="left", padx=4)
+            rb = ttk.Radiobutton(frm4, text=label, variable=self.txt_enc_var, value=enc)
+            rb.pack(side="left", padx=4)
+            self._txt_enc_rb_list.append(rb)
 
         # 开始按钮
         frm5 = ttk.Frame(self)
@@ -484,9 +498,38 @@ class CsvConvertCard(ttk.Frame):
         self.log_text = tk.Text(self, height=12, state="disabled")
         self.log_text.pack(fill="both", expand=True, pady=4)
 
+        # 参数联动：转换类型/合并方式变化时自动禁用无关参数（审计 P2）
+        self.conv_var.trace_add("write", lambda *a: self._sync_option_states())
+        self.merge_var.trace_add("write", lambda *a: self._sync_option_states())
+        self._sync_option_states()
+
+    def _sync_option_states(self):
+        """按当前转换类型/合并方式联动启用/禁用参数控件（审计 P2）。
+
+        - 转 TXT：XLSX 输出方式与"仅保留第一个文件表头"禁用，TXT 编码启用；
+        - 转 XLSX：TXT 编码禁用；"仅保留表头"仅"合并为单工作表"时可用。
+        """
+        is_xlsx = self.conv_var.get() == "xlsx"
+        for rb in getattr(self, "_merge_rb_list", []):
+            rb.config(state="normal" if is_xlsx else "disabled")
+        state_header = "normal" if (is_xlsx and self.merge_var.get() == "one") else "disabled"
+        try:
+            self.merge_header_chk.config(state=state_header)
+        except Exception:
+            pass
+        for rb in getattr(self, "_txt_enc_rb_list", []):
+            rb.config(state="disabled" if is_xlsx else "normal")
+
     def log(self, msg):
         self.log_text.configure(state="normal")
         self.log_text.insert("end", msg + "\n")
+        # 行数上限：批量转换的长日志持续膨胀会拖慢滚动与重绘（审计 P2）
+        try:
+            total_lines = int(self.log_text.index("end-1c").split(".")[0])
+            if total_lines > 500:
+                self.log_text.delete("1.0", "{}.0".format(total_lines - 500 + 1))
+        except Exception:
+            pass
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
         self.update_idletasks()
@@ -501,19 +544,41 @@ class CsvConvertCard(ttk.Frame):
 
     def pick_folder(self):
         folder = filedialog.askdirectory(title="选择包含 CSV 的文件夹")
-        if folder:
+        if not folder:
+            return
+        try:
             self.csv_files = [
                 os.path.join(folder, f)
                 for f in os.listdir(folder)
                 if f.lower().endswith(".csv")
             ]
-            self.var_files.set(f"文件夹: {folder} ({len(self.csv_files)} 个 CSV)")
+        except OSError as exc:
+            messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
+            return
+        self.var_files.set(f"文件夹: {folder} ({len(self.csv_files)} 个 CSV)")
 
     def pick_out(self):
         d = filedialog.askdirectory(title="选择输出目录")
         if d:
             self.out_dir = d
             self.var_out.set(d)
+
+    def _confirm_overwrite(self, dst):
+        """同名输出文件覆盖确认：首次冲突询问一次，之后沿用同一选择（覆盖/跳过）。
+
+        返回 True=允许写盘；False=跳过该输出。（每次 run() 开始时重置策略。）
+        """
+        if not os.path.exists(dst):
+            return True
+        policy = getattr(self, "_overwrite_policy", None)
+        if policy is not None:
+            return policy
+        answer = messagebox.askyesno(
+            "同名文件已存在",
+            "{}\n\n是否覆盖？\n（「否」将跳过本次转换中所有同名文件）".format(dst),
+        )
+        self._overwrite_policy = bool(answer)
+        return bool(answer)
 
     def run(self):
         if not self.csv_files:
@@ -524,6 +589,8 @@ class CsvConvertCard(ttk.Frame):
 
         self.btn_run.configure(state="disabled")
         self.progress["value"] = 0
+        self._overwrite_policy = None  # 本次转换的覆盖策略在首次冲突时决定
+        self._batch_failed = 0  # 本次转换的失败计数（收尾弹窗按实际结果提示）
         self.log("开始转换...")
 
         def progress(cur, total):
@@ -543,8 +610,20 @@ class CsvConvertCard(ttk.Frame):
                     self._build_merged_single_sheet(out_dir, progress)
             else:
                 self._build_txt(out_dir, progress)
-            self.log("全部处理完成。")
-            messagebox.showinfo("完成", "转换完成！")
+            failed = getattr(self, "_batch_failed", 0)
+            total = len(self.csv_files)
+            # 按实际结果反馈：此前无论失败多少都弹"转换完成！"，与日志矛盾（审计 P1◐）
+            if failed == 0:
+                self.log("全部处理完成。")
+                messagebox.showinfo("完成", "转换完成！")
+            elif failed < total:
+                self.log(f"处理结束：成功 {total - failed}/{total}，失败 {failed}。")
+                messagebox.showwarning(
+                    "部分失败", f"处理结束：成功 {total - failed} 个，失败 {failed} 个，详见日志。"
+                )
+            else:
+                self.log(f"处理失败：全部 {total} 个文件均失败。")
+                messagebox.showerror("转换失败", f"全部 {total} 个文件均转换失败，详见日志。")
         except Exception as e:  # noqa: BLE001
             self.log(f"发生错误: {e}")
             messagebox.showerror("错误", str(e))
@@ -555,15 +634,19 @@ class CsvConvertCard(ttk.Frame):
         total = len(self.csv_files)
         for idx, src in enumerate(self.csv_files, start=1):
             try:
-                wb = Workbook()
-                ws = wb.active
-                ws.title = "Sheet1"
                 name = os.path.splitext(os.path.basename(src))[0]
-                rows = convert_csv_to_sheet(ws, src)
                 dst = os.path.join(out_dir, name + ".xlsx")
-                wb.save(dst)
-                self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
+                if not self._confirm_overwrite(dst):
+                    self.log(f"[跳过] 已存在同名文件: {os.path.basename(dst)}")
+                else:
+                    wb = Workbook()
+                    ws = wb.active
+                    ws.title = "Sheet1"
+                    rows = convert_csv_to_sheet(ws, src)
+                    wb.save(dst)
+                    self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
 
@@ -580,12 +663,16 @@ class CsvConvertCard(ttk.Frame):
                 rows = convert_csv_to_sheet(ws, src)
                 self.log(f"[成功] {os.path.basename(src)} -> 工作表[{name}] ({rows} 行)")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
         if wb.sheetnames:
             dst = os.path.join(out_dir, "merged.xlsx")
-            wb.save(dst)
-            self.log(f"已合并保存到 {dst}")
+            if self._confirm_overwrite(dst):
+                wb.save(dst)
+                self.log(f"已合并保存到 {dst}")
+            else:
+                self.log(f"[跳过] 已存在同名文件: {dst}")
         else:
             self.log("没有可转换的文件。")
 
@@ -607,6 +694,7 @@ class CsvConvertCard(ttk.Frame):
                     current_row += 1
                 self.log(f"[成功] {os.path.basename(src)} -> 追加 {len(rows)} 行")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
         # 自动列宽
@@ -619,8 +707,11 @@ class CsvConvertCard(ttk.Frame):
             ws.column_dimensions[letter].width = width
         if current_row > 1:
             dst = os.path.join(out_dir, "merged_single.xlsx")
-            wb.save(dst)
-            self.log(f"已合并保存到 {dst}")
+            if self._confirm_overwrite(dst):
+                wb.save(dst)
+                self.log(f"已合并保存到 {dst}")
+            else:
+                self.log(f"[跳过] 已存在同名文件: {dst}")
         else:
             self.log("没有可转换的文件。")
 
@@ -631,9 +722,13 @@ class CsvConvertCard(ttk.Frame):
             try:
                 name = os.path.splitext(os.path.basename(src))[0]
                 dst = os.path.join(out_dir, name + ".txt")
-                rows = csv_to_txt(src, dst, output_encoding=enc)
-                self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
+                if self._confirm_overwrite(dst):
+                    rows = csv_to_txt(src, dst, output_encoding=enc)
+                    self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
+                else:
+                    self.log(f"[跳过] 已存在同名文件: {os.path.basename(dst)}")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
 
@@ -877,6 +972,13 @@ class TextToolsCard(ttk.Frame):
     def log(self, msg):
         self.log_text.configure(state="normal")
         self.log_text.insert("end", msg + "\n")
+        # 行数上限：批量处理的长日志持续膨胀会拖慢滚动与重绘（审计 P2）
+        try:
+            total_lines = int(self.log_text.index("end-1c").split(".")[0])
+            if total_lines > 500:
+                self.log_text.delete("1.0", "{}.0".format(total_lines - 500 + 1))
+        except Exception:
+            pass
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
         self.update_idletasks()
@@ -891,13 +993,18 @@ class TextToolsCard(ttk.Frame):
 
     def pick_folder(self):
         folder = filedialog.askdirectory(title="选择包含文本文件的文件夹")
-        if folder:
+        if not folder:
+            return
+        try:
             self.files = [
                 os.path.join(folder, f)
                 for f in os.listdir(folder)
                 if f.lower().endswith((".txt", ".csv", ".log"))
             ]
-            self.var_files.set(f"文件夹: {folder} ({len(self.files)} 个文件)")
+        except OSError as exc:
+            messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
+            return
+        self.var_files.set(f"文件夹: {folder} ({len(self.files)} 个文件)")
 
     def pick_out(self):
         d = filedialog.askdirectory(title="选择输出目录")
@@ -925,14 +1032,26 @@ class TextToolsCard(ttk.Frame):
         enc = self.out_enc.get()
         total = len(self.files)
         try:
+            failed = 0
             for idx, src in enumerate(self.files, start=1):
                 try:
                     self._process_one(src, out_dir, op, enc)
                 except Exception as e:  # noqa: BLE001
+                    failed += 1
                     self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
                 progress(idx, total)
-            self.log("全部处理完成。")
-            messagebox.showinfo("完成", "处理完成！")
+            # 按实际结果反馈：此前全部失败也弹"处理完成！"，与日志矛盾（审计 P1◐）
+            if failed == 0:
+                self.log("全部处理完成。")
+                messagebox.showinfo("完成", "处理完成！")
+            elif failed < total:
+                self.log(f"处理结束：成功 {total - failed}/{total}，失败 {failed}。")
+                messagebox.showwarning(
+                    "部分失败", f"处理结束：成功 {total - failed} 个，失败 {failed} 个，详见日志。"
+                )
+            else:
+                self.log(f"处理失败：全部 {total} 个文件均失败。")
+                messagebox.showerror("处理失败", f"全部 {total} 个文件均处理失败，详见日志。")
         except Exception as e:  # noqa: BLE001
             self.log(f"发生错误: {e}")
             messagebox.showerror("错误", str(e))
@@ -950,6 +1069,8 @@ class TextToolsCard(ttk.Frame):
                 n = int(self.split_var.get())
             except ValueError:
                 raise ValueError("每个文件行数必须是整数")
+            if n <= 0:
+                raise ValueError("每个文件行数必须是正整数")
             created = split_file_by_lines(src, out_dir, n, output_encoding=enc)
             self.log(f"[拆分] {os.path.basename(src)} -> {len(created)} 个文件")
         elif op == "filter":

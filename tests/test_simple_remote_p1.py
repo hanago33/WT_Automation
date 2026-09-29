@@ -189,6 +189,9 @@ class P1HttpErrorBodyTests(unittest.TestCase):
                 holder.token_var = type(
                     "V", (), {"get": lambda self: "good", "set": lambda self, v: None}
                 )()
+                # _queue_request 现在从线程安全快照取令牌（worker 线程不得读 Tk 变量），
+                # 部分替身需同步提供该内部字段。
+                holder._prefs_snapshot = {"user": "", "token": "good", "mine_only": False}
                 holder._http_lock = threading.Lock()
                 holder._http_conn = None
                 holder._make_conn = TaskQueueWindow._make_conn.__get__(holder)

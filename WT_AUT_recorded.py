@@ -2862,7 +2862,7 @@ def run_automation(steps_arg=None, from_step=None, to_step=None, skip_setup=Fals
 		if task_id:
 			wt_task_queue.mark_failed(task_id, error=str(e), run_id=context.get("runId", "") if "context" in locals() else "", db_path=queue_db)
 		if monitor_window:
-			_ui_safe_call(lambda: monitor_window.log(error_msg))
+			_ui_safe_call(lambda: monitor_window.log(error_msg, kind="error"))
 			_ui_safe_call(monitor_window.set_error)
 		_ui_safe_call(lambda: _update_taskbar_progress(_progress_current, _progress_total, status="failed"))
 		_ui_safe_call(lambda: _update_progress_title(_progress_current, _progress_total, step_name="流程失败", status="failed"))

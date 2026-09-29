@@ -32,6 +32,15 @@ STATUS_LABELS = {
     "terminated": "已终止",
 }
 
+
+def build_status_filter_options():
+    """状态筛选下拉的选项：由 STATUS_LABELS 派生，避免与状态模型不同步。
+
+    原先是在 _build_ui 里手工列举 6 项，漏了「已取消 / 已终止」——
+    这两种状态的任务只能靠「全部」查看，无法筛选。
+    """
+    return [("全部", "全部")] + [(label, label) for label in STATUS_LABELS.values()]
+
 MONITOR_STATUS_LABELS = {
     "idle": "空闲",
     "running": "运行中",
@@ -118,6 +127,15 @@ class TaskQueueWindow:
         self._role_banner_var = tk.StringVar()
         self._role_banner_label = None
         self._local_ips = _local_ipv4s()
+        # 线程安全快照：后台线程（轮询/提交/上传/控制）不得直接读取 Tk 变量
+        # —— 跨线程读 Tcl 对象在部分环境会偶发 "main thread is not in main loop"
+        # 或原生崩溃；这里在主线程维护普通值的镜像，worker 只读镜像。
+        # 快照由 _sync_prefs_snapshot 在变量变化时刷新（见 _on_user_changed 等回调）。
+        self._prefs_snapshot = {
+            "user": str(initial_user or "").strip(),
+            "token": str(initial_token or "").strip(),
+            "mine_only": False,
+        }
 
         pal = wt_theme.get_palette()
         self.window = tk.Toplevel(master)
@@ -255,6 +273,8 @@ class TaskQueueWindow:
         self.user_var.trace_add("write", self._on_user_changed)
         self.token_var.trace_add("write", self._on_settings_text_changed)
         self.monitor_url_var.trace_add("write", self._on_monitor_url_changed)
+        # 变量初值同步到线程安全快照（此后由上述回调持续维护）
+        self._sync_prefs_snapshot()
 
         hint = tk.Label(
             top,
@@ -366,14 +386,7 @@ class TaskQueueWindow:
         ).pack(side=tk.LEFT, padx=(0, 4))
 
         self.status_filter_var = tk.StringVar(value="全部")
-        status_options = [
-            ("全部", "全部"),
-            ("排队中", "排队中"),
-            ("运行中", "运行中"),
-            ("已暂停", "已暂停"),
-            ("成功", "成功"),
-            ("失败", "失败"),
-        ]
+        status_options = build_status_filter_options()
         pill_selector = wt_theme.create_pill_selector(
             filter_frame,
             options=status_options,
@@ -1292,6 +1305,7 @@ class TaskQueueWindow:
         self.flow_detail_text.config(state=tk.DISABLED)
 
     def _on_settings_text_changed(self, *_args):
+        self._sync_prefs_snapshot()
         self._save_settings()
         # 地址栏实时更新角色横幅（不重连，仅视觉反馈；连接在点"刷新"时生效）
         new_url = self.url_var.get().strip().rstrip("/")
@@ -1308,7 +1322,25 @@ class TaskQueueWindow:
     def _on_user_changed(self, *_args):
         if not self.user_var.get().strip() and self.mine_only_var.get():
             self.mine_only_var.set(False)
+        self._sync_prefs_snapshot()
         self._save_settings()
+
+    def _sync_prefs_snapshot(self):
+        """从 Tk 变量刷新「线程安全快照」（仅主线程调用；worker 线程只读快照）。
+
+        后台线程（轮询/提交/上传/控制）不得直接读取 Tk 变量 —— 跨线程读
+        Tcl 对象在部分环境会偶发 "main thread is not in main loop" 或原生崩溃。
+        快照随用户名/令牌/「只看我的」的变化由 trace 回调自动刷新。
+        """
+        user_var = getattr(self, "user_var", None)
+        if user_var is not None:
+            self._prefs_snapshot["user"] = user_var.get().strip()
+        token_var = getattr(self, "token_var", None)
+        if token_var is not None:
+            self._prefs_snapshot["token"] = token_var.get().strip()
+        mine_only_var = getattr(self, "mine_only_var", None)
+        if mine_only_var is not None:
+            self._prefs_snapshot["mine_only"] = bool(mine_only_var.get())
 
     def _on_monitor_url_changed(self, *_args):
         url = self.monitor_url_var.get().strip().rstrip("/")
@@ -1367,13 +1399,15 @@ class TaskQueueWindow:
                 parent=self.window,
             )
             return
+        self._sync_prefs_snapshot()
         self._save_settings()
         self.refresh()
 
     def _task_list_path(self):
-        if not self.mine_only_var.get():
+        # 由轮询 worker 线程调用，只能读线程安全快照，不得触碰 Tk 变量。
+        if not self._prefs_snapshot["mine_only"]:
             return "/api/tasks?scope=all"
-        user = self.user_var.get().strip()
+        user = self._prefs_snapshot["user"]
         if not user:
             return None
         return "/api/tasks?scope=mine&user={}".format(urllib.parse.quote(user))
@@ -2071,9 +2105,10 @@ class TaskQueueWindow:
         full = self.base_url + path
         parsed_full = urllib.parse.urlparse(full)
         target = parsed_full.path + ("?" + parsed_full.query if parsed_full.query else "")
+        # 本方法在 worker 线程执行：令牌只读线程安全快照，不得读 Tk 变量
         headers = {
             "Accept": "application/json",
-            "Authorization": "Bearer " + self.token_var.get().strip(),
+            "Authorization": "Bearer " + self._prefs_snapshot["token"],
         }
         data = None
         if body is not None:
@@ -2148,6 +2183,13 @@ class TaskQueueWindow:
         if not callback:
             messagebox.showinfo(label, "请从总控台的“检查与日志”中停止{}。".format(label))
             return
+        # 停止服务会中断其上正在运行的任务，属不可逆操作，原先无任何确认、误点即生效。
+        if not messagebox.askyesno(
+            stop_text,
+            "确定停止{}吗？\n其上正在运行的任务可能被中断。".format(label),
+            parent=self.window,
+        ):
+            return
         try:
             callback(service)
         except Exception as exc:
@@ -2168,7 +2210,8 @@ class TaskQueueWindow:
         ).start()
 
     def _submit_local_flow_worker(self, file_path):
-        user = self.user_var.get().strip()
+        # worker 线程：只读线程安全快照，不得读 Tk 变量
+        user = self._prefs_snapshot["user"]
         if not user:
             self._post_ui(
                 lambda: messagebox.showwarning("提交 JSON 链路", "请先填写用户名。")
@@ -2360,30 +2403,60 @@ class TaskQueueWindow:
                 "选择流程失败", "读取 JSON 失败：\n{}".format(exc), parent=dialog
             )
             return
+        # 上传走后台线程：网络慢/文件大时不再阻塞 UI（原先在 UI 线程同步上传，窗口假死数秒）
+        user = self._prefs_snapshot["user"]
+        threading.Thread(
+            target=self._upload_local_flow_worker,
+            args=(dialog, listbox, flows, file_path, content, user),
+            daemon=True,
+        ).start()
+
+    def _upload_local_flow_worker(self, dialog, listbox, flows, file_path, content, user):
+        """后台线程：上传所选本地流程 JSON 到服务器（不触碰 Tk 变量）。"""
         try:
             payload = self._post_json(
                 "/api/flows/upload",
                 {
                     "name": os.path.basename(file_path),
                     "content": content,
-                    "user": self.user_var.get().strip(),
+                    "user": user,
                 },
             )
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            messagebox.showerror(
-                "上传流程失败", "{} {}".format(exc.code, detail), parent=dialog
+            self._post_ui(
+                lambda c=exc.code, d=detail: self._show_upload_error(
+                    dialog, "{} {}".format(c, d)
+                )
             )
             return
         except Exception as exc:
-            messagebox.showerror(
-                "上传流程失败", self._friendly_error(exc), parent=dialog
+            self._post_ui(
+                lambda e=exc: self._show_upload_error(dialog, self._friendly_error(e))
             )
             return
         flow = {
             "name": payload.get("name") or os.path.basename(file_path),
             "path": payload.get("flowPath", ""),
         }
+        self._post_ui(lambda: self._apply_uploaded_flow(dialog, listbox, flows, flow))
+
+    @staticmethod
+    def _dialog_alive(dialog):
+        """对话框可能在上传期间被用户关闭，更新其 UI 前须先确认。"""
+        try:
+            return bool(dialog.winfo_exists())
+        except Exception:
+            return False
+
+    def _show_upload_error(self, dialog, detail):
+        if not self._dialog_alive(dialog):
+            return
+        messagebox.showerror("上传流程失败", detail, parent=dialog)
+
+    def _apply_uploaded_flow(self, dialog, listbox, flows, flow):
+        if not self._dialog_alive(dialog):
+            return
         for index, item in enumerate(flows):
             if item.get("name") == flow["name"]:
                 flows[index] = flow
@@ -2767,7 +2840,11 @@ class TaskQueueWindow:
             )
             self._post_ui(self.refresh)
             return True
-        except Exception:
+        except Exception as exc:
+            # 保持 bool 返回（调用方按真值判断），但把失败原因写进日志面板：
+            # 原先静默 return False，用户与调用方都只看到「点了没反应」。
+            reason = self._friendly_error(exc)
+            self._post_ui(lambda: self._append_log_text("任务操作失败：{}".format(reason)))
             return False
 
     def _append_log_text(self, line):
@@ -2812,6 +2889,19 @@ class TaskQueueWindow:
                 "删除任务",
                 "确定删除该任务记录吗？此操作不可恢复，且不会终止正在运行的 worker。\n"
                 "如需停止运行中的任务，请先用「终止」。",
+                parent=self.window,
+            ):
+                return
+        elif action in ("terminate", "cancel"):
+            # 「终止」会强制结束运行中的 worker，「取消」会让排队任务不再执行，
+            # 都属不可逆操作，原先却只有「删除」有确认，误点即生效。
+            if action == "terminate":
+                title, detail = "终止任务", "正在运行的 worker 会被强制结束，当前进度将丢失。"
+            else:
+                title, detail = "取消任务", "排队中的任务将不再执行。"
+            if not messagebox.askyesno(
+                title,
+                "确定{}所选任务吗？\n{}".format("终止" if action == "terminate" else "取消", detail),
                 parent=self.window,
             ):
                 return
