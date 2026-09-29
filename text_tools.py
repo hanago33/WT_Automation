@@ -460,9 +460,11 @@ class CsvConvertCard(ttk.Frame):
         frm_merge.pack(fill="x", pady=2)
         ttk.Label(frm_merge, text="XLSX 输出方式：").pack(side="left")
         self.merge_var = tk.StringVar(value="single")
-        ttk.Radiobutton(frm_merge, text="每个文件单独一个工作簿", variable=self.merge_var, value="single").pack(side="left", padx=4)
-        ttk.Radiobutton(frm_merge, text="合并为多工作表", variable=self.merge_var, value="multi").pack(side="left", padx=4)
-        ttk.Radiobutton(frm_merge, text="合并为单工作表", variable=self.merge_var, value="one").pack(side="left", padx=4)
+        self._merge_rb_list = []
+        for value, label in (("single", "每个文件单独一个工作簿"), ("multi", "合并为多工作表"), ("one", "合并为单工作表")):
+            rb = ttk.Radiobutton(frm_merge, text=label, variable=self.merge_var, value=value)
+            rb.pack(side="left", padx=4)
+            self._merge_rb_list.append(rb)
 
         # 单工作表合并选项（仅合并为单工作表时有效）
         self.merge_single_header = tk.BooleanVar(value=True)
@@ -476,8 +478,11 @@ class CsvConvertCard(ttk.Frame):
         frm4.pack(fill="x", pady=2)
         ttk.Label(frm4, text="TXT 输出编码：").pack(side="left")
         self.txt_enc_var = tk.StringVar(value="utf-8-sig")
+        self._txt_enc_rb_list = []
         for enc, label in [("utf-8-sig", "UTF-8(带BOM)"), ("utf-8", "UTF-8"), ("gbk", "GBK")]:
-            ttk.Radiobutton(frm4, text=label, variable=self.txt_enc_var, value=enc).pack(side="left", padx=4)
+            rb = ttk.Radiobutton(frm4, text=label, variable=self.txt_enc_var, value=enc)
+            rb.pack(side="left", padx=4)
+            self._txt_enc_rb_list.append(rb)
 
         # 开始按钮
         frm5 = ttk.Frame(self)
@@ -492,6 +497,28 @@ class CsvConvertCard(ttk.Frame):
         # 日志
         self.log_text = tk.Text(self, height=12, state="disabled")
         self.log_text.pack(fill="both", expand=True, pady=4)
+
+        # 参数联动：转换类型/合并方式变化时自动禁用无关参数（审计 P2）
+        self.conv_var.trace_add("write", lambda *a: self._sync_option_states())
+        self.merge_var.trace_add("write", lambda *a: self._sync_option_states())
+        self._sync_option_states()
+
+    def _sync_option_states(self):
+        """按当前转换类型/合并方式联动启用/禁用参数控件（审计 P2）。
+
+        - 转 TXT：XLSX 输出方式与"仅保留第一个文件表头"禁用，TXT 编码启用；
+        - 转 XLSX：TXT 编码禁用；"仅保留表头"仅"合并为单工作表"时可用。
+        """
+        is_xlsx = self.conv_var.get() == "xlsx"
+        for rb in getattr(self, "_merge_rb_list", []):
+            rb.config(state="normal" if is_xlsx else "disabled")
+        state_header = "normal" if (is_xlsx and self.merge_var.get() == "one") else "disabled"
+        try:
+            self.merge_header_chk.config(state=state_header)
+        except Exception:
+            pass
+        for rb in getattr(self, "_txt_enc_rb_list", []):
+            rb.config(state="disabled" if is_xlsx else "normal")
 
     def log(self, msg):
         self.log_text.configure(state="normal")

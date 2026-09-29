@@ -13,6 +13,7 @@ generic_flow_executor.py。
 import io
 import os
 import re
+import shutil
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SRC_DIR = os.path.join(ROOT, "WT_Automation")
@@ -28,30 +29,53 @@ def read_text(path):
 
 
 def write_text(path, text):
-    with io.open(path, "w", encoding="utf-8", newline="\n") as f:
+    """写盘：覆盖前备份旧产物（.bak），再以临时文件原子替换。
+
+    避免生成中断留下半截文件；备份保证手改过的产物可找回（审计 P2）。
+    """
+    if os.path.exists(path):
+        try:
+            shutil.copy2(path, path + ".bak")
+        except OSError:
+            pass
+    tmp_path = path + ".tmp"
+    with io.open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
+    os.replace(tmp_path, path)
+
+
+def _replace_checked(text, old, new, count=None):
+    """执行替换并校验命中：母版演进导致替换点失配时立即报错。
+
+    避免"替换静默失效 → 仍然产出写死 WT/MUP 的副本"（审计 P2）。
+    """
+    if old not in text:
+        raise RuntimeError("母版文本已变化，替换点未命中：\n{}".format(old[:160]))
+    if count is None:
+        return text.replace(old, new)
+    return text.replace(old, new, count)
 
 
 def make_locator(src):
     out = src
 
     # 1) 模块级关键词常量 -> 可配置变量（默认空：匹配所有可见顶层窗）
-    out = out.replace(
+    out = _replace_checked(out, 
         '_MUP_WINDOW_KEYWORDS = ("mupsmartclient", "smartclient", "meteodyn", "univwrse")',
         '_TARGET_WINDOW_KEYWORDS = ()  # 通用化：目标软件窗口关键词，运行时由 '
         'config_generic_target() 注入；空元组=匹配所有可见顶层窗口',
     )
 
     # 2) 枚举函数改名 + 关键词引用改名
-    out = out.replace(
+    out = _replace_checked(out, 
         "def _enum_visible_mup_win32_windows():",
         "def _enum_target_win32_windows():",
     )
-    out = out.replace(
+    out = _replace_checked(out, 
         '    """MUP 关键词过滤的可见顶层窗口（复用 iter_visible_top_level_windows，纯 Win32）。"""',
         '    """目标软件关键词过滤的可见顶层窗口（通用化；关键词为空时返回全部可见顶层窗）。"""',
     )
-    out = out.replace(
+    out = _replace_checked(out, 
         "        matched = any(keyword in class_name for keyword in _MUP_WINDOW_KEYWORDS) or any(\n"
         "            keyword in process_name for keyword in _MUP_WINDOW_KEYWORDS\n"
         "        )\n",
@@ -64,13 +88,13 @@ def make_locator(src):
     )
 
     # 3) 调用点改名
-    out = out.replace(
+    out = _replace_checked(out, 
         "result = _wrap_hwnd_candidates(_enum_visible_mup_win32_windows())",
         "result = _wrap_hwnd_candidates(_enum_target_win32_windows())",
     )
 
     # 4) 无标题 WPF 窗口识别里的 MUPSmartClient 子串匹配 -> 可配置进程关键词
-    out = out.replace(
+    out = _replace_checked(out, 
         "            # HwndWrapper[MUPSmartClient.exe;;<GUID>] 的 GUID 随安装/机器变化，\n"
         "            # 只按进程名子串匹配，避免换机后窗口匹配静默失效\n"
         '            or "MUPSmartClient" in actual_class_name\n',
@@ -81,23 +105,23 @@ def make_locator(src):
     )
 
     # 5) _activate_process_main_window 默认参数
-    out = out.replace(
+    out = _replace_checked(out, 
         'def _activate_process_main_window(process_name="MUPSmartClient"):',
         'def _activate_process_main_window(process_name=None):',
     )
-    out = out.replace(
+    out = _replace_checked(out, 
         '        keyword = str(process_name or "MUPSmartClient").lower()',
         '        keyword = str(process_name or "").lower()  # 为空则不按类名过滤（交给调用方先激活顶层窗）',
     )
 
     # 6) 硬编码调用点
-    out = out.replace(
+    out = _replace_checked(out, 
         '            _activate_process_main_window("MUPSmartClient")',
         "            _activate_process_main_window(_TARGET_ACTIVATE_PROCESS_NAME)",
     )
 
     # 7) 模块注释里的 MUP 主窗说明 -> 通用说明
-    out = out.replace(
+    out = _replace_checked(out, 
         "# 目标软件主窗口候选提供者：运行时注入（如 WT_AUT_recorded 用 find_main_windows 按进程名\n"
         "# 找 MUPSmartClient 主窗）。fallback 用它的 hwnd 包装成 UIA wrapper，比枚举解析进程名可靠。",
         "# 目标软件主窗口候选提供者：运行时注入（使用方用 find_main_windows 按进程名找目标软件主窗）。\n"
@@ -144,13 +168,13 @@ def get_generic_target_config():
 
 '''
     # 在 configure_flow_locator 定义前插入
-    marker = "def configure_flow_locator(get_step_definition=None, log_step=None, get_main_window_candidates=None):"
-    out = out.replace(marker, cfg_api + "\n" + marker, 1)
+    marker = "def configure_flow_locator(get_step_definition=None, log_step=None, get_main_window_candidates=None, log_at=None):"
+    out = _replace_checked(out, marker, cfg_api + "\n" + marker, 1)
 
     # 9) 运行时主窗口候选注入：若 _GET_MAIN_WINDOW_CANDIDATES 为空且配置了
     #    main_window_process，则自动按进程名回退（可选，给没注入的人兜底）
     #    在 iter_flow_search_windows 使用 _GET_MAIN_WINDOW_CANDIDATES 处补充兜底
-    out = out.replace(
+    out = _replace_checked(out, 
         "            result = _wrap_hwnd_candidates(_GET_MAIN_WINDOW_CANDIDATES())\n",
         "            result = _wrap_hwnd_candidates(_GET_MAIN_WINDOW_CANDIDATES())\n"
         "            if not result and _TARGET_MAIN_WINDOW_PROCESS:\n"
@@ -165,6 +189,7 @@ def get_generic_target_config():
         "                except Exception:\n"
         "                    result = []\n",
     )
+
     return out
 
 
@@ -204,7 +229,9 @@ except Exception:  # pragma: no cover
 
 
 def _pid_of(process_name):
-    pname = process_name.lower()
+    # 调用方可能传 exe 完整路径（浏览选择），只取映像名比较；
+    # 此前全串精确比较 → 传路径时恒不命中，兜底查找整条链路失效（审计 P2）
+    pname = os.path.basename(process_name or "").lower()
     pids = []
     for p in psutil.process_iter(["pid", "name"]):
         try:
@@ -278,7 +305,12 @@ configure_flow_executor(get_step_definition=..., get_flow_package=..., log_step=
 重新生成副本：在项目根目录执行
     python tools/generic_flow/make_generic_copy.py
 '''
-    write_text(os.path.join(OUT_DIR, "README.md"), readme)
+    # README 允许人工扩写：仅在缺失时生成，避免重生成冲掉手工维护内容
+    readme_path = os.path.join(OUT_DIR, "README.md")
+    if not os.path.exists(readme_path):
+        write_text(readme_path, readme)
+    else:
+        print("skip: README.md 已存在（人工维护版不覆盖）")
 
     # 示例启动脚本
     example = '''# -*- coding: utf-8 -*-
@@ -335,7 +367,12 @@ if __name__ == "__main__":
     print("通用化副本导入成功。配置 =", __import__("generic_flow_locator").get_generic_target_config())
     print("请按 README 接入真实步骤定义与控件库后调用 execute_flow_step(...) 。")
 '''
-    write_text(os.path.join(OUT_DIR, "run_example.py"), example)
+    # run_example 同样有人工维护版：仅在缺失时生成
+    example_path = os.path.join(OUT_DIR, "run_example.py")
+    if not os.path.exists(example_path):
+        write_text(example_path, example)
+    else:
+        print("skip: run_example.py 已存在（人工维护版不覆盖）")
 
     print("done: generic_flow_locator.py / generic_flow_executor.py / generic_main_window.py "
           "/ run_example.py / README.md / make_generic_copy.py")
