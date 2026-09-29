@@ -18,10 +18,17 @@ import time
 _HOVER_MONITOR_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_hover_monitor.log")
 
 def _hover_log(msg):
-    """同时输出到控制台和日志文件。"""
+    """同时输出到控制台和日志文件（文件超限轮转为 .old，避免无限增长）。"""
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
     print(line)
     try:
+        # 超过 8MB 轮转为 .old（保留上一份便于回溯），之后继续写新文件；
+        # 悬停跟踪高频写入会让该文件无限膨胀（审计 P2）
+        if os.path.exists(_HOVER_MONITOR_LOG) and os.path.getsize(_HOVER_MONITOR_LOG) > 8 * 1024 * 1024:
+            try:
+                os.replace(_HOVER_MONITOR_LOG, _HOVER_MONITOR_LOG + ".old")
+            except OSError:
+                pass
         with open(_HOVER_MONITOR_LOG, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:
@@ -7387,8 +7394,24 @@ class ControlMapBuilderApp:
                 self._region_capture_title = captured_title
         except Exception:
             self._region_capture_title = ""
-        overlay = RegionPickerOverlay(self.root, on_complete=lambda rect: self._finish_region_pick(rect, auto_save))
-        overlay.window.focus_force()
+        try:
+            overlay = RegionPickerOverlay(self.root, on_complete=lambda rect: self._finish_region_pick(rect, auto_save))
+            overlay.window.focus_force()
+        except Exception as exc:
+            # 全屏遮罩构造失败时主窗口仍处于 withdraw → 必须恢复，否则
+            # 表现为"界面消失"且无任何提示（审计 P2）
+            try:
+                import traceback as _tb
+                _hover_log("画框 overlay 创建失败: {}\n{}".format(exc, _tb.format_exc()))
+            except Exception:
+                pass
+            try:
+                self.root.deiconify()
+                self.root.lift()
+                self.root.focus_force()
+            except Exception:
+                pass
+            messagebox.showerror("画框采集", "无法创建画框窗口：\n{}".format(exc))
 
     def _finish_region_pick(self, rect, auto_save):
         original_mode = self.var_scan_mode.get().strip()
@@ -7836,6 +7859,13 @@ class ControlMapBuilderApp:
         MUP 重启后 payload 里记录的 pid 会失效（进程号变了），此处兜底按可执行路径
         实时枚举 Meteodyn\\MeteodynUniverse 下的进程，两者取并集，保证重启后仍可补采。
         """
+        now = time.time()
+        cache = getattr(self, "_target_pids_cache", None)
+        if cache is not None and now - cache[0] < 2.0:
+            # 2 秒内复用上次结果：悬停 tick 每 ~80ms 调用本方法，在 UI 线程全量
+            # 枚举 psutil.process_iter 的开销不可忽略（审计 P2）；MUP 重启的 pid
+            # 变化最多延迟 2 秒被感知，对补采影响可忽略。
+            return list(cache[1])
         flat = self.current_payload.get("flatControls", []) if isinstance(self.current_payload, dict) else []
         pids = {str(item.get("processId", "")).strip() for item in flat if str(item.get("processId", "")).strip()}
         try:
@@ -7849,7 +7879,9 @@ class ControlMapBuilderApp:
                     pids.add(str(proc.info.get("pid", "")))
         except Exception:
             pass
-        return sorted(p for p in pids if p)
+        result = sorted(p for p in pids if p)
+        self._target_pids_cache = (now, tuple(result))
+        return list(result)
 
     # ---- "只看不采"模式开关 ----
 
@@ -8582,6 +8614,25 @@ class ControlMapBuilderApp:
         self._on_tree_select()
         self.var_status.set(f"已更新保存命名：{saved_name}")
 
+    def _has_pending_control_alias(self):
+        """输入框的保存名/ID 是否与当前选中控件的已保存值不一致（未点「应用」）。"""
+        if not isinstance(self.current_payload, dict):
+            return False
+        index = self._get_selected_tree_index()
+        if index is None:
+            return False
+        flat_controls = self.current_payload.get("flatControls", []) or []
+        if not (0 <= index < len(flat_controls)):
+            return False
+        item = flat_controls[index]
+        typed_name = self.var_saved_control_name.get().strip()
+        typed_id = self.var_saved_control_id.get().strip()
+        if typed_name and typed_name != str(item.get("savedControlName", "")).strip():
+            return True
+        if typed_id and typed_id != str(item.get("savedControlId", "")).strip():
+            return True
+        return False
+
     def _build_filtered_payload_for_save(self):
         payload = json.loads(json.dumps(self.current_payload, ensure_ascii=False))
         flat_controls = payload.get("flatControls", []) or []
@@ -8658,6 +8709,16 @@ class ControlMapBuilderApp:
         if not isinstance(self.current_payload, dict):
             messagebox.showinfo("提示", "请先完成一次扫描。")
             return
+        # 输入框里可能有未点"应用到当前控件"的改名：先询问一并应用，
+        # 否则保存结果与用户预期不符（输入被静默忽略，审计 P1◐）
+        if self._has_pending_control_alias() and messagebox.askyesno(
+            "未应用的改名",
+            "检测到未应用到控件的命名修改：\n{}\n\n是否先应用到当前选中控件，再保存？".format(
+                self.var_saved_control_name.get().strip() or self.var_saved_control_id.get().strip()
+            ),
+            parent=self.root,
+        ):
+            self.cmd_apply_current_control_alias()
         initial_dir = os.path.join(CONTROL_MAP_DIR, "recordings") if os.path.exists(os.path.join(CONTROL_MAP_DIR, "recordings")) else BASE_DIR
         target_window = self.current_payload.get("targetWindow", {}) or {}
         default_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{slugify_filename(target_window.get('title', 'window'))}_control_map.json"
@@ -9393,10 +9454,21 @@ class ControlMapBuilderApp:
                 )
                 messagebox.showinfo("合并成功", msg)
 
-                # 合并成功后，刷新主界面控件树
+                # 合并成功后刷新主界面：重建分组 + 重置勾选为全量 + 清空命名输入。
+                # 此前只刷树不重建分组/不重置勾选 —— 分组表仍是旧数据（组号错配，
+                # 新库更短时索引越界被当成"保存失败"），旧勾选还会让后续保存写出
+                # 与展示不一致的库文件（审计 P1◐，与「加载控件库」路径口径一致）。
                 self.current_payload = result
+                self._rebuild_control_groups()
+                self._all_checked_mode = True
+                self.checked_control_indices = set(range(len(result.get("flatControls", []) or [])))
+                self.var_saved_control_name.set("")
+                self.var_saved_control_id.set("")
                 self._refresh_tree()
-                self.var_status.set(f"已合并入库：新增 {stats['added']}，更新 {stats['updated']}")
+                self._refresh_summary()
+                self.var_status.set(
+                    f"已合并入库：新增 {stats['added']}，更新 {stats['updated']}（已重建分组并全量勾选）"
+                )
 
                 dlg.destroy()
             except Exception as exc:

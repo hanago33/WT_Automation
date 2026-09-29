@@ -5291,7 +5291,11 @@ def iter_flow_search_windows(step_definition, window_title_hint="", control_defi
             result = _wrap_hwnd_candidates(_GET_MAIN_WINDOW_CANDIDATES())
             if not result and _TARGET_MAIN_WINDOW_PROCESS:
                 try:
-                    from .generic_main_window import find_main_windows_by_process
+                    try:
+                        from .generic_main_window import find_main_windows_by_process
+                    except ImportError:
+                        # 顶层导入（非包）场景：相对导入不可用，回退同目录绝对导入
+                        from generic_main_window import find_main_windows_by_process
                     result = _wrap_hwnd_candidates(
                         find_main_windows_by_process(_TARGET_MAIN_WINDOW_PROCESS))
                 except Exception:
