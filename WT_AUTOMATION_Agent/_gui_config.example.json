@@ -1,0 +1,11 @@
+{
+  "base_url": "https://opencode.ai/zen/go/v1",
+  "api_key": "YOUR-API-KEY",
+  "model": "deepseek-v4-flash",
+  "project_desc": "",
+  "control_file": "",
+  "timeout": 120,
+  "max_retries": 3,
+  "retry_backoff": 2,
+  "retry_codes": "429,500,502,503,504"
+}
