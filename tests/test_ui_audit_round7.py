@@ -121,6 +121,52 @@ class ScreenshotCountdownTests(unittest.TestCase):
         self.assertNotIn("time.sleep", src[start:end])
 
 
+class TakeScreenshotStatusTests(unittest.TestCase):
+    """截屏保存后的状态提示必须如实反映加载结果（用户在确认框取消时不得谎报“已加载”）。"""
+
+    class _FakeImage:
+        def __init__(self, saved):
+            self._saved = saved
+
+        def save(self, path):
+            self._saved.append(path)
+
+    def _make(self, loaded, saved):
+        import tempfile
+        win = object.__new__(T.TemplateBuilderApp)
+        win.status_var = FakeVar("")
+        win.output_dir_var = FakeVar(tempfile.mkdtemp())
+        win.screenshot_path_var = FakeVar("")
+        # load_screenshot 按场景返回 True/False（确认框取消 → False）
+        win.load_screenshot = lambda path: loaded
+        return win, saved
+
+    def test_status_claims_loaded_only_when_loaded(self):
+        saved = []
+        with patch.object(T.ImageGrab, "grab", return_value=self._FakeImage(saved)):
+            win, saved = self._make(loaded=True, saved=saved)
+            win._do_take_screenshot()
+        self.assertEqual(len(saved), 1)  # 截图确已落盘
+        self.assertTrue(win.status_var.get().startswith("截屏已保存并加载"))
+
+    def test_status_reports_not_loaded_on_cancel(self):
+        saved = []
+        with patch.object(T.ImageGrab, "grab", return_value=self._FakeImage(saved)):
+            win, saved = self._make(loaded=False, saved=saved)
+            win._do_take_screenshot()
+        self.assertEqual(len(saved), 1)  # 截图已落盘，但未加载
+        self.assertIn("未加载", win.status_var.get())
+        self.assertNotIn("已加载", win.status_var.get())
+
+    def test_load_screenshot_returns_bool(self):
+        src = _read_source("build_image_template_library.py")
+        start = src.find("def load_screenshot")
+        end = src.find("def detect_regions")
+        body = src[start:end]
+        self.assertIn("return False", body)  # 确认取消 / 读取失败
+        self.assertIn("return True", body)   # 成功加载
+
+
 # ── #5 滚轮路由 ─────────────────────────────────────────────────────────
 
 

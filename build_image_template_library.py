@@ -755,8 +755,11 @@ class TemplateBuilderApp:
             screenshot.save(screenshot_path)
 
             self.screenshot_path_var.set(screenshot_path)
-            self.load_screenshot(screenshot_path)
-            self.status_var.set(f"截屏已保存并加载: {screenshot_path}")
+            if self.load_screenshot(screenshot_path):
+                self.status_var.set(f"截屏已保存并加载: {screenshot_path}")
+            else:
+                # 用户在确认框取消（保留当前候选）或读取失败时不得谎报“已加载”
+                self.status_var.set(f"截图已保存但未加载: {screenshot_path}")
         except Exception as exc:
             messagebox.showerror("错误", f"截屏失败: {exc}")
     
@@ -839,6 +842,11 @@ class TemplateBuilderApp:
         os.startfile(target_dir)
 
     def load_screenshot(self, file_path):
+        """加载截图并重置工作区。返回是否真正加载成功。
+
+        两种失败路径：用户在确认框取消（保留当前候选）、文件读取失败。
+        调用方（如截屏保存后的状态提示）须按返回值区分“已加载/未加载”。
+        """
         # 重新加载会清空当前候选框与撤回栈（不可恢复）：有内容时先确认（审计 P1◐）
         if self.candidates and not messagebox.askyesno(
             "确认重新加载",
@@ -846,11 +854,11 @@ class TemplateBuilderApp:
                 len(self.candidates)
             ),
         ):
-            return
+            return False
         self.source_image_bgr = cv2.imread(file_path)
         if self.source_image_bgr is None:
             messagebox.showerror("读取失败", f"无法读取截图: {file_path}")
-            return
+            return False
 
         self.source_image_rgb = cv2.cvtColor(self.source_image_bgr, cv2.COLOR_BGR2RGB)
         self.candidates = []
@@ -864,6 +872,7 @@ class TemplateBuilderApp:
         self.status_var.set("截图已加载，点击“自动检测”开始切分")
         self.root.update_idletasks()
         self.refresh_canvas()
+        return True
 
     def detect_regions(self):
         if self.source_image_bgr is None:
