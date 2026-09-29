@@ -8269,7 +8269,7 @@ class ControlMapBuilderApp:
                     pass
 
     def _on_subtree_collected(self, result, interactive=False):
-        """Worker 线程完成子树采集后的 UI 回调。
+        """Worker 线程完成子树采集后的 UI 回调（悬停/热键/定点/选中四条路径共用）。
 
         参数 result 为 collect_subtree_at_point 的返回值：
         (sub_flats, target_window, error) 三元组，或 None（异常时）；
@@ -8288,15 +8288,16 @@ class ControlMapBuilderApp:
             source=self._worker_last_source,
             interactive=interactive,
         )
+        # 采完后重置查看层 key：下个 tick 重新评估当前悬停元素，层级树自动聚焦
+        # 到刚入库的控件。必须在所有路径的共用收尾里做 —— 采集层去重靠
+        # _hover_last_collect_key，与这三个 key 无关，重置不会引发重复采集。
+        self._hover_last_hit_key = ""
+        self._hover_last_fresh_xy = None
+        self._hover_existing_index = None
 
     def _supplement_worker_done(self, result):
         """定点/选中补采的 worker 完成回调（保留 interactive 弹窗反馈）。"""
         self._on_subtree_collected(result, interactive=True)
-        # 采完后重置查看层 key：下个 tick 重新评估当前悬停元素，层级树自动聚焦
-        # 到刚入库的控件（采集层去重靠 _hover_last_collect_key，不会重复入队）
-        self._hover_last_hit_key = ""
-        self._hover_last_fresh_xy = None
-        self._hover_existing_index = None
 
     def _bring_to_front_temporarily(self, duration_ms=2500):
         """把主窗口临时置顶带回最前。

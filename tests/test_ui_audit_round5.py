@@ -185,6 +185,35 @@ class SupplementWorkerDispatchTests(unittest.TestCase):
         win._supplement_worker_done(([], {}, "boom"))
         self.assertTrue(captured.get("interactive"))
 
+    def test_hover_path_resets_view_keys_after_supplement(self):
+        """悬停路径回调也必须重置查看层 key。
+
+        80d8deb 重构时这三行被误挪进 _supplement_worker_done（仅定点/选中路径），
+        悬停/热键补采后层级树不再自动聚焦新入库控件（session-21 修正）。
+        """
+        win = object.__new__(B.ControlMapBuilderApp)
+        win._finish_supplement = lambda *a, **k: None
+        win._worker_last_source = "悬停(1,2)"
+        win._hover_last_hit_key = "aid|x|y"
+        win._hover_last_fresh_xy = (1, 2)
+        win._hover_existing_index = 3
+        win._on_subtree_collected(([{"n": 1}], {}, ""), interactive=False)
+        self.assertEqual(win._hover_last_hit_key, "")
+        self.assertIsNone(win._hover_last_fresh_xy)
+        self.assertIsNone(win._hover_existing_index)
+
+    def test_supplement_worker_done_also_resets_view_keys(self):
+        win = object.__new__(B.ControlMapBuilderApp)
+        win._finish_supplement = lambda *a, **k: None
+        win._worker_last_source = "选中控件"
+        win._hover_last_hit_key = "aid|x|y"
+        win._hover_last_fresh_xy = (1, 2)
+        win._hover_existing_index = 3
+        win._supplement_worker_done(([{"n": 1}], {}, ""))
+        self.assertEqual(win._hover_last_hit_key, "")
+        self.assertIsNone(win._hover_last_fresh_xy)
+        self.assertIsNone(win._hover_existing_index)
+
 
 # ── P1-4 / P1-5：监控线程纪律 ───────────────────────────────────────────
 

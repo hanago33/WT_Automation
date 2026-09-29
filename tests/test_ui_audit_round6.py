@@ -196,6 +196,57 @@ class TemplateBuilderRoundTests(unittest.TestCase):
         win.file_name_var = FakeVar("x")
         win._commit_file_name_entry()  # 不应抛异常
 
+    def test_listbox_select_commits_pending_rename_before_switch(self):
+        """点击列表切换候选时，未提交的改名必须先落到【原选中候选】。
+
+        实测 tk 8.6 真实事件流中 <<ListboxSelect>> 先于 Entry <FocusOut> 触发：
+        若只靠失焦提交，切换时 file_name_var 已被新候选名字覆盖，手工改名
+        仍然静默丢失（原缺陷复现）。on_listbox_select 须先提交再切换。
+        """
+        win = object.__new__(T.TemplateBuilderApp)
+        win.selected_index = 0
+        win.template_names = ["tpl_001", "tpl_002"]
+        win.file_name_var = FakeVar("手工改名")  # 用户已输入但未点“应用”
+
+        class _Listbox:
+            def __init__(self, selection):
+                self._selection = selection
+
+            def curselection(self):
+                return self._selection
+
+        win.listbox = _Listbox((1,))
+        win.update_preview = lambda: None
+        win.refresh_canvas = lambda: None
+        refreshed = []
+        win.refresh_listbox = lambda: refreshed.append(True)
+        win.on_listbox_select(None)
+        # 改名落到原候选 0，候选 1 不被污染，输入框显示新候选的名字
+        self.assertEqual(win.template_names[0], "手工改名")
+        self.assertEqual(win.template_names[1], "tpl_002")
+        self.assertEqual(win.selected_index, 1)
+        self.assertEqual(win.file_name_var.get(), "tpl_002")
+        self.assertEqual(refreshed, [True])  # 提交时刷新了一次列表
+
+    def test_listbox_select_without_pending_rename_is_noop_commit(self):
+        """无未提交改动时切换候选不产生额外写入。"""
+        win = object.__new__(T.TemplateBuilderApp)
+        win.selected_index = 0
+        win.template_names = ["tpl_001", "tpl_002"]
+        win.file_name_var = FakeVar("tpl_001")
+
+        class _Listbox:
+            def curselection(self):
+                return (1,)
+
+        win.listbox = _Listbox()
+        win.update_preview = lambda: None
+        win.refresh_canvas = lambda: None
+        win.refresh_listbox = lambda: None
+        win.on_listbox_select(None)
+        self.assertEqual(win.template_names, ["tpl_001", "tpl_002"])
+        self.assertEqual(win.selected_index, 1)
+
     def test_load_screenshot_asks_before_clearing(self):
         win = object.__new__(T.TemplateBuilderApp)
         win.candidates = [object()]
