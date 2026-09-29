@@ -515,23 +515,26 @@ class MonitorWindow:
 def _ui_safe_call(callback):
     """线程安全地把 Tk 回调调度到主线程执行。
 
-    monitor 模式下主线程运行 mainloop，用 after 调度；若主线程不在 mainloop
-    （如 --no-monitor / 主线程同步执行），则直接调用兜底。
-    背景：run_automation 在后台自动化线程中运行，直接调用 Tk widget 方法
-    （尤其 root.update()/root.title()）会跨线程重入 Tcl 事件循环，导致原生崩溃。
+    调度一律优先 after；after 不可用（无 monitor 窗口 / 窗口已销毁）时，
+    仅在「当前即主线程」的情况下直接调用兜底 —— 后台线程绝不直接触碰 Tk
+    （跨线程重入 Tcl 会原生崩溃，与本函数注释一致；审计 P2 指出旧实现的
+    "直接调用兜底"对后台线程同样生效，自相矛盾；且 winfo_exists 本身也是
+    跨线程 Tcl 调用，一并去掉）。
     """
     mw = monitor_window
     if mw is not None and getattr(mw, "root", None) is not None:
         try:
-            if mw.root.winfo_exists():
-                mw.root.after(0, callback)
-                return True
+            mw.root.after(0, callback)
+            return True
         except Exception:
             pass
-    try:
-        callback()
-    except Exception:
-        pass
+    import threading as _th
+    if _th.current_thread() is _th.main_thread():
+        try:
+            callback()
+            return True
+        except Exception:
+            return False
     return False
 
 

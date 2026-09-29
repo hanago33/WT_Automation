@@ -579,6 +579,10 @@ class TemplateBuilderApp:
         tk.Label(form_frame, text="文件名", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=0, sticky="w")
         self.file_name_entry = tk.Entry(form_frame, textvariable=self.file_name_var, width=28, bg=TEMPLATE_THEME["panel"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10))
         self.file_name_entry.grid(row=0, column=1, sticky="ew", padx=4)
+        # 失焦/回车即提交文件名到当前候选：此前手工改名不点"应用"就切换候选框
+        # 会被静默丢弃（审计 P1◐）。FocusOut 先于列表选择变更触发，时序天然正确。
+        self.file_name_entry.bind("<FocusOut>", self._commit_file_name_entry)
+        self.file_name_entry.bind("<Return>", self._commit_file_name_entry)
         tk.Label(form_frame, text=".png", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["muted"], font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=2, sticky="w")
         tk.Label(form_frame, text="批量前缀", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=0, sticky="w", pady=(6, 0))
         tk.Entry(form_frame, textvariable=self.batch_prefix_var, width=28, bg=TEMPLATE_THEME["panel"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=1, sticky="ew", padx=4, pady=(6, 0))
@@ -827,6 +831,14 @@ class TemplateBuilderApp:
         os.startfile(target_dir)
 
     def load_screenshot(self, file_path):
+        # 重新加载会清空当前候选框与撤回栈（不可恢复）：有内容时先确认（审计 P1◐）
+        if self.candidates and not messagebox.askyesno(
+            "确认重新加载",
+            "加载新截图将清空当前的 {} 个候选区域与撤回记录（不可恢复）。\n\n是否继续？".format(
+                len(self.candidates)
+            ),
+        ):
+            return
         self.source_image_bgr = cv2.imread(file_path)
         if self.source_image_bgr is None:
             messagebox.showerror("读取失败", f"无法读取截图: {file_path}")
@@ -1255,6 +1267,16 @@ class TemplateBuilderApp:
         self.selection_additive = False
         self.pre_drag_snapshot = None
 
+    def _commit_file_name_entry(self, _event=None):
+        """把输入框中的文件名提交给当前选中候选（Entry 失焦/回车时触发）。"""
+        if self.selected_index is None or not (0 <= self.selected_index < len(self.template_names)):
+            return
+        typed = sanitize_template_name(self.file_name_var.get().strip(), "")
+        if not typed or typed == self.template_names[self.selected_index]:
+            return
+        self.template_names[self.selected_index] = typed
+        self.refresh_listbox()
+
     def on_listbox_select(self, _event):
         selected = self.listbox.curselection()
         if selected:
@@ -1483,7 +1505,16 @@ class TemplateBuilderApp:
         if os.path.exists(output_path) and not self._confirm_overwrite_template(output_path):
             return None
         crop_image.save(output_path)
-        self._update_index_file(output_root, category, file_name, region, output_path)
+        try:
+            self._update_index_file(output_root, category, file_name, region, output_path)
+        except Exception as exc:
+            # 索引写失败：回滚刚落盘的图片，避免"有图无索引"的半成品静默存在（审计 P1◐）
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
+            messagebox.showerror("保存失败", "图片已回滚（索引写入失败）：\n{}".format(exc))
+            return None
         return output_path
 
     def save_current_template(self):
@@ -1854,8 +1885,12 @@ class TemplateBuilderApp:
 
     def open_output_dir(self):
         output_root = self.output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR
-        os.makedirs(output_root, exist_ok=True)
-        os.startfile(output_root)
+        try:
+            os.makedirs(output_root, exist_ok=True)
+            os.startfile(output_root)
+        except Exception as exc:
+            # 路径异常/无关联程序时此前静默失效（"点了没反应"，审计 P1◐）
+            messagebox.showerror("打开目录失败", "{}\n\n{}".format(output_root, exc))
 
 
 def main():

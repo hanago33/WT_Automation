@@ -248,11 +248,16 @@ class TxtMergeCard(ttk.Frame):
         folder = filedialog.askdirectory(title="选择包含文本文件的文件夹")
         if not folder:
             return
-        paths = [
-            os.path.join(folder, name)
-            for name in sorted(os.listdir(folder))
-            if name.lower().endswith(".txt")
-        ]
+        try:
+            paths = [
+                os.path.join(folder, name)
+                for name in sorted(os.listdir(folder))
+                if name.lower().endswith(".txt")
+            ]
+        except OSError as exc:
+            # 目录不可读/已删除时此前异常被 Tk 吞掉（"点了没反应"，审计 P2）
+            messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
+            return
         if not paths:
             messagebox.showinfo("提示", "该文件夹内没有找到 .txt 文件。")
             return
@@ -512,13 +517,18 @@ class CsvConvertCard(ttk.Frame):
 
     def pick_folder(self):
         folder = filedialog.askdirectory(title="选择包含 CSV 的文件夹")
-        if folder:
+        if not folder:
+            return
+        try:
             self.csv_files = [
                 os.path.join(folder, f)
                 for f in os.listdir(folder)
                 if f.lower().endswith(".csv")
             ]
-            self.var_files.set(f"文件夹: {folder} ({len(self.csv_files)} 个 CSV)")
+        except OSError as exc:
+            messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
+            return
+        self.var_files.set(f"文件夹: {folder} ({len(self.csv_files)} 个 CSV)")
 
     def pick_out(self):
         d = filedialog.askdirectory(title="选择输出目录")
@@ -553,6 +563,7 @@ class CsvConvertCard(ttk.Frame):
         self.btn_run.configure(state="disabled")
         self.progress["value"] = 0
         self._overwrite_policy = None  # 本次转换的覆盖策略在首次冲突时决定
+        self._batch_failed = 0  # 本次转换的失败计数（收尾弹窗按实际结果提示）
         self.log("开始转换...")
 
         def progress(cur, total):
@@ -572,8 +583,20 @@ class CsvConvertCard(ttk.Frame):
                     self._build_merged_single_sheet(out_dir, progress)
             else:
                 self._build_txt(out_dir, progress)
-            self.log("全部处理完成。")
-            messagebox.showinfo("完成", "转换完成！")
+            failed = getattr(self, "_batch_failed", 0)
+            total = len(self.csv_files)
+            # 按实际结果反馈：此前无论失败多少都弹"转换完成！"，与日志矛盾（审计 P1◐）
+            if failed == 0:
+                self.log("全部处理完成。")
+                messagebox.showinfo("完成", "转换完成！")
+            elif failed < total:
+                self.log(f"处理结束：成功 {total - failed}/{total}，失败 {failed}。")
+                messagebox.showwarning(
+                    "部分失败", f"处理结束：成功 {total - failed} 个，失败 {failed} 个，详见日志。"
+                )
+            else:
+                self.log(f"处理失败：全部 {total} 个文件均失败。")
+                messagebox.showerror("转换失败", f"全部 {total} 个文件均转换失败，详见日志。")
         except Exception as e:  # noqa: BLE001
             self.log(f"发生错误: {e}")
             messagebox.showerror("错误", str(e))
@@ -596,6 +619,7 @@ class CsvConvertCard(ttk.Frame):
                     wb.save(dst)
                     self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
 
@@ -612,6 +636,7 @@ class CsvConvertCard(ttk.Frame):
                 rows = convert_csv_to_sheet(ws, src)
                 self.log(f"[成功] {os.path.basename(src)} -> 工作表[{name}] ({rows} 行)")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
         if wb.sheetnames:
@@ -642,6 +667,7 @@ class CsvConvertCard(ttk.Frame):
                     current_row += 1
                 self.log(f"[成功] {os.path.basename(src)} -> 追加 {len(rows)} 行")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
         # 自动列宽
@@ -675,6 +701,7 @@ class CsvConvertCard(ttk.Frame):
                 else:
                     self.log(f"[跳过] 已存在同名文件: {os.path.basename(dst)}")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
 
@@ -939,13 +966,18 @@ class TextToolsCard(ttk.Frame):
 
     def pick_folder(self):
         folder = filedialog.askdirectory(title="选择包含文本文件的文件夹")
-        if folder:
+        if not folder:
+            return
+        try:
             self.files = [
                 os.path.join(folder, f)
                 for f in os.listdir(folder)
                 if f.lower().endswith((".txt", ".csv", ".log"))
             ]
-            self.var_files.set(f"文件夹: {folder} ({len(self.files)} 个文件)")
+        except OSError as exc:
+            messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
+            return
+        self.var_files.set(f"文件夹: {folder} ({len(self.files)} 个文件)")
 
     def pick_out(self):
         d = filedialog.askdirectory(title="选择输出目录")
@@ -973,14 +1005,26 @@ class TextToolsCard(ttk.Frame):
         enc = self.out_enc.get()
         total = len(self.files)
         try:
+            failed = 0
             for idx, src in enumerate(self.files, start=1):
                 try:
                     self._process_one(src, out_dir, op, enc)
                 except Exception as e:  # noqa: BLE001
+                    failed += 1
                     self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
                 progress(idx, total)
-            self.log("全部处理完成。")
-            messagebox.showinfo("完成", "处理完成！")
+            # 按实际结果反馈：此前全部失败也弹"处理完成！"，与日志矛盾（审计 P1◐）
+            if failed == 0:
+                self.log("全部处理完成。")
+                messagebox.showinfo("完成", "处理完成！")
+            elif failed < total:
+                self.log(f"处理结束：成功 {total - failed}/{total}，失败 {failed}。")
+                messagebox.showwarning(
+                    "部分失败", f"处理结束：成功 {total - failed} 个，失败 {failed} 个，详见日志。"
+                )
+            else:
+                self.log(f"处理失败：全部 {total} 个文件均失败。")
+                messagebox.showerror("处理失败", f"全部 {total} 个文件均处理失败，详见日志。")
         except Exception as e:  # noqa: BLE001
             self.log(f"发生错误: {e}")
             messagebox.showerror("错误", str(e))

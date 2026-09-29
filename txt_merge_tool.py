@@ -284,11 +284,15 @@ class TxtMergeApp:
         if not folder:
             return
         # 扫描文件夹内所有 .txt 文件（不递归子目录）
-        paths = [
-            os.path.join(folder, name)
-            for name in sorted(os.listdir(folder))
-            if name.lower().endswith(".txt")
-        ]
+        try:
+            paths = [
+                os.path.join(folder, name)
+                for name in sorted(os.listdir(folder))
+                if name.lower().endswith(".txt")
+            ]
+        except OSError as exc:
+            messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
+            return
         if not paths:
             messagebox.showinfo("提示", "该文件夹内没有找到 .txt 文件。")
             return
@@ -380,18 +384,28 @@ def main():
         root = TkinterDnD.Tk()
     else:
         root = tk.Tk()
-    app = TxtMergeApp(root)
 
-    # 使用 OLE 拖拽时需要初始化 COM 并处理其消息
-    if _HAS_OLE_DND and app._ole_drop is not None:
-        pythoncom.CoInitialize()
+    # OLE 拖拽的 RegisterDragDrop 依赖 COM 已在 UI 线程初始化（STA）——
+    # 必须在构建 App 之前 CoInitialize，否则注册静默失败、拖拽不工作（审计 P2）
+    ole_ready = False
+    if _HAS_OLE_DND:
         try:
-            root.mainloop()
-        finally:
-            app._ole_drop.unregister()
-            pythoncom.CoUninitialize()
-    else:
+            pythoncom.CoInitialize()
+            ole_ready = True
+        except Exception:  # noqa: BLE001
+            ole_ready = False
+    app = TxtMergeApp(root)
+    try:
         root.mainloop()
+    finally:
+        if ole_ready:
+            drop = getattr(app, "_ole_drop", None)
+            if drop is not None:
+                try:
+                    drop.unregister()
+                except Exception:  # noqa: BLE001
+                    pass
+            pythoncom.CoUninitialize()
 
 
 if __name__ == "__main__":
