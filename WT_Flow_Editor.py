@@ -3330,7 +3330,7 @@ class ControlLocatorTesterDialog:
                 )
                 return None
 
-            overlay = tk.Toplevel()
+            overlay = tk.Toplevel(self.window)
             overlay.overrideredirect(True)
             overlay.attributes("-topmost", True)
             try:

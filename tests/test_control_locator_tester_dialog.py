@@ -11,7 +11,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from tests._tk_support import shared_tk_root
+from _tk_support import shared_tk_root
 from WT_Flow_Editor import ControlLocatorTesterDialog
 import wt_ui_state
 
