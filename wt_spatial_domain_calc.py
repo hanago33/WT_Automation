@@ -423,11 +423,15 @@ def main():
         desktop = os.path.join(os.path.expanduser("~"), "Desktop")
         candidates = []
         if os.path.isdir(desktop):
-            candidates = [
-                os.path.join(desktop, name, "03-WT输入")
-                for name in sorted(os.listdir(desktop))
-                if os.path.isdir(os.path.join(desktop, name, "03-WT输入"))
-            ]
+            try:
+                candidates = [
+                    os.path.join(desktop, name, "03-WT输入")
+                    for name in sorted(os.listdir(desktop))
+                    if os.path.isdir(os.path.join(desktop, name, "03-WT输入"))
+                ]
+            except OSError as exc:
+                # 桌面不可读（重定向/权限）：保持"能用"，提示显式指定而非崩溃
+                print("[提示] 桌面目录不可读（{}），请用 --dir / --cft / --jwd 显式指定。".format(exc))
         if len(candidates) == 1:
             print("[提示] 未指定输入，自动使用桌面下的目录：{}".format(candidates[0]))
             points.extend(parse_points_from_input_dir(candidates[0]))

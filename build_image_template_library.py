@@ -2102,13 +2102,21 @@ class TemplateBuilderApp:
             index_data["templates"] = []
 
         screenshot_path = self.screenshot_path_var.get().strip()
+        image_rel = repo_relative_path(output_path)
+        screenshot_rel = repo_relative_path(screenshot_path)
+        if not image_rel or not screenshot_rel:
+            # 项目外路径无法相对化：索引被迫记录本机绝对路径（换机即失效）——
+            # 显式告警而非静默（审计 P2）
+            self.status_var.set(
+                "警告：模板/截图位于项目根之外，索引被迫记录本机绝对路径；"
+                "建议把输出目录移回项目内")
         record = {
             "category": category,
             "file_name": file_name,
             # 只写相对项目根的路径：索引随 git 走，写本机绝对路径换机即失效（AGENTS.md 禁止）
-            "image_path": repo_relative_path(output_path) or output_path,
+            "image_path": image_rel or output_path,
             "relative_image_path": safe_relpath(output_path, output_root),
-            "source_screenshot": repo_relative_path(screenshot_path) or screenshot_path,
+            "source_screenshot": screenshot_rel or screenshot_path,
             "region": region.as_dict(),
             "updatedAt": datetime.now().isoformat(timespec="seconds"),
         }

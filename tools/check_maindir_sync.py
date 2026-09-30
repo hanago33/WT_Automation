@@ -79,7 +79,11 @@ def classify(maindir_tree, trunk_tree):
 
 
 def blob_in_history(repo, blob):
-    """该 blob 是否出现在主干历史中（出现 → 主目录版本只是主干旧版，覆盖零损失）。"""
+    """该 blob 是否出现在主干历史中（出现 → 主目录版本只是主干旧版，覆盖零损失）。
+
+    用 --all 而非仅当前分支：口径偏宽但方向保守——宁可把可覆盖项误报成
+    「本地变体」等人工确认，也不会把未提交过的内容误判为零损失。
+    """
     out = _git(repo, ["log", "--all", "--format=%h %s", "--find-object=" + blob, "-1"])
     return out.strip()
 
@@ -148,8 +152,21 @@ def main(argv=None):
         print("[错误] 主目录不存在：{}（可用 --maindir 指定）".format(maindir))
         return 2
 
+    # 审计 P1：盘点必须按仓库根整树进行。此前用 os.getcwd()——在子目录运行时
+    # ls-tree 会被限制为子目录子集，静默产出错误盘点且仍结论"可安全同步"。
+    trunk_repo = os.getcwd()
     try:
-        result = inspect(trunk_repo=os.getcwd(), maindir_repo=maindir, ref=args.ref)
+        toplevel = _git(trunk_repo, ["rev-parse", "--show-toplevel"]).strip()
+    except SyncCheckError as exc:
+        print("[错误] 当前目录不是 git 仓库：{}".format(exc))
+        return 2
+    trunk_repo = os.path.normcase(os.path.normpath(toplevel))
+    if trunk_repo != os.path.normcase(os.path.normpath(REPO_ROOT)):
+        print("[警告] 当前目录属于 {}，而非本脚本所在的主干仓库 {}；盘点以当前仓库为准。".format(
+            trunk_repo, REPO_ROOT))
+
+    try:
+        result = inspect(trunk_repo=trunk_repo, maindir_repo=maindir, ref=args.ref)
     except SyncCheckError as exc:
         print("[错误] {}".format(exc))
         return 2

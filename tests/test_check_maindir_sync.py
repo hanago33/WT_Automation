@@ -141,6 +141,32 @@ def test_inspect_classifies_history_version_as_zero_loss(tmp_path, monkeypatch):
 
 
 @pytestmark_git
+def test_main_run_from_subdirectory_anchors_to_repo_root(tmp_path, monkeypatch, capsys):
+    """审计 P1 回归：从子目录运行 main() 必须按仓库根整树盘点。
+
+    基线缺陷：trunk_tree 取自 cwd（子目录）→ 只见子目录子集，且路径丢失
+    sub/ 前缀，仍结论"可安全同步"。修复后 toplevel 锚定，A 项带 sub/ 前缀。
+    """
+    trunk = tmp_path / "trunk"
+    maindir = tmp_path / "maindir"
+    for repo in (trunk, maindir):
+        os.makedirs(repo)
+        _init_repo(str(repo))
+    _write(str(trunk), "a.py", "x = 1\n")
+    _write(str(trunk), "sub/b.py", "y = 1\n")
+    _write(str(trunk), "sub/c.py", "z = 1\n")
+    _commit(str(trunk))
+    _write(str(maindir), "a.py", "x = 1\n")
+    _commit(str(maindir))
+
+    monkeypatch.chdir(trunk / "sub")  # _write 时已创建
+    assert C.main(["--maindir", str(maindir), "--ref", "HEAD"]) == 1
+    out = capsys.readouterr().out
+    assert "sub/b.py" in out and "sub/c.py" in out   # 修复前是丢前缀的 b.py/c.py
+    assert "结论：主目录与主干已一致" not in out
+
+
+@pytestmark_git
 def test_inspect_flags_local_variant(tmp_path, monkeypatch):
     """主目录改过但主干从未提交过该内容 → 必须报「本地变体」。"""
     trunk = tmp_path / "trunk"

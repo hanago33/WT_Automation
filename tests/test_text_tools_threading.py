@@ -407,8 +407,8 @@ class WorkerTkIsolationTests(unittest.TestCase):
         app.tools_card.affix_suf = _FakeVar("]")
         app.tools_card.case_mode = _FakeVar("lower")
         app.tools_card.enc_target = _FakeVar("big5")
-        app.tools_card.out_dir = r"C:\out	xt"
-        app.tools_card.var_out = _FakeVar(r"C:\out	xt")
+        app.tools_card.out_dir = r"C:\out\tooldir"
+        app.tools_card.var_out = _FakeVar(r"C:\out\tooldir")
 
         state = app._collect_ui_state()
         self.assertEqual(state["geometry"], "680x600+6+28")
@@ -455,7 +455,7 @@ class WorkerTkIsolationTests(unittest.TestCase):
         self.assertEqual(app2.tools_card.op_var.get(), "replace")
         self.assertEqual(app2.tools_card.filter_mode.get(), "drop")
         self.assertEqual(app2.tools_card.affix_pre.get(), "[")
-        self.assertEqual(app2.tools_card.out_dir, r"C:\out	xt")
+        self.assertEqual(app2.tools_card.out_dir, r"C:\out\tooldir")
 
 
 class TxtMergeCardWorkerTests(unittest.TestCase):
