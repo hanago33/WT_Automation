@@ -193,9 +193,12 @@ class StartMonitoringDuringLoadTests(unittest.TestCase):
 
 
 class OverwriteConfirmTests(unittest.TestCase):
+    """#1 线程化后契约：循环内零交互，策略由运行前预扫描决定（_resolve_overwrite_policy）。"""
+
     def _make_card(self):
         card = object.__new__(T.CsvConvertCard)
-        card._overwrite_policy = None
+        card._overwrite_policy = "overwrite"
+        card._overwrite_allow = set()
         return card
 
     def test_no_conflict_allows_without_dialog(self):
@@ -205,27 +208,39 @@ class OverwriteConfirmTests(unittest.TestCase):
             self.assertTrue(card._confirm_overwrite("out.xlsx"))
         ask.assert_not_called()
 
-    def test_first_conflict_asks_once_and_remembers_skip(self):
+    def test_skip_policy_skips_conflicts_without_dialog(self):
+        # 旧契约（循环内 askyesno 首问后记忆）已被预扫描策略取代
         card = self._make_card()
+        card._overwrite_policy = "skip"
         with patch.object(T.os.path, "exists", return_value=True), \
-                patch.object(T.messagebox, "askyesno", return_value=False) as ask:
+                patch.object(T.messagebox, "askyesno") as ask:
             self.assertFalse(card._confirm_overwrite("a.xlsx"))
             self.assertFalse(card._confirm_overwrite("b.xlsx"))
-        ask.assert_called_once()
-        self.assertFalse(card._overwrite_policy)
+        ask.assert_not_called()  # 循环内零交互
 
-    def test_conflict_yes_remembers_overwrite(self):
+    def test_overwrite_policy_allows_all_conflicts_without_dialog(self):
         card = self._make_card()
+        card._overwrite_policy = "overwrite"
         with patch.object(T.os.path, "exists", return_value=True), \
-                patch.object(T.messagebox, "askyesno", return_value=True) as ask:
+                patch.object(T.messagebox, "askyesno") as ask:
             self.assertTrue(card._confirm_overwrite("a.xlsx"))
             self.assertTrue(card._confirm_overwrite("b.xlsx"))
-        ask.assert_called_once()
-        self.assertTrue(card._overwrite_policy)
+        ask.assert_not_called()
 
-    def test_run_resets_policy_each_time(self):
+    def test_ask_policy_uses_prescanned_allow_set(self):
+        card = self._make_card()
+        card._overwrite_policy = "ask"
+        card._overwrite_allow = {"a.xlsx"}
+        with patch.object(T.os.path, "exists", return_value=True), \
+                patch.object(T.messagebox, "askyesno") as ask:
+            self.assertTrue(card._confirm_overwrite("a.xlsx"))
+            self.assertFalse(card._confirm_overwrite("b.xlsx"))
+        ask.assert_not_called()
+
+    def test_run_resolves_policy_via_prescan_each_time(self):
         src = _read_source("text_tools.py")
-        self.assertIn("self._overwrite_policy = None  # 本次转换的覆盖策略在首次冲突时决定", src)
+        self.assertIn("policy, allow_set = self._resolve_overwrite_policy(conflicts)", src)
+        self.assertIn("self._collect_output_targets(out_dir)", src)
 
 
 # ── 4. P1-1：except 变量逃逸修复 ─────────────────────────────────────────

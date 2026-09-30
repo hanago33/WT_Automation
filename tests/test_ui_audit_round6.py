@@ -19,6 +19,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -83,6 +84,20 @@ class FakeRoot:
 class FakeWidget:
     def configure(self, **kwargs):
         pass
+
+
+def _drain_scheduled(card, scheduled):
+    """无 Tk 环境：模拟主线程事件循环，反复执行 after 收集的轮询回调直到静止。"""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not scheduled:
+            thread = getattr(card, "_run_thread", None)
+            if thread is None or not thread.is_alive():
+                break
+        for fn in list(scheduled):
+            scheduled.remove(fn)
+            fn()
+        time.sleep(0.01)
 
 
 def _read_source(*parts):
@@ -280,14 +295,19 @@ class TextToolsRoundTests(unittest.TestCase):
         card.progress = {}
         card.btn_run = FakeWidget()
         card.conv_var = FakeVar("txt")
+        card.merge_var = FakeVar("single")          # run() 选项快照需要（读但不使用）
+        card.merge_single_header = FakeVar(True)    # 同上
         card.txt_enc_var = FakeVar("utf-8")
         card.log = lambda _m: None
         card.update_idletasks = lambda: None
+        scheduled = []
+        card.after = lambda ms, fn: scheduled.append(fn)  # 无 Tk 环境：收集轮询回调
         with patch.object(TX.messagebox, "showerror") as err, \
                 patch.object(TX.messagebox, "showinfo") as info, \
                 patch.object(TX.messagebox, "showwarning") as warn, \
                 patch.object(TX.messagebox, "askyesno", return_value=True):
             card.run()
+            _drain_scheduled(card, scheduled)
         err.assert_called_once()
         info.assert_not_called()
         warn.assert_not_called()
@@ -298,13 +318,25 @@ class TextToolsRoundTests(unittest.TestCase):
         card.out_dir = tempfile.gettempdir()
         card.op_var = FakeVar("dedupe")
         card.out_enc = FakeVar("utf-8")
+        card.split_var = FakeVar("1000")            # 参数快照需要
+        card.filter_kw = FakeVar("")
+        card.filter_mode = FakeVar("keep")
+        card.replace_old = FakeVar("")
+        card.replace_new = FakeVar("")
+        card.affix_pre = FakeVar("")
+        card.affix_suf = FakeVar("")
+        card.case_mode = FakeVar("upper")
+        card.enc_target = FakeVar("utf-8")
         card.progress = {}
         card.btn_run = FakeWidget()
         card.log = lambda _m: None
         card.update_idletasks = lambda: None
+        scheduled = []
+        card.after = lambda ms, fn: scheduled.append(fn)
         with patch.object(TX.messagebox, "showerror") as err, \
                 patch.object(TX.messagebox, "showinfo") as info:
             card.run()
+            _drain_scheduled(card, scheduled)
         err.assert_called_once()
         info.assert_not_called()
 
