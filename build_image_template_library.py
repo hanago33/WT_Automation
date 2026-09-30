@@ -11,10 +11,12 @@
 import json
 import math
 import os
+import queue
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
@@ -40,6 +42,8 @@ CANVAS_MAX_WIDTH = 1100
 CANVAS_MAX_HEIGHT = 760
 DEFAULT_TEMPLATE_PREFIX = "template"
 MIN_REGION_SIZE = 12
+# 单框 OCR 超时（秒）：批量命名在 worker 上逐框限时，超时按未识别处理不卡整体
+OCR_NAME_TIMEOUT = 20.0
 HANDLE_SIZE = 6
 CONTACT_SHEET_CELL_WIDTH = 240
 CONTACT_SHEET_CELL_HEIGHT = 180
@@ -331,7 +335,7 @@ def preprocess_for_ocr(crop_image):
     return Image.fromarray(binary)
 
 
-def run_tesseract_cli(processed_image):
+def run_tesseract_cli(processed_image, timeout=None):
     if not TESSERACT_EXE:
         return ""
 
@@ -354,10 +358,14 @@ def run_tesseract_cli(processed_image):
             text=True,
             encoding="utf-8",
             errors="ignore",
+            timeout=timeout,
         )
         if result.returncode != 0:
             return ""
         return result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        # 超时与「识别为空」需要区分（None），批量命名据此计「OCR 超时」并跳过该框
+        return None
     except Exception:
         return ""
     finally:
@@ -367,18 +375,34 @@ def run_tesseract_cli(processed_image):
             pass
 
 
-def extract_text_with_ocr(crop_image):
+def extract_text_with_ocr(crop_image, timeout=None):
     processed_image = preprocess_for_ocr(crop_image)
 
     if pytesseract is not None:
         try:
-            text = pytesseract.image_to_string(processed_image, lang="chi_sim+eng", config="--psm 7")
+            text = pytesseract.image_to_string(
+                processed_image, lang="chi_sim+eng", config="--psm 7", timeout=timeout
+            )
             if text.strip():
                 return text.strip()
         except Exception:
             pass
 
-    return run_tesseract_cli(processed_image)
+    return run_tesseract_cli(processed_image, timeout=timeout)
+
+
+def ocr_name_from_raw(raw_text, index):
+    """OCR 原始文本 → 模板名；返回 (名称, 是否超时)（待修改清单 #3）。
+
+    raw_text=None 表示 OCR 超时（run_tesseract_cli 的 TimeoutExpired 信号），
+    按未识别处理：回退默认名并计一次超时，供批量循环统计展示。
+    """
+    fallback = f"{DEFAULT_TEMPLATE_PREFIX}_{index + 1:03d}"
+    if raw_text is None:
+        return fallback, True
+    if raw_text:
+        return sanitize_template_name(raw_text, fallback), False
+    return fallback, False
 
 
 def get_ocr_status_message():
@@ -606,7 +630,7 @@ class TemplateBuilderApp:
             return btn
 
         _tone("OCR命名当前", self.ocr_name_current, "default")
-        _tone("OCR命名选中", self.ocr_name_selected, "default")
+        self.btn_ocr_name_selected = _tone("OCR命名选中", self.ocr_name_selected, "default")
         _tone("保存当前模板", self.save_current_template, "primary")
         _tone("保存并下一项", self.save_and_next, "primary")
         _tone("保存选中模板", self.save_selected_templates, "primary")
@@ -1438,18 +1462,16 @@ class TemplateBuilderApp:
         self.status_var.set("OCR 不可用，请先安装 Tesseract OCR")
         return False
 
-    def suggest_name_for_index(self, index):
+    def suggest_name_for_index(self, index, timeout=None):
         if index < 0 or index >= len(self.candidates):
             return ""
 
         region = self.candidates[index]
         crop = self.source_image_rgb[region.y:region.y + region.h, region.x:region.x + region.w]
         crop_image = Image.fromarray(crop)
-        raw_text = extract_text_with_ocr(crop_image)
-        fallback_name = f"{DEFAULT_TEMPLATE_PREFIX}_{index + 1:03d}"
-        if raw_text:
-            return sanitize_template_name(raw_text, fallback_name)
-        return fallback_name
+        raw_text = extract_text_with_ocr(crop_image, timeout=timeout)
+        name, _timed_out = ocr_name_from_raw(raw_text, index)
+        return name
 
     def ocr_name_current(self):
         self.sync_selection_from_listbox()
@@ -1461,7 +1483,8 @@ class TemplateBuilderApp:
 
         try:
             self.push_undo_state()
-            suggested_name = self.suggest_name_for_index(self.selected_index)
+            suggested_name = self.suggest_name_for_index(
+                self.selected_index, timeout=OCR_NAME_TIMEOUT)
             self.template_names[self.selected_index] = suggested_name
             self.file_name_var.set(suggested_name)
             self.refresh_listbox()
@@ -1472,6 +1495,13 @@ class TemplateBuilderApp:
             self.status_var.set(f"OCR 命名当前失败: {exc}")
 
     def ocr_name_selected(self):
+        # 运行中再次点击 = 请求取消（逐框边界生效，见 worker 循环）
+        thread = getattr(self, "_ocr_thread", None)
+        if thread is not None and thread.is_alive():
+            self._ocr_cancel.set()
+            self.status_var.set("正在取消 OCR 批量命名（等待当前框完成）...")
+            return
+
         self.sync_selection_from_listbox()
         if not self.selected_indices:
             messagebox.showwarning("提示", "请先在右侧列表中选择一个或多个候选区域")
@@ -1479,22 +1509,98 @@ class TemplateBuilderApp:
         if not self.ensure_ocr_available():
             return
 
-        try:
-            self.push_undo_state()
-            renamed_count = 0
-            for index in sorted(self.selected_indices):
-                suggested_name = self.suggest_name_for_index(index)
-                self.template_names[index] = suggested_name
-                renamed_count += 1
+        # 撤回快照仍在主线程一次性执行（待修改清单 #3 要求）
+        self.push_undo_state()
 
-            if self.selected_index is not None:
-                self.file_name_var.set(self.template_names[self.selected_index])
-            self.refresh_listbox()
-            self.set_selected_indices(self.selected_indices, active_index=self.selected_index)
-            self.status_var.set(f"OCR 批量命名完成，共处理 {renamed_count} 个候选区域")
-        except Exception as exc:
-            messagebox.showerror("OCR 批量命名失败", f"OCR 命名选中失败：\n{exc}")
-            self.status_var.set(f"OCR 批量命名失败: {exc}")
+        # 主线程快照裁剪图：worker 只依赖局部数据，不与 UI 共享可变状态
+        jobs = []
+        for index in sorted(self.selected_indices):
+            region = self.candidates[index]
+            crop = self.source_image_rgb[region.y:region.y + region.h, region.x:region.x + region.w]
+            jobs.append((index, Image.fromarray(crop)))
+        total = len(jobs)
+
+        self._ocr_cancel = threading.Event()
+        self._ocr_events = queue.Queue()
+        self._ocr_btn_text_backup = self.btn_ocr_name_selected.cget("text")
+        self.btn_ocr_name_selected.config(text="⨂ 取消命名")
+
+        def _worker():
+            processed = 0
+            timed_out = 0
+            for index, crop_image in jobs:
+                if self._ocr_cancel.is_set():
+                    self._ocr_events.put(
+                        lambda p=processed, t=total, k=timed_out:
+                        self._ocr_batch_finished(
+                            processed=p, total=t, timed_out=k, cancelled=True))
+                    return
+                try:
+                    raw_text = extract_text_with_ocr(crop_image, timeout=OCR_NAME_TIMEOUT)
+                except Exception as exc:  # noqa: BLE001
+                    msg = str(exc)
+                    self._ocr_events.put(
+                        lambda m=msg: self._ocr_batch_finished(error=m))
+                    return
+                name, box_timed_out = ocr_name_from_raw(raw_text, index)
+                timed_out += 1 if box_timed_out else 0
+                processed += 1
+                self._ocr_events.put(
+                    lambda i=index, n=name, p=processed, t=total, k=timed_out:
+                    self._ocr_apply_one(index=i, name=n, processed=p, total=t, timed_out=k))
+            self._ocr_events.put(
+                lambda p=processed, t=total, k=timed_out:
+                self._ocr_batch_finished(processed=p, total=t, timed_out=k))
+
+        self._ocr_thread = threading.Thread(target=_worker, daemon=True)
+        self._ocr_thread.start()
+        # 轮询链从主线程启动（worker 不跨线程调 after，见 txt_merge 同款模式）
+        self.root.after(80, self._drain_ocr_events)
+
+    def _drain_ocr_events(self):
+        """主线程排空 OCR worker 事件队列；线程存活或队列非空则续订下一轮。"""
+        while True:
+            try:
+                fn = self._ocr_events.get_nowait()
+            except queue.Empty:
+                break
+            fn()
+        thread = getattr(self, "_ocr_thread", None)
+        if (thread is not None and thread.is_alive()) or not self._ocr_events.empty():
+            self.root.after(80, self._drain_ocr_events)
+
+    def _ocr_apply_one(self, index, name, processed, total, timed_out):
+        """主线程：写回单框命名并刷新列表与进度。"""
+        if 0 <= index < len(self.template_names):
+            self.template_names[index] = name
+        self.refresh_listbox()
+        suffix = f"（超时 {timed_out}）" if timed_out else ""
+        self.status_var.set(
+            f"OCR 批量命名中... {processed}/{total}{suffix}")
+
+    def _ocr_batch_finished(self, processed=0, total=0, timed_out=0,
+                            cancelled=False, error=None):
+        """OCR 批量命名收尾（仅主线程执行）：恢复按钮 + 三态反馈。"""
+        self.btn_ocr_name_selected.config(text=self._ocr_btn_text_backup)
+        if error is not None:
+            messagebox.showerror("OCR 批量命名失败", f"OCR 命名选中失败：\n{error}")
+            self.status_var.set(f"OCR 批量命名失败: {error}")
+            return
+        if cancelled:
+            suffix = f"（超时 {timed_out}）" if timed_out else ""
+            self.status_var.set(
+                f"OCR 批量命名已取消（完成 {processed}/{total}{suffix}）")
+            messagebox.showinfo(
+                "已取消",
+                f"OCR 批量命名已取消，完成 {processed}/{total} 个候选区域。")
+            return
+        if self.selected_index is not None and 0 <= self.selected_index < len(self.template_names):
+            self.file_name_var.set(self.template_names[self.selected_index])
+        self.refresh_listbox()
+        self.set_selected_indices(self.selected_indices, active_index=self.selected_index)
+        suffix = f"（超时 {timed_out}）" if timed_out else ""
+        self.status_var.set(
+            f"OCR 批量命名完成，共处理 {processed} 个候选区域{suffix}")
 
     def _confirm_overwrite_template(self, output_path):
         """同名模板 PNG 覆盖确认：首次冲突询问一次，之后沿用（覆盖/跳过）。
