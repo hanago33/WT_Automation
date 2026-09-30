@@ -40,6 +40,7 @@ import wt_task_queue_window
 import wt_project_workdir_parser
 import wt_simple_options
 import wt_mast_config_xml
+import wt_ui_state
 from wt_flow_graph import FlowGraphWindow
 
 
@@ -2786,28 +2787,174 @@ class LauncherApp:
         此处用 Toplevel + 目录列表自行实现，完全绕开原生对话框。
         """
         initial = str(getattr(self, "project_work_dir", "") or "").strip()
+        saved_state = wt_ui_state.load("project_dir_picker")
         if not initial or not os.path.isdir(initial):
-            initial = os.path.expanduser("~")
+            last_dir = str(saved_state.get("last_dir") or "").strip()
+            if last_dir and os.path.isdir(last_dir):
+                initial = last_dir
+            else:
+                initial = os.path.expanduser("~")
         result = {"path": ""}
 
         dialog = tk.Toplevel(self.root)
         dialog.title("选择市场项目工作文件夹（含 03-WT输入 / 04-WT输出）")
         dialog.transient(self.root)
         dialog.grab_set()
-        wt_dpi.geometry(dialog, 680, 520)
-        dialog.minsize(wt_dpi.scale(560), wt_dpi.scale(400))
+        saved_geom = saved_state.get("geometry")
+        if saved_geom:
+            wt_ui_state.apply_window_geometry(dialog, saved_geom)
+        else:
+            wt_dpi.geometry(dialog, 740, 560)
+        dialog.minsize(wt_dpi.scale(600), wt_dpi.scale(440))
         dialog.configure(bg=self.theme["bg"])
         theme = self.theme
 
+        def _save_picker_state():
+            try:
+                wt_ui_state.save("project_dir_picker", {
+                    "geometry": wt_ui_state.capture_window_geometry(dialog),
+                    "last_dir": path_var.get().strip(),
+                })
+            except Exception:
+                pass
+
         path_var = tk.StringVar(value=initial)
+
+        # ── 1. 顶部快捷跳转芯片栏 ──
+        chip_bar = tk.Frame(dialog, bg=theme["bg"])
+        chip_bar.pack(fill=tk.X, padx=14, pady=(10, 4))
+        tk.Label(
+            chip_bar, text="快捷跳转:", font=("Microsoft YaHei UI", 9, "bold"),
+            bg=theme["bg"], fg=theme["muted"]
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        def _jump_to(target_dir):
+            if target_dir and os.path.isdir(target_dir):
+                path_var.set(target_dir)
+                _refresh()
+
+        # 可用盘符
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive_root = "{}:\\".format(letter)
+            if os.path.isdir(drive_root):
+                tk.Button(
+                    chip_bar, text="{}: 盘".format(letter),
+                    command=lambda d=drive_root: _jump_to(d),
+                    bg=theme["secondary"], fg=theme["text"],
+                    font=("Microsoft YaHei UI", 8),
+                    relief=tk.FLAT, padx=6, pady=2, cursor="hand2"
+                ).pack(side=tk.LEFT, padx=2)
+
+        # 桌面快捷
+        desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
+        if os.path.isdir(desktop_path):
+            tk.Button(
+                chip_bar, text="🖥️ 桌面",
+                command=lambda: _jump_to(desktop_path),
+                bg=theme["secondary"], fg=theme["text"],
+                font=("Microsoft YaHei UI", 8),
+                relief=tk.FLAT, padx=8, pady=2, cursor="hand2"
+            ).pack(side=tk.LEFT, padx=(6, 2))
+
+            # 智能探测桌面下的 WT 工程候选
+            desktop_candidates = []
+            try:
+                for sub in sorted(os.listdir(desktop_path)):
+                    sub_full = os.path.join(desktop_path, sub)
+                    if os.path.isdir(sub_full) and (
+                        os.path.isdir(os.path.join(sub_full, "03-WT输入")) or
+                        os.path.isdir(os.path.join(sub_full, "04-WT输出"))
+                    ):
+                        desktop_candidates.append(sub_full)
+            except OSError:
+                pass
+            for cand in desktop_candidates[:2]:
+                cand_name = os.path.basename(cand)
+                chip_text = "⚡ {}…".format(cand_name[:10]) if len(cand_name) > 10 else "⚡ {}".format(cand_name)
+                tk.Button(
+                    chip_bar, text=chip_text,
+                    command=lambda d=cand: _jump_to(d),
+                    bg="#ecfdf5", fg="#059669",
+                    font=("Microsoft YaHei UI", 8, "bold"),
+                    relief=tk.FLAT, padx=8, pady=2, cursor="hand2"
+                ).pack(side=tk.LEFT, padx=2)
+
+        # ── 2. 路径输入与导航栏 ──
+        top_row = tk.Frame(dialog, bg=theme["bg"])
+        top_row.pack(fill=tk.X, padx=14, pady=(4, 4))
+        tk.Label(top_row, text="当前路径", width=8, anchor="w",
+                 bg=theme["bg"], fg=theme["text"], font=("Microsoft YaHei UI", 9, "bold")).pack(side=tk.LEFT)
+        entry = tk.Entry(top_row, textvariable=path_var, font=("Microsoft YaHei UI", 10),
+                         bg=theme["card"], fg=theme["text"], relief=tk.FLAT, bd=0,
+                         highlightthickness=1, highlightbackground=theme.get("border", "#d7e0ee"))
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+
+        # ── 3. 目录列表容器 ──
+        list_wrap = tk.Frame(dialog, bg=theme["bg"])
+        list_wrap.pack(fill=tk.BOTH, expand=True, padx=14, pady=(4, 4))
         listbox = tk.Listbox(
-            dialog, font=("Microsoft YaHei UI", 10), bg="#ffffff", fg=theme["text"],
-            selectbackground=theme["primary"], selectforeground="white", activestyle="none",
+            list_wrap, font=("Microsoft YaHei UI", 10), bg=theme["card"], fg=theme["text"],
+            selectbackground=theme["primary"], selectforeground="#ffffff", activestyle="none",
+            relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=theme.get("border", "#d7e0ee"),
         )
-        listbox.pack(fill=tk.BOTH, expand=True, padx=14, pady=(6, 4))
+        scroll = tk.Scrollbar(list_wrap, orient=tk.VERTICAL, command=listbox.yview, relief=tk.FLAT)
+        listbox.configure(yscrollcommand=scroll.set)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # ── 4. 合规性即时探针 (Live Compliance Badge) ──
+        badge_frame = tk.Frame(dialog, bg=theme["bg"])
+        badge_frame.pack(fill=tk.X, padx=14, pady=(4, 2))
+        badge_icon = tk.Label(badge_frame, text="●", font=("Microsoft YaHei UI", 10), bg=theme["bg"], fg=theme["muted"])
+        badge_icon.pack(side=tk.LEFT, padx=(0, 4))
+        badge_text = tk.Label(
+            badge_frame, text="正在检测目录…", font=("Microsoft YaHei UI", 9),
+            bg=theme["bg"], fg=theme["muted"], anchor="w"
+        )
+        badge_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        def _update_compliance_badge(target_dir, is_selected_child=False):
+            prefix = "所选子目录：" if is_selected_child else "当前目录："
+            if not target_dir or not os.path.isdir(target_dir):
+                badge_icon.config(fg=theme.get("danger", "#dc2626"))
+                badge_text.config(text="{}目录不存在或无法访问".format(prefix), fg=theme.get("danger", "#dc2626"))
+                return
+            try:
+                diag = wt_project_workdir_parser.diagnose_project_work_dir(target_dir)
+                if diag.get("input_root_exists") and diag.get("output_root_exists"):
+                    counts = diag.get("file_counts") or {}
+                    info_str = " (含 {} txt, {} wtg, {} tif)".format(
+                        counts.get("txt", 0), counts.get("wtg", 0), counts.get("tif", 0)
+                    ) if counts else ""
+                    badge_icon.config(fg="#059669")
+                    badge_text.config(text="{}✓ 标准项目目录（含 03-WT输入 与 04-WT输出{}）".format(prefix, info_str), fg="#059669")
+                elif diag.get("input_root_exists"):
+                    badge_icon.config(fg="#b45309")
+                    badge_text.config(text="{}⚠️ 包含 03-WT输入（未发现 04-WT输出，运行时可自动生成）".format(prefix), fg="#b45309")
+                elif diag.get("output_root_exists"):
+                    badge_icon.config(fg="#b45309")
+                    badge_text.config(text="{}⚠️ 包含 04-WT输出（缺少 03-WT输入）".format(prefix), fg="#b45309")
+                else:
+                    badge_icon.config(fg=theme["muted"])
+                    badge_text.config(text="{}普通文件夹（未检测到 03-WT输入 / 04-WT输出）".format(prefix), fg=theme["muted"])
+            except Exception as exc:
+                badge_icon.config(fg=theme["muted"])
+                badge_text.config(text="{}检测异常: {}".format(prefix, exc), fg=theme["muted"])
+
+        def _normalize_dir_path(p):
+            p = str(p or "").strip()
+            if not p:
+                return os.path.expanduser("~")
+            # 盘符根目录（如 "D:" 或 "D:\"）必须保留反斜杠，避免被转成 Windows 驱动器相对路径
+            if len(p) == 2 and p[1] == ":":
+                return p + "\\"
+            p_stripped = p.rstrip("\\/")
+            if len(p_stripped) == 2 and p_stripped[1] == ":":
+                return p_stripped + "\\"
+            return p_stripped or "\\"
 
         def _refresh():
-            cur = path_var.get().strip().rstrip("\\/")
+            cur = _normalize_dir_path(path_var.get())
             entries = []
             try:
                 if cur and os.path.isdir(cur):
@@ -2815,34 +2962,62 @@ class LauncherApp:
                         d for d in os.listdir(cur)
                         if os.path.isdir(os.path.join(cur, d))
                     )
-            except OSError:
+            except Exception:
                 entries = []
             listbox.delete(0, tk.END)
             for d in entries:
-                listbox.insert(tk.END, d)
-            path_var.set(cur or os.path.expanduser("~"))
+                listbox.insert(tk.END, "📁 {}".format(d))
+            path_var.set(cur)
+            _update_compliance_badge(cur, is_selected_child=False)
 
-        def _enter():
+        def _get_selected_name():
             sel = listbox.curselection()
             if not sel:
+                return None
+            item = listbox.get(sel[0])
+            return item[2:].strip() if item.startswith("📁 ") else item.strip()
+
+        def _enter():
+            name = _get_selected_name()
+            if not name:
                 return
-            name = listbox.get(sel[0])
-            cur = path_var.get().strip().rstrip("\\/")
-            path_var.set(os.path.join(cur, name))
+            cur = _normalize_dir_path(path_var.get())
+            path_var.set(_normalize_dir_path(os.path.join(cur, name)))
             _refresh()
 
         def _go_up():
             cur = os.path.abspath(path_var.get().strip() or os.path.expanduser("~"))
             parent = os.path.dirname(cur)
             if parent and parent != cur:
-                path_var.set(parent)
+                path_var.set(_normalize_dir_path(parent))
                 _refresh()
 
         def _on_entry_return(_event=None):
             _refresh()
 
+        def _on_listbox_select(_event=None):
+            name = _get_selected_name()
+            cur = _normalize_dir_path(path_var.get())
+            if name:
+                sub_dir = _normalize_dir_path(os.path.join(cur, name))
+                _update_compliance_badge(sub_dir, is_selected_child=True)
+            else:
+                _update_compliance_badge(cur, is_selected_child=False)
+
+        entry.bind("<Return>", _on_entry_return)
+        listbox.bind("<<ListboxSelect>>", _on_listbox_select)
+        listbox.bind("<Double-Button-1>", lambda _e: _enter())
+        listbox.bind("<Return>", lambda _e: _enter())
+
+        tk.Button(top_row, text="↑ 上一级", command=_go_up,
+                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+                  padx=10, pady=3, cursor="hand2").pack(side=tk.LEFT, padx=(6, 0))
+        tk.Button(top_row, text="⟳ 刷新", command=_refresh,
+                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+                  padx=8, pady=3, cursor="hand2").pack(side=tk.LEFT, padx=(4, 0))
+
         def _ok():
-            path = path_var.get().strip().rstrip("\\/")
+            path = _normalize_dir_path(path_var.get())
             if not path or not os.path.isdir(path):
                 messagebox.showwarning("提示", "目录不存在：\n{}".format(path), parent=dialog)
                 return
@@ -2860,41 +3035,35 @@ class LauncherApp:
                 ):
                     return
             result["path"] = path
+            _save_picker_state()
             dialog.destroy()
 
         def _cancel():
+            _save_picker_state()
             dialog.destroy()
 
         def _on_close():
+            _save_picker_state()
             dialog.destroy()
 
-        top_row = tk.Frame(dialog, bg=theme["bg"])
-        top_row.pack(fill=tk.X, padx=14, pady=(12, 4))
-        tk.Label(top_row, text="目录", width=6, anchor="w",
-                 bg=theme["bg"], fg=theme["muted"]).pack(side=tk.LEFT)
-        entry = tk.Entry(top_row, textvariable=path_var, font=("Microsoft YaHei UI", 10))
-        entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        entry.bind("<Return>", _on_entry_return)
-
-        nav_row = tk.Frame(dialog, bg=theme["bg"])
-        nav_row.pack(fill=tk.X, padx=14, pady=(0, 4))
-        tk.Button(nav_row, text="↑ 上一级", command=_go_up,
-                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-                  padx=10, pady=4, cursor="hand2").pack(side=tk.LEFT)
-        tk.Label(nav_row, text="双击目录进入", bg=theme["bg"],
-                 fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(10, 0))
-
-        listbox.bind("<Double-Button-1>", lambda _e: _enter())
-        listbox.bind("<Return>", lambda _e: _enter())
-
+        # ── 5. 底部操作栏 ──
         bottom = tk.Frame(dialog, bg=theme["bg"])
-        bottom.pack(fill=tk.X, padx=14, pady=10)
-        tk.Button(bottom, text="选择此目录", command=_ok,
-                  bg="#059669", fg="white", relief=tk.FLAT, padx=18, pady=6,
-                  cursor="hand2").pack(side=tk.LEFT)
-        tk.Button(bottom, text="取消", command=_cancel,
-                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-                  padx=18, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=(8, 0))
+        bottom.pack(fill=tk.X, padx=14, pady=(6, 12))
+        tk.Button(
+            bottom, text="选择此目录", command=_ok,
+            bg="#059669", fg="white", font=("Microsoft YaHei UI", 10, "bold"),
+            relief=tk.FLAT, padx=20, pady=6, cursor="hand2"
+        ).pack(side=tk.LEFT)
+        tk.Button(
+            bottom, text="进入子目录", command=_enter,
+            bg=theme["secondary"], fg=theme["text"], font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, padx=12, pady=6, cursor="hand2"
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        tk.Button(
+            bottom, text="取消", command=_cancel,
+            bg=theme["secondary"], fg=theme["text"], font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, padx=14, pady=6, cursor="hand2"
+        ).pack(side=tk.RIGHT)
 
         dialog.protocol("WM_DELETE_WINDOW", _on_close)
         _refresh()
@@ -2935,13 +3104,31 @@ class LauncherApp:
                 ("airDensity", "空气密度 (kg/m³)"),
             ], None),
         ]
+        saved_state = wt_ui_state.load("project_params_dialog")
+        saved_geom = saved_state.get("geometry")
+        saved_tab = saved_state.get("active_tab", 0)
+
         dialog = tk.Toplevel(self.root)
         dialog.title("项目计算参数（人工确认与空间推导）")
         dialog.transient(self.root)
         dialog.grab_set()
-        wt_dpi.geometry(dialog, 780, 840)
-        dialog.minsize(wt_dpi.scale(660), wt_dpi.scale(640))
+        if saved_geom:
+            wt_ui_state.apply_window_geometry(dialog, saved_geom)
+        else:
+            wt_dpi.geometry(dialog, 840, 860)
+        dialog.minsize(wt_dpi.scale(700), wt_dpi.scale(640))
         dialog.configure(bg=self.theme["bg"])
+        theme = self.theme
+
+        def _save_params_dialog_state():
+            try:
+                active_idx = notebook.index(notebook.select()) if notebook.tabs() else 0
+                wt_ui_state.save("project_params_dialog", {
+                    "geometry": wt_ui_state.capture_window_geometry(dialog),
+                    "active_tab": int(active_idx),
+                })
+            except Exception:
+                pass
 
         notebook = ttk.Notebook(dialog)
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 2))
@@ -2985,23 +3172,31 @@ class LauncherApp:
         tab1_canvas.configure(yscrollcommand=tab1_scroll.set)
         tab1_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         tab1_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        _WHEEL_ROUTER.register(tab1_canvas)
+        _WHEEL_ROUTER.bind_root(dialog)
 
         entries = {}
         tk.Label(
-            form_wrapper, text="项目计算参数", font=("Microsoft YaHei UI", 12, "bold"),
+            form_wrapper, text="项目计算参数配置", font=("Microsoft YaHei UI", 12, "bold"),
             bg=self.theme["bg"], fg=self.theme["text"],
         ).pack(pady=(10, 2))
         tk.Label(
-            form_wrapper, text="按板块分组；空间计算域自动推导并预填，支持人工直接微调后保存",
+            form_wrapper, text="按业务板块卡片化排布；空间计算域自动推导并预填，支持人工直接微调后保存",
             font=("Microsoft YaHei UI", 9), bg=self.theme["bg"], fg=self.theme["muted"],
         ).pack(pady=(0, 6))
         form = tk.Frame(form_wrapper, bg=self.theme["bg"])
-        form.pack(fill=tk.BOTH, expand=True, padx=18)
+        form.pack(fill=tk.BOTH, expand=True, padx=14)
 
         # ── 标签页 2：解析参数（加载项目文件夹时自动解析，只读）──
         parsed_tab = tk.Frame(notebook, bg=self.theme["bg"])
         notebook.add(parsed_tab, text="② 解析参数（只读）")
         self._build_parsed_params_view(parsed_tab)
+
+        if saved_tab and 0 <= saved_tab < len(notebook.tabs()):
+            try:
+                notebook.select(saved_tab)
+            except Exception:
+                pass
 
         current = dict(getattr(self, "project_params", {}) or {})
         parsed_info = getattr(self, "parsed_project_info", None) or {}
@@ -3021,64 +3216,157 @@ class LauncherApp:
                 current[p_key] = str(parsed_info.get(info_key)).strip()
 
         combo_widgets = {}
-        for section_title, field_list, section_note in sections:
-            tk.Label(
-                form, text=section_title, font=("Microsoft YaHei UI", 10, "bold"),
-                bg=self.theme["bg"], fg=self.theme["primary"],
-            ).pack(anchor="w", pady=(10, 2))
-            if section_note:
+
+        def _make_card(parent, title, note=None):
+            card = tk.LabelFrame(
+                parent, text="  {}  ".format(title), font=("Microsoft YaHei UI", 10, "bold"),
+                bg=theme["card"], fg=theme["primary"],
+                bd=1, relief=tk.GROOVE
+            )
+            card.pack(fill=tk.X, padx=4, pady=6)
+            if note:
                 tk.Label(
-                    form, text=section_note, font=("Microsoft YaHei UI", 9),
-                    bg=self.theme["bg"], fg=self.theme["muted"],
-                ).pack(anchor="w", pady=(0, 2))
-            for key, label_text in field_list:
-                row = tk.Frame(form, bg=self.theme["bg"])
-                row.pack(fill=tk.X, pady=3)
-                tk.Label(row, text=label_text, width=18, anchor="w",
-                         bg=self.theme["bg"], fg=self.theme["text"]).pack(side=tk.LEFT)
-                var = tk.StringVar(value=str(current.get(key, DEFAULT_PROJECT_PARAMS.get(key, ""))))
-                if key in wt_simple_options.OPTION_KIND_KEYS:
-                    # Cp 版本 / 风机类型型号：下拉选择 + 新建（＋）+ 删除当前（－）+ 管理列表
-                    combo = ttk.Combobox(
-                        row, textvariable=var, values=self._simple_option_values(key),
-                        state="normal", font=("Microsoft YaHei UI", 10),
-                    )
-                    combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-                    try:
-                        combo.configure(style="Modern.TCombobox")
-                    except tk.TclError:
-                        pass
-                    combo_widgets[key] = combo
-                    # 三个按钮依次为「新建 / 删除当前 / 管理列表」，
-                    # 各自捕获本行的 var/combo，点击时即时生效并刷新下拉列表
-                    for _btn_text, _btn_width, _btn_cmd in (
-                        ("＋", 3,
-                         lambda k=key, v=var, c=combo: self._simple_add_option(k, v, c)),
-                        ("－", 3,
-                         lambda k=key, v=var, c=combo: self._simple_remove_current_option(k, v, c)),
-                        ("管理", 5,
-                         lambda k=key, v=var, c=combo: self._simple_manage_options(k, v, c)),
-                    ):
-                        tk.Button(
-                            row, text=_btn_text, width=_btn_width, cursor="hand2",
-                            command=_btn_cmd,
-                            bg=self.theme["secondary"], fg=self.theme["text"], relief=tk.FLAT,
-                        ).pack(side=tk.LEFT, padx=(4, 0))
-                elif key == "mastId":
-                    # 测风塔对象编号：下拉选择（选项=项目识别出的测风塔数量）
-                    combo = ttk.Combobox(
-                        row, textvariable=var, values=list(self.project_mast_ids or []),
-                        state="normal", font=("Microsoft YaHei UI", 10),
-                    )
-                    combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-                    try:
-                        combo.configure(style="Modern.TCombobox")
-                    except tk.TclError:
-                        pass
-                    combo_widgets[key] = combo
-                else:
-                    tk.Entry(row, textvariable=var, width=18, font=("Microsoft YaHei UI", 9), relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.theme.get("border", "#d7e0ee")).pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
-                entries[key] = var
+                    card, text=note, font=("Microsoft YaHei UI", 8),
+                    bg=theme["card"], fg=theme["muted"], anchor="w"
+                ).pack(fill=tk.X, padx=10, pady=(2, 6))
+            return card
+
+        # ── 卡片 1：空间计算域与建模范围 ──
+        sp_card = _make_card(
+            form, "空间计算域与建模范围（自动推导 / 支持人工修改）",
+            note="基于机位点与测风塔坐标自动推导（2500m 缓冲正方形与外接圆），修改后可直接覆盖"
+        )
+        sp_grid = tk.Frame(sp_card, bg=theme["card"])
+        sp_grid.pack(fill=tk.X, padx=10, pady=(0, 8))
+        sp_grid.columnconfigure(1, weight=1)
+        sp_grid.columnconfigure(3, weight=1)
+
+        def _add_grid_field(grid_parent, r, c, key, label, unit="m"):
+            tk.Label(
+                grid_parent, text=label, font=("Microsoft YaHei UI", 9),
+                bg=theme["card"], fg=theme["text"], anchor="w"
+            ).grid(row=r, column=c * 2, sticky="w", padx=(10 if c > 0 else 2, 4), pady=3)
+            cell_f = tk.Frame(grid_parent, bg=theme["card"])
+            cell_f.grid(row=r, column=c * 2 + 1, sticky="ew", padx=(0, 6), pady=3)
+            var = tk.StringVar(value=str(current.get(key, DEFAULT_PROJECT_PARAMS.get(key, ""))))
+            entry = tk.Entry(
+                cell_f, textvariable=var, font=("Microsoft YaHei UI", 9),
+                relief=tk.FLAT, bd=0, highlightthickness=1,
+                highlightbackground=theme.get("border", "#d7e0ee"),
+                bg="#ffffff", fg=theme["text"]
+            )
+            entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+            if unit:
+                tk.Label(
+                    cell_f, text=unit, font=("Microsoft YaHei UI", 8),
+                    bg=theme["card"], fg=theme["muted"]
+                ).pack(side=tk.LEFT, padx=(4, 0))
+            entries[key] = var
+
+        _add_grid_field(sp_grid, 0, 0, "domainCenterX", "建模中心 X", unit="m")
+        _add_grid_field(sp_grid, 0, 1, "domainCenterY", "建模中心 Y", unit="m")
+        _add_grid_field(sp_grid, 1, 0, "domainNwX", "绘图西北角 X", unit="m")
+        _add_grid_field(sp_grid, 1, 1, "domainNwY", "绘图西北角 Y", unit="m")
+        _add_grid_field(sp_grid, 2, 0, "domainSeX", "绘图东南角 X", unit="m")
+        _add_grid_field(sp_grid, 2, 1, "domainSeY", "绘图东南角 Y", unit="m")
+        _add_grid_field(sp_grid, 3, 0, "radius", "计算域半径 R", unit="m")
+        _add_grid_field(sp_grid, 3, 1, "domainOuterRadius", "规范外圆半径 Router", unit="m")
+
+        # ── 卡片 2：新建风机类型 ──
+        turb_card = _make_card(
+            form, "新建风机类型",
+            note="同时用于发送综合计算的「全文检索」检索并选中风机型号"
+        )
+        t_row = tk.Frame(turb_card, bg=theme["card"])
+        t_row.pack(fill=tk.X, padx=10, pady=(0, 8))
+        tk.Label(t_row, text="风机类型/型号", width=14, anchor="w",
+                 bg=theme["card"], fg=theme["text"], font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
+        turb_var = tk.StringVar(value=str(current.get("turbineType", DEFAULT_PROJECT_PARAMS.get("turbineType", ""))))
+        turb_combo = ttk.Combobox(
+            t_row, textvariable=turb_var, values=self._simple_option_values("turbineType"),
+            state="normal", font=("Microsoft YaHei UI", 9)
+        )
+        turb_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        combo_widgets["turbineType"] = turb_combo
+        entries["turbineType"] = turb_var
+        for _btn_text, _btn_width, _btn_cmd in (
+            ("＋", 3, lambda: self._simple_add_option("turbineType", turb_var, turb_combo)),
+            ("－", 3, lambda: self._simple_remove_current_option("turbineType", turb_var, turb_combo)),
+            ("管理", 5, lambda: self._simple_manage_options("turbineType", turb_var, turb_combo)),
+        ):
+            tk.Button(
+                t_row, text=_btn_text, width=_btn_width, cursor="hand2", command=_btn_cmd,
+                bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT, font=("Microsoft YaHei UI", 8)
+            ).pack(side=tk.LEFT, padx=(4, 0))
+
+        # ── 卡片 3：发送 CFD 计算 ──
+        cfd_card = _make_card(form, "发送 CFD 计算")
+        cfd_grid = tk.Frame(cfd_card, bg=theme["card"])
+        cfd_grid.pack(fill=tk.X, padx=10, pady=(0, 8))
+        cfd_grid.columnconfigure(1, weight=1)
+        cfd_grid.columnconfigure(3, weight=1)
+        _add_grid_field(cfd_grid, 0, 0, "cfdHRes", "CFD 水平分辨率", unit="")
+        _add_grid_field(cfd_grid, 0, 1, "cfdBuf", "CFD 边界缓冲", unit="")
+        _add_grid_field(cfd_grid, 1, 0, "cfdMax", "CFD 最大网格", unit="")
+        _add_grid_field(cfd_grid, 1, 1, "cfdMin", "CFD 最小网格", unit="")
+
+        # ── 卡片 4：发送综合计算 ──
+        comp_card = _make_card(form, "发送综合计算")
+        comp_grid = tk.Frame(comp_card, bg=theme["card"])
+        comp_grid.pack(fill=tk.X, padx=10, pady=(0, 8))
+        comp_grid.columnconfigure(1, weight=1)
+        comp_grid.columnconfigure(3, weight=1)
+
+        # Cp 版本 (row 0, col 0)
+        tk.Label(comp_grid, text="Cp 版本", font=("Microsoft YaHei UI", 9),
+                 bg=theme["card"], fg=theme["text"], anchor="w").grid(row=0, column=0, sticky="w", padx=(2, 4), pady=3)
+        cp_f = tk.Frame(comp_grid, bg=theme["card"])
+        cp_f.grid(row=0, column=1, sticky="ew", padx=(0, 6), pady=3)
+        cp_var = tk.StringVar(value=str(current.get("cpVersion", DEFAULT_PROJECT_PARAMS.get("cpVersion", ""))))
+        cp_combo = ttk.Combobox(
+            cp_f, textvariable=cp_var, values=self._simple_option_values("cpVersion"),
+            state="normal", font=("Microsoft YaHei UI", 9)
+        )
+        cp_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        combo_widgets["cpVersion"] = cp_combo
+        entries["cpVersion"] = cp_var
+        for _btn_text, _btn_width, _btn_cmd in (
+            ("＋", 3, lambda: self._simple_add_option("cpVersion", cp_var, cp_combo)),
+            ("－", 3, lambda: self._simple_remove_current_option("cpVersion", cp_var, cp_combo)),
+            ("管理", 5, lambda: self._simple_manage_options("cpVersion", cp_var, cp_combo)),
+        ):
+            tk.Button(
+                cp_f, text=_btn_text, width=_btn_width, cursor="hand2", command=_btn_cmd,
+                bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT, font=("Microsoft YaHei UI", 8)
+            ).pack(side=tk.LEFT, padx=(3, 0))
+
+        # 测风塔对象编号 (row 0, col 1)
+        tk.Label(comp_grid, text="测风对象编号", font=("Microsoft YaHei UI", 9),
+                 bg=theme["card"], fg=theme["text"], anchor="w").grid(row=0, column=2, sticky="w", padx=(10, 4), pady=3)
+        mast_var = tk.StringVar(value=str(current.get("mastId", DEFAULT_PROJECT_PARAMS.get("mastId", ""))))
+        mast_combo = ttk.Combobox(
+            comp_grid, textvariable=mast_var, values=list(self.project_mast_ids or []),
+            state="normal", font=("Microsoft YaHei UI", 9)
+        )
+        mast_combo.grid(row=0, column=3, sticky="ew", padx=(0, 6), pady=3)
+        combo_widgets["mastId"] = mast_combo
+        entries["mastId"] = mast_var
+
+        # 50年风速 / 海拔 / 空气密度
+        _add_grid_field(comp_grid, 1, 0, "wind50", "50年回归风速", unit="m/s")
+        _add_grid_field(comp_grid, 1, 1, "elevation", "海拔高度", unit="m")
+        _add_grid_field(comp_grid, 2, 0, "airDensity", "空气密度", unit="kg/m³")
+
+        # ── 实时操作反馈栏 ──
+        feedback_bar = tk.Frame(dialog, bg=theme["bg"])
+        feedback_bar.pack(fill=tk.X, padx=14, pady=(4, 2))
+        feedback_icon = tk.Label(feedback_bar, text="ℹ", font=("Microsoft YaHei UI", 10), bg=theme["bg"], fg=theme["muted"])
+        feedback_icon.pack(side=tk.LEFT, padx=(0, 4))
+        feedback_text = tk.Label(
+            feedback_bar, text="就绪：可修改参数并保存，或点击重新按坐标计算更新空间域。",
+            font=("Microsoft YaHei UI", 9), bg=theme["bg"], fg=theme["muted"], anchor="w"
+        )
+        feedback_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         def _save():
             new_params = dict(getattr(self, "project_params", {}) or {})
@@ -3090,6 +3378,7 @@ class LauncherApp:
                     new_params.pop(key, None)
             self.project_params = new_params
             self._simple_save_state()
+            _save_params_dialog_state()
             dialog.destroy()
             # 手输了下拉列表里没有的值时给个提示，引导用「＋」把它固化成选项
             pending_new = []
@@ -3115,34 +3404,39 @@ class LauncherApp:
         def _recalculate_spatial():
             work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
             if not work_dir or not os.path.isdir(work_dir):
+                feedback_icon.config(fg=theme.get("danger", "#dc2626"))
+                feedback_text.config(text="✗ 未找到有效的项目工作目录", fg=theme.get("danger", "#dc2626"))
                 messagebox.showinfo("提示", "未找到有效的项目工作目录。")
                 return
             try:
                 import wt_spatial_domain_calc
                 pts = wt_spatial_domain_calc.parse_points_from_input_dir(os.path.join(work_dir, "03-WT输入"))
                 if not pts:
+                    feedback_icon.config(fg=theme.get("danger", "#dc2626"))
+                    feedback_text.config(text="⚠️ 未在项目 03-WT输入 目录下找到机位点或测风塔坐标文件！", fg=theme.get("danger", "#dc2626"))
                     messagebox.showwarning("提示", "未在项目 03-WT输入 目录下找到机位点或测风塔坐标文件！")
                     return
                 calc = wt_spatial_domain_calc.calculate_spatial_domain(pts, buffer_m=2500.0)
                 sq = calc["square_domain"]
                 cir = calc["circles"]
-                if "domainCenterX" in entries: entries["domainCenterX"].set(f"{sq['center_x']:.3f}")
-                if "domainCenterY" in entries: entries["domainCenterY"].set(f"{sq['center_y']:.3f}")
+                if "domainCenterX" in entries: entries["domainCenterX"].set("{:.3f}".format(sq["center_x"]))
+                if "domainCenterY" in entries: entries["domainCenterY"].set("{:.3f}".format(sq["center_y"]))
                 if "radius" in entries: entries["radius"].set(str(int(round(cir["inner_radius_R"]))))
-                if "domainNwX" in entries: entries["domainNwX"].set(f"{sq['nw_corner']['x']:.1f}")
-                if "domainNwY" in entries: entries["domainNwY"].set(f"{sq['nw_corner']['y']:.1f}")
-                if "domainSeX" in entries: entries["domainSeX"].set(f"{sq['se_corner']['x']:.1f}")
-                if "domainSeY" in entries: entries["domainSeY"].set(f"{sq['se_corner']['y']:.1f}")
-                if "domainOuterRadius" in entries: entries["domainOuterRadius"].set(f"{cir['outer_radius_Router']:.1f}")
-                messagebox.showinfo(
-                    "计算完成",
-                    f"已成功基于 {len(pts)} 个坐标点重新推导空间计算域并更新表单！\n"
-                    f"正方形边长: {sq['side_length']:.1f} m\n"
-                    f"内圆半径 R: {int(round(cir['inner_radius_R']))} m\n"
-                    f"外圆半径 Router: {cir['outer_radius_Router']:.1f} m"
+                if "domainNwX" in entries: entries["domainNwX"].set("{:.1f}".format(sq["nw_corner"]["x"]))
+                if "domainNwY" in entries: entries["domainNwY"].set("{:.1f}".format(sq["nw_corner"]["y"]))
+                if "domainSeX" in entries: entries["domainSeX"].set("{:.1f}".format(sq["se_corner"]["x"]))
+                if "domainSeY" in entries: entries["domainSeY"].set("{:.1f}".format(sq["se_corner"]["y"]))
+                if "domainOuterRadius" in entries: entries["domainOuterRadius"].set("{:.1f}".format(cir["outer_radius_Router"]))
+                msg = "已基于 {} 个坐标点重新推导完成：边长 {:.1f}m，内圆R {:.0f}m，外圆Router {:.1f}m".format(
+                    len(pts), sq["side_length"], cir["inner_radius_R"], cir["outer_radius_Router"]
                 )
+                feedback_icon.config(fg="#059669")
+                feedback_text.config(text="✓ " + msg, fg="#059669")
+                messagebox.showinfo("计算完成", msg)
             except Exception as e:
-                messagebox.showerror("计算异常", f"重新推导空间域失败：{e}")
+                feedback_icon.config(fg=theme.get("danger", "#dc2626"))
+                feedback_text.config(text="✗ 重新推导空间域失败：{}".format(e), fg=theme.get("danger", "#dc2626"))
+                messagebox.showerror("计算异常", "重新推导空间域失败：{}".format(e))
 
         def _inject_to_json():
             try:
@@ -3171,31 +3465,55 @@ class LauncherApp:
                 res = wt_spatial_domain_calc.inject_into_flow_definitions(
                     sq_res, flow_imp, flow_mod, in_place=True
                 )
+                feedback_icon.config(fg="#2563eb")
+                feedback_text.config(text="✓ 已将空间坐标成功写入流程定义 JSON 文件", fg="#2563eb")
                 messagebox.showinfo(
                     "写入成功",
                     "已将当前空间坐标直接写入流程定义 JSON 文件：\n\n" +
-                    f"1. 导入并配置元素.json:\n   西北角: ({entries['domainNwX'].get()}, {entries['domainNwY'].get()})\n   东南角: ({entries['domainSeX'].get()}, {entries['domainSeY'].get()})\n\n" +
-                    f"2. 创建一个新建模.json:\n   中心: ({entries['domainCenterX'].get()}, {entries['domainCenterY'].get()})\n   半径R: {entries['radius'].get()} m"
+                    "1. 导入并配置元素.json:\n   西北角: ({}, {})\n   东南角: ({}, {})\n\n".format(
+                        entries['domainNwX'].get(), entries['domainNwY'].get(),
+                        entries['domainSeX'].get(), entries['domainSeY'].get()
+                    ) +
+                    "2. 创建一个新建模.json:\n   中心: ({}, {})\n   半径R: {} m".format(
+                        entries['domainCenterX'].get(), entries['domainCenterY'].get(),
+                        entries['radius'].get()
+                    )
                 )
             except Exception as e:
-                messagebox.showerror("写入失败", f"参数写入流程文件失败：{e}")
+                feedback_icon.config(fg=theme.get("danger", "#dc2626"))
+                feedback_text.config(text="✗ 写入流程文件失败：{}".format(e), fg=theme.get("danger", "#dc2626"))
+                messagebox.showerror("写入失败", "参数写入流程文件失败：{}".format(e))
+
+        def _cancel():
+            _save_params_dialog_state()
+            dialog.destroy()
+
+        def _on_close():
+            _save_params_dialog_state()
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", _on_close)
 
         btn_row = tk.Frame(dialog, bg=self.theme["bg"])
-        btn_row.pack(fill=tk.X, pady=12)
+        btn_row.pack(fill=tk.X, padx=14, pady=12)
         tk.Button(btn_row, text="保存参数", command=_save,
-                  bg="#059669", fg="white", relief=tk.FLAT, padx=16, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=(18, 6))
+                  bg="#059669", fg="white", font=("Microsoft YaHei UI", 10, "bold"),
+                  relief=tk.FLAT, padx=16, pady=6, cursor="hand2").pack(side=tk.LEFT)
         tk.Button(btn_row, text="重新按坐标计算", command=_recalculate_spatial,
-                  bg=self.theme["primary"], fg="white", relief=tk.FLAT, padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=6)
+                  bg=self.theme["primary"], fg="white", font=("Microsoft YaHei UI", 9),
+                  relief=tk.FLAT, padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=6)
         tk.Button(btn_row, text="写入流程文件", command=_inject_to_json,
-                  bg="#2563eb", fg="white", relief=tk.FLAT, padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=6)
-        tk.Button(btn_row, text="取消", command=dialog.destroy,
-                  bg=self.theme["secondary"], fg=self.theme["text"],
+                  bg="#2563eb", fg="white", font=("Microsoft YaHei UI", 9),
+                  relief=tk.FLAT, padx=12, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_row, text="取消", command=_cancel,
+                  bg=self.theme["secondary"], fg=self.theme["text"], font=("Microsoft YaHei UI", 9),
                   relief=tk.FLAT, padx=16, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=6)
         tk.Button(
             btn_row, text="生成测风塔配置文件（自动生成 XML）",
             command=self._generate_mast_config_xml_for_project,
-            bg=self.theme["primary"], fg="white", relief=tk.FLAT, padx=12, pady=6,
-        ).pack(side=tk.RIGHT, padx=(6, 18))
+            bg=self.theme["secondary"], fg=self.theme["text"], font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, padx=12, pady=6, cursor="hand2"
+        ).pack(side=tk.RIGHT)
 
     def _generate_mast_config_xml_for_project(self):
         """人工触发：为项目内全部测风塔生成/覆盖导入配置文件（<塔>配置信息.xml）。
