@@ -19,6 +19,9 @@ Pillow>=9.4.0
 # ── Agent / 网络请求 ──
 requests>=2.28.0
 
+# ── 进程管理（tools/generic_flow 强退兜底等） ──
+psutil>=5.9.0
+
 # ── Excel 读写（流程导入导出 / 参数扫描报告） ──
 openpyxl>=3.1.0
 
