@@ -471,36 +471,66 @@ class RelativeRegionHelperDialog:
         container = tk.Frame(self.window, bg=self.theme.get("bg", "#eef3f9"), padx=14, pady=14)
         container.pack(fill=tk.BOTH, expand=True)
 
-        header = tk.LabelFrame(
+        header = tk.Frame(
             container,
-            text="使用说明",
-            padx=10,
-            pady=10,
+            bg=self.theme.get("card", "#ffffff"),
+            padx=12,
+            pady=8,
+            highlightthickness=1,
+            highlightbackground=self.theme.get("border", "#d7e0ee"),
+        )
+        header.pack(fill=tk.X, pady=(0, 10))
+
+        banner_top = tk.Frame(header, bg=self.theme.get("card", "#ffffff"))
+        banner_top.pack(fill=tk.X)
+
+        tk.Label(
+            banner_top,
+            text="💡 提示：先抓取目标父窗口，再手动画框或延时记录鼠标中心；右侧实时透视工程坐标，支持一键导出与校准。",
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("text", "#1f2d3d"),
+            font=("Microsoft YaHei UI", 9, "bold"),
+            anchor="w",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self._help_detail_frame = tk.Frame(header, bg=self.theme.get("card", "#ffffff"), pady=6)
+
+        def _toggle_help():
+            if self._help_detail_frame.winfo_viewable():
+                self._help_detail_frame.pack_forget()
+                self._help_btn.config(text="▼ 展开说明")
+            else:
+                self._help_detail_frame.pack(fill=tk.X, pady=(6, 0))
+                self._help_btn.config(text="▲ 收起说明")
+
+        self._help_btn = wt_theme.create_flat_button(
+            banner_top,
+            "▼ 展开说明",
+            _toggle_help,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=8,
+            pady=2,
         )
-        header.pack(fill=tk.X)
+        self._help_btn.pack(side=tk.RIGHT)
+
         tk.Label(
-            header,
-            text="1. 可直接抓前台父窗口，也可用延时抓取让总控台先最小化。2. 抓到父窗口后，优先用“手动画框选择区域”框出目标输入框或按钮。3. 鼠标中心建议用延时记录，避免点击按钮时鼠标已偏移。4. 右侧会显示父窗口和相对区域可视化预览。",
+            self._help_detail_frame,
+            text="1. 可直接抓前台父窗口，也可用延时抓取让总控台先最小化。\n"
+                 "2. 抓到父窗口后，优先用“手动画框选择区域”框出目标输入框或按钮。\n"
+                 "3. 鼠标中心建议用延时记录，避免点击按钮时鼠标已偏移。\n"
+                 "4. 右侧会实时显示父窗口和相对区域高对比可视化工程预览及生成的 JSON 配置。",
             justify=tk.LEFT,
             anchor="w",
-            wraplength=900,
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("muted", "#5f6f82"),
+            font=("Microsoft YaHei UI", 8),
         ).pack(fill=tk.X)
 
         body = tk.Frame(container, bg=self.theme.get("bg", "#eef3f9"))
-        body.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        body.pack(fill=tk.BOTH, expand=True)
 
-        left = tk.LabelFrame(
-            body,
-            text="参数配置",
-            padx=10,
-            pady=10,
-            bg=self.theme.get("card", "#ffffff"),
-            fg=self.theme.get("text", "#1f2d3d"),
-        )
+        left = tk.Frame(body, bg=self.theme.get("bg", "#eef3f9"))
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         right = tk.LabelFrame(
             body,
@@ -509,148 +539,190 @@ class RelativeRegionHelperDialog:
             pady=10,
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("text", "#1f2d3d"),
+            font=("Microsoft YaHei UI", 9, "bold"),
         )
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
 
-        for column in (1, 3, 5):
-            left.columnconfigure(column, weight=1)
-
-        row = 0
-        wt_theme.create_flat_button(left, "抓取当前前台窗口", self.capture_foreground_window, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=0, sticky="ew", pady=4)
-        wt_theme.create_flat_button(left, "延时抓取父窗口", self.capture_foreground_window_with_delay, tone="primary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=1, sticky="ew", padx=(8, 12), pady=4)
-        wt_theme.create_flat_button(left, "手动画框选择区域", self.start_region_overlay_capture, tone="primary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=2, columnspan=2, sticky="ew", padx=(0, 12), pady=4)
-        wt_theme.create_flat_button(left, "最小化总控台", self.minimize_launcher, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=4, sticky="ew", pady=4)
-        wt_theme.create_flat_button(left, "刷新预览", self._refresh_preview, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=5, sticky="ew", padx=(8, 0), pady=4)
-        row += 1
-        self._grid_label_entry(left, "延时秒数", self.var_capture_delay_seconds, row, 0)
-        self._grid_label_entry(left, "鼠标中心 X", self.var_center_x, row, 2)
-        self._grid_label_entry(left, "鼠标中心 Y", self.var_center_y, row, 4)
-        row += 1
-        wt_theme.create_flat_button(left, "延时记录鼠标为区域中心", self.capture_mouse_center_with_delay, tone="warning", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=0, columnspan=2, sticky="ew", pady=4)
-        wt_theme.create_flat_button(left, "立即读取当前鼠标", self.capture_mouse_center, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).grid(row=row, column=2, columnspan=1, sticky="ew", padx=(8, 12), pady=4)
-        tk.Label(
+        # --- 卡片 1：🎯 窗口抓取与选区 ---
+        card_capture = tk.LabelFrame(
             left,
-            text="建议优先使用“延时抓父窗口 + 手动画框选择区域”；若用鼠标中心，优先点延时记录，避免你点按钮时鼠标位置已经变了。",
-            justify=tk.LEFT,
-            anchor="w",
-            wraplength=430,
+            text="🎯 窗口抓取与选区",
+            padx=10,
+            pady=8,
             bg=self.theme.get("card", "#ffffff"),
-            fg=self.theme.get("muted", "#5f6f82"),
-        ).grid(row=row, column=3, columnspan=3, sticky="ew", padx=(0, 0), pady=4)
-        row += 1
+            fg=self.theme.get("text", "#1f2d3d"),
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        card_capture.pack(fill=tk.X, pady=(0, 10))
 
-        self._grid_label_entry(left, "父窗口标题 *", self.var_parent_title, row, 0)
-        self._grid_label_entry(left, "父窗口类名", self.var_parent_class, row, 2)
-        row += 1
-        self._grid_label_entry(left, "框架类型", self.var_parent_framework, row, 0)
-        self._grid_label_entry(left, "窗口矩形", self.var_window_rect, row, 2)
-        row += 1
-        self._grid_label_entry(left, "区域 X(0-1) *", self.var_region_x, row, 0)
-        self._grid_label_entry(left, "区域 Y(0-1) *", self.var_region_y, row, 2)
-        row += 1
-        self._grid_label_entry(left, "区域宽度 *", self.var_region_width, row, 0)
-        self._grid_label_entry(left, "区域高度 *", self.var_region_height, row, 2)
-        row += 1
-        self.action_name_label = tk.Label(
+        btn_box = tk.Frame(card_capture, bg=self.theme.get("card", "#ffffff"))
+        btn_box.pack(fill=tk.X, pady=(0, 6))
+        wt_theme.create_flat_button(btn_box, "🎯 抓取当前窗口", self.capture_foreground_window, tone="secondary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).pack(side=tk.LEFT, padx=(0, 4))
+        wt_theme.create_flat_button(btn_box, "⏱️ 延时抓取父窗口", self.capture_foreground_window_with_delay, tone="primary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).pack(side=tk.LEFT, padx=4)
+        wt_theme.create_flat_button(btn_box, "✏️ 手动画框选择", self.start_region_overlay_capture, tone="primary", font=("Microsoft YaHei UI", 9), padx=8, pady=4).pack(side=tk.LEFT, padx=4)
+        wt_theme.create_flat_button(btn_box, "🗕 最小化", self.minimize_launcher, tone="secondary", font=("Microsoft YaHei UI", 9), padx=6, pady=4).pack(side=tk.LEFT, padx=4)
+        wt_theme.create_flat_button(btn_box, "🔄 刷新", self._refresh_preview, tone="secondary", font=("Microsoft YaHei UI", 9), padx=6, pady=4).pack(side=tk.RIGHT)
+
+        mouse_box = tk.Frame(card_capture, bg=self.theme.get("card", "#ffffff"))
+        mouse_box.pack(fill=tk.X, pady=(4, 2))
+        tk.Label(mouse_box, text="延时(秒):", font=("Microsoft YaHei UI", 9), bg=self.theme.get("card", "#ffffff"), fg=self.theme.get("text", "#1f2d3d")).pack(side=tk.LEFT)
+        tk.Entry(mouse_box, textvariable=self.var_capture_delay_seconds, width=4, font=("Microsoft YaHei UI", 9), relief=tk.FLAT, highlightthickness=1, highlightbackground=self.theme.get("border", "#d7e0ee")).pack(side=tk.LEFT, padx=(4, 8), ipady=2)
+        wt_theme.create_flat_button(mouse_box, "⏱️ 延时记录鼠标中心", self.capture_mouse_center_with_delay, tone="warning", font=("Microsoft YaHei UI", 8), padx=6, pady=3).pack(side=tk.LEFT, padx=(0, 4))
+        wt_theme.create_flat_button(mouse_box, "📍 当前鼠标", self.capture_mouse_center, tone="secondary", font=("Microsoft YaHei UI", 8), padx=6, pady=3).pack(side=tk.LEFT, padx=4)
+        tk.Label(mouse_box, text="中心 X:", font=("Microsoft YaHei UI", 8), bg=self.theme.get("card", "#ffffff"), fg=self.theme.get("muted", "#5f6f82")).pack(side=tk.LEFT, padx=(6, 2))
+        tk.Entry(mouse_box, textvariable=self.var_center_x, width=6, font=("Microsoft YaHei UI", 8), relief=tk.FLAT, highlightthickness=1, highlightbackground=self.theme.get("border", "#d7e0ee")).pack(side=tk.LEFT, padx=2, ipady=1)
+        tk.Label(mouse_box, text="Y:", font=("Microsoft YaHei UI", 8), bg=self.theme.get("card", "#ffffff"), fg=self.theme.get("muted", "#5f6f82")).pack(side=tk.LEFT, padx=(4, 2))
+        tk.Entry(mouse_box, textvariable=self.var_center_y, width=6, font=("Microsoft YaHei UI", 8), relief=tk.FLAT, highlightthickness=1, highlightbackground=self.theme.get("border", "#d7e0ee")).pack(side=tk.LEFT, padx=2, ipady=1)
+
+        # --- 卡片 2：📐 相对比例与动作参数 ---
+        card_params = tk.LabelFrame(
             left,
+            text="📐 相对比例与动作参数",
+            padx=10,
+            pady=8,
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("text", "#1f2d3d"),
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        card_params.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        for col in (1, 3, 5):
+            card_params.columnconfigure(col, weight=1)
+
+        r = 0
+        self._grid_label_entry(card_params, "父窗口标题 *", self.var_parent_title, r, 0)
+        self._grid_label_entry(card_params, "父窗口类名", self.var_parent_class, r, 2)
+        r += 1
+        self._grid_label_entry(card_params, "框架类型", self.var_parent_framework, r, 0)
+        self._grid_label_entry(card_params, "窗口矩形", self.var_window_rect, r, 2)
+        r += 1
+        self._grid_label_entry(card_params, "区域 X(0-1) *", self.var_region_x, r, 0)
+        self._grid_label_entry(card_params, "区域 Y(0-1) *", self.var_region_y, r, 2)
+        r += 1
+        self._grid_label_entry(card_params, "区域宽度 *", self.var_region_width, r, 0)
+        self._grid_label_entry(card_params, "区域高度 *", self.var_region_height, r, 2)
+        r += 1
+        self.action_name_label = tk.Label(
+            card_params,
             text="动作类型",
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("text", "#1f2d3d"),
+            font=("Microsoft YaHei UI", 9),
         )
-        self.action_name_label.grid(row=row, column=0, sticky="w", pady=4)
+        self.action_name_label.grid(row=r, column=0, sticky="w", pady=4)
         self.action_combo = ttk.Combobox(
-            left,
+            card_params,
             textvariable=self.var_action_name,
             values=("type_text_relative", "click_relative_region"),
             state="readonly",
         )
-        self.action_combo.grid(row=row, column=1, sticky="ew", padx=(8, 12), pady=4)
+        self.action_combo.grid(row=r, column=1, sticky="ew", padx=(8, 12), pady=4)
         self.action_combo.bind("<<ComboboxSelected>>", self._on_action_name_change)
+
         self.anchor_label = tk.Label(
-            left,
+            card_params,
             text="点击锚点",
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("text", "#1f2d3d"),
+            font=("Microsoft YaHei UI", 9),
         )
-        self.anchor_label.grid(row=row, column=2, sticky="w", pady=4)
+        self.anchor_label.grid(row=r, column=2, sticky="w", pady=4)
         self.anchor_combo = ttk.Combobox(
-            left,
+            card_params,
             textvariable=self.var_anchor,
             values=("center", "top_left", "top_right", "bottom_left", "bottom_right"),
             state="readonly",
         )
-        self.anchor_combo.grid(row=row, column=3, sticky="ew", padx=(8, 12), pady=4)
+        self.anchor_combo.grid(row=r, column=3, sticky="ew", padx=(8, 12), pady=4)
+
         self.default_text_label = tk.Label(
-            left,
+            card_params,
             text="输入文本",
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("text", "#1f2d3d"),
+            font=("Microsoft YaHei UI", 9),
         )
-        self.default_text_label.grid(row=row, column=4, sticky="w", pady=4)
-        self.default_text_entry = tk.Entry(left, textvariable=self.var_text, font=("Microsoft YaHei UI", 9), relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.theme.get("border", "#d7e0ee"))
-        self.default_text_entry.grid(row=row, column=5, sticky="ew", padx=(8, 12), pady=4, ipady=2)
-        row += 1
-
-        button_row = tk.Frame(left, bg=self.theme.get("card", "#ffffff"))
-        button_row.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
-        wt_theme.create_flat_button(button_row, "复制 actionConfig", self.copy_action_config, tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=5).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        wt_theme.create_flat_button(button_row, "复制完整步骤样例", self.copy_step_template, tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=5).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
-        row += 1
-
-        multi_row = tk.Frame(left, bg=self.theme.get("card", "#ffffff"))
-        multi_row.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
-        wt_theme.create_flat_button(
-            multi_row,
-            "批量画框采集",
-            self.start_multi_region_capture,
-            tone="primary",
+        self.default_text_label.grid(row=r, column=4, sticky="w", pady=4)
+        self.default_text_entry = tk.Entry(
+            card_params,
+            textvariable=self.var_text,
             font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self.theme.get("border", "#d7e0ee"),
+        )
+        self.default_text_entry.grid(row=r, column=5, sticky="ew", padx=(8, 12), pady=4, ipady=2)
+
+        # --- 卡片 3：📦 批量采集与数据导出 ---
+        card_export = tk.LabelFrame(
+            left,
+            text="📦 批量采集与数据导出",
             padx=10,
-            pady=5,
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        wt_theme.create_flat_button(
-            multi_row,
-            "导出校准数据",
-            self.export_multi_region_calibration,
-            tone="success",
-            font=("Microsoft YaHei UI", 9),
-            padx=10,
-            pady=5,
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+            pady=8,
+            bg=self.theme.get("card", "#ffffff"),
+            fg=self.theme.get("text", "#1f2d3d"),
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        card_export.pack(fill=tk.X)
+
+        copy_row = tk.Frame(card_export, bg=self.theme.get("card", "#ffffff"))
+        copy_row.pack(fill=tk.X, pady=(0, 6))
+        wt_theme.create_flat_button(copy_row, "📋 复制 actionConfig", self.copy_action_config, tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=4).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        wt_theme.create_flat_button(copy_row, "📋 复制完整步骤样例", self.copy_step_template, tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=4).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        multi_row = tk.Frame(card_export, bg=self.theme.get("card", "#ffffff"))
+        multi_row.pack(fill=tk.X, pady=(0, 6))
+        wt_theme.create_flat_button(multi_row, "🔲 批量画框采集", self.start_multi_region_capture, tone="primary", font=("Microsoft YaHei UI", 9), padx=10, pady=4).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        wt_theme.create_flat_button(multi_row, "💾 导出校准数据", self.export_multi_region_calibration, tone="success", font=("Microsoft YaHei UI", 9), padx=10, pady=4).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
         tk.Label(
             multi_row,
             textvariable=self.var_multi_region_count,
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("muted", "#5f6f82"),
+            font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side=tk.LEFT, padx=(10, 0))
-        row += 1
 
         tk.Label(
-            left,
+            card_export,
             textvariable=self.status_var,
             justify=tk.LEFT,
             anchor="w",
-            wraplength=640,
+            wraplength=460,
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("muted", "#5f6f82"),
-        ).grid(row=row, column=0, columnspan=6, sticky="ew", pady=(12, 0))
+            font=("Microsoft YaHei UI", 8),
+        ).pack(fill=tk.X, pady=(4, 0))
 
-        preview_hint = tk.Label(
-            right,
-            text="父窗口与相对区域预览",
-            anchor="w",
+        # --- 右侧预览面板 ---
+        right_header = tk.Frame(right, bg=self.theme.get("card", "#ffffff"))
+        right_header.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(
+            right_header,
+            text="📐 相对区域工程可视化",
+            font=("Microsoft YaHei UI", 9, "bold"),
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("text", "#1f2d3d"),
-        )
-        preview_hint.pack(fill=tk.X, pady=(0, 6))
+        ).pack(side=tk.LEFT)
+        wt_theme.create_flat_button(
+            right_header,
+            "📋 复制预览 JSON",
+            self.copy_preview_json,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=8,
+            pady=2,
+        ).pack(side=tk.RIGHT)
+
         self.region_preview_canvas = tk.Canvas(
             right,
             height=260,
-            bg="#f8fbff",
+            bg="#0f172a",
             highlightthickness=1,
             highlightbackground=self.theme.get("border", "#d7e0ee"),
         )
-        self.region_preview_canvas.pack(fill=tk.X, pady=(0, 10))
+        self.region_preview_canvas.pack(fill=tk.X, pady=(0, 6))
+
         tk.Label(
             right,
             textvariable=self.preview_metrics_var,
@@ -659,9 +731,14 @@ class RelativeRegionHelperDialog:
             wraplength=430,
             bg=self.theme.get("card", "#ffffff"),
             fg=self.theme.get("muted", "#5f6f82"),
-        ).pack(fill=tk.X, pady=(0, 10))
+            font=("Microsoft YaHei UI", 8),
+        ).pack(fill=tk.X, pady=(0, 6))
+
+        code_box = tk.Frame(right, bg=self.theme.get("card", "#ffffff"))
+        code_box.pack(fill=tk.BOTH, expand=True)
+
         self.preview_text = tk.Text(
-            right,
+            code_box,
             wrap=tk.WORD,
             font=("Consolas", 10),
             bg="#fbfdff",
@@ -671,7 +748,7 @@ class RelativeRegionHelperDialog:
             insertbackground=self.theme.get("text", "#1f2d3d"),
         )
         self.preview_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        preview_scrollbar = tk.Scrollbar(right, command=self.preview_text.yview, relief=tk.FLAT)
+        preview_scrollbar = tk.Scrollbar(code_box, command=self.preview_text.yview, relief=tk.FLAT)
         preview_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.preview_text.config(yscrollcommand=preview_scrollbar.set)
 
@@ -1131,34 +1208,46 @@ class RelativeRegionHelperDialog:
         canvas.delete("all")
         canvas_width = max(int(canvas.winfo_width() or 0), 520)
         canvas_height = max(int(canvas.winfo_height() or 0), 260)
-        canvas.create_rectangle(10, 10, canvas_width - 10, canvas_height - 10, outline=self.theme.get("border", "#d7e0ee"), width=1)
+
+        # 绘制暗色工程 CAD 网格底纹
+        canvas.create_rectangle(0, 0, canvas_width, canvas_height, fill="#0f172a", outline="")
+        grid_step = 24
+        for gx in range(0, canvas_width, grid_step):
+            canvas.create_line(gx, 0, gx, canvas_height, fill="#1e293b", width=1)
+        for gy in range(0, canvas_height, grid_step):
+            canvas.create_line(0, gy, canvas_width, gy, fill="#1e293b", width=1)
+
         if not self.window_rect or not self.window_rect.get("width") or not self.window_rect.get("height"):
             self.preview_metrics_var.set("预览摘要：尚未抓取父窗口，暂无像素尺寸与中心点信息")
             canvas.create_text(
                 canvas_width / 2,
                 canvas_height / 2,
                 text="尚未抓取父窗口\n请先抓取父窗口后再画框或记录鼠标中心",
-                fill=self.theme.get("muted", "#5f6f82"),
-                font=("TkDefaultFont", 11),
+                fill="#94a3b8",
+                font=("Microsoft YaHei UI", 11),
                 justify=tk.CENTER,
             )
             return
-        padding = 28
+
+        padding = 32
         preview_left = padding
         preview_top = padding
         preview_width = canvas_width - padding * 2
         preview_height = canvas_height - padding * 2
         parent_width_px = max(int(self.window_rect.get("width", 0) or 0), 1)
         parent_height_px = max(int(self.window_rect.get("height", 0) or 0), 1)
+
+        # 绘制父窗口工程外框
         canvas.create_rectangle(
             preview_left,
             preview_top,
             preview_left + preview_width,
             preview_top + preview_height,
-            fill="#eef6ff",
-            outline="#60a5fa",
+            fill="#1e293b",
+            outline="#38bdf8",
             width=2,
         )
+
         region_x = max(0.0, min(1.0, self._parse_float(self.var_region_x.get(), 0.45)))
         region_y = max(0.0, min(1.0, self._parse_float(self.var_region_y.get(), 0.45)))
         region_width = max(0.0, min(1.0, self._parse_float(self.var_region_width.get(), 0.32)))
@@ -1169,55 +1258,67 @@ class RelativeRegionHelperDialog:
         region_top_px = int(round(parent_height_px * region_y))
         region_center_x_px = int(round(region_left_px + region_width_px / 2.0))
         region_center_y_px = int(round(region_top_px + region_height_px / 2.0))
+
         region_left = preview_left + preview_width * region_x
         region_top = preview_top + preview_height * region_y
         region_right = min(preview_left + preview_width, region_left + preview_width * region_width)
         region_bottom = min(preview_top + preview_height, region_top + preview_height * region_height)
+
+        # 绘制目标相对选区
         canvas.create_rectangle(
             region_left,
             region_top,
             region_right,
             region_bottom,
-            fill="#93c5fd",
-            outline="#1d4ed8",
+            fill="#1d4ed8",
+            outline="#60a5fa",
             width=2,
         )
+
         center_x = (region_left + region_right) / 2.0
         center_y = (region_top + region_bottom) / 2.0
-        canvas.create_line(center_x - 10, center_y, center_x + 10, center_y, fill="#1e3a8a", width=2)
-        canvas.create_line(center_x, center_y - 10, center_x, center_y + 10, fill="#1e3a8a", width=2)
+
+        # 高对比中心准星与标点
+        canvas.create_line(center_x - 12, center_y, center_x + 12, center_y, fill="#f59e0b", width=2)
+        canvas.create_line(center_x, center_y - 12, center_x, center_y + 12, fill="#f59e0b", width=2)
+        canvas.create_oval(center_x - 3, center_y - 3, center_x + 3, center_y + 3, fill="#f59e0b", outline="#ffffff", width=1)
+
         anchor_text = self.var_anchor.get().strip() or "center"
+        parent_title = self.var_parent_title.get().strip() or "目标父窗口"
+        if len(parent_title) > 24:
+            parent_title = parent_title[:22] + "..."
+
         canvas.create_text(
-            preview_left + 6,
-            preview_top - 10,
-            text="父窗口",
+            preview_left + 8,
+            preview_top - 12,
+            text=f"🪟 父窗口: {parent_title} ({parent_width_px}×{parent_height_px}px)",
             anchor="w",
-            fill=self.theme.get("text", "#1f2d3d"),
-            font=("TkDefaultFont", 10, "bold"),
+            fill="#38bdf8",
+            font=("Microsoft YaHei UI", 9, "bold"),
         )
         canvas.create_text(
             region_left + 6,
             max(preview_top + 14, region_top - 10),
-            text=f"区域 {region_width:.3f} x {region_height:.3f} / {region_width_px}px x {region_height_px}px / anchor={anchor_text}",
+            text=f"🎯 选区: {region_width:.3f}×{region_height:.3f} ({region_width_px}×{region_height_px}px) · {anchor_text}",
             anchor="w",
-            fill="#1e3a8a",
-            font=("TkDefaultFont", 9, "bold"),
+            fill="#93c5fd",
+            font=("Microsoft YaHei UI", 8, "bold"),
         )
         canvas.create_text(
             preview_left,
             preview_top + preview_height + 12,
             text=f"窗口矩形: {self.var_window_rect.get() or '未捕获'}",
             anchor="w",
-            fill=self.theme.get("muted", "#5f6f82"),
-            font=("TkDefaultFont", 9),
+            fill="#94a3b8",
+            font=("Microsoft YaHei UI", 8),
         )
         canvas.create_text(
             preview_left,
-            preview_top + preview_height + 28,
-            text=f"中心点: ({region_center_x_px}, {region_center_y_px})   左上角: ({region_left_px}, {region_top_px})   区域占比: x={region_x:.4f}, y={region_y:.4f}",
+            preview_top + preview_height + 26,
+            text=f"中心点: ({region_center_x_px}, {region_center_y_px})   左上角: ({region_left_px}, {region_top_px})   相对比例: x={region_x:.4f}, y={region_y:.4f}",
             anchor="w",
-            fill=self.theme.get("muted", "#5f6f82"),
-            font=("TkDefaultFont", 9),
+            fill="#cbd5e1",
+            font=("Microsoft YaHei UI", 8),
         )
         self.preview_metrics_var.set(
             "预览摘要："
@@ -1240,6 +1341,16 @@ class RelativeRegionHelperDialog:
     def copy_step_template(self):
         self._refresh_preview()
         self._copy_payload(self.build_step_template(), "完整步骤样例")
+
+    def copy_preview_json(self):
+        try:
+            content = self.preview_text.get("1.0", tk.END).strip()
+            if content:
+                self.parent.clipboard_clear()
+                self.parent.clipboard_append(content)
+                self.status_var.set(f"已复制预览配置 JSON 到剪贴板（{len(content)} 字符）。")
+        except Exception:
+            self.status_var.set("复制预览 JSON 失败。")
 
     # ---------- 批量画框采集：一个界面内连续框选多个控件，导出校准数据 ----------
 
