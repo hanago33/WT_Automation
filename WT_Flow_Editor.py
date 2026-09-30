@@ -15,6 +15,7 @@ from datetime import datetime
 from functools import lru_cache
 import wt_dpi
 import wt_theme
+import wt_ui_state
 import wt_wheel_router
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
@@ -2700,12 +2701,27 @@ class ControlEditDialog:
 
 
 class ControlLocatorTesterDialog:
-    """控件定位检验器 - 快速验证控件是否能正确定位到目标"""
+    """控件定位检验透视台 - 实时透视验证控件在目标窗口中的定位精度与屏幕坐标"""
+
+    TOOL_KEY = "flow_editor_locator_tester"
 
     def __init__(self, parent, initial_control=None):
         self.result = None
         self.initial_control = initial_control if isinstance(initial_control, dict) else None
-        self.window = _make_dialog_window(parent, "控件定位检验器", 1000, 700, min_width=800, min_height=500)
+        self._all_windows = []
+        self._selected_hwnd = None
+        self._last_matched_rect = None
+        self._last_matched_name = ""
+
+        self.window = _make_dialog_window(
+            parent,
+            "控件定位检验透视台",
+            width=1120,
+            height=720,
+            min_width=920,
+            min_height=580,
+            on_close=self._on_close,
+        )
 
         # 尝试导入 pywinauto
         self.pywinauto_available = False
@@ -2716,74 +2732,17 @@ class ControlLocatorTesterDialog:
         except ImportError:
             pass
 
-        self.var_status = tk.StringVar(value="请选择目标窗口，然后选择控件进行定位检验")
+        self.var_status = tk.StringVar(value="就绪：请选择目标窗口，输入或导入定位规则后检验")
         self.var_target_window = tk.StringVar(value="")
-        self.var_locator_method = tk.StringVar(value="")
+        self.var_window_filter = tk.StringVar(value="")
+        self.var_locator_method = tk.StringVar(value="automation_id")
         self.var_locator_value = tk.StringVar(value="")
-        self.var_test_result = tk.StringVar(value="")
+        self.var_test_result = tk.StringVar(value="待检验")
+        self.var_auto_highlight = tk.BooleanVar(value=True)
 
         self._build_ui()
-
-    def _build_ui(self):
-        # 顶部控制区
-        control_frame = tk.LabelFrame(self.window, text="定位信息", padx=10, pady=10)
-        control_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
-
-        row = 0
-        tk.Label(control_frame, text="定位方法").grid(row=row, column=0, sticky="w", padx=5, pady=3)
-        self.method_combo = ttk.Combobox(
-            control_frame,
-            textvariable=self.var_locator_method,
-            values=["automation_id", "automation_id,control_type", "automation_id,class_name",
-                    "name", "name,control_type", "name,class_name",
-                    "class_name", "class_name,control_type", "control_type",
-                    "handle", "text", "text,control_type"],
-            width=28,
-        )
-        self.method_combo.grid(row=row, column=1, sticky="w", padx=5, pady=3)
-        self.method_combo.configure(state="readonly")
-
-        tk.Label(control_frame, text="定位值").grid(row=row, column=2, sticky="w", padx=5, pady=3)
-        self.loc_value_entry = tk.Entry(control_frame, textvariable=self.var_locator_value, width=30)
-        self.loc_value_entry.grid(row=row, column=3, sticky="ew", padx=5, pady=3)
-
-        tk.Label(control_frame, text="目标窗口（可选）").grid(row=row, column=4, sticky="w", padx=5, pady=3)
-        self.target_window_entry = tk.Entry(control_frame, textvariable=self.var_target_window, width=25)
-        self.target_window_entry.grid(row=row, column=5, sticky="ew", padx=5, pady=3)
-
-        control_frame.columnconfigure(3, weight=1)
-        control_frame.columnconfigure(5, weight=1)
-
-        row += 1
-        btn_frame = tk.Frame(control_frame)
-        btn_frame.grid(row=row, column=0, columnspan=6, sticky="w", pady=(5, 0))
-        tk.Button(btn_frame, text="刷新窗口列表", command=self._refresh_window_list, bg="#e0e7ff", width=12).pack(side=tk.LEFT, padx=2)
-        tk.Button(btn_frame, text="从控件库选择", command=self._select_from_library, bg="#d1fae5", width=12).pack(side=tk.LEFT, padx=2)
-        tk.Button(btn_frame, text="开始检验", command=self._test_locator, bg="#fef3c7", width=12).pack(side=tk.LEFT, padx=2)
-        tk.Button(btn_frame, text="获取父级定位", command=self._get_parent_locator, bg="#fce7f3", width=12).pack(side=tk.LEFT, padx=2)
-        tk.Button(btn_frame, text="关闭", command=self.window.destroy, width=8).pack(side=tk.RIGHT)
-
-        # 窗口列表
-        list_frame = tk.LabelFrame(self.window, text="可用窗口", padx=10, pady=10)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 5))
-
-        self.window_listbox = tk.Listbox(list_frame, height=6, exportselection=False)
-        self.window_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.window_listbox.bind("<<ListboxSelect>>", self._on_window_select)
-        window_scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.window_listbox.yview)
-        window_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.window_listbox.configure(yscrollcommand=window_scrollbar.set)
-
-        # 结果显示区
-        result_frame = tk.LabelFrame(self.window, text="检验结果", padx=10, pady=10)
-        result_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(5, 10))
-
-        self.result_text = scrolledtext.ScrolledText(result_frame, height=12, wrap=tk.WORD, font=("Consolas", 10))
-        self.result_text.pack(fill=tk.BOTH, expand=True)
-
-        tk.Label(result_frame, textvariable=self.var_test_result, fg=EDITOR_THEME["muted"], anchor="w").pack(fill=tk.X, pady=(5, 0))
-
-        tk.Label(result_frame, textvariable=self.var_status, fg="#6b7280", anchor="w").pack(fill=tk.X, pady=(5, 0))
+        self._load_ui_state()
+        self._refresh_window_list()
 
         if self.initial_control:
             control = self.initial_control
@@ -2792,203 +2751,634 @@ class ControlLocatorTesterDialog:
                 control.get("targetMethod", "")
                 or control.get("recommendedTargetMethod", "")
                 or inspect_data.get("recommendedTargetMethod", "")
+                or "automation_id"
             ).strip())
             self.var_locator_value.set(str(
                 control.get("targetValue", "")
                 or control.get("recommendedTargetValue", "")
                 or inspect_data.get("recommendedTargetValue", "")
             ).strip())
-            self.var_target_window.set(str(control.get("windowTitle", "") or self.var_target_window.get()).strip())
-            self.var_status.set(f"已载入采集候选：{control.get('name', '') or inspect_data.get('name', '')}")
+            ctrl_win = str(control.get("windowTitle", "") or inspect_data.get("windowTitle", "")).strip()
+            if ctrl_win:
+                self.var_target_window.set(ctrl_win)
+            ctrl_name = control.get("name", "") or inspect_data.get("name", "")
+            self.var_status.set(f"已载入采集候选控件：{ctrl_name}")
 
-        self._refresh_window_list()
+    def _build_ui(self):
+        theme = EDITOR_THEME
+        self.window.configure(bg=theme["bg"])
+
+        # ─────────────────────────────────────────────────────────────────
+        # 1. 顶部操作状态栏 (Header Bar)
+        # ─────────────────────────────────────────────────────────────────
+        header = tk.Frame(self.window, bg=theme["toolbar"], padx=14, pady=8, bd=1, relief=tk.SOLID)
+        header.pack(fill=tk.X, side=tk.TOP)
+
+        title_box = tk.Frame(header, bg=theme["toolbar"])
+        title_box.pack(side=tk.LEFT)
+
+        tk.Label(
+            title_box,
+            text="🔍 控件定位检验透视台",
+            font=("Microsoft YaHei UI", 11, "bold"),
+            bg=theme["toolbar"],
+            fg=theme["text"],
+        ).pack(side=tk.LEFT)
+
+        tk.Label(
+            title_box,
+            text=" |  Win32/UIA 定位快速试错、层级树探查与屏幕边界高亮透视",
+            font=("Microsoft YaHei UI", 8),
+            bg=theme["toolbar"],
+            fg="#64748b",
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+        # 顶部右侧指标徽标
+        right_box = tk.Frame(header, bg=theme["toolbar"])
+        right_box.pack(side=tk.RIGHT)
+
+        tk.Checkbutton(
+            right_box,
+            text="🎯 命中自动屏幕高亮",
+            variable=self.var_auto_highlight,
+            bg=theme["toolbar"],
+            fg=theme["text"],
+            font=("Microsoft YaHei UI", 8),
+            activebackground=theme["toolbar"],
+            cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        self.lbl_timing_badge = tk.Label(
+            right_box,
+            text="⏱️ -- ms",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            bg="#f1f5f9",
+            fg="#64748b",
+            padx=8,
+            pady=2,
+            relief=tk.FLAT,
+        )
+        self.lbl_timing_badge.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.lbl_status_badge = tk.Label(
+            right_box,
+            text="● 待检验",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            bg="#f1f5f9",
+            fg="#64748b",
+            padx=8,
+            pady=2,
+            relief=tk.FLAT,
+        )
+        self.lbl_status_badge.pack(side=tk.LEFT)
+
+        # ─────────────────────────────────────────────────────────────────
+        # 2. 主体左右分栏 (PanedWindow)
+        # ─────────────────────────────────────────────────────────────────
+        paned = ttk.PanedWindow(self.window, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=(8, 0))
+
+        # ── 左栏：目标与定位规则配置面板 ──
+        left_pane = tk.Frame(paned, bg=theme["bg"], width=430)
+        paned.add(left_pane, weight=1)
+
+        # Card 1: 目标窗口选择
+        win_card = tk.LabelFrame(
+            left_pane,
+            text=" 1. 目标窗口探测与选择 ",
+            bg=theme["card"],
+            fg="#1e293b",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief=tk.SOLID,
+            bd=1,
+            padx=10,
+            pady=8,
+        )
+        win_card.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+
+        filter_row = tk.Frame(win_card, bg=theme["card"])
+        filter_row.pack(fill=tk.X, pady=(0, 5))
+
+        tk.Label(
+            filter_row,
+            text="🔍",
+            bg=theme["card"],
+            fg="#64748b",
+            font=("Segoe UI Emoji", 9),
+        ).pack(side=tk.LEFT, padx=(0, 3))
+
+        ent_filter = tk.Entry(
+            filter_row,
+            textvariable=self.var_window_filter,
+            font=("Microsoft YaHei UI", 8),
+            bg="#f8fafc",
+            relief=tk.SOLID,
+            bd=1,
+        )
+        ent_filter.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        ent_filter.bind("<KeyRelease>", lambda e: self._apply_window_filter())
+
+        btn_refresh = tk.Button(
+            filter_row,
+            text="🔄 刷新",
+            command=self._refresh_window_list,
+            bg="#e0e7ff",
+            fg="#3730a3",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            relief=tk.FLAT,
+            padx=8,
+            pady=1,
+            cursor="hand2",
+        )
+        btn_refresh.pack(side=tk.RIGHT)
+
+        # 可见窗口列表
+        list_box_frame = tk.Frame(win_card, bg=theme["card"])
+        list_box_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+
+        self.window_listbox = tk.Listbox(
+            list_box_frame,
+            height=6,
+            exportselection=False,
+            font=("Microsoft YaHei UI", 8),
+            selectbackground=theme["primary"],
+            selectforeground="white",
+            relief=tk.SOLID,
+            bd=1,
+        )
+        self.window_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.window_listbox.bind("<<ListboxSelect>>", self._on_window_select)
+
+        win_scroll = ttk.Scrollbar(list_box_frame, orient="vertical", command=self.window_listbox.yview)
+        win_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.window_listbox.configure(yscrollcommand=win_scroll.set)
+
+        # 选中窗口显示
+        sel_row = tk.Frame(win_card, bg=theme["card"])
+        sel_row.pack(fill=tk.X)
+
+        tk.Label(
+            sel_row,
+            text="已锁定窗口:",
+            font=("Microsoft YaHei UI", 8),
+            bg=theme["card"],
+            fg="#475569",
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        self.target_window_entry = tk.Entry(
+            sel_row,
+            textvariable=self.var_target_window,
+            font=("Microsoft YaHei UI", 8),
+            bg="#ffffff",
+            relief=tk.SOLID,
+            bd=1,
+        )
+        self.target_window_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.lbl_win_count = tk.Label(
+            win_card,
+            text="枚举中...",
+            font=("Microsoft YaHei UI", 7),
+            bg=theme["card"],
+            fg="#94a3b8",
+            anchor="w",
+        )
+        self.lbl_win_count.pack(fill=tk.X, pady=(2, 0))
+
+        # Card 2: 定位规则配置与操作
+        loc_card = tk.LabelFrame(
+            left_pane,
+            text=" 2. 定位参数与检验动作 ",
+            bg=theme["card"],
+            fg="#1e293b",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief=tk.SOLID,
+            bd=1,
+            padx=10,
+            pady=8,
+        )
+        loc_card.pack(fill=tk.X, pady=(0, 6))
+
+        # 定位方法 Combobox
+        grid_loc = tk.Frame(loc_card, bg=theme["card"])
+        grid_loc.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            grid_loc,
+            text="定位方法:",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            bg=theme["card"],
+            fg=theme["text"],
+            width=8,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", pady=3)
+
+        self.method_combo = ttk.Combobox(
+            grid_loc,
+            textvariable=self.var_locator_method,
+            values=[
+                "automation_id",
+                "name",
+                "class_name",
+                "automation_id,control_type",
+                "name,control_type",
+                "automation_id,class_name",
+                "name,class_name",
+                "class_name,control_type",
+                "control_type",
+                "handle",
+                "text",
+                "text,control_type",
+            ],
+            state="readonly",
+            font=("Consolas", 9),
+        )
+        self.method_combo.grid(row=0, column=1, sticky="ew", pady=3)
+
+        # 定位值 Entry
+        tk.Label(
+            grid_loc,
+            text="定位值:",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            bg=theme["card"],
+            fg=theme["text"],
+            width=8,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="w", pady=3)
+
+        val_box = tk.Frame(grid_loc, bg=theme["card"])
+        val_box.grid(row=1, column=1, sticky="ew", pady=3)
+
+        self.loc_value_entry = tk.Entry(
+            val_box,
+            textvariable=self.var_locator_value,
+            font=("Consolas", 9),
+            bg="#ffffff",
+            relief=tk.SOLID,
+            bd=1,
+        )
+        self.loc_value_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        btn_clear = tk.Button(
+            val_box,
+            text="✕",
+            command=lambda: self.var_locator_value.set(""),
+            bg="#f1f5f9",
+            fg="#94a3b8",
+            font=("Microsoft YaHei UI", 8),
+            relief=tk.FLAT,
+            padx=5,
+            cursor="hand2",
+        )
+        btn_clear.pack(side=tk.LEFT, padx=(3, 0))
+
+        grid_loc.columnconfigure(1, weight=1)
+
+        # 操作动作按钮栅格
+        action_row = tk.Frame(loc_card, bg=theme["card"])
+        action_row.pack(fill=tk.X, pady=(6, 2))
+
+        btn_test = tk.Button(
+            action_row,
+            text="▶ 开始检验",
+            command=self._test_locator,
+            bg=theme["primary"],
+            fg="white",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief=tk.FLAT,
+            padx=12,
+            pady=5,
+            cursor="hand2",
+        )
+        btn_test.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+
+        btn_highlight = tk.Button(
+            action_row,
+            text="🎯 屏幕高亮透视",
+            command=lambda: self._flash_highlight(),
+            bg="#fef3c7",
+            fg="#92400e",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            relief=tk.FLAT,
+            padx=8,
+            pady=5,
+            cursor="hand2",
+        )
+        btn_highlight.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+
+        action_row2 = tk.Frame(loc_card, bg=theme["card"])
+        action_row2.pack(fill=tk.X, pady=(4, 0))
+
+        btn_parent = tk.Button(
+            action_row2,
+            text="🌳 获取父级层级",
+            command=self._get_parent_locator,
+            bg="#f1f5f9",
+            fg="#334155",
+            font=("Microsoft YaHei UI", 8),
+            relief=tk.FLAT,
+            padx=8,
+            pady=4,
+            cursor="hand2",
+        )
+        btn_parent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+
+        btn_lib = tk.Button(
+            action_row2,
+            text="📖 控件库导入",
+            command=self._select_from_library,
+            bg="#d1fae5",
+            fg="#065f46",
+            font=("Microsoft YaHei UI", 8),
+            relief=tk.FLAT,
+            padx=8,
+            pady=4,
+            cursor="hand2",
+        )
+        btn_lib.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+
+        # ── 右栏：诊断透视与详情控制台 ──
+        right_pane = tk.Frame(paned, bg=theme["bg"])
+        paned.add(right_pane, weight=2)
+
+        diag_card = tk.LabelFrame(
+            right_pane,
+            text=" 3. 实时透视与诊断控制台 ",
+            bg=theme["card"],
+            fg="#1e293b",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief=tk.SOLID,
+            bd=1,
+            padx=10,
+            pady=8,
+        )
+        diag_card.pack(fill=tk.BOTH, expand=True)
+
+        # 四项指标卡片栏
+        metrics_bar = tk.Frame(diag_card, bg=theme["card"])
+        metrics_bar.pack(fill=tk.X, pady=(0, 8))
+
+        def _make_metric_box(parent, title, default_val):
+            box = tk.Frame(parent, bg="#f8fafc", bd=1, relief=tk.SOLID, padx=8, pady=4)
+            tk.Label(box, text=title, font=("Microsoft YaHei UI", 7), bg="#f8fafc", fg="#64748b").pack(anchor="w")
+            val_lbl = tk.Label(box, text=default_val, font=("Microsoft YaHei UI", 8, "bold"), bg="#f8fafc", fg="#0f172a")
+            val_lbl.pack(anchor="w")
+            return box, val_lbl
+
+        b1, self.lbl_m_status = _make_metric_box(metrics_bar, "命中状态", "待检验")
+        b1.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+
+        b2, self.lbl_m_timing = _make_metric_box(metrics_bar, "检验耗时", "-- ms")
+        b2.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+
+        b3, self.lbl_m_rect = _make_metric_box(metrics_bar, "屏幕包围盒 (W×H @ X,Y)", "--")
+        b3.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+
+        b4, self.lbl_m_attr = _make_metric_box(metrics_bar, "可见性 / 激活态", "--")
+        b4.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        # 控制台文本区
+        self.result_text = scrolledtext.ScrolledText(
+            diag_card,
+            wrap=tk.WORD,
+            font=("Consolas", 9),
+            bg="#f8fafc",
+            fg="#0f172a",
+            bd=1,
+            relief=tk.SOLID,
+            padx=8,
+            pady=8,
+        )
+        self.result_text.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+
+        # 配置文本样式标签
+        self.result_text.tag_config("title", font=("Consolas", 10, "bold"), foreground="#1e40af")
+        self.result_text.tag_config("success", font=("Consolas", 9, "bold"), foreground="#059669")
+        self.result_text.tag_config("error", font=("Consolas", 9, "bold"), foreground="#dc2626")
+        self.result_text.tag_config("warning", font=("Consolas", 9, "bold"), foreground="#d97706")
+        self.result_text.tag_config("key", font=("Consolas", 9, "bold"), foreground="#334155")
+        self.result_text.tag_config("val", font=("Consolas", 9), foreground="#0f172a")
+        self.result_text.tag_config("dim", font=("Consolas", 9), foreground="#94a3b8")
+        self.result_text.tag_config("highlight", background="#fef08a", foreground="#854d0e")
+
+        self.result_text.insert(
+            tk.END,
+            "═══ 控件定位检验透视台就绪 ═══\n"
+            "• 左侧选择目标窗口，输入定位方法与参数后点击「▶ 开始检验」\n"
+            "• 支持在检验命中时自动在屏幕相应区域闪烁透视高亮线框\n"
+            "• 点击「🌳 获取父级层级」可分析控件的祖先链与同级兄弟控件\n"
+        )
+
+        # 底部控制台操作栏
+        diag_bottom = tk.Frame(diag_card, bg=theme["card"])
+        diag_bottom.pack(fill=tk.X)
+
+        btn_copy = tk.Button(
+            diag_bottom,
+            text="📋 复制诊断报告",
+            command=self._copy_report,
+            bg="#f1f5f9",
+            fg="#334155",
+            font=("Microsoft YaHei UI", 8),
+            relief=tk.FLAT,
+            padx=10,
+            pady=3,
+            cursor="hand2",
+        )
+        btn_copy.pack(side=tk.LEFT)
+
+        btn_apply = tk.Button(
+            diag_bottom,
+            text="✓ 采纳此定位并返回",
+            command=self._apply_and_close,
+            bg="#059669",
+            fg="white",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            relief=tk.FLAT,
+            padx=12,
+            pady=3,
+            cursor="hand2",
+        )
+        btn_apply.pack(side=tk.LEFT, padx=(8, 0))
+
+        btn_close = tk.Button(
+            diag_bottom,
+            text="关闭",
+            command=self._on_close,
+            bg="#f1f5f9",
+            fg="#64748b",
+            font=("Microsoft YaHei UI", 8),
+            relief=tk.FLAT,
+            padx=12,
+            pady=3,
+            cursor="hand2",
+        )
+        btn_close.pack(side=tk.RIGHT)
+
+        # ─────────────────────────────────────────────────────────────────
+        # 3. 底部常驻提示条
+        # ─────────────────────────────────────────────────────────────────
+        status_bar = tk.Frame(self.window, bg="#f1f5f9", padx=12, pady=5)
+        status_bar.pack(fill=tk.X, side=tk.BOTTOM, pady=(6, 0))
+
+        tk.Label(
+            status_bar,
+            textvariable=self.var_status,
+            font=("Microsoft YaHei UI", 8),
+            bg="#f1f5f9",
+            fg="#475569",
+            anchor="w",
+        ).pack(fill=tk.X)
 
     def _refresh_window_list(self):
-        """刷新可用窗口列表"""
+        """刷新可用窗口列表（win32-first，安全防崩溃）"""
         self.window_listbox.delete(0, tk.END)
+        self._all_windows = []
         if not self.pywinauto_available:
             self.var_status.set("pywinauto 未安装，无法枚举窗口")
+            self.lbl_win_count.config(text="pywinauto 未安装")
             return
 
         try:
-            # win32-first：纯 Win32 枚举可见顶层窗口（不触碰 UIA 全桌面树，
-            # 避开 Desktop(backend="uia").windows() 的原生崩溃面）
             import wt_flow_locator as flow_locator
             windows = []
             for info in flow_locator.iter_visible_top_level_windows():
                 title = (info.get("title") or "").strip()
                 if title:
-                    windows.append((title, info.get("className") or ""))
-            windows.sort(key=lambda x: x[0].lower())
-            for title, class_name in windows:
-                self.window_listbox.insert(tk.END, f"{title} [{class_name}]")
-            self.var_status.set(f"找到 {len(windows)} 个窗口")
+                    windows.append({
+                        "title": title,
+                        "className": info.get("className") or "",
+                        "hwnd": info.get("hwnd") or 0,
+                    })
+            windows.sort(key=lambda x: x["title"].lower())
+            self._all_windows = windows
+            self._apply_window_filter()
+            self.var_status.set(f"已发现 {len(windows)} 个顶层可见窗口")
         except Exception as exc:
             self.var_status.set(f"枚举窗口失败：{exc}")
+            self.lbl_win_count.config(text=f"枚举失败：{exc}")
+
+    def _apply_window_filter(self):
+        """根据搜索框实时过滤列表"""
+        q = self.var_window_filter.get().strip().lower()
+        self.window_listbox.delete(0, tk.END)
+        matched_count = 0
+        for win in self._all_windows:
+            title = win["title"]
+            cls_name = win["className"]
+            if not q or (q in title.lower()) or (q in cls_name.lower()):
+                self.window_listbox.insert(tk.END, f"{title} [{cls_name}]")
+                matched_count += 1
+        self.lbl_win_count.config(
+            text=f"共 {len(self._all_windows)} 个窗口 (匹配 {matched_count} 个)"
+            if q else f"共 {len(self._all_windows)} 个可见窗口"
+        )
 
     def _on_window_select(self, event=None):
         """窗口选中事件"""
         selection = self.window_listbox.curselection()
-        if selection:
-            content = self.window_listbox.get(selection[0])
-            # 提取窗口标题
-            title = content.rsplit(" [", 1)[0] if " [" in content else content
-            self.var_target_window.set(title)
+        if not selection:
+            return
+        content = self.window_listbox.get(selection[0])
+        title = content.rsplit(" [", 1)[0] if " [" in content else content
+        self.var_target_window.set(title)
+        for w in self._all_windows:
+            if w["title"] == title:
+                self._selected_hwnd = w["hwnd"]
+                break
+        self.var_status.set(f"已锁定目标窗口：{title}")
 
     def _select_from_library(self):
         """从控件库选择控件"""
-        dialog = ControlMapImportDialog(self.window, initial_filter="")
-        self.window.wait_window(dialog.window)
-        if dialog.result and len(dialog.result) > 0:
-            control = dialog.result[0]
-            self.var_locator_method.set(str(control.get("targetMethod", "")).strip())
-            self.var_locator_value.set(str(control.get("targetValue", "")).strip())
-            window_title = str(control.get("windowTitle", "")).strip()
-            if window_title:
-                self.var_target_window.set(window_title)
-            self.var_status.set(f"已选择控件：{control.get('name', '')}")
-
-    def _get_parent_locator(self):
-        """根据当前控件的父子关系生成更可靠的定位信息"""
-        if not self.pywinauto_available:
-            self.var_status.set("pywinauto 未安装，无法获取父级信息")
-            return
-
-        target_title = self.var_target_window.get().strip()
-        if not target_title:
-            self.result_text.delete("1.0", tk.END)
-            self.result_text.insert("1.0", "请先指定目标窗口标题")
-            return
-
         try:
-            # win32-first：窗口列表纯 Win32 枚举，命中后再按句柄包 UIA，
-            # 避免 Desktop(backend="uia").windows() 全桌面枚举的原生崩溃面
-            import wt_flow_locator as flow_locator
-            all_windows = [w for w in flow_locator.iter_visible_top_level_windows() if (w.get("title") or "").strip()]
-            if target_title:
-                matched_windows = [
-                    w for w in all_windows
-                    if target_title.lower() in (w.get("title") or "").lower()
-                ]
-            else:
-                matched_windows = all_windows
+            dialog = ControlMapImportDialog(
+                self.window,
+                default_window_title=self.var_target_window.get().strip(),
+                initial_filter="",
+            )
+            self.window.wait_window(dialog.window)
+            if dialog.result and len(dialog.result) > 0:
+                control = dialog.result[0]
+                self.var_locator_method.set(str(control.get("targetMethod", "")).strip())
+                self.var_locator_value.set(str(control.get("targetValue", "")).strip())
+                window_title = str(control.get("windowTitle", "")).strip()
+                if window_title:
+                    self.var_target_window.set(window_title)
+                self.var_status.set(f"已从控件库导入：{control.get('name', '')}")
+        except Exception as exc:
+            messagebox.showwarning("打开控件库失败", f"无法打开控件库：{exc}", parent=self.window)
 
-            if not matched_windows:
-                self.result_text.delete("1.0", tk.END)
-                message = f"未找到标题包含 '{target_title}' 的窗口" if target_title else "未找到可用窗口"
-                self.result_text.insert("1.0", message)
-                return
+    def _flash_highlight(self, rect=None):
+        """在屏幕目标矩形区域弹出一个半透明高亮线框，并在指定毫秒后自动销毁"""
+        target_rect = rect or self._last_matched_rect
+        if not target_rect:
+            messagebox.showinfo("提示", "当前尚无定位命中的控件坐标，请先执行「▶ 开始检验」。", parent=self.window)
+            return None
+        try:
+            left = int(target_rect.left)
+            top = int(target_rect.top)
+            right = int(target_rect.right)
+            bottom = int(target_rect.bottom)
+            w = max(12, right - left)
+            h = max(12, bottom - top)
 
-            target_window = flow_locator.wrap_window_by_handle(matched_windows[0].get("hwnd"))
-            if target_window is None:
-                self.result_text.delete("1.0", tk.END)
-                self.result_text.insert("1.0", "目标窗口 UIA 包装失败，请重试或更换目标窗口")
-                return
-            locator_value = self.var_locator_value.get().strip()
-            locator_method = self.var_locator_method.get().strip()
+            if w > 10000 or h > 10000 or right < -5000 or bottom < -5000:
+                messagebox.showwarning(
+                    "坐标异常",
+                    f"控件包围盒坐标异常 ({left}, {top}, {w}×{h})，可能窗口已最小化或处于屏幕外部。",
+                    parent=self.window,
+                )
+                return None
 
-            if not locator_value:
-                self.result_text.delete("1.0", tk.END)
-                self.result_text.insert("1.0", "请先输入定位值，或从控件库选择一个控件")
-                return
-
-            # 尝试定位控件
-            found = None
-            search_props = {}
-
-            if "," in locator_method:
-                parts = [p.strip() for p in locator_method.split(",")]
-                if "automation_id" in parts:
-                    search_props["automation_id"] = locator_value.split(",")[0].strip() if "," in locator_value else locator_value
-                if "name" in parts:
-                    search_props["name"] = locator_value.split(",")[-1].strip()
-            else:
-                search_props[locator_method] = locator_value
-
+            overlay = tk.Toplevel()
+            overlay.overrideredirect(True)
+            overlay.attributes("-topmost", True)
             try:
-                if search_props:
-                    found = target_window.child(**search_props)
+                overlay.attributes("-alpha", 0.45)
             except Exception:
                 pass
+            overlay.geometry(f"{w}x{h}+{left}+{top}")
 
-            if found:
-                # 获取控件的层级路径
-                ancestors = []
-                current = found
-                for _ in range(10):
-                    try:
-                        parent = current.parent()
-                        if parent and parent.window_text() != target_title:
-                            try:
-                                ancestors.append(f"{parent.window_text()} [{parent.class_name()}]")
-                            except Exception:
-                                pass
-                        else:
-                            break
-                        current = parent
-                    except Exception:
-                        break
+            canvas = tk.Canvas(
+                overlay,
+                width=w,
+                height=h,
+                bg="#fef08a",
+                highlightthickness=3,
+                highlightbackground="#ef4444",
+                cursor="hand2",
+            )
+            canvas.pack(fill=tk.BOTH, expand=True)
 
-                # 获取兄弟控件信息
-                siblings = []
+            ctrl_name = self._last_matched_name or "Target Control"
+            canvas.create_text(
+                max(6, w // 2),
+                max(10, min(14, h // 2)),
+                text=f"🎯 {ctrl_name} ({w}×{h})",
+                fill="#991b1b",
+                font=("Microsoft YaHei UI", 9, "bold"),
+            )
+
+            def _cleanup():
                 try:
-                    parent_ctrl = found.parent()
-                    if parent_ctrl:
-                        for child in parent_ctrl.children():
-                            try:
-                                siblings.append(f"{child.window_text()} | {child.class_name()} | {getattr(child, 'automation_id', '')}")
-                            except Exception:
-                                pass
+                    overlay.destroy()
                 except Exception:
                     pass
 
-                # 显示结果
-                result = []
-                result.append(f"=== 控件定位成功 ===")
-                result.append(f"控件名称: {found.window_text()}")
-                result.append(f"控件类型: {found.class_name()}")
-                try:
-                    result.append(f"AutomationId: {found.automation_id()}")
-                except Exception:
-                    pass
-                result.append("")
-                result.append(f"=== 父级层级 (从近到远) ===")
-                for i, ancestor in enumerate(reversed(ancestors)):
-                    result.append(f"  L{i}: {ancestor}")
-                result.append("")
-                result.append(f"=== 兄弟控件 ===")
-                for sib in siblings[:10]:
-                    marker = " >>> " if locator_value in sib else "      "
-                    result.append(f"{marker}{sib}")
-
-                self.result_text.delete("1.0", tk.END)
-                self.result_text.insert("1.0", "\n".join(result))
-                self.var_test_result.set(f"定位成功！可用作辅助判断")
-                self.var_status.set("已获取控件的父子关系信息")
-
-                # 自动更新定位值为包含父级信息的版本
-                if ancestors:
-                    parent_info = ancestors[-1].split(" [")[0] if ancestors else ""
-                    if parent_info and len(parent_info) > 2:
-                        new_value = f"{locator_value}"
-                        self.var_locator_value.set(new_value)
-            else:
-                self.result_text.delete("1.0", tk.END)
-                self.result_text.insert("1.0", f"未能定位到控件\n请检查定位方法和值是否正确\n\n目标窗口: {target_title}\n定位方法: {locator_method}\n定位值: {locator_value}")
-                self.var_test_result.set("定位失败")
-                self.var_status.set("未能找到匹配的控件")
-
-        except Exception as exc:
-            self.result_text.delete("1.0", tk.END)
-            self.result_text.insert("1.0", f"检验过程出错：\n{exc}")
-            self.var_test_result.set("检验出错")
-            self.var_status.set(f"检验出错：{exc}")
+            overlay.after(1600, _cleanup)
+            overlay.bind("<Button-1>", lambda e: _cleanup())
+            return overlay
+        except Exception:
+            return None
 
     def _test_locator(self):
-        """测试控件定位"""
+        """执行控件定位检验"""
         if not self.pywinauto_available:
-            self.result_text.delete("1.0", tk.END)
-            self.result_text.insert("1.0", "pywinauto 未安装，无法进行定位检验")
+            self._update_result_view(
+                status="pywinauto 未安装",
+                elapsed_ms=0,
+                error="pywinauto 未安装，无法进行定位检验",
+            )
             return
 
         target_title = self.var_target_window.get().strip()
@@ -2996,36 +3386,55 @@ class ControlLocatorTesterDialog:
         locator_value = self.var_locator_value.get().strip()
 
         if not locator_value:
-            self.result_text.delete("1.0", tk.END)
-            self.result_text.insert("1.0", "请输入定位值")
+            self._update_result_view(
+                status="参数缺失",
+                elapsed_ms=0,
+                error="请输入或选择定位值（targetValue）",
+            )
             return
 
+        t0 = time.perf_counter()
         try:
-            # win32-first：窗口列表纯 Win32 枚举，命中后再按句柄包 UIA，
-            # 避免 Desktop(backend="uia").windows() 全桌面枚举的原生崩溃面
             import wt_flow_locator as flow_locator
-            all_windows = [w for w in flow_locator.iter_visible_top_level_windows() if (w.get("title") or "").strip()]
-            if target_title:
-                matched_windows = [
-                    w for w in all_windows
-                    if target_title.lower() in (w.get("title") or "").lower()
-                ]
-            else:
-                matched_windows = all_windows
 
-            if not matched_windows:
-                self.result_text.delete("1.0", tk.END)
-                message = f"未找到标题包含 '{target_title}' 的窗口" if target_title else "未找到可用窗口"
-                self.result_text.insert("1.0", message)
-                return
+            target_window = None
+            if self._selected_hwnd:
+                target_window = flow_locator.wrap_window_by_handle(self._selected_hwnd)
 
-            target_window = flow_locator.wrap_window_by_handle(matched_windows[0].get("hwnd"))
             if target_window is None:
-                self.result_text.delete("1.0", tk.END)
-                self.result_text.insert("1.0", "目标窗口 UIA 包装失败，请重试或更换目标窗口")
+                all_windows = [
+                    w for w in flow_locator.iter_visible_top_level_windows()
+                    if (w.get("title") or "").strip()
+                ]
+                if target_title:
+                    matched = [
+                        w for w in all_windows
+                        if target_title.lower() in (w.get("title") or "").lower()
+                    ]
+                else:
+                    matched = all_windows
+
+                if not matched:
+                    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    msg = f"未找到标题包含 '{target_title}' 的顶层窗口" if target_title else "未找到任何可用顶层窗口"
+                    self._update_result_view(
+                        status="未找到窗口",
+                        elapsed_ms=elapsed_ms,
+                        error=msg,
+                    )
+                    return
+
+                target_window = flow_locator.wrap_window_by_handle(matched[0].get("hwnd"))
+
+            if target_window is None:
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                self._update_result_view(
+                    status="窗口包装失败",
+                    elapsed_ms=elapsed_ms,
+                    error="目标窗口 UIA 包装失败，请重试或更换目标窗口",
+                )
                 return
 
-            # 构建搜索属性
             search_props = {}
             if "," in locator_method:
                 parts = [p.strip() for p in locator_method.split(",")]
@@ -3036,73 +3445,400 @@ class ControlLocatorTesterDialog:
             else:
                 search_props[locator_method] = locator_value
 
-            result_lines = []
-            result_lines.append(f"目标窗口: {target_title}")
-            result_lines.append(f"定位方法: {locator_method}")
-            result_lines.append(f"定位值: {locator_value}")
-            result_lines.append("")
+            found = None
+            try:
+                found = target_window.child(**search_props)
+            except Exception:
+                found = None
 
-            # 尝试定位
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+            if found:
+                ctrl_name = ""
+                try: ctrl_name = found.window_text()
+                except Exception: pass
+                ctrl_cls = ""
+                try: ctrl_cls = found.class_name()
+                except Exception: pass
+                auto_id = ""
+                try: auto_id = found.automation_id()
+                except Exception: pass
+                rect = None
+                try: rect = found.rectangle()
+                except Exception: pass
+                is_vis = None
+                try: is_vis = found.is_visible()
+                except Exception: pass
+                is_en = None
+                try: is_en = found.is_enabled()
+                except Exception: pass
+
+                self._last_matched_rect = rect
+                self._last_matched_name = ctrl_name or locator_value
+
+                self._update_result_view(
+                    status="定位成功",
+                    elapsed_ms=elapsed_ms,
+                    success=True,
+                    target_title=target_title,
+                    method=locator_method,
+                    value=locator_value,
+                    name=ctrl_name,
+                    class_name=ctrl_cls,
+                    automation_id=auto_id,
+                    rect=rect,
+                    is_visible=is_vis,
+                    is_enabled=is_en,
+                )
+
+                if self.var_auto_highlight.get() and rect:
+                    self._flash_highlight(rect)
+            else:
+                self._last_matched_rect = None
+                candidates = []
+                try:
+                    count = 0
+                    for ctrl in target_window.descendants():
+                        try:
+                            n = ctrl.window_text()
+                            c = ctrl.class_name()
+                            aid = getattr(ctrl, 'automation_id', '')
+                            if n or aid:
+                                candidates.append((n, c, aid))
+                                count += 1
+                                if count >= 35:
+                                    break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                self._update_result_view(
+                    status="定位未命中",
+                    elapsed_ms=elapsed_ms,
+                    success=False,
+                    target_title=target_title,
+                    method=locator_method,
+                    value=locator_value,
+                    candidates=candidates,
+                )
+
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            self._update_result_view(
+                status="检验异常",
+                elapsed_ms=elapsed_ms,
+                error=f"检验过程发生异常：{exc}",
+            )
+
+    def _get_parent_locator(self):
+        """探查控件的父子层级与兄弟节点，帮助提取更稳定可靠的定位特征"""
+        if not self.pywinauto_available:
+            self._update_result_view(
+                status="pywinauto 未安装",
+                elapsed_ms=0,
+                error="pywinauto 未安装，无法获取父级层级信息",
+            )
+            return
+
+        target_title = self.var_target_window.get().strip()
+        locator_method = self.var_locator_method.get().strip()
+        locator_value = self.var_locator_value.get().strip()
+
+        if not locator_value:
+            self._update_result_view(
+                status="参数缺失",
+                elapsed_ms=0,
+                error="请先输入定位值，或从控件库选择一个控件",
+            )
+            return
+
+        t0 = time.perf_counter()
+        try:
+            import wt_flow_locator as flow_locator
+
+            target_window = None
+            if self._selected_hwnd:
+                target_window = flow_locator.wrap_window_by_handle(self._selected_hwnd)
+
+            if target_window is None:
+                all_windows = [
+                    w for w in flow_locator.iter_visible_top_level_windows()
+                    if (w.get("title") or "").strip()
+                ]
+                matched = [
+                    w for w in all_windows
+                    if not target_title or target_title.lower() in (w.get("title") or "").lower()
+                ]
+                if not matched:
+                    self._update_result_view(status="未找到窗口", elapsed_ms=0, error="未找到目标窗口")
+                    return
+                target_window = flow_locator.wrap_window_by_handle(matched[0].get("hwnd"))
+
+            if target_window is None:
+                self._update_result_view(status="包装失败", elapsed_ms=0, error="目标窗口 UIA 包装失败")
+                return
+
+            search_props = {}
+            if "," in locator_method:
+                parts = [p.strip() for p in locator_method.split(",")]
+                if "automation_id" in parts:
+                    search_props["automation_id"] = locator_value.split(",")[0].strip() if "," in locator_value else locator_value
+                if "name" in parts:
+                    search_props["name"] = locator_value.split(",")[-1].strip()
+            else:
+                search_props[locator_method] = locator_value
+
             found = None
             try:
                 found = target_window.child(**search_props)
             except Exception:
                 pass
 
-            if found:
-                result_lines.append("=== 定位成功 ===")
-                result_lines.append(f"控件名称: {found.window_text()}")
-                result_lines.append(f"控件类型: {found.class_name()}")
-                try:
-                    result_lines.append(f"AutomationId: {found.automation_id()}")
-                except Exception:
-                    pass
-                try:
-                    rect = found.rectangle()
-                    result_lines.append(f"位置: {rect.left},{rect.top} - {rect.right},{rect.bottom}")
-                except Exception:
-                    pass
-                try:
-                    result_lines.append(f"是否可见: {found.is_visible()}")
-                    result_lines.append(f"是否启用: {found.is_enabled()}")
-                except Exception:
-                    pass
-                self.var_test_result.set("定位成功")
-            else:
-                result_lines.append("=== 定位失败 ===")
-                result_lines.append("未能找到匹配的控件")
-                result_lines.append("")
-                result_lines.append("尝试列出窗口内的控件:")
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
-                # 列出窗口内的一些控件帮助调试
+            if not found:
+                self._update_result_view(
+                    status="定位未命中",
+                    elapsed_ms=elapsed_ms,
+                    error=f"未能定位到控件，无法获取父级关系。\n请先确认定位参数是否能命中控件。\n\n目标窗口: {target_title}\n定位方法: {locator_method}\n定位值: {locator_value}",
+                )
+                return
+
+            ancestors = []
+            current = found
+            for _ in range(10):
                 try:
-                    count = 0
-                    for ctrl in target_window.descendants():
+                    parent = current.parent()
+                    if parent and parent.window_text() != target_title:
                         try:
-                            name = ctrl.window_text()
-                            ctrl_type = ctrl.class_name()
-                            auto_id = getattr(ctrl, 'automation_id', '')
-                            if name or auto_id:
-                                result_lines.append(f"  {name} | {ctrl_type} | {auto_id}")
-                                count += 1
-                                if count > 30:
-                                    result_lines.append("  ... (更多控件省略)")
-                                    break
+                            ancestors.append((parent.window_text() or "(Unnamed)", parent.class_name() or ""))
                         except Exception:
                             pass
-                except Exception as e:
-                    result_lines.append(f"  枚举控件失败: {e}")
+                    else:
+                        break
+                    current = parent
+                except Exception:
+                    break
 
-                self.var_test_result.set("定位失败")
+            siblings = []
+            try:
+                parent_ctrl = found.parent()
+                if parent_ctrl:
+                    for child in parent_ctrl.children():
+                        try:
+                            c_name = child.window_text() or ""
+                            c_cls = child.class_name() or ""
+                            c_aid = getattr(child, 'automation_id', '') or ""
+                            siblings.append((c_name, c_cls, c_aid))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
-            self.result_text.delete("1.0", tk.END)
-            self.result_text.insert("1.0", "\n".join(result_lines))
-            self.var_status.set(f"检验完成：{self.var_test_result.get()}")
+            lines = [
+                ("title", "═══ 控件层级拓扑与兄弟节点诊断报告 ═══\n"),
+                ("key", "目标控件: "), ("val", f"{found.window_text()} [{found.class_name()}]\n"),
+                ("key", "检索耗时: "), ("val", f"{elapsed_ms:.1f} ms\n\n"),
+                ("title", "── 祖先层级树 (从根到目标) ──\n"),
+            ]
+            if ancestors:
+                for idx, (anc_name, anc_cls) in enumerate(reversed(ancestors)):
+                    indent = "  " * idx
+                    lines.append(("key", f"{indent}├── [L{idx}] "))
+                    lines.append(("val", f"{anc_name} "))
+                    lines.append(("dim", f"[{anc_cls}]\n"))
+                indent = "  " * len(ancestors)
+                lines.append(("success", f"{indent}└── 🎯 [Target] {found.window_text()} [{found.class_name()}]\n\n"))
+            else:
+                lines.append(("dim", "  (该控件直接位于顶层窗口下，无中间父级容器)\n\n"))
+
+            lines.append(("title", f"── 同级兄弟控件 ({len(siblings)} 个) ──\n"))
+            for s_name, s_cls, s_aid in siblings[:20]:
+                is_target = (locator_value in s_name) or (locator_value in s_aid) or (s_name == found.window_text())
+                if is_target:
+                    lines.append(("highlight", " ▶ [MATCH] "))
+                    lines.append(("success", f"{s_name or '(无名称)'} | {s_cls} | {s_aid}\n"))
+                else:
+                    lines.append(("dim", "   • "))
+                    lines.append(("val", f"{s_name or '(无名称)'} | {s_cls} | {s_aid}\n"))
+
+            if len(siblings) > 20:
+                lines.append(("dim", f"   ... 其余 {len(siblings) - 20} 个兄弟控件已折叠\n"))
+
+            self._render_console(lines)
+            self._update_badges("层级解析完成", elapsed_ms, badge_bg="#d1fae5", badge_fg="#065f46")
+            self.lbl_m_status.config(text="✓ 已提取层级", fg="#059669")
+            self.lbl_m_timing.config(text=f"{elapsed_ms:.1f} ms")
+            self.var_status.set(f"已成功获取 {len(ancestors)} 层父级与 {len(siblings)} 个同级兄弟节点")
 
         except Exception as exc:
-            self.result_text.delete("1.0", tk.END)
-            self.result_text.insert("1.0", f"检验出错：\n{exc}")
-            self.var_test_result.set("检验出错")
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            self._update_result_view(status="解析异常", elapsed_ms=elapsed_ms, error=f"获取层级出错：{exc}")
+
+    def _render_console(self, tagged_chunks):
+        """向 ScrolledText 渲染带格式的彩色输出"""
+        self.result_text.delete("1.0", tk.END)
+        for tag, text in tagged_chunks:
+            self.result_text.insert(tk.END, text, tag)
+
+    def _update_badges(self, status_text, elapsed_ms, badge_bg="#f1f5f9", badge_fg="#64748b"):
+        self.lbl_status_badge.config(text=status_text, bg=badge_bg, fg=badge_fg)
+        self.lbl_timing_badge.config(text=f"⏱️ {elapsed_ms:.1f} ms", bg="#e0f2fe", fg="#0369a1")
+
+    def _update_result_view(self, status, elapsed_ms, success=None, error=None, **kwargs):
+        self.var_test_result.set(status)
+        self.var_status.set(f"检验完成：{status}")
+
+        if error:
+            self._update_badges(f"✗ {status}", elapsed_ms, badge_bg="#fee2e2", badge_fg="#991b1b")
+            self.lbl_m_status.config(text=status, fg="#dc2626")
+            self.lbl_m_timing.config(text=f"{elapsed_ms:.1f} ms")
+            self.lbl_m_rect.config(text="--")
+            self.lbl_m_attr.config(text="--")
+            self._render_console([
+                ("error", f"═══ 检验未通过: {status} ═══\n\n"),
+                ("val", f"{error}\n"),
+            ])
+            return
+
+        if success:
+            self._update_badges("✓ 定位成功", elapsed_ms, badge_bg="#d1fae5", badge_fg="#065f46")
+            self.lbl_m_status.config(text="✓ 成功命中", fg="#059669")
+            self.lbl_m_timing.config(text=f"{elapsed_ms:.1f} ms")
+
+            rect = kwargs.get("rect")
+            if rect:
+                w = max(0, rect.right - rect.left)
+                h = max(0, rect.bottom - rect.top)
+                cx = (rect.left + rect.right) // 2
+                cy = (rect.top + rect.bottom) // 2
+                self.lbl_m_rect.config(text=f"{w}×{h} @ ({rect.left}, {rect.top})")
+            else:
+                self.lbl_m_rect.config(text="无坐标信息")
+
+            vis = kwargs.get("is_visible")
+            en = kwargs.get("is_enabled")
+            self.lbl_m_attr.config(text=f"可见: {'是' if vis else '否'} | 启用: {'是' if en else '否'}")
+
+            lines = [
+                ("title", "═══ 控件定位检验成功报告 ═══\n\n"),
+                ("key", "【目标窗口】 "), ("val", f"{kwargs.get('target_title') or '(当前活跃)'}\n"),
+                ("key", "【检索规则】 "), ("val", f"{kwargs.get('method')} = \"{kwargs.get('value')}\"\n"),
+                ("key", "【响应耗时】 "), ("success", f"{elapsed_ms:.1f} ms\n\n"),
+                ("title", "── 命中控件元数据属性 ──\n"),
+                ("key", "• 控件文本 (Name):        "), ("val", f"{kwargs.get('name') or '(空)'}\n"),
+                ("key", "• 控件类型 (ClassName):   "), ("val", f"{kwargs.get('class_name') or '(未知)'}\n"),
+                ("key", "• 自动化标识 (AutomationId):"), ("val", f"{kwargs.get('automation_id') or '(未定义)'}\n"),
+                ("key", "• 可见性 / 启用状态:       "), ("val", f"可见={'是' if vis else '否'}, 启用={'是' if en else '否'}\n"),
+            ]
+            if rect:
+                lines.extend([
+                    ("key", "• 屏幕包围盒 (Rect):       "),
+                    ("val", f"左上: ({rect.left}, {rect.top})  右下: ({rect.right}, {rect.bottom})  尺寸: {w}×{h}\n"),
+                    ("key", "• 物理中心点 (Center):     "),
+                    ("highlight", f"X={cx}, Y={cy}  (可直接用于 pyautogui 物理点击)\n"),
+                ])
+            lines.append(("\nsuccess", "✓ 验证结论：该定位规则在当前目标窗口内唯一且有效，可直接采纳！\n"))
+            self._render_console(lines)
+        else:
+            self._update_badges("✗ 定位未命中", elapsed_ms, badge_bg="#fee2e2", badge_fg="#991b1b")
+            self.lbl_m_status.config(text="✗ 未命中", fg="#dc2626")
+            self.lbl_m_timing.config(text=f"{elapsed_ms:.1f} ms")
+            self.lbl_m_rect.config(text="--")
+            self.lbl_m_attr.config(text="--")
+
+            candidates = kwargs.get("candidates") or []
+            lines = [
+                ("error", "═══ 控件定位未命中 ═══\n\n"),
+                ("key", "【目标窗口】 "), ("val", f"{kwargs.get('target_title')}\n"),
+                ("key", "【检索规则】 "), ("val", f"{kwargs.get('method')} = \"{kwargs.get('value')}\"\n"),
+                ("key", "【响应耗时】 "), ("val", f"{elapsed_ms:.1f} ms\n\n"),
+                ("warning", "未能找到匹配该定位特征的子控件。可能原因：\n"),
+                ("dim", " 1. 目标窗口未处于前台或控件未加载完成；\n"),
+                ("dim", " 2. 定位方法或属性拼写错误（如 automation_id 与 name 混淆）；\n"),
+                ("dim", " 3. 该控件处于更深层容器或内嵌子窗口中，建议使用「🌳 获取父级层级」或尝试不同定位方法。\n\n"),
+            ]
+            if candidates:
+                lines.append(("title", f"── 窗口内部分候选控件 ({len(candidates)} 个) ──\n"))
+                for n, c, aid in candidates:
+                    lines.append(("dim", " • "))
+                    lines.append(("val", f"{n or '(无名称)'} | {c} | {aid}\n"))
+            self._render_console(lines)
+
+    def _copy_report(self):
+        """复制诊断报告至系统剪贴板"""
+        content = self.result_text.get("1.0", tk.END).strip()
+        if not content:
+            return
+        try:
+            self.window.clipboard_clear()
+            self.window.clipboard_append(content)
+            self.var_status.set("✓ 诊断报告已成功复制到剪贴板")
+        except Exception:
+            pass
+
+    def _apply_and_close(self):
+        """采纳当前定位规则并返回"""
+        method = self.var_locator_method.get().strip()
+        value = self.var_locator_value.get().strip()
+        win_title = self.var_target_window.get().strip()
+        if not value:
+            messagebox.showwarning("警告", "定位值为空，无法采纳。", parent=self.window)
+            return
+
+        self.result = {
+            "windowTitle": win_title,
+            "targetMethod": method,
+            "targetValue": value,
+        }
+        if self.initial_control:
+            res = dict(self.initial_control)
+            res["windowTitle"] = win_title
+            res["targetMethod"] = method
+            res["targetValue"] = value
+            self.result = res
+
+        self._on_close()
+
+    def _load_ui_state(self):
+        """恢复窗口尺寸及上次会话偏好"""
+        try:
+            saved = wt_ui_state.load(self.TOOL_KEY)
+            if isinstance(saved, dict):
+                geom = saved.get("geometry")
+                if geom:
+                    wt_ui_state.apply_window_geometry(self.window, geom)
+                if not self.initial_control:
+                    if saved.get("target_window"):
+                        self.var_target_window.set(saved.get("target_window"))
+                    if saved.get("locator_method"):
+                        self.var_locator_method.set(saved.get("locator_method"))
+                    if saved.get("locator_value"):
+                        self.var_locator_value.set(saved.get("locator_value"))
+                if "auto_highlight" in saved:
+                    self.var_auto_highlight.set(bool(saved.get("auto_highlight")))
+        except Exception:
+            pass
+
+    def _save_ui_state(self):
+        """保存窗口状态"""
+        try:
+            geom = wt_ui_state.capture_window_geometry(self.window)
+            wt_ui_state.save(self.TOOL_KEY, {
+                "geometry": geom,
+                "target_window": self.var_target_window.get().strip(),
+                "locator_method": self.var_locator_method.get().strip(),
+                "locator_value": self.var_locator_value.get().strip(),
+                "auto_highlight": self.var_auto_highlight.get(),
+            })
+        except Exception:
+            pass
+
+    def _on_close(self):
+        """关闭窗口时的清理与状态保存"""
+        self._save_ui_state()
+        self.window.destroy()
 
 
 def control_map_timestamp(value):
