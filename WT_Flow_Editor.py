@@ -4365,103 +4365,332 @@ class ControlMapImportDialog:
         self._refresh_file_list()
 
     def _build_ui(self):
-        tips = tk.LabelFrame(self.window, text="使用说明", padx=10, pady=10)
-        tips.pack(fill=tk.X, padx=10, pady=(10, 0))
+        self.window.configure(bg=EDITOR_THEME.get("bg", "#f8fafc"))
+
+        # ── 顶栏紧凑使用指引（支持折叠展开，节省垂直空间） ──
+        tips = tk.Frame(
+            self.window,
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            padx=12,
+            pady=6,
+        )
+        tips.pack(fill=tk.X, padx=10, pady=(8, 0))
+
+        tips_header = tk.Frame(tips, bg=EDITOR_THEME.get("card", "#ffffff"))
+        tips_header.pack(fill=tk.X)
+
         tk.Label(
-            tips,
+            tips_header,
+            text="💡 提示：从已扫描的控件库中检索、复核并批量导入当前流程步骤锚点。",
+            font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).pack(side=tk.LEFT)
+
+        self._tips_expanded = False
+        tips_body = tk.Frame(tips, bg=EDITOR_THEME.get("card", "#ffffff"))
+
+        tk.Label(
+            tips_body,
             text=(
-                "1. 先在总控台或控件库采集器里扫描目标软件窗口并保存。\n"
-                "2. 在这里选择一个控件库文件，右侧会列出可直接导入步骤的控件候选。\n"
-                "3. 质量分级可帮助你优先导入更稳定的控件，也支持多选后一次导入。\n"
-                "4. 导入后会进入当前步骤的“细分控件清单”，动作里的目标控件可直接下拉选择。"
+                "• 先在总控台或控件库采集器里扫描目标软件窗口并保存。\n"
+                "• 选择左侧控件库文件，中间列表会列出可直接导入当前步骤的控件候选（支持按质量优先排序）。\n"
+                "• 质量分级帮助你优先选用更稳定的控件（推荐保留/建议优化/谨慎使用），支持按住 Ctrl/Shift 批量多选。\n"
+                "• 导入后会进入当前步骤的“细分控件清单”，流程动作即可直接关联下拉选取。"
             ),
             justify=tk.LEFT,
             anchor="w",
-            fg=EDITOR_THEME["muted"],
-        ).pack(fill=tk.X)
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("muted", "#64748b"),
+            font=("Microsoft YaHei UI", 8),
+        ).pack(fill=tk.X, pady=(4, 2))
 
-        toolbar = tk.Frame(self.window, padx=10, pady=8)
+        def _toggle_tips():
+            self._tips_expanded = not self._tips_expanded
+            if self._tips_expanded:
+                tips_body.pack(fill=tk.X, pady=(4, 0))
+                btn_tips_toggle.config(text="▲ 收起帮助")
+            else:
+                tips_body.pack_forget()
+                btn_tips_toggle.config(text="▼ 展开帮助")
+
+        btn_tips_toggle = wt_theme.create_flat_button(
+            tips_header,
+            "▼ 展开帮助",
+            _toggle_tips,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=1,
+        )
+        btn_tips_toggle.pack(side=tk.RIGHT)
+
+        # ── 顶部操作工具栏 ──
+        toolbar = tk.Frame(self.window, bg=EDITOR_THEME.get("bg", "#f8fafc"), padx=10, pady=6)
         toolbar.pack(fill=tk.X)
-        # 顶部操作分两排排布，避免窗口缩小时单排控件被遮挡：
-        # 第一排：过滤筛选区；第二排：文件/视图模式区
-        toolbar_row1 = tk.Frame(toolbar)
+
+        # 第一排：过滤筛选与辅助工具区
+        toolbar_row1 = tk.Frame(toolbar, bg=EDITOR_THEME.get("bg", "#f8fafc"))
         toolbar_row1.pack(fill=tk.X)
-        tk.Label(toolbar_row1, text="过滤关键字").pack(side=tk.LEFT)
-        tk.Entry(toolbar_row1, textvariable=self.var_filter).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
-        tk.Label(toolbar_row1, text="排序方式").pack(side=tk.LEFT)
+
+        tk.Label(
+            toolbar_row1,
+            text="🔍 过滤：",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).pack(side=tk.LEFT)
+
+        filter_entry = tk.Entry(
+            toolbar_row1,
+            textvariable=self.var_filter,
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+        )
+        filter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6), ipady=2)
+
+        wt_theme.create_flat_button(
+            toolbar_row1,
+            "✕ 清除",
+            lambda: self.var_filter.set(""),
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=1,
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(
+            toolbar_row1,
+            text="排序：",
+            font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("muted", "#64748b"),
+        ).pack(side=tk.LEFT)
+
         ttk.Combobox(
             toolbar_row1,
             textvariable=self.var_sort,
-            values=("添加时间-新到旧", "添加时间-旧到新", "质量优先"),
-            width=16,
+            values=("质量优先", "添加时间-新到旧", "添加时间-旧到新"),
+            width=14,
             state="readonly",
-        ).pack(side=tk.LEFT, padx=(8, 8))
-        tk.Label(toolbar_row1, text="时间筛选").pack(side=tk.LEFT)
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(2, 10))
+
+        tk.Label(
+            toolbar_row1,
+            text="时间：",
+            font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("muted", "#64748b"),
+        ).pack(side=tk.LEFT)
+
         ttk.Combobox(
             toolbar_row1,
             textvariable=self.var_time_filter,
             values=("全部时间", "最近7天", "最近30天"),
-            width=12,
+            width=10,
             state="readonly",
-        ).pack(side=tk.LEFT, padx=(8, 8))
-        tk.Button(toolbar_row1, text="刷新控件库", command=self._refresh_file_list).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar_row1, text="打开控件库目录", command=self._open_control_map_dir).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar_row1, text="打开控件库采集器", command=self._open_control_map_builder).pack(side=tk.LEFT, padx=2)
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(2, 10))
 
-        toolbar_row2 = tk.Frame(toolbar)
+        wt_theme.create_flat_button(
+            toolbar_row1,
+            "🔄 刷新",
+            self._refresh_file_list,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=8,
+            pady=2,
+        ).pack(side=tk.LEFT, padx=2)
+
+        wt_theme.create_flat_button(
+            toolbar_row1,
+            "📁 库目录",
+            self._open_control_map_dir,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=8,
+            pady=2,
+        ).pack(side=tk.LEFT, padx=2)
+
+        wt_theme.create_flat_button(
+            toolbar_row1,
+            "🎯 打开采集器",
+            self._open_control_map_builder,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=8,
+            pady=2,
+        ).pack(side=tk.LEFT, padx=2)
+
+        # 第二排：模式切换与视图控制
+        toolbar_row2 = tk.Frame(toolbar, bg=EDITOR_THEME.get("bg", "#f8fafc"))
         toolbar_row2.pack(fill=tk.X, pady=(6, 0))
-        tk.Label(toolbar_row2, text="|").pack(side=tk.LEFT, padx=(0, 6))
-        tk.Radiobutton(toolbar_row2, text="单文件", variable=self.var_file_scope, value="single", command=self._on_file_scope_change).pack(side=tk.LEFT, padx=(0, 2))
-        tk.Radiobutton(toolbar_row2, text="总控件信息", variable=self.var_file_scope, value="master", command=self._on_file_scope_change).pack(side=tk.LEFT, padx=2)
-        tk.Radiobutton(toolbar_row2, text="标准目录", variable=self.var_file_scope, value="catalog", command=self._on_file_scope_change).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar_row2, text="合并去重并保存", command=self._merge_and_save_master, bg="#d1fae5").pack(side=tk.LEFT, padx=(8, 2))
-        tk.Label(toolbar_row2, text="|").pack(side=tk.LEFT, padx=(8, 6))
-        self.var_view_mode = tk.StringVar(value="flat")
-        tk.Radiobutton(toolbar_row2, text="树形视图", variable=self.var_view_mode, value="tree", command=self._on_view_mode_change).pack(side=tk.LEFT, padx=(0, 2))
-        tk.Radiobutton(toolbar_row2, text="列表视图", variable=self.var_view_mode, value="flat", command=self._on_view_mode_change).pack(side=tk.LEFT, padx=2)
-        tk.Button(toolbar_row2, text="展开全部", command=self._cmd_expand_all,
-                  font=("Microsoft YaHei UI", 9), padx=6, pady=0).pack(side=tk.LEFT, padx=(12, 2))
-        tk.Button(toolbar_row2, text="折叠全部", command=self._cmd_collapse_all,
-                  font=("Microsoft YaHei UI", 9), padx=6, pady=0).pack(side=tk.LEFT, padx=2)
+
+        tk.Label(
+            toolbar_row2,
+            text="范围：",
+            font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("muted", "#64748b"),
+        ).pack(side=tk.LEFT)
+
+        for scope_val, scope_label in (("single", "单文件"), ("master", "总控件信息"), ("catalog", "标准目录")):
+            tk.Radiobutton(
+                toolbar_row2,
+                text=scope_label,
+                variable=self.var_file_scope,
+                value=scope_val,
+                command=self._on_file_scope_change,
+                bg=EDITOR_THEME.get("bg", "#f8fafc"),
+                fg=EDITOR_THEME.get("text", "#1f2d3d"),
+                font=("Microsoft YaHei UI", 9),
+                activebackground=EDITOR_THEME.get("bg", "#f8fafc"),
+            ).pack(side=tk.LEFT, padx=3)
+
+        wt_theme.create_flat_button(
+            toolbar_row2,
+            "⚡ 合并去重并保存",
+            self._merge_and_save_master,
+            tone="primary",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            padx=8,
+            pady=1,
+        ).pack(side=tk.LEFT, padx=(10, 14))
+
+        tk.Label(
+            toolbar_row2,
+            text="视图：",
+            font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("muted", "#64748b"),
+        ).pack(side=tk.LEFT)
+
+        for view_val, view_label in (("flat", "列表视图"), ("tree", "树形视图")):
+            tk.Radiobutton(
+                toolbar_row2,
+                text=view_label,
+                variable=self.var_view_mode,
+                value=view_val,
+                command=self._on_view_mode_change,
+                bg=EDITOR_THEME.get("bg", "#f8fafc"),
+                fg=EDITOR_THEME.get("text", "#1f2d3d"),
+                font=("Microsoft YaHei UI", 9),
+                activebackground=EDITOR_THEME.get("bg", "#f8fafc"),
+            ).pack(side=tk.LEFT, padx=3)
+
+        wt_theme.create_flat_button(
+            toolbar_row2,
+            "展开全部",
+            self._cmd_expand_all,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=1,
+        ).pack(side=tk.LEFT, padx=(12, 2))
+
+        wt_theme.create_flat_button(
+            toolbar_row2,
+            "折叠全部",
+            self._cmd_collapse_all,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=1,
+        ).pack(side=tk.LEFT, padx=2)
+
         self.var_filter.trace_add("write", lambda *_args: self._schedule_filter_refresh())
         self.var_sort.trace_add("write", lambda *_args: self._refresh_file_list())
         self.var_time_filter.trace_add("write", lambda *_args: self._refresh_file_list())
 
-        body = tk.PanedWindow(self.window, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
-        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        # ── 中部三栏主工作区 ──
+        body = tk.PanedWindow(self.window, orient=tk.HORIZONTAL, sashrelief=tk.FLAT, bg=EDITOR_THEME.get("bg", "#f8fafc"))
+        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=(4, 8))
 
-        left = tk.LabelFrame(body, text="控件库文件", padx=10, pady=10)
-        body.add(left, minsize=wt_dpi.scale(280), width=wt_dpi.scale(300))
-        middle = tk.LabelFrame(body, text="控件候选", padx=10, pady=10)
-        body.add(middle, minsize=wt_dpi.scale(500), width=wt_dpi.scale(660))
-        right = tk.LabelFrame(body, text="控件详情", padx=10, pady=10)
-        body.add(right, minsize=wt_dpi.scale(340), width=wt_dpi.scale(480))
+        # 左栏：控件库文件
+        left = tk.LabelFrame(
+            body,
+            text="📁 控件库文件",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            padx=8,
+            pady=8,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        body.add(left, minsize=wt_dpi.scale(260), width=wt_dpi.scale(280))
 
         tk.Label(
             left,
             textvariable=self.var_file_summary,
-            fg=EDITOR_THEME["muted"],
+            font=("Microsoft YaHei UI", 8),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("primary", "#2563eb"),
             anchor="w",
-            justify=tk.LEFT,
-        ).pack(fill=tk.X, pady=(0, 8))
+            padx=6,
+            pady=2,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        ).pack(fill=tk.X, pady=(0, 6))
 
-        self.file_listbox = tk.Listbox(left, width=42, exportselection=False)
+        file_list_wrap = tk.Frame(left, bg=EDITOR_THEME.get("card", "#ffffff"))
+        file_list_wrap.pack(fill=tk.BOTH, expand=True)
+
+        self.file_listbox = tk.Listbox(
+            file_list_wrap,
+            exportselection=False,
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=0,
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            selectbackground=EDITOR_THEME.get("primary", "#2563eb"),
+            selectforeground="#ffffff",
+        )
         self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.file_listbox.bind("<<ListboxSelect>>", self._on_file_select)
-        file_scrollbar = ttk.Scrollbar(left, orient="vertical", command=self.file_listbox.yview)
+        file_scrollbar = ttk.Scrollbar(file_list_wrap, orient="vertical", command=self.file_listbox.yview)
         file_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.file_listbox.configure(yscrollcommand=file_scrollbar.set)
+
+        # 中栏：控件候选
+        middle = tk.LabelFrame(
+            body,
+            text="🎯 控件候选",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            padx=8,
+            pady=8,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        body.add(middle, minsize=wt_dpi.scale(520), width=wt_dpi.scale(680))
 
         tk.Label(
             middle,
             textvariable=self.var_candidate_summary,
-            fg=EDITOR_THEME["muted"],
+            font=("Microsoft YaHei UI", 8),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("primary", "#2563eb"),
             anchor="w",
-            justify=tk.LEFT,
-        ).pack(fill=tk.X, pady=(0, 8))
+            padx=6,
+            pady=2,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        ).pack(fill=tk.X, pady=(0, 6))
 
-        control_wrap = tk.Frame(middle)
+        control_wrap = tk.Frame(middle, bg=EDITOR_THEME.get("card", "#ffffff"))
         control_wrap.pack(fill=tk.BOTH, expand=True)
+
         self.control_tree = ttk.Treeview(
             control_wrap,
             columns=("ctrl_type", "quality", "locator", "window"),
@@ -4474,57 +4703,259 @@ class ControlMapImportDialog:
         self.control_tree.heading("quality", text="质量")
         self.control_tree.heading("locator", text="推荐定位")
         self.control_tree.heading("window", text="窗口")
-        self.control_tree.column("#0", width=280, anchor="w")
-        self.control_tree.column("ctrl_type", width=100, anchor="w")
-        self.control_tree.column("quality", width=90, anchor="center")
-        self.control_tree.column("locator", width=280, anchor="w")
-        self.control_tree.column("window", width=160, anchor="w")
+        self.control_tree.column("#0", width=260, anchor="w")
+        self.control_tree.column("ctrl_type", width=90, anchor="w")
+        self.control_tree.column("quality", width=95, anchor="center")
+        self.control_tree.column("locator", width=240, anchor="w")
+        self.control_tree.column("window", width=140, anchor="w")
         self.control_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.control_tree.bind("<<TreeviewSelect>>", self._on_control_select)
+
+        # 质量等级与容器状态样式标签
+        self.control_tree.tag_configure("quality_high", foreground="#059669")
+        self.control_tree.tag_configure("quality_medium", foreground="#d97706")
+        self.control_tree.tag_configure("quality_low", foreground="#dc2626")
+        self.control_tree.tag_configure("quality_unverified", foreground="#2563eb")
+        self.control_tree.tag_configure("quality_unclassified", foreground="#64748b")
+        self.control_tree.tag_configure("container", foreground="#1d4ed8", font=("Microsoft YaHei UI", 9, "bold"))
+        self.control_tree.tag_configure("transparent", foreground="#64748b", font=("Microsoft YaHei UI", 9, "italic"))
+
         control_scrollbar = ttk.Scrollbar(control_wrap, orient="vertical", command=self.control_tree.yview)
         control_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         control_h_scrollbar = ttk.Scrollbar(middle, orient="horizontal", command=self.control_tree.xview)
-        control_h_scrollbar.pack(fill=tk.X, pady=(6, 0))
+        control_h_scrollbar.pack(fill=tk.X, pady=(4, 0))
         self.control_tree.configure(yscrollcommand=control_scrollbar.set, xscrollcommand=control_h_scrollbar.set)
 
+        # 右栏：控件详情
+        right = tk.LabelFrame(
+            body,
+            text="🏷️ 控件详细属性",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            padx=8,
+            pady=8,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        body.add(right, minsize=wt_dpi.scale(320), width=wt_dpi.scale(440))
+
+        right_header = tk.Frame(right, bg=EDITOR_THEME.get("card", "#ffffff"))
+        right_header.pack(fill=tk.X, pady=(0, 6))
+
         tk.Label(
+            right_header,
+            text="可即时查看定位与诊断属性",
+            font=("Microsoft YaHei UI", 8),
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("muted", "#64748b"),
+        ).pack(side=tk.LEFT)
+
+        wt_theme.create_flat_button(
+            right_header,
+            "📋 复制表达式",
+            self._copy_selected_locator,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=1,
+        ).pack(side=tk.RIGHT)
+
+        wt_theme.create_flat_button(
+            right_header,
+            "📋 复制 JSON",
+            self._copy_selected_json,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=1,
+        ).pack(side=tk.RIGHT, padx=(0, 4))
+
+        self.preview_text = scrolledtext.ScrolledText(
             right,
-            text="右侧显示当前选中控件的完整详情，便于确认业务名称、质量分级和推荐定位。",
-            fg=EDITOR_THEME["muted"],
-            justify=tk.LEFT,
-            anchor="w",
-        ).pack(fill=tk.X)
-        self.preview_text = scrolledtext.ScrolledText(right, height=14, wrap=tk.WORD, font=("Consolas", 10))
-        self.preview_text.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+            height=14,
+            wrap=tk.WORD,
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+            bd=0,
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        self.preview_text.pack(fill=tk.BOTH, expand=True)
 
-        action_row = tk.Frame(self.window, padx=10, pady=10)
+        # ── 底部操作工具栏 ──
+        action_row = tk.Frame(self.window, bg=EDITOR_THEME.get("bg", "#f8fafc"), padx=10, pady=8)
         action_row.pack(fill=tk.X)
-        # 底部操作分两排排布，避免窗口缩小时单排按钮被遮挡：
-        # 第一排：导入/编辑/检验操作；第二排：视图切换 + 状态信息
-        action_row1 = tk.Frame(action_row)
-        action_row1.pack(fill=tk.X)
-        tk.Button(action_row1, text="导入所选控件", command=self.import_selected, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row1, text="导入推荐控件", command=self.import_recommended, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row1, text="导入当前文件全部控件", command=self.import_all, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row1, text="编辑所选控件", command=self.edit_selected_control, bg="#fef3c7").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row1, text="删除所选控件", command=self.delete_selected_controls, bg="#fee2e2").pack(side=tk.LEFT, padx=3)
-        self._btn_test_locator = tk.Button(action_row1, text="检验定位", command=self._toggle_probe_button, bg="#e0e7ff")
-        self._btn_test_locator.pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row1, text="取消", command=self.on_cancel).pack(side=tk.LEFT, padx=3)
 
-        action_row2 = tk.Frame(action_row)
+        # 第一排：导入 / 编辑 / 检验 / 删除 主操作组
+        action_row1 = tk.Frame(action_row, bg=EDITOR_THEME.get("bg", "#f8fafc"))
+        action_row1.pack(fill=tk.X)
+
+        wt_theme.create_flat_button(
+            action_row1,
+            "📥 导入所选控件",
+            self.import_selected,
+            tone="primary",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=12,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=3)
+
+        wt_theme.create_flat_button(
+            action_row1,
+            "⭐ 导入推荐控件",
+            self.import_recommended,
+            tone="primary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=3)
+
+        wt_theme.create_flat_button(
+            action_row1,
+            "📦 导入当前文件全部",
+            self.import_all,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=3)
+
+        wt_theme.create_flat_button(
+            action_row1,
+            "✏️ 编辑所选控件",
+            self.edit_selected_control,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=3)
+
+        wt_theme.create_flat_button(
+            action_row1,
+            "🗑️ 删除所选控件",
+            self.delete_selected_controls,
+            tone="danger",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=3)
+
+        self._btn_test_locator = wt_theme.create_flat_button(
+            action_row1,
+            "🎯 检验定位",
+            self._toggle_probe_button,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        )
+        self._btn_test_locator.pack(side=tk.LEFT, padx=3)
+
+        wt_theme.create_flat_button(
+            action_row1,
+            "关闭",
+            self.on_cancel,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=14,
+            pady=4,
+        ).pack(side=tk.RIGHT, padx=3)
+
+        # 第二排：辅助视图控制与即时反馈
+        action_row2 = tk.Frame(action_row, bg=EDITOR_THEME.get("bg", "#f8fafc"))
         action_row2.pack(fill=tk.X, pady=(6, 0))
-        tk.Button(action_row2, text="展开全部", command=self._cmd_expand_all,
-                  font=("Microsoft YaHei UI", 9), padx=6, pady=2).pack(side=tk.LEFT, padx=2)
-        tk.Button(action_row2, text="折叠全部", command=self._cmd_collapse_all,
-                  font=("Microsoft YaHei UI", 9), padx=6, pady=2).pack(side=tk.LEFT, padx=2)
+
+        wt_theme.create_flat_button(
+            action_row2,
+            "展开全部",
+            self._cmd_expand_all,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=2,
+        ).pack(side=tk.LEFT, padx=2)
+
+        wt_theme.create_flat_button(
+            action_row2,
+            "折叠全部",
+            self._cmd_collapse_all,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=2,
+        ).pack(side=tk.LEFT, padx=2)
+
         ttk.Separator(action_row2, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=8)
-        tk.Label(action_row2, textvariable=self.var_status, fg=EDITOR_THEME["muted"]).pack(side=tk.RIGHT)
-        
-        # 定位结果状态标签（用于显示检验定位结果而不弹窗）
+
+        # 定位结果状态标签
         self.var_locator_result = tk.StringVar(value="")
-        self.locator_result_label = tk.Label(action_row2, textvariable=self.var_locator_result, fg="#0066cc", font=("Microsoft YaHei", 9))
-        self.locator_result_label.pack(side=tk.LEFT, padx=(20, 0))
+        self.locator_result_label = tk.Label(
+            action_row2,
+            textvariable=self.var_locator_result,
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg="#2563eb",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        self.locator_result_label.pack(side=tk.LEFT, padx=(6, 0))
+
+        tk.Label(
+            action_row2,
+            textvariable=self.var_status,
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("muted", "#64748b"),
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.RIGHT)
+
+    def _copy_selected_locator(self):
+        selected_ctrl = self._get_selected_single_control()
+        if not selected_ctrl:
+            self.var_status.set("请先在列表中选中一个控件。")
+            return
+        method = str(selected_ctrl.get("recommendedTargetMethod", "") or selected_ctrl.get("targetMethod", "")).strip()
+        value = str(selected_ctrl.get("recommendedTargetValue", "") or selected_ctrl.get("targetValue", "")).strip()
+        locator = f"{method}:{value}".strip(":")
+        if not locator:
+            self.var_status.set("未找到所选控件的定位数据。")
+            return
+        try:
+            self.window.clipboard_clear()
+            self.window.clipboard_append(locator)
+            self.var_status.set(f"已复制定位表达式到剪贴板：{locator}")
+        except Exception:
+            self.var_status.set(f"定位表达式：{locator}")
+
+    def _copy_selected_json(self):
+        selected_ctrl = self._get_selected_single_control()
+        if not selected_ctrl:
+            self.var_status.set("请先在列表中选中一个控件。")
+            return
+        try:
+            payload_str = json.dumps(selected_ctrl, ensure_ascii=False, indent=2)
+            self.window.clipboard_clear()
+            self.window.clipboard_append(payload_str)
+            self.var_status.set(f"已复制控件 JSON 数据到剪贴板（{len(payload_str)} 字符）。")
+        except Exception:
+            self.var_status.set("复制控件 JSON 数据失败。")
+
+    def _get_selected_single_control(self):
+        selection = self.control_tree.selection()
+        if not selection:
+            return None
+        iid = selection[0]
+        view_mode = self.var_view_mode.get().strip()
+        if view_mode == "tree":
+            return self._tree_node_map.get(iid)
+        try:
+            idx = int(iid)
+            controls = self._get_filtered_controls()
+            if 0 <= idx < len(controls):
+                return controls[idx]
+        except Exception:
+            pass
+        return None
 
     def _refresh_file_list(self):
         if self.var_file_scope.get().strip() == "catalog":
@@ -5030,6 +5461,22 @@ class ControlMapImportDialog:
         window = str(control.get("windowTitle", "")).strip()
         return name, quality, control_type, locator, window
 
+    @staticmethod
+    def _format_quality_display(quality_raw):
+        """格式化质量评级显示，并返回对应语义色彩 tag。"""
+        q = str(quality_raw or "").strip()
+        if not q or q in ("未分类", "none", "unknown"):
+            return "⚪ 未分类", "quality_unverified"
+        if any(w in q for w in ("推荐", "high", "高", "优质")):
+            return "✓ 推荐保留", "quality_high"
+        elif any(w in q for w in ("优化", "medium", "中", "良好")):
+            return "⚡ 建议优化", "quality_medium"
+        elif any(w in q for w in ("谨慎", "low", "低", "差")):
+            return "⚠️ 谨慎使用", "quality_low"
+        elif "待验证" in q or "verify" in q.lower():
+            return "🔍 待验证", "quality_unverified"
+        return f"• {q}", "quality_unverified"
+
     def _refresh_flat_view(self):
         """列表视图：显示序号、控件名称、类型、质量、推荐定位和窗口六列。"""
         self.control_tree.configure(
@@ -5047,20 +5494,29 @@ class ControlMapImportDialog:
         self.control_tree.column("seq", width=40, minwidth=36, anchor="center", stretch=False)
         self.control_tree.column("name", width=165, minwidth=120, stretch=True, anchor="w")
         self.control_tree.column("ctrl_type", width=75, minwidth=50, stretch=False, anchor="w")
-        self.control_tree.column("quality", width=65, minwidth=45, stretch=False, anchor="center")
+        self.control_tree.column("quality", width=80, minwidth=60, stretch=False, anchor="center")
         self.control_tree.column("locator", width=165, minwidth=110, stretch=True, anchor="w")
         self.control_tree.column("window", width=115, minwidth=80, stretch=False, anchor="w")
+
+        # 质量等级语义色彩 tags
+        self.control_tree.tag_configure("quality_high", foreground="#15803d")
+        self.control_tree.tag_configure("quality_medium", foreground="#b45309")
+        self.control_tree.tag_configure("quality_low", foreground="#b91c1c")
+        self.control_tree.tag_configure("quality_unverified", foreground="#64748b")
+
         controls = self._get_filtered_controls()
         payload_title = ""
         if isinstance(self.current_payload, dict):
             payload_title = str(((self.current_payload.get("targetWindow", {}) or {}).get("title", ""))).strip()
         for index, control in enumerate(controls, start=1):
             name, quality, control_type, locator, window_title = self._control_display_fields(control)
+            quality_badge, quality_tag = self._format_quality_display(quality)
             self.control_tree.insert(
                 "",
                 tk.END,
                 iid=str(index - 1),
-                values=(index, name, control_type, quality, locator, window_title),
+                values=(index, name, control_type, quality_badge, locator, window_title),
+                tags=(quality_tag,),
             )
         self.preview_text.delete("1.0", tk.END)
         summary_parts = [f"候选控件：{len(controls)}"]
@@ -5088,11 +5544,11 @@ class ControlMapImportDialog:
         # 列自适应树宽：初始总宽 650 低于中栏默认可用宽度（约 676），
         # 避免树形视图一打开就出现横向滚动条；stretch=True 的列在窗口拉宽时
         # 自动扩展，多余空间优先分配给名称(#0)/推荐定位列。
-        # 名称列带树形缩进/图标，给足宽度；总宽 = 190+75+65+170+115 = 615，
+        # 名称列带树形缩进/图标，给足宽度；总宽 = 190+75+80+170+115 = 630，
         # 低于中栏默认可用宽度（约 636），且 #0/locator 可拉伸，默认不出现横向滚动条。
         self.control_tree.column("#0", width=190, minwidth=130, stretch=True, anchor="w")
         self.control_tree.column("ctrl_type", width=75, minwidth=50, stretch=False, anchor="w")
-        self.control_tree.column("quality", width=65, minwidth=45, stretch=False, anchor="center")
+        self.control_tree.column("quality", width=80, minwidth=60, stretch=False, anchor="center")
         self.control_tree.column("locator", width=170, minwidth=110, stretch=True, anchor="w")
         self.control_tree.column("window", width=115, minwidth=80, stretch=False, anchor="w")
         # 节点 tag：主（容器/面板）加粗主色，次（叶子控件）普通，透明容器浅灰斜体，
@@ -5102,6 +5558,10 @@ class ControlMapImportDialog:
         self.control_tree.tag_configure("synthetic", foreground="#94a3b8")
         self.control_tree.tag_configure("transparent", foreground="#94a3b8", font=("Microsoft YaHei UI", 9, "italic"))
         self.control_tree.tag_configure("instance", foreground="#64748b")
+        self.control_tree.tag_configure("quality_high", foreground="#15803d")
+        self.control_tree.tag_configure("quality_medium", foreground="#b45309")
+        self.control_tree.tag_configure("quality_low", foreground="#b91c1c")
+        self.control_tree.tag_configure("quality_unverified", foreground="#64748b")
         if self.var_file_scope.get().strip() in ("master", "catalog"):
             self.control_tree.heading("window", text="来源文件")
         else:
@@ -5272,17 +5732,19 @@ class ControlMapImportDialog:
 
             if ctrl:
                 _name, quality, ctrl_type, locator, window_title = self._control_display_fields(ctrl)
+                quality_badge, q_tag = self._format_quality_display(quality)
                 if self.var_file_scope.get().strip() in ("master", "catalog"):
                     window_title = str(ctrl.get("_sourceFile", "") or window_title).strip()
             else:
-                ctrl_type = quality = locator = window_title = ""
+                ctrl_type = quality_badge = locator = window_title = ""
+                q_tag = "quality_unverified"
 
             display_name = f"[{node['name']}]" if node["synthetic"] else node["name"]
 
             iid = self.control_tree.insert(
                 parent_iid, tk.END, iid=path,
                 text=display_name,
-                values=(ctrl_type, quality, locator, window_title),
+                values=(ctrl_type, quality_badge, locator, window_title),
             )
             # 主次节点区分：合成前缀/占位 → synthetic；有子节点 → container；否则 → leaf
             if node["synthetic"]:
@@ -5290,7 +5752,7 @@ class ControlMapImportDialog:
             elif node["children"]:
                 self.control_tree.item(iid, tags=("container",))
             else:
-                self.control_tree.item(iid, tags=("leaf",))
+                self.control_tree.item(iid, tags=("leaf", q_tag))
 
             # 同 uiPath 多实例（模板复制控件，如各 interest-area 面板的 添加/编辑/删除 等）：
             # 主行之外每个实例补一行叶子，iid=path|#k 保证唯一，并映射到各自 flat 条目，
@@ -5299,6 +5761,7 @@ class ControlMapImportDialog:
             extra_indexes = node.get("flat_indexes", [])[1:]
             for _k, (extra_ctrl, extra_idx) in enumerate(zip(extra_controls, extra_indexes), start=1):
                 _e_name, _e_quality, _e_type, _e_locator, _e_window = self._control_display_fields(extra_ctrl)
+                _e_badge, _e_qtag = self._format_quality_display(_e_quality)
                 if self.var_file_scope.get().strip() in ("master", "catalog"):
                     _e_window = str(extra_ctrl.get("_sourceFile", "") or _e_window).strip()
                 leaf_iid = f"{path}|#{_k}"
@@ -5311,9 +5774,9 @@ class ControlMapImportDialog:
                 self.control_tree.insert(
                     iid, tk.END, iid=leaf_iid,
                     text=f"实例 {_k}: {leaf_name}",
-                    values=(_e_type, _e_quality, _e_locator, _e_window),
+                    values=(_e_type, _e_badge, _e_locator, _e_window),
                 )
-                self.control_tree.item(leaf_iid, tags=("instance",))
+                self.control_tree.item(leaf_iid, tags=("instance", _e_qtag))
                 self._tree_node_map[leaf_iid] = extra_ctrl
                 self._tree_node_index[leaf_iid] = extra_idx
 
@@ -5439,6 +5902,7 @@ class ControlMapImportDialog:
             name = semantic
             control_type = str(ctrl.get("controlType", "") or node.get("controlType", "") or "Unknown").strip()
             quality = str(ctrl.get("qualityTier", "") or ctrl.get("_qualityTier", "") or "未分类").strip()
+            quality_badge, q_tag = self._format_quality_display(quality)
             method = str(ctrl.get("recommendedTargetMethod", "") or ctrl.get("targetMethod", "")).strip()
             value = str(ctrl.get("recommendedTargetValue", "") or ctrl.get("targetValue", "")).strip()
             locator = f"{method}:{value}".strip(":")
@@ -5453,14 +5917,14 @@ class ControlMapImportDialog:
             elif has_children:
                 prefix, tags = "▸", ("container",)
             else:
-                prefix, tags = "●", ("leaf",)
+                prefix, tags = "●", ("leaf", q_tag)
             self._tree_seq += 1
             iid = f"hierarchy:{self._tree_seq}"
             self.control_tree.insert(
                 parent_iid, tk.END, iid=iid,
                 open=(depth < 2),
                 text=f"{prefix} {name}",
-                values=(control_type, quality, locator, window_title),
+                values=(control_type, quality_badge, locator, window_title),
                 tags=tags,
             )
             try:
