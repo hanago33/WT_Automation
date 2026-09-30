@@ -26,7 +26,13 @@
 不需要 tearDownClass。
 """
 
+import sys
 import unittest
+
+if __name__ == "_tk_support":
+    sys.modules.setdefault("tests._tk_support", sys.modules[__name__])
+elif __name__ == "tests._tk_support":
+    sys.modules.setdefault("_tk_support", sys.modules[__name__])
 
 _root = None
 _tk = None
