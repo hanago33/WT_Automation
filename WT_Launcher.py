@@ -77,6 +77,10 @@ SERVER_MONITOR_PORT = 8767
 TASK_SERVER_SCRIPT = os.path.join(BASE_DIR, "wt_task_server.py")
 TASK_SERVER_DEFAULT_URL = "http://127.0.0.1:8768"
 TASK_SERVER_PORT = 8768
+# 服务器一键会话修复（原 服务器一键会话修复.bat 的 2-4 步，收编进总控台按钮）
+SESSION_DIAGNOSE_SCRIPT = os.path.join(BASE_DIR, "diagnose_session.py")
+QUEUE_SELFCHECK_SCRIPT = os.path.join(BASE_DIR, "wt_queue_selfcheck.py")
+SERVER_GM_EXE_FIX_SCRIPT = os.path.join(BASE_DIR, "fix_server_gm_exe.py")
 FLOW_DEFINITION_ENV_KEY = "WT_FLOW_DEFINITION_FILE"
 RECORDER_LAUNCH_CMD_FILE = os.path.join(BASE_DIR, "_launch_pywinauto_recorder.cmd")
 _PYAUTOGUI_MODULE = None
@@ -5366,6 +5370,7 @@ class LauncherApp:
                 ("启动任务队列服务", self.start_task_queue_service),
                 ("停止任务队列服务", self.stop_task_queue_service),
                 ("任务与服务器监控", self.open_task_queue, True),
+                ("一键会话修复（服务器）", self.run_server_session_repair, True),
                 ("模型配置检查", self.run_model_check),
                 ("打开 UI-TARS 配置", self.open_ui_tars_config),
                 ("打开运行日志", self.open_log_file, True),
@@ -7340,6 +7345,10 @@ class LauncherApp:
             elif item_type == "log":
                 message, tag = payload
                 self._append_log(message, tag=tag)
+            elif item_type == "status":
+                status_text, step_text = payload
+                self.status_var.set(status_text)
+                self.current_step_var.set(step_text)
             elif item_type == "exit":
                 self._handle_process_exit(payload)
         self.root.after(120, self._poll_output_queue)
@@ -9301,6 +9310,108 @@ class LauncherApp:
         self._append_log("已停止{}（端口 {}）。".format(label, port), tag="warning")
         self.status_var.set("状态：{}已停止".format(label))
         messagebox.showinfo("停止{}".format(label), "{}已停止。".format(label))
+
+    def run_server_session_repair(self):
+        """服务器一键会话修复：诊断 → 当前会话重启队列服务 → WT 程序路径校验修复。
+
+        等价于 服务器一键会话修复.bat 的 2-4 步（部署发布包仍走 bat 拖 zip /
+        deploy_release.py），收编为总控台按钮后无需再单独找 bat 执行。
+        """
+        scripts = [
+            ("会话诊断脚本", SESSION_DIAGNOSE_SCRIPT),
+            ("队列服务自检脚本", QUEUE_SELFCHECK_SCRIPT),
+            ("WT 程序路径修复脚本", SERVER_GM_EXE_FIX_SCRIPT),
+        ]
+        missing = [label for label, path in scripts if not os.path.exists(path)]
+        if missing:
+            messagebox.showerror(
+                "一键会话修复",
+                "未找到必需脚本：\n" + "\n".join(missing),
+            )
+            return
+        if getattr(self, "_session_repair_running", False):
+            messagebox.showinfo("一键会话修复", "会话修复正在运行中，请等待完成。")
+            return
+        if not messagebox.askyesno(
+            "一键会话修复（服务器）",
+            "将依次执行：\n"
+            "1) 会话诊断（SessionId / UIPI 权限一致性）\n"
+            "2) 停止 8767/8768 旧服务，并在当前会话重启（--force 幂等）\n"
+            "3) WT 程序（MUP）路径校验与修复（.lnk → .exe）\n\n"
+            "确认执行？",
+            parent=self.root,
+        ):
+            return
+        token = str(getattr(self, "task_queue_token", "") or "").strip()
+        if not token:
+            from wt_queue_selfcheck import DEFAULT_TOKEN
+            token = DEFAULT_TOKEN
+        self._session_repair_running = True
+        self.status_var.set("状态：一键会话修复运行中…")
+        self.current_step_var.set("当前步骤：一键会话修复（服务器）")
+        threading.Thread(target=self._session_repair_worker, args=(token,), daemon=True).start()
+
+    def _session_repair_worker(self, token):
+        def log(message, tag="info"):
+            self.output_queue.put(("log", (message, tag)))
+
+        # 子进程 stdout 统一按 UTF-8 输出（捕获管道下 Python 默认跟随 GBK，中文会乱码）。
+        # 注意不要设 PYTHONUTF8=1：diagnose_session 内部按 locale 编码解码 PowerShell
+        # 输出，UTF-8 模式会同时改掉那份解码，反而造成二次乱码。
+        env = dict(os.environ)
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUNBUFFERED"] = "1"
+        steps = [
+            ("1/3 会话诊断", [sys.executable, SESSION_DIAGNOSE_SCRIPT]),
+            ("2/3 重启队列/监控服务",
+             [sys.executable, QUEUE_SELFCHECK_SCRIPT, "--server", "--force", "--token", token]),
+            ("3/3 WT 程序路径校验修复", [sys.executable, SERVER_GM_EXE_FIX_SCRIPT]),
+        ]
+        log("========== 一键会话修复（服务器）开始 ==========", tag="system")
+        ok_count = 0
+        try:
+            for title, command in steps:
+                log("---- {} ----".format(title), tag="system")
+                try:
+                    completed = subprocess.run(
+                        command,
+                        cwd=BASE_DIR,
+                        env=env,
+                        capture_output=True,
+                        timeout=180,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                except Exception as exc:
+                    log("[{}] 执行失败：{}".format(title, exc), tag="error")
+                    continue
+                for line in completed.stdout.decode("utf-8", errors="replace").splitlines():
+                    if line.strip():
+                        log(line, tag=wt_logging.tag_for_line(line))
+                for line in completed.stderr.decode("utf-8", errors="replace").splitlines():
+                    if line.strip():
+                        log(line, tag="warning")
+                step_ok = completed.returncode == 0
+                if step_ok:
+                    ok_count += 1
+                log("[{}] 退出码 {}".format(title, completed.returncode),
+                    tag="success" if step_ok else "warning")
+            log("========== 一键会话修复（服务器）结束 ==========", tag="system")
+            log(
+                "下一步：① 确认上方诊断无 [MISMATCH] / [UIPI 风险]；"
+                "② 提交远程任务，健康检查应看到 size=1920x1040（而非 160x28）。",
+                tag="info",
+            )
+            summary = "会话修复完成：{}/3 步成功".format(ok_count)
+            log(summary, tag="success" if ok_count == len(steps) else "warning")
+            self.output_queue.put((
+                "status",
+                (
+                    "状态：{}".format(summary),
+                    "当前步骤：一键会话修复（服务器）已完成",
+                ),
+            ))
+        finally:
+            self._session_repair_running = False
 
     def open_task_queue(self):
         existing = getattr(self, "_task_queue_window", None)
