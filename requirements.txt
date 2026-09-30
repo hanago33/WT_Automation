@@ -6,6 +6,10 @@
 pywinauto>=0.6.8
 pyautogui>=0.9.54
 pynput>=1.7.6            # 半自动采集“交互点击”首选方案；缺失时自动降级到零依赖的 Windows 原生钩子（win32_input_hook.py）
+pywinauto_recorder @ git+https://github.com/beuaaa/pywinauto_recorder@0.6.8
+# 录制流程回放器（player），不在 PyPI，直接从上游 GitHub 锁定 0.6.8 安装；
+# 新机 pip install -r requirements.txt 即装，不再依赖本地安装目录拷贝。
+# 未安装时不影响 GUI / 半自动采集 / 控件库构建。
 
 # ── 控件库 / 图像模板构建 ──
 opencv-python>=4.7.0
@@ -25,7 +29,8 @@ openpyxl>=3.1.0
 ttkbootstrap>=1.10.1
 
 # 说明：
-# 1) pywinauto_recorder.player 不在 PyPI，需从本地 Pywinauto Recorder 安装目录获取
+# 1) pywinauto_recorder（含 player）自 2026-09-30 起由上方 git 依赖直接安装
+#    （上游 GitHub 锁定 0.6.8）；录制器本体仍从本地安装目录启动
 #    （见 _launch_pywinauto_recorder.cmd）。未安装时不影响 GUI / 半自动采集 / 控件库构建。
 # 2) 原生 Win32 输入钩子（win32_input_hook.py）仅使用标准库 ctypes，无需额外安装。
 # 3) GUI 与 Agent 后端具备双轨自适应能力：未安装 ttkbootstrap 时自动降级为标准库现代样式，零外部依赖也能稳定运行。

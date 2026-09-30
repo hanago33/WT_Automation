@@ -126,6 +126,29 @@ class TestTxtMergeAppHeadless(unittest.TestCase):
             self.app.clear_list()
         self.assertEqual(len(self.app.files), 0)
 
+    def test_append_paths_keeps_brace_ending_names(self):
+        """拖拽路径清洗只剥成对花括号：名称首尾本身含 {} 的合法目录不得被截断。
+
+        旧实现 str.strip("{}'\"") 会把 `Data{2024}` 这类目录截成 `…Data{2024`
+        导致整个目录被静默丢弃（session-24 修正）。
+        """
+        brace_dir = os.path.join(self.temp_dir.name, "Data{2024}")
+        os.makedirs(brace_dir, exist_ok=True)
+        inner = os.path.join(brace_dir, "report.txt")
+        with open(inner, "w", encoding="utf-8") as f:
+            f.write("content")
+
+        # 模拟 splitlist 失败兜底：整串被花括号包裹
+        self.app._append_paths(["{" + brace_dir + "}"])
+        self.assertEqual(self.app.files, [inner])
+
+        # 名称正常的文件不受影响（成对剥壳后原样保留）
+        plain = os.path.join(self.temp_dir.name, "notes.txt")
+        with open(plain, "w", encoding="utf-8") as f:
+            f.write("content")
+        self.app._append_paths(["{" + plain + "}"])
+        self.assertIn(plain, self.app.files)
+
     def test_ui_components(self):
         self.root.update_idletasks()
         self.assertIsNotNone(self.app.badge_status)

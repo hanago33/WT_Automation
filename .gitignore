@@ -92,8 +92,8 @@ vendor/
 # Axe Windows output
 AxeWindowsOutputFiles/
 
-# Live detector scripts
-control_live_detector.py
+# Live detector scripts（control_live_detector.py 已于 2026-09-30 纳入版本控制，
+# 不再忽略——它是 WT_Launcher 功能依赖 + 测试依赖；其余采集辅助件维持忽略）
 test_detector.py
 external_capture_config.json
 tools/external_capture/axewindows_bridge/bin/
@@ -140,3 +140,6 @@ uia_tree_dumper/**/obj/
 
 # 生成物（make_power_template.py 产物，运行即重新生成）
 /逐时功率计算模板.xlsx
+
+# 工具运行时配置（GUI 自动记忆项，不随版本控制）
+txt2wtg/txt2wtg_gui_config.json
