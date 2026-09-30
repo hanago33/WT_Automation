@@ -25,6 +25,7 @@ for p in (HERE, ROOT):
         sys.path.insert(0, p)
 
 import generic_automation  # 通用化主程序副本
+import wt_ui_state
 
 _TARGET_PROCESS_KEYWORD = ""  # 通用化：目标进程名关键词，由配置注入（提权检测用）
 
@@ -202,8 +203,26 @@ class GenericLauncherUI:
             self.flow_var.set(p)
 
     def _append(self, msg):
+        """线程安全日志入口：任何线程调用都经主线程 after 更新文本框。
+
+        此前 _run_worker 与自动化线程直接 configure/insert/see，跨线程操作
+        Tcl 对象会偶发日志丢失甚至解释器重入崩溃（审计 P1-9）。
+        """
+        try:
+            self.root.after(0, self._append_ui, str(msg))
+        except Exception:
+            pass  # 窗口已关闭
+
+    def _append_ui(self, msg):
         self.log.configure(state="normal")
         self.log.insert("end", msg + "\n")
+        # 行数上限：长流程日志持续膨胀会拖慢滚动与重绘（审计 P2）
+        try:
+            total_lines = int(self.log.index("end-1c").split(".")[0])
+            if total_lines > 1000:
+                self.log.delete("1.0", "{}.0".format(total_lines - 1000 + 1))
+        except Exception:
+            pass
         self.log.configure(state="disabled")
         self.log.see("end")
 
@@ -229,6 +248,10 @@ class GenericLauncherUI:
         base = os.path.basename(exe).lower()
         kw = base[:-4] if base.endswith(".exe") else base
         title_re = self.title_var.get().strip() or None
+        # 提权检测（UIPI 内容树隔离处置）依赖本模块级关键词；此前恒为空串，
+        # 导致 _runs_target_elevated 永远 False、管理员场景静默全失败。
+        global _TARGET_PROCESS_KEYWORD
+        _TARGET_PROCESS_KEYWORD = kw
 
         # 注入通用目标配置
         generic_automation.config_generic_target_app(
@@ -238,8 +261,20 @@ class GenericLauncherUI:
         )
         generic_automation.FLOW_DEFINITION_FILE = flow
 
-        # 重定向日志到文本框
-        generic_automation.log_step = lambda msg: self._append(str(msg))
+        # 重定向日志到文本框：包装而非整体替换 —— 原 log_step 还负责写
+        # wt_automation.log 与运行状态上报，替换会连带丢掉这两项（审计 P1-9）。
+        if not getattr(generic_automation, "_launcher_log_wrapped", False):
+            _orig_log_step = generic_automation.log_step
+
+            def _launcher_log_step(msg, _orig=_orig_log_step):
+                try:
+                    _orig(msg)
+                except Exception:
+                    pass
+                self._append(str(msg))
+
+            generic_automation.log_step = _launcher_log_step
+            generic_automation._launcher_log_wrapped = True
 
         self._running = True
         self._append("[preflight] 目标=%s 关键词=%s 流程=%s" % (exe, kw, flow))
@@ -255,13 +290,41 @@ class GenericLauncherUI:
         finally:
             self._running = False
 
+    # ── 界面状态持久化（待修改清单 #6） ──
+    UI_STATE_KEY = "generic_launcher"
+
+    def _collect_ui_state(self):
+        state = {"geometry": wt_ui_state.capture_window_geometry(self.root)}
+        for key, var in (("exe", self.exe_var), ("title", self.title_var), ("flow", self.flow_var)):
+            state[key] = var.get()
+        return state
+
+    def _apply_ui_state(self, state):
+        if not state:
+            return
+        for key, var in (("exe", self.exe_var), ("title", self.title_var), ("flow", self.flow_var)):
+            if state.get(key):
+                try:
+                    var.set(state[key])
+                except Exception:
+                    pass
+        wt_ui_state.apply_window_geometry(self.root, state.get("geometry"))
+
+    def _on_close(self):
+        try:
+            wt_ui_state.save(self.UI_STATE_KEY, self._collect_ui_state())
+        finally:
+            self.root.destroy()
+
 
 def main():
     # 启动期：若目标软件以管理员运行，先尝试提权（通用化，按配置关键词；此处尚未配置则用默认不提权）
     if _TARGET_PROCESS_KEYWORD and _maybe_relaunch_elevated():
         return  # 已触发 UAC 提权重启，原进程退出
     app = tk.Tk()
-    GenericLauncherUI(app)
+    ui = GenericLauncherUI(app)
+    ui._apply_ui_state(wt_ui_state.load(GenericLauncherUI.UI_STATE_KEY))
+    app.protocol("WM_DELETE_WINDOW", ui._on_close)
     app.mainloop()
 
 

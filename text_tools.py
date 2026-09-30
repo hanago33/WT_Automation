@@ -26,13 +26,31 @@ import os
 import sys
 import csv
 import io
+import queue
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-# 常见文本编码，按优先级尝试解码
-_ENCODINGS = ["utf-8", "gbk", "gb18030", "utf-16", "big5", "latin-1"]
+
+class BatchCancelled(Exception):
+    """批量处理被取消（逐文件边界抛出，done=已完成文件数）（待修改清单 #1）。"""
+
+    def __init__(self, done=0):
+        super().__init__("cancelled after {} file(s)".format(done))
+        self.done = done
+
+# TXT 合并/读取核心统一到 wt_txt_merge_core（待修改清单 #5）：本模块与 txt_merge_tool
+# 共用唯一实现，下方仅保留 text_tools 历史默认值（newline_between=False）的差异适配。
+# 注意经由模块属性调用（而非 from-import 按值绑定），保证测试可以 patch 核心。
+import wt_txt_merge_core
+import wt_ui_state
+
+
+def read_text_file(path):
+    """读取文本文件内容，自动探测编码，返回 (内容, 编码)。实现统一委托核心。"""
+    return wt_txt_merge_core.read_text_file(path)
 
 # 拖拽支持：优先用 tkinterdnd2，否则用 pywin32 的 OLE 拖拽
 _HAS_DND = False
@@ -109,18 +127,6 @@ class OleDropTarget:
         return 0
 
 
-def read_text_file(path):
-    """读取文本文件内容，自动探测编码，返回 (内容, 编码)。"""
-    with open(path, "rb") as f:
-        raw = f.read()
-    for enc in ["utf-8-sig"] + _ENCODINGS:
-        try:
-            return raw.decode(enc), enc
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return raw.decode("latin-1"), "latin-1"
-
-
 def merge_txt_files(
     file_paths,
     output_path,
@@ -129,25 +135,27 @@ def merge_txt_files(
     separator="",
     remove_empty_lines=False,
     output_encoding="utf-8-sig",
+    progress_callback=None,
+    cancel_event=None,
 ):
-    """按顺序合并多个 txt 文件到输出文件，保持内容原样。"""
-    parts = []
-    for i, path in enumerate(file_paths):
-        content, _ = read_text_file(path)
-        if i > 0:
-            if separator:
-                parts.append(separator + "\n")
-            elif newline_between:
-                parts.append("\n")
-        if add_headers:
-            parts.append(os.path.basename(path) + "\n")
-        parts.append(content)
-    merged = "".join(parts)
-    if remove_empty_lines:
-        merged = "\n".join(line for line in merged.split("\n") if line.strip() != "")
-    with open(output_path, "w", encoding=output_encoding, newline="") as f:
-        f.write(merged)
-    return len(file_paths), len(merged)
+    """按顺序合并多个 txt 文件到输出文件，保持内容原样。
+
+    实现统一委托 wt_txt_merge_core（待修改清单 #5）；保留本模块历史默认值
+    newline_between=False（txt_merge_tool 侧为 True，两个 UI 调用均显式传参，
+    默认值从不参与实际行为——此处仅为兼容外部潜在调用方）。
+    progress_callback / cancel_event 透传核心（待修改清单 #2）。
+    """
+    return wt_txt_merge_core.merge_txt_files(
+        file_paths,
+        output_path,
+        newline_between=newline_between,
+        add_headers=add_headers,
+        separator=separator,
+        remove_empty_lines=remove_empty_lines,
+        output_encoding=output_encoding,
+        progress_callback=progress_callback,
+        cancel_event=cancel_event,
+    )
 
 
 class TxtMergeCard(ttk.Frame):
@@ -218,7 +226,8 @@ class TxtMergeCard(ttk.Frame):
         # 合并按钮
         merge_frame = ttk.Frame(self)
         merge_frame.pack(fill="x", pady=(6, 4))
-        ttk.Button(merge_frame, text="合并为单个 txt", command=self.merge).pack(side="left", padx=2)
+        self.btn_merge = ttk.Button(merge_frame, text="合并为单个 txt", command=self.merge)
+        self.btn_merge.pack(side="left", padx=2)
 
         self.status = ttk.Label(self, text="", foreground="#333333")
         self.status.pack(fill="x", pady=(0, 4))
@@ -248,11 +257,16 @@ class TxtMergeCard(ttk.Frame):
         folder = filedialog.askdirectory(title="选择包含文本文件的文件夹")
         if not folder:
             return
-        paths = [
-            os.path.join(folder, name)
-            for name in sorted(os.listdir(folder))
-            if name.lower().endswith(".txt")
-        ]
+        try:
+            paths = [
+                os.path.join(folder, name)
+                for name in sorted(os.listdir(folder))
+                if name.lower().endswith(".txt")
+            ]
+        except OSError as exc:
+            # 目录不可读/已删除时此前异常被 Tk 吞掉（"点了没反应"，审计 P2）
+            messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
+            return
         if not paths:
             messagebox.showinfo("提示", "该文件夹内没有找到 .txt 文件。")
             return
@@ -275,6 +289,10 @@ class TxtMergeCard(ttk.Frame):
         self.refresh_list()
 
     def clear_list(self):
+        if self.files and not messagebox.askyesno(
+            "确认清空", "确定清空列表中的 {} 个文件吗？".format(len(self.files))
+        ):
+            return
         self.files = []
         self.refresh_list()
 
@@ -301,6 +319,13 @@ class TxtMergeCard(ttk.Frame):
         self.status.config(text=f"共 {len(self.files)} 个文件")
 
     def merge(self):
+        # 运行中再次点击 = 请求取消（逐文件边界生效，见 wt_txt_merge_core）
+        thread = getattr(self, "_merge_thread", None)
+        if thread is not None and thread.is_alive():
+            self._merge_cancel.set()
+            self.status.config(text="正在取消合并（等待当前文件完成）...")
+            return
+
         if not self.files:
             messagebox.showwarning("提示", "请先添加要合并的 txt 文件。")
             return
@@ -312,18 +337,78 @@ class TxtMergeCard(ttk.Frame):
         )
         if not output:
             return
-        try:
-            count, total_chars = merge_txt_files(
-                self.files,
-                output,
-                newline_between=self.join_var.get() == "newline",
-                add_headers=self.header_var.get(),
-                separator=self.sep_var.get().strip(),
-                remove_empty_lines=self.empty_var.get(),
-                output_encoding=self.enc_var.get(),
-            )
-        except Exception as e:  # noqa: BLE001
-            messagebox.showerror("合并失败", f"发生错误：\n{e}")
+
+        # 选项主线程快照，worker 只用局部数据（待修改清单 #1 同款纪律）
+        options = dict(
+            newline_between=self.join_var.get() == "newline",
+            add_headers=self.header_var.get(),
+            separator=self.sep_var.get().strip(),
+            remove_empty_lines=self.empty_var.get(),
+            output_encoding=self.enc_var.get(),
+        )
+        paths = list(self.files)
+        total = len(paths)
+        self._merge_cancel = threading.Event()
+        self._merge_events = queue.Queue()
+        self._merge_btn_text_backup = self.btn_merge.cget("text")
+        self.btn_merge.configure(text="⨂ 取消合并")
+        self.status.config(text="正在合并...")
+
+        def _progress(done, total_count):
+            # worker 只投递文本，由主线程更新（与 txt_merge_tool 同款纪律）
+            self._merge_events.put(
+                lambda d=done, t=total_count: self.status.config(
+                    text=f"正在合并... {d}/{t}"))
+
+        def _worker():
+            try:
+                count, total_chars = merge_txt_files(
+                    paths, output,
+                    progress_callback=_progress,
+                    cancel_event=self._merge_cancel, **options)
+            except wt_txt_merge_core.MergeCancelled as exc:
+                done = exc.done
+                self._merge_events.put(lambda d=done, t=total: self._merge_finish(
+                    output, cancelled=True, done=d, total=t))
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)
+                self._merge_events.put(lambda m=msg: self._merge_finish(output, error=m))
+            else:
+                self._merge_events.put(lambda c=count, tc=total_chars: self._merge_finish(
+                    output, count=c, total_chars=tc))
+
+        self._merge_thread = threading.Thread(target=_worker, daemon=True)
+        self._merge_thread.start()
+        # 轮询链从主线程启动（worker 不跨线程调 after）
+        self.after(80, self._drain_merge_events)
+
+    def _drain_merge_events(self):
+        while True:
+            try:
+                fn = self._merge_events.get_nowait()
+            except queue.Empty:
+                break
+            fn()
+        thread = getattr(self, "_merge_thread", None)
+        if (thread is not None and thread.is_alive()) or not self._merge_events.empty():
+            self.after(80, self._drain_merge_events)
+
+    def _merge_finish(self, output, count=0, total_chars=0, cancelled=False,
+                      done=0, total=None, error=None):
+        """收尾（仅主线程执行）：恢复按钮 + 三态反馈。"""
+        self.btn_merge.configure(text=self._merge_btn_text_backup)
+        if error is not None:
+            messagebox.showerror("合并失败", f"发生错误：\n{error}")
+            self.status.config(text=f"合并失败: {error}")
+            return
+        if cancelled:
+            total = total if total else len(self.files)
+            self.status.config(
+                text=f"已取消（完成 {done}/{total}）——输出未写入，原文件保持原样")
+            messagebox.showinfo(
+                "已取消",
+                f"合并已取消，完成 {done}/{total} 个文件。\n"
+                f"输出未写入：目标文件保持原样。")
             return
         messagebox.showinfo("完成", f"已合并 {count} 个文件，共 {total_chars} 个字符。\n输出文件：\n{output}")
         self.status.config(text=f"合并完成：{output}")
@@ -451,9 +536,11 @@ class CsvConvertCard(ttk.Frame):
         frm_merge.pack(fill="x", pady=2)
         ttk.Label(frm_merge, text="XLSX 输出方式：").pack(side="left")
         self.merge_var = tk.StringVar(value="single")
-        ttk.Radiobutton(frm_merge, text="每个文件单独一个工作簿", variable=self.merge_var, value="single").pack(side="left", padx=4)
-        ttk.Radiobutton(frm_merge, text="合并为多工作表", variable=self.merge_var, value="multi").pack(side="left", padx=4)
-        ttk.Radiobutton(frm_merge, text="合并为单工作表", variable=self.merge_var, value="one").pack(side="left", padx=4)
+        self._merge_rb_list = []
+        for value, label in (("single", "每个文件单独一个工作簿"), ("multi", "合并为多工作表"), ("one", "合并为单工作表")):
+            rb = ttk.Radiobutton(frm_merge, text=label, variable=self.merge_var, value=value)
+            rb.pack(side="left", padx=4)
+            self._merge_rb_list.append(rb)
 
         # 单工作表合并选项（仅合并为单工作表时有效）
         self.merge_single_header = tk.BooleanVar(value=True)
@@ -467,8 +554,11 @@ class CsvConvertCard(ttk.Frame):
         frm4.pack(fill="x", pady=2)
         ttk.Label(frm4, text="TXT 输出编码：").pack(side="left")
         self.txt_enc_var = tk.StringVar(value="utf-8-sig")
+        self._txt_enc_rb_list = []
         for enc, label in [("utf-8-sig", "UTF-8(带BOM)"), ("utf-8", "UTF-8"), ("gbk", "GBK")]:
-            ttk.Radiobutton(frm4, text=label, variable=self.txt_enc_var, value=enc).pack(side="left", padx=4)
+            rb = ttk.Radiobutton(frm4, text=label, variable=self.txt_enc_var, value=enc)
+            rb.pack(side="left", padx=4)
+            self._txt_enc_rb_list.append(rb)
 
         # 开始按钮
         frm5 = ttk.Frame(self)
@@ -484,9 +574,45 @@ class CsvConvertCard(ttk.Frame):
         self.log_text = tk.Text(self, height=12, state="disabled")
         self.log_text.pack(fill="both", expand=True, pady=4)
 
+        # 参数联动：转换类型/合并方式变化时自动禁用无关参数（审计 P2）
+        self.conv_var.trace_add("write", lambda *a: self._sync_option_states())
+        self.merge_var.trace_add("write", lambda *a: self._sync_option_states())
+        self._sync_option_states()
+
+    def _sync_option_states(self):
+        """按当前转换类型/合并方式联动启用/禁用参数控件（审计 P2）。
+
+        - 转 TXT：XLSX 输出方式与"仅保留第一个文件表头"禁用，TXT 编码启用；
+        - 转 XLSX：TXT 编码禁用；"仅保留表头"仅"合并为单工作表"时可用。
+        """
+        is_xlsx = self.conv_var.get() == "xlsx"
+        for rb in getattr(self, "_merge_rb_list", []):
+            rb.config(state="normal" if is_xlsx else "disabled")
+        state_header = "normal" if (is_xlsx and self.merge_var.get() == "one") else "disabled"
+        try:
+            self.merge_header_chk.config(state=state_header)
+        except Exception:
+            pass
+        for rb in getattr(self, "_txt_enc_rb_list", []):
+            rb.config(state="disabled" if is_xlsx else "normal")
+
     def log(self, msg):
+        """日志入口：worker 线程调用时投递事件队列，主线程直接写（待修改清单 #1）。"""
+        if threading.current_thread() is threading.main_thread():
+            self._log_direct(msg)
+        else:
+            self._events.put(lambda m=msg: self._log_direct(m))
+
+    def _log_direct(self, msg):
         self.log_text.configure(state="normal")
         self.log_text.insert("end", msg + "\n")
+        # 行数上限：批量转换的长日志持续膨胀会拖慢滚动与重绘（审计 P2）
+        try:
+            total_lines = int(self.log_text.index("end-1c").split(".")[0])
+            if total_lines > 500:
+                self.log_text.delete("1.0", "{}.0".format(total_lines - 500 + 1))
+        except Exception:
+            pass
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
         self.update_idletasks()
@@ -501,13 +627,18 @@ class CsvConvertCard(ttk.Frame):
 
     def pick_folder(self):
         folder = filedialog.askdirectory(title="选择包含 CSV 的文件夹")
-        if folder:
+        if not folder:
+            return
+        try:
             self.csv_files = [
                 os.path.join(folder, f)
                 for f in os.listdir(folder)
                 if f.lower().endswith(".csv")
             ]
-            self.var_files.set(f"文件夹: {folder} ({len(self.csv_files)} 个 CSV)")
+        except OSError as exc:
+            messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
+            return
+        self.var_files.set(f"文件夹: {folder} ({len(self.csv_files)} 个 CSV)")
 
     def pick_out(self):
         d = filedialog.askdirectory(title="选择输出目录")
@@ -515,89 +646,267 @@ class CsvConvertCard(ttk.Frame):
             self.out_dir = d
             self.var_out.set(d)
 
+    def _confirm_overwrite(self, dst):
+        """循环内的覆盖判定：运行前预扫描已确定策略，此处只做纯查询、零交互。
+
+        策略语义（见 _resolve_overwrite_policy）：
+          "overwrite" → 全部覆盖；"skip" → 冲突文件全部跳过；
+          "ask" → 仅覆盖预扫描时逐个确认允许的文件（_overwrite_allow 集合）。
+        """
+        if not os.path.exists(dst):
+            return True
+        # 缺省 "skip"：绕过预扫描的异常路径宁可少写盘，也不能静默覆盖旧文件
+        policy = getattr(self, "_overwrite_policy", "skip")
+        if policy == "skip":
+            return False
+        if policy == "ask":
+            return dst in getattr(self, "_overwrite_allow", set())
+        return True
+
+    def _collect_output_targets(self, out_dir):
+        """按当前转换模式枚举全部输出目标路径（运行前预扫描用，待修改清单 #1）。"""
+        conv = self.conv_var.get()
+        targets = []
+        if conv == "xlsx":
+            merge_mode = self.merge_var.get()
+            if merge_mode == "single":
+                for src in self.csv_files:
+                    name = os.path.splitext(os.path.basename(src))[0]
+                    targets.append(os.path.join(out_dir, name + ".xlsx"))
+            elif merge_mode == "multi":
+                targets.append(os.path.join(out_dir, "merged.xlsx"))
+            else:
+                targets.append(os.path.join(out_dir, "merged_single.xlsx"))
+        else:
+            for src in self.csv_files:
+                name = os.path.splitext(os.path.basename(src))[0]
+                targets.append(os.path.join(out_dir, name + ".txt"))
+        return targets
+
+    def _ask_overwrite_policy_dialog(self, conflicts):
+        """模态四选一：全部覆盖 / 全部跳过 / 逐个确认 / 取消。返回策略或 None。"""
+        choice = {"value": None}
+        dialog = tk.Toplevel(self)
+        dialog.title("同名输出文件")
+        dialog.resizable(False, False)
+        tk.Label(
+            dialog,
+            text="检测到 {} 个同名输出文件：\n\n{}".format(
+                len(conflicts), "\n".join(conflicts[:8]) + ("\n..." if len(conflicts) > 8 else "")),
+            justify="left",
+            wraplength=420,
+        ).pack(padx=16, pady=(14, 8))
+
+        def _set(value):
+            choice["value"] = value
+            dialog.destroy()
+
+        buttons = tk.Frame(dialog)
+        buttons.pack(pady=(0, 6))
+        tk.Button(buttons, text="全部覆盖", width=10, command=lambda: _set("overwrite")).pack(side="left", padx=4)
+        tk.Button(buttons, text="全部跳过", width=10, command=lambda: _set("skip")).pack(side="left", padx=4)
+        tk.Button(buttons, text="逐个确认", width=10, command=lambda: _set("ask")).pack(side="left", padx=4)
+        tk.Button(dialog, text="取消本次转换", command=lambda: _set(None)).pack(pady=(0, 12))
+        dialog.transient(self.winfo_toplevel())
+        dialog.grab_set()
+        self.winfo_toplevel().wait_window(dialog)
+        return choice["value"]
+
+    def _resolve_overwrite_policy(self, conflicts):
+        """预扫描冲突清单 → 一次性确定覆盖策略（主线程，待修改清单 #1）。
+
+        交互全部留在启动前：之后 worker 循环内零对话框。
+        返回 (policy, allow_set)：policy ∈ {"overwrite", "skip", "ask"}，
+        "ask" 时 allow_set 为逐个确认允许覆盖的路径集合；用户取消返回 (None, set())。
+        无冲突时直接 ("overwrite", set())，不弹对话框。
+        """
+        if not conflicts:
+            return "overwrite", set()
+        choice = self._ask_overwrite_policy_dialog(conflicts)
+        if choice is None:
+            return None, set()
+        if choice == "ask":
+            allow = set()
+            for dst in conflicts:
+                if messagebox.askyesno("覆盖确认", "{}\n\n是否覆盖该文件？".format(dst)):
+                    allow.add(dst)
+            return "ask", allow
+        return choice, set()
+
     def run(self):
+        # 运行中再次点击 = 请求取消（逐文件边界生效）
+        thread = getattr(self, "_run_thread", None)
+        if thread is not None and thread.is_alive():
+            self._cancel_event.set()
+            self.log("正在取消（等待当前文件完成）...")
+            return
+
         if not self.csv_files:
             messagebox.showwarning("提示", "请先选择 CSV 文件或文件夹。")
             return
         out_dir = self.out_dir or os.path.dirname(self.csv_files[0]) or "."
         os.makedirs(out_dir, exist_ok=True)
 
-        self.btn_run.configure(state="disabled")
+        # ── 运行前预扫描覆盖冲突，交互全部在主线程完成（待修改清单 #1） ──
+        conflicts = [p for p in self._collect_output_targets(out_dir) if os.path.exists(p)]
+        policy, allow_set = self._resolve_overwrite_policy(conflicts)
+        if policy is None:
+            self.log("已取消：未开始转换。")
+            return
+        self._overwrite_policy = policy
+        self._overwrite_allow = allow_set
+
+        # 选项在主线程一次性快照，worker 不读 Tk 变量
+        options = dict(
+            conv=self.conv_var.get(),
+            merge_mode=self.merge_var.get(),
+            merge_single_header=self.merge_single_header.get(),
+            txt_enc=self.txt_enc_var.get(),
+        )
+        files = list(self.csv_files)  # 快照：运行期增删列表不影响迭代与 total
+        total = len(files)
+
+        self._cancel_event = threading.Event()
+        self._events = queue.Queue()
+        self._batch_failed = 0
+        self.btn_run.configure(text="⨂ 取消转换")
         self.progress["value"] = 0
         self.log("开始转换...")
 
-        def progress(cur, total):
-            self.progress["maximum"] = total
-            self.progress["value"] = cur
-            self.update_idletasks()
+        def progress(cur, total_count):
+            # worker 只投递，进度条由主线程更新
+            self._events.put(lambda c=cur, t=total_count: self._update_progress(c, t))
 
-        conv = self.conv_var.get()
-        try:
-            if conv == "xlsx":
-                merge_mode = self.merge_var.get()
-                if merge_mode == "single":
-                    self._build_single_xlsx(out_dir, progress)
-                elif merge_mode == "multi":
-                    self._build_merged_multi_sheet(out_dir, progress)
+        def _worker():
+            try:
+                if options["conv"] == "xlsx":
+                    if options["merge_mode"] == "single":
+                        self._build_single_xlsx(out_dir, progress, files)
+                    elif options["merge_mode"] == "multi":
+                        self._build_merged_multi_sheet(out_dir, progress, files)
+                    else:
+                        self._build_merged_single_sheet(
+                            out_dir, progress, files,
+                            only_first_header=options["merge_single_header"])
                 else:
-                    self._build_merged_single_sheet(out_dir, progress)
+                    self._build_txt(out_dir, progress, files, enc=options["txt_enc"])
+            except BatchCancelled as exc:
+                done = exc.done
+                self._events.put(
+                    lambda d=done, t=total: self._finish(cancelled=True, done=d, total=t))
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)
+                self._events.put(lambda m=msg: self._finish(error=m))
             else:
-                self._build_txt(out_dir, progress)
+                self._events.put(lambda: self._finish(total=total))
+
+        self._run_thread = threading.Thread(target=_worker, daemon=True)
+        self._run_thread.start()
+        # 轮询链从主线程启动（worker 不跨线程调 after）
+        self.after(80, self._drain_events)
+
+    def _drain_events(self):
+        """主线程排空 worker 事件队列；线程存活或队列非空则续订下一轮。"""
+        while True:
+            try:
+                fn = self._events.get_nowait()
+            except queue.Empty:
+                break
+            fn()
+        thread = getattr(self, "_run_thread", None)
+        if (thread is not None and thread.is_alive()) or not self._events.empty():
+            self.after(80, self._drain_events)
+
+    def _update_progress(self, cur, total):
+        self.progress["maximum"] = total
+        self.progress["value"] = cur
+
+    def _finish(self, cancelled=False, done=0, total=0, error=None):
+        """收尾（仅主线程执行）：恢复按钮；三档结果反馈逻辑与原同步版一致。"""
+        self.btn_run.configure(text="开始转换", state="normal")
+        if error is not None:
+            self.log(f"发生错误: {error}")
+            messagebox.showerror("错误", error)
+            return
+        failed = getattr(self, "_batch_failed", 0)
+        if cancelled:
+            self.log(f"已取消：完成 {done}/{total}，失败 {failed}。")
+            messagebox.showwarning(
+                "已取消", f"已取消转换：完成 {done}/{total}，失败 {failed}。")
+            return
+        # 按实际结果反馈：此前无论失败多少都弹"转换完成！"，与日志矛盾（审计 P1◐）
+        if failed == 0:
             self.log("全部处理完成。")
             messagebox.showinfo("完成", "转换完成！")
-        except Exception as e:  # noqa: BLE001
-            self.log(f"发生错误: {e}")
-            messagebox.showerror("错误", str(e))
-        finally:
-            self.btn_run.configure(state="normal")
+        elif failed < total:
+            self.log(f"处理结束：成功 {total - failed}/{total}，失败 {failed}。")
+            messagebox.showwarning(
+                "部分失败", f"处理结束：成功 {total - failed} 个，失败 {failed} 个，详见日志。"
+            )
+        else:
+            self.log(f"处理失败：全部 {total} 个文件均失败。")
+            messagebox.showerror("转换失败", f"全部 {total} 个文件均转换失败，详见日志。")
 
-    def _build_single_xlsx(self, out_dir, progress):
-        total = len(self.csv_files)
-        for idx, src in enumerate(self.csv_files, start=1):
+    def _build_single_xlsx(self, out_dir, progress, files):
+        total = len(files)
+        for idx, src in enumerate(files, start=1):
+            if self._cancel_event.is_set():
+                raise BatchCancelled(done=idx - 1)  # 取消在逐文件边界（待修改清单 #1）
             try:
-                wb = Workbook()
-                ws = wb.active
-                ws.title = "Sheet1"
                 name = os.path.splitext(os.path.basename(src))[0]
-                rows = convert_csv_to_sheet(ws, src)
                 dst = os.path.join(out_dir, name + ".xlsx")
-                wb.save(dst)
-                self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
+                if not self._confirm_overwrite(dst):
+                    self.log(f"[跳过] 已存在同名文件: {os.path.basename(dst)}")
+                else:
+                    wb = Workbook()
+                    ws = wb.active
+                    ws.title = "Sheet1"
+                    rows = convert_csv_to_sheet(ws, src)
+                    wb.save(dst)
+                    self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
 
-    def _build_merged_multi_sheet(self, out_dir, progress):
+    def _build_merged_multi_sheet(self, out_dir, progress, files):
         """合并为单个工作簿，每个 CSV 一个工作表。"""
         wb = Workbook()
         wb.remove(wb.active)
         used = set()
-        total = len(self.csv_files)
-        for idx, src in enumerate(self.csv_files, start=1):
+        total = len(files)
+        for idx, src in enumerate(files, start=1):
+            if self._cancel_event.is_set():
+                raise BatchCancelled(done=idx - 1)  # 取消在逐文件边界（待修改清单 #1）
             try:
                 name = safe_sheet_name(os.path.splitext(os.path.basename(src))[0], used)
                 ws = wb.create_sheet(title=name)
                 rows = convert_csv_to_sheet(ws, src)
                 self.log(f"[成功] {os.path.basename(src)} -> 工作表[{name}] ({rows} 行)")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
         if wb.sheetnames:
             dst = os.path.join(out_dir, "merged.xlsx")
-            wb.save(dst)
-            self.log(f"已合并保存到 {dst}")
+            if self._confirm_overwrite(dst):
+                wb.save(dst)
+                self.log(f"已合并保存到 {dst}")
+            else:
+                self.log(f"[跳过] 已存在同名文件: {dst}")
         else:
             self.log("没有可转换的文件。")
 
-    def _build_merged_single_sheet(self, out_dir, progress):
+    def _build_merged_single_sheet(self, out_dir, progress, files, only_first_header=False):
         """合并为单个工作簿，所有 CSV 纵向堆叠到同一个工作表。"""
         wb = Workbook()
         ws = wb.active
         ws.title = "合并数据"
-        only_first_header = self.merge_single_header.get()
-        total = len(self.csv_files)
+        total = len(files)  # 与迭代同一份快照（审计复审核对：此前漏改，进度上限仍取实时列表）
         current_row = 1
-        for idx, src in enumerate(self.csv_files, start=1):
+        for idx, src in enumerate(files, start=1):
+            if self._cancel_event.is_set():
+                raise BatchCancelled(done=idx - 1)  # 取消在逐文件边界（待修改清单 #1）
             try:
                 skip = only_first_header and idx > 1
                 rows = read_csv_rows(src, skip_header=skip)
@@ -607,6 +916,7 @@ class CsvConvertCard(ttk.Frame):
                     current_row += 1
                 self.log(f"[成功] {os.path.basename(src)} -> 追加 {len(rows)} 行")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
         # 自动列宽
@@ -619,21 +929,29 @@ class CsvConvertCard(ttk.Frame):
             ws.column_dimensions[letter].width = width
         if current_row > 1:
             dst = os.path.join(out_dir, "merged_single.xlsx")
-            wb.save(dst)
-            self.log(f"已合并保存到 {dst}")
+            if self._confirm_overwrite(dst):
+                wb.save(dst)
+                self.log(f"已合并保存到 {dst}")
+            else:
+                self.log(f"[跳过] 已存在同名文件: {dst}")
         else:
             self.log("没有可转换的文件。")
 
-    def _build_txt(self, out_dir, progress):
-        enc = self.txt_enc_var.get()
-        total = len(self.csv_files)
-        for idx, src in enumerate(self.csv_files, start=1):
+    def _build_txt(self, out_dir, progress, files, enc="utf-8-sig"):
+        total = len(files)
+        for idx, src in enumerate(files, start=1):
+            if self._cancel_event.is_set():
+                raise BatchCancelled(done=idx - 1)  # 取消在逐文件边界（待修改清单 #1）
             try:
                 name = os.path.splitext(os.path.basename(src))[0]
                 dst = os.path.join(out_dir, name + ".txt")
-                rows = csv_to_txt(src, dst, output_encoding=enc)
-                self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
+                if self._confirm_overwrite(dst):
+                    rows = csv_to_txt(src, dst, output_encoding=enc)
+                    self.log(f"[成功] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
+                else:
+                    self.log(f"[跳过] 已存在同名文件: {os.path.basename(dst)}")
             except Exception as e:  # noqa: BLE001
+                self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
 
@@ -727,6 +1045,22 @@ def convert_encoding_file(path, out_path, target_encoding="utf-8-sig"):
     with open(out_path, "w", encoding=target_encoding, newline="") as f:
         f.write(content)
     return len(content.splitlines())
+
+
+# _process_one 需要的选项键：主线程快照必须全量给出；worker 内只按固定键读
+# params，缺失键以空串兜底（不回读 Tk，见 _process_one 注释）
+_PROCESS_PARAM_KEYS = (
+    "split_lines",
+    "filter_kw",
+    "filter_mode",
+    "replace_old",
+    "replace_new",
+    "affix_pre",
+    "affix_suf",
+    "case_mode",
+    "enc_target",
+)
+_PROCESS_PARAM_DEFAULTS = {key: "" for key in _PROCESS_PARAM_KEYS}
 
 
 class TextToolsCard(ttk.Frame):
@@ -875,8 +1209,22 @@ class TextToolsCard(ttk.Frame):
             self.out_enc_frame.pack(fill="x", pady=2)
 
     def log(self, msg):
+        """日志入口：worker 线程调用时投递事件队列，主线程直接写（待修改清单 #1）。"""
+        if threading.current_thread() is threading.main_thread():
+            self._log_direct(msg)
+        else:
+            self._events.put(lambda m=msg: self._log_direct(m))
+
+    def _log_direct(self, msg):
         self.log_text.configure(state="normal")
         self.log_text.insert("end", msg + "\n")
+        # 行数上限：批量处理的长日志持续膨胀会拖慢滚动与重绘（审计 P2）
+        try:
+            total_lines = int(self.log_text.index("end-1c").split(".")[0])
+            if total_lines > 500:
+                self.log_text.delete("1.0", "{}.0".format(total_lines - 500 + 1))
+        except Exception:
+            pass
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
         self.update_idletasks()
@@ -891,13 +1239,18 @@ class TextToolsCard(ttk.Frame):
 
     def pick_folder(self):
         folder = filedialog.askdirectory(title="选择包含文本文件的文件夹")
-        if folder:
+        if not folder:
+            return
+        try:
             self.files = [
                 os.path.join(folder, f)
                 for f in os.listdir(folder)
                 if f.lower().endswith((".txt", ".csv", ".log"))
             ]
-            self.var_files.set(f"文件夹: {folder} ({len(self.files)} 个文件)")
+        except OSError as exc:
+            messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
+            return
+        self.var_files.set(f"文件夹: {folder} ({len(self.files)} 个文件)")
 
     def pick_out(self):
         d = filedialog.askdirectory(title="选择输出目录")
@@ -906,40 +1259,132 @@ class TextToolsCard(ttk.Frame):
             self.var_out.set(d)
 
     def run(self):
+        # 运行中再次点击 = 请求取消（逐文件边界生效）
+        thread = getattr(self, "_run_thread", None)
+        if thread is not None and thread.is_alive():
+            self._cancel_event.set()
+            self.log("正在取消（等待当前文件完成）...")
+            return
+
         if not self.files:
             messagebox.showwarning("提示", "请先选择文本文件。")
             return
         out_dir = self.out_dir or os.path.dirname(self.files[0]) or "."
         os.makedirs(out_dir, exist_ok=True)
 
-        self.btn_run.configure(state="disabled")
+        # 选项在主线程一次性快照（与 _process_one 的补齐路径共用同一份定义），
+        # worker 中禁止触碰 Tk（待修改清单 #1）
+        params = self._snapshot_process_params()
+        op = self.op_var.get()
+        enc = self.out_enc.get()
+        files = list(self.files)
+        total = len(files)
+
+        self._cancel_event = threading.Event()
+        self._events = queue.Queue()
+        self.btn_run.configure(text="⨂ 取消处理")
         self.progress["value"] = 0
         self.log("开始处理...")
 
-        def progress(cur, total):
-            self.progress["maximum"] = total
-            self.progress["value"] = cur
-            self.update_idletasks()
+        def progress(cur, total_count):
+            # worker 只投递，进度条由主线程更新
+            self._events.put(lambda c=cur, t=total_count: self._update_progress(c, t))
 
-        op = self.op_var.get()
-        enc = self.out_enc.get()
-        total = len(self.files)
-        try:
-            for idx, src in enumerate(self.files, start=1):
-                try:
-                    self._process_one(src, out_dir, op, enc)
-                except Exception as e:  # noqa: BLE001
-                    self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
-                progress(idx, total)
+        def _worker():
+            failed = 0
+            try:
+                for idx, src in enumerate(files, start=1):
+                    if self._cancel_event.is_set():
+                        raise BatchCancelled(done=idx - 1)  # 取消在逐文件边界
+                    try:
+                        self._process_one(src, out_dir, op, enc, params)
+                    except Exception as e:  # noqa: BLE001
+                        failed += 1
+                        self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
+                    progress(idx, total)
+            except BatchCancelled as exc:
+                done = exc.done
+                self._events.put(
+                    lambda d=done, f=failed, t=total:
+                    self._finish(cancelled=True, done=d, failed=f, total=t))
+                return
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)
+                self._events.put(lambda m=msg: self._finish(error=m))
+                return
+            self._events.put(lambda f=failed: self._finish(failed=f))
+
+        self._run_thread = threading.Thread(target=_worker, daemon=True)
+        self._run_thread.start()
+        # 轮询链从主线程启动（worker 不跨线程调 after）
+        self.after(80, self._drain_events)
+
+    def _drain_events(self):
+        """主线程排空 worker 事件队列；线程存活或队列非空则续订下一轮。"""
+        while True:
+            try:
+                fn = self._events.get_nowait()
+            except queue.Empty:
+                break
+            fn()
+        thread = getattr(self, "_run_thread", None)
+        if (thread is not None and thread.is_alive()) or not self._events.empty():
+            self.after(80, self._drain_events)
+
+    def _update_progress(self, cur, total):
+        self.progress["maximum"] = total
+        self.progress["value"] = cur
+
+    def _finish(self, cancelled=False, done=0, failed=0, total=0, error=None):
+        """收尾（仅主线程执行）：恢复按钮；三档结果反馈逻辑与原同步版一致。"""
+        self.btn_run.configure(text="开始处理", state="normal")
+        if error is not None:
+            self.log(f"发生错误: {error}")
+            messagebox.showerror("错误", error)
+            return
+        if cancelled:
+            self.log(f"已取消：完成 {done}/{total}，失败 {failed}。")
+            messagebox.showwarning(
+                "已取消", f"已取消处理：完成 {done}/{total}，失败 {failed}。")
+            return
+        # 按实际结果反馈：此前全部失败也弹"处理完成！"，与日志矛盾（审计 P1◐）
+        if failed == 0:
             self.log("全部处理完成。")
             messagebox.showinfo("完成", "处理完成！")
-        except Exception as e:  # noqa: BLE001
-            self.log(f"发生错误: {e}")
-            messagebox.showerror("错误", str(e))
-        finally:
-            self.btn_run.configure(state="normal")
+        elif failed < total:
+            self.log(f"处理结束：成功 {total - failed}/{total}，失败 {failed}。")
+            messagebox.showwarning(
+                "部分失败", f"处理结束：成功 {total - failed} 个，失败 {failed} 个，详见日志。"
+            )
+        else:
+            self.log(f"处理失败：全部 {total} 个文件均失败。")
+            messagebox.showerror("处理失败", f"全部 {total} 个文件均处理失败，详见日志。")
 
-    def _process_one(self, src, out_dir, op, enc):
+    def _snapshot_process_params(self):
+        """主线程快照 _process_one 需要的全部选项（worker 内禁止调用：会读 Tk）。"""
+        return dict(
+            split_lines=self.split_var.get(),
+            filter_kw=self.filter_kw.get(),
+            filter_mode=self.filter_mode.get(),
+            replace_old=self.replace_old.get(),
+            replace_new=self.replace_new.get(),
+            affix_pre=self.affix_pre.get(),
+            affix_suf=self.affix_suf.get(),
+            case_mode=self.case_mode.get(),
+            enc_target=self.enc_target.get(),
+        )
+
+    def _process_one(self, src, out_dir, op, enc, params=None):
+        """处理单个文件。params 为 run() 在主线程快照的选项字典。
+
+        worker 内禁止触碰 Tk 变量：params 为 None 且当前在主线程（旧式直接调用）
+        时在此补齐整份快照；只给了一部分时，缺失键以空串兜底、**不回头读 Tk**
+        （此前用 params.get(key) or self.xxx.get()，字段留空时会静默落回 Tk）。
+        因此函数体只按固定键读 params。
+        """
+        if params is None and threading.current_thread() is threading.main_thread():
+            params = self._snapshot_process_params()
+        params = dict(_PROCESS_PARAM_DEFAULTS, **(params or {}))
         base = os.path.splitext(os.path.basename(src))[0]
         if op == "dedupe":
             dst = os.path.join(out_dir, base + "_去重.txt")
@@ -947,37 +1392,40 @@ class TextToolsCard(ttk.Frame):
             self.log(f"[去重] {os.path.basename(src)}: {orig} -> {uniq} 行 -> {os.path.basename(dst)}")
         elif op == "split":
             try:
-                n = int(self.split_var.get())
+                n = int(params["split_lines"])
             except ValueError:
                 raise ValueError("每个文件行数必须是整数")
+            if n <= 0:
+                raise ValueError("每个文件行数必须是正整数")
             created = split_file_by_lines(src, out_dir, n, output_encoding=enc)
             self.log(f"[拆分] {os.path.basename(src)} -> {len(created)} 个文件")
         elif op == "filter":
-            kw = self.filter_kw.get()
+            kw = params["filter_kw"]
             if not kw:
                 raise ValueError("请输入过滤关键词")
             dst = os.path.join(out_dir, base + "_过滤.txt")
-            mode = self.filter_mode.get()
+            mode = params["filter_mode"]
             orig, kept = filter_lines(src, dst, kw, mode=mode, output_encoding=enc)
             self.log(f"[过滤] {os.path.basename(src)}: {orig} -> {kept} 行 -> {os.path.basename(dst)}")
         elif op == "replace":
-            old = self.replace_old.get()
+            old = params["replace_old"]
             if not old:
                 raise ValueError("请输入要查找的内容")
             dst = os.path.join(out_dir, base + "_替换.txt")
-            count = replace_keyword(src, dst, old, self.replace_new.get(), output_encoding=enc)
+            count = replace_keyword(src, dst, old, params["replace_new"], output_encoding=enc)
             self.log(f"[替换] {os.path.basename(src)}: 替换 {count} 处 -> {os.path.basename(dst)}")
         elif op == "affix":
             dst = os.path.join(out_dir, base + "_加前后缀.txt")
-            rows = add_prefix_suffix(src, dst, self.affix_pre.get(), self.affix_suf.get(), output_encoding=enc)
+            rows = add_prefix_suffix(
+                src, dst, params["affix_pre"], params["affix_suf"], output_encoding=enc)
             self.log(f"[前后缀] {os.path.basename(src)}: 处理 {rows} 行 -> {os.path.basename(dst)}")
         elif op == "case":
             dst = os.path.join(out_dir, base + "_大小写.txt")
-            rows = convert_case(src, dst, self.case_mode.get(), output_encoding=enc)
+            rows = convert_case(src, dst, params["case_mode"], output_encoding=enc)
             self.log(f"[大小写] {os.path.basename(src)}: 处理 {rows} 行 -> {os.path.basename(dst)}")
         elif op == "encoding":
             dst = os.path.join(out_dir, base + "_转码.txt")
-            rows = convert_encoding_file(src, dst, target_encoding=self.enc_target.get())
+            rows = convert_encoding_file(src, dst, target_encoding=params["enc_target"])
             self.log(f"[编码转换] {os.path.basename(src)} -> {os.path.basename(dst)} ({rows} 行)")
 
 
@@ -986,6 +1434,8 @@ class TextToolsCard(ttk.Frame):
 # =====================================================================
 
 class App:
+    UI_STATE_KEY = "text_tools"
+
     def __init__(self, root):
         self.root = root
         root.title("文本处理工具")
@@ -1004,6 +1454,80 @@ class App:
         self.notebook.add(self.csv_card, text="CSV 转换")
         self.notebook.add(self.tools_card, text="文本工具")
 
+    def _collect_ui_state(self):
+        """窗口几何 + 各卡片选项（轻量标量；文件列表属业务数据不落盘）。"""
+        state = {"geometry": wt_ui_state.capture_window_geometry(self.root)}
+        state.update({
+            "txt_join": self.txt_card.join_var.get(),
+            "txt_headers": self.txt_card.header_var.get(),
+            "txt_separator": self.txt_card.sep_var.get(),
+            "txt_remove_empty": self.txt_card.empty_var.get(),
+            "txt_encoding": self.txt_card.enc_var.get(),
+            "csv_conv": self.csv_card.conv_var.get(),
+            "csv_merge": self.csv_card.merge_var.get(),
+            "csv_merged_header": self.csv_card.merge_single_header.get(),
+            "csv_txt_encoding": self.csv_card.txt_enc_var.get(),
+            "csv_out_dir": self.csv_card.out_dir or "",
+            "tools_op": self.tools_card.op_var.get(),
+            "tools_out_encoding": self.tools_card.out_enc.get(),
+            "tools_split_lines": self.tools_card.split_var.get(),
+            "tools_filter_kw": self.tools_card.filter_kw.get(),
+            "tools_filter_mode": self.tools_card.filter_mode.get(),
+            "tools_replace_old": self.tools_card.replace_old.get(),
+            "tools_replace_new": self.tools_card.replace_new.get(),
+            "tools_affix_pre": self.tools_card.affix_pre.get(),
+            "tools_affix_suf": self.tools_card.affix_suf.get(),
+            "tools_case_mode": self.tools_card.case_mode.get(),
+            "tools_enc_target": self.tools_card.enc_target.get(),
+            "tools_out_dir": self.tools_card.out_dir or "",
+        })
+        return state
+
+    def _apply_ui_state(self, state):
+        if not state:
+            return
+
+        def _set(var, key):
+            if key in state:
+                try:
+                    var.set(state[key])
+                except Exception:
+                    pass
+
+        _set(self.txt_card.join_var, "txt_join")
+        _set(self.txt_card.header_var, "txt_headers")
+        _set(self.txt_card.sep_var, "txt_separator")
+        _set(self.txt_card.empty_var, "txt_remove_empty")
+        _set(self.txt_card.enc_var, "txt_encoding")
+        _set(self.csv_card.conv_var, "csv_conv")
+        _set(self.csv_card.merge_var, "csv_merge")
+        _set(self.csv_card.merge_single_header, "csv_merged_header")
+        _set(self.csv_card.txt_enc_var, "csv_txt_encoding")
+        if state.get("csv_out_dir"):
+            self.csv_card.out_dir = state["csv_out_dir"]
+            self.csv_card.var_out.set(state["csv_out_dir"])
+        _set(self.tools_card.op_var, "tools_op")
+        _set(self.tools_card.out_enc, "tools_out_encoding")
+        _set(self.tools_card.split_var, "tools_split_lines")
+        _set(self.tools_card.filter_kw, "tools_filter_kw")
+        _set(self.tools_card.filter_mode, "tools_filter_mode")
+        _set(self.tools_card.replace_old, "tools_replace_old")
+        _set(self.tools_card.replace_new, "tools_replace_new")
+        _set(self.tools_card.affix_pre, "tools_affix_pre")
+        _set(self.tools_card.affix_suf, "tools_affix_suf")
+        _set(self.tools_card.case_mode, "tools_case_mode")
+        _set(self.tools_card.enc_target, "tools_enc_target")
+        if state.get("tools_out_dir"):
+            self.tools_card.out_dir = state["tools_out_dir"]
+            self.tools_card.var_out.set(state["tools_out_dir"])
+        wt_ui_state.apply_window_geometry(self.root, state.get("geometry"))
+
+    def _on_close(self):
+        try:
+            wt_ui_state.save(self.UI_STATE_KEY, self._collect_ui_state())
+        finally:
+            self.root.destroy()
+
 
 def main():
     if _HAS_DND:
@@ -1011,6 +1535,8 @@ def main():
     else:
         root = tk.Tk()
     app = App(root)
+    app._apply_ui_state(wt_ui_state.load(App.UI_STATE_KEY))
+    root.protocol("WM_DELETE_WINDOW", app._on_close)
     root.mainloop()
 
 

@@ -11,10 +11,12 @@
 import json
 import math
 import os
+import queue
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
@@ -22,6 +24,7 @@ from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 
 import wt_dpi
+import wt_wheel_router
 import wt_theme
 import cv2
 import numpy as np
@@ -39,6 +42,8 @@ CANVAS_MAX_WIDTH = 1100
 CANVAS_MAX_HEIGHT = 760
 DEFAULT_TEMPLATE_PREFIX = "template"
 MIN_REGION_SIZE = 12
+# 单框 OCR 超时（秒）：批量命名在 worker 上逐框限时，超时按未识别处理不卡整体
+OCR_NAME_TIMEOUT = 20.0
 HANDLE_SIZE = 6
 CONTACT_SHEET_CELL_WIDTH = 240
 CONTACT_SHEET_CELL_HEIGHT = 180
@@ -303,8 +308,12 @@ def save_template_index(output_root, index_data):
     os.makedirs(output_root, exist_ok=True)
     index_path = os.path.join(output_root, INDEX_FILE_NAME)
     normalized = rebuild_template_index(output_root, index_data)
-    with open(index_path, "w", encoding="utf-8") as file_obj:
+    # 原子写：先写临时文件再替换 —— 直接 open(w) 先截断，写盘中途失败会把
+    # 索引损坏成半截 JSON（下次打开被 load 静默当成空索引，审计 P2）
+    tmp_path = index_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as file_obj:
         json.dump(normalized, file_obj, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, index_path)
     return normalized
 
 
@@ -326,7 +335,7 @@ def preprocess_for_ocr(crop_image):
     return Image.fromarray(binary)
 
 
-def run_tesseract_cli(processed_image):
+def run_tesseract_cli(processed_image, timeout=None):
     if not TESSERACT_EXE:
         return ""
 
@@ -349,10 +358,14 @@ def run_tesseract_cli(processed_image):
             text=True,
             encoding="utf-8",
             errors="ignore",
+            timeout=timeout,
         )
         if result.returncode != 0:
             return ""
         return result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        # 超时与「识别为空」需要区分（None），批量命名据此计「OCR 超时」并跳过该框
+        return None
     except Exception:
         return ""
     finally:
@@ -362,18 +375,39 @@ def run_tesseract_cli(processed_image):
             pass
 
 
-def extract_text_with_ocr(crop_image):
+def extract_text_with_ocr(crop_image, timeout=None):
     processed_image = preprocess_for_ocr(crop_image)
 
     if pytesseract is not None:
         try:
-            text = pytesseract.image_to_string(processed_image, lang="chi_sim+eng", config="--psm 7")
+            text = pytesseract.image_to_string(
+                processed_image, lang="chi_sim+eng", config="--psm 7", timeout=timeout
+            )
             if text.strip():
                 return text.strip()
+        except RuntimeError as exc:
+            # pytesseract 的 timeout 到期即抛 RuntimeError：不再回退 CLI 重跑同一
+            # 时限（单框最坏 2×timeout），直接按超时返回 None
+            if "timeout" in str(exc).lower():
+                return None
         except Exception:
             pass
 
-    return run_tesseract_cli(processed_image)
+    return run_tesseract_cli(processed_image, timeout=timeout)
+
+
+def ocr_name_from_raw(raw_text, index):
+    """OCR 原始文本 → 模板名；返回 (名称, 是否超时)（待修改清单 #3）。
+
+    raw_text=None 表示 OCR 超时（run_tesseract_cli 的 TimeoutExpired 信号），
+    按未识别处理：回退默认名并计一次超时，供批量循环统计展示。
+    """
+    fallback = f"{DEFAULT_TEMPLATE_PREFIX}_{index + 1:03d}"
+    if raw_text is None:
+        return fallback, True
+    if raw_text:
+        return sanitize_template_name(raw_text, fallback), False
+    return fallback, False
 
 
 def get_ocr_status_message():
@@ -531,8 +565,10 @@ class TemplateBuilderApp:
         self.right_canvas_window = self.right_canvas.create_window((0, 0), window=right_frame, anchor=tk.NW)
         right_frame.bind("<Configure>", self.on_right_frame_configure)
         self.right_canvas.bind("<Configure>", self.on_right_canvas_configure)
-        # add="+"：不覆盖应用其它位置注册的全局滚轮处理，避免互相拆绑
-        self.right_canvas.bind_all("<MouseWheel>", self.on_mousewheel, add="+")
+        # 统一滚轮路由（wt_wheel_router）：高精度触控板 delta 余数累积，
+        # 消除 int(delta/120) 截断为 0 的零响应（审计 P2）
+        wt_wheel_router.register(self.right_canvas)
+        wt_wheel_router.bind_root(self.root)
 
         tk.Label(right_frame, text="候选区域", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10, "bold")).pack(anchor="w")
         self.listbox = tk.Listbox(right_frame, width=45, height=12, selectmode=tk.EXTENDED, exportselection=False, bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], selectbackground=TEMPLATE_THEME["primary"], selectforeground="#ffffff", highlightbackground=TEMPLATE_THEME["border"], highlightcolor=TEMPLATE_THEME["primary"], highlightthickness=1, relief="flat", bd=0, font=(TEMPLATE_THEME["font"], 10))
@@ -575,6 +611,10 @@ class TemplateBuilderApp:
         tk.Label(form_frame, text="文件名", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=0, sticky="w")
         self.file_name_entry = tk.Entry(form_frame, textvariable=self.file_name_var, width=28, bg=TEMPLATE_THEME["panel"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10))
         self.file_name_entry.grid(row=0, column=1, sticky="ew", padx=4)
+        # 失焦/回车即提交文件名到当前候选：此前手工改名不点"应用"就切换候选框
+        # 会被静默丢弃（审计 P1◐）。FocusOut 先于列表选择变更触发，时序天然正确。
+        self.file_name_entry.bind("<FocusOut>", self._commit_file_name_entry)
+        self.file_name_entry.bind("<Return>", self._commit_file_name_entry)
         tk.Label(form_frame, text=".png", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["muted"], font=(TEMPLATE_THEME["font"], 10)).grid(row=0, column=2, sticky="w")
         tk.Label(form_frame, text="批量前缀", bg=TEMPLATE_THEME["panel_soft"], fg=TEMPLATE_THEME["text"], font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=0, sticky="w", pady=(6, 0))
         tk.Entry(form_frame, textvariable=self.batch_prefix_var, width=28, bg=TEMPLATE_THEME["panel"], fg=TEMPLATE_THEME["text"], insertbackground=TEMPLATE_THEME["text"], relief="solid", bd=1, font=(TEMPLATE_THEME["font"], 10)).grid(row=1, column=1, sticky="ew", padx=4, pady=(6, 0))
@@ -595,7 +635,7 @@ class TemplateBuilderApp:
             return btn
 
         _tone("OCR命名当前", self.ocr_name_current, "default")
-        _tone("OCR命名选中", self.ocr_name_selected, "default")
+        self.btn_ocr_name_selected = _tone("OCR命名选中", self.ocr_name_selected, "default")
         _tone("保存当前模板", self.save_current_template, "primary")
         _tone("保存并下一项", self.save_and_next, "primary")
         _tone("保存选中模板", self.save_selected_templates, "primary")
@@ -643,17 +683,6 @@ class TemplateBuilderApp:
 
     def on_right_canvas_configure(self, event):
         self.right_canvas.itemconfigure(self.right_canvas_window, width=event.width)
-
-    def on_mousewheel(self, event):
-        widget = self.root.winfo_containing(event.x_root, event.y_root)
-        if widget is None:
-            return
-        parent = widget
-        while parent is not None:
-            if parent == self.right_canvas:
-                self.right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-                return
-            parent = parent.master
 
     def capture_state(self):
         return {
@@ -718,29 +747,48 @@ class TemplateBuilderApp:
         return "break"
 
     def take_screenshot(self):
+        """截屏（3 秒后倒计时）。
+
+        倒计时用 after 链实现：原实现 update()+sleep(1)×3 阻塞主循环
+        （期间界面完全无响应），且按钮在倒计时中可重复点击叠加多轮
+        倒计时（审计 P2）。
+        """
+        if getattr(self, "_screenshot_countdown_running", False):
+            return  # 倒计时进行中：忽略重复点击
+        self._screenshot_countdown_running = True
+        self._screenshot_countdown = 3
         self.status_var.set("3秒后开始截屏，请切换到目标窗口...")
-        self.root.update()
-        for i in range(3, 0, -1):
-            self.status_var.set(f"{i}秒后开始截屏...")
-            self.root.update()
-            time.sleep(1)
-        
+        self.root.after(1000, self._screenshot_countdown_tick)
+
+    def _screenshot_countdown_tick(self):
+        self._screenshot_countdown -= 1
+        if self._screenshot_countdown <= 0:
+            self._screenshot_countdown_running = False
+            self._do_take_screenshot()
+            return
+        self.status_var.set(f"{self._screenshot_countdown}秒后开始截屏...")
+        self.root.after(1000, self._screenshot_countdown_tick)
+
+    def _do_take_screenshot(self):
         try:
             screenshot = ImageGrab.grab()
             if screenshot is None:
                 messagebox.showerror("错误", "截屏失败")
                 return
-            
+
             output_root = self.output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR
             os.makedirs(output_root, exist_ok=True)
-            
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             screenshot_path = os.path.join(output_root, f"screenshot_{timestamp}.png")
             screenshot.save(screenshot_path)
-            
+
             self.screenshot_path_var.set(screenshot_path)
-            self.load_screenshot(screenshot_path)
-            self.status_var.set(f"截屏已保存并加载: {screenshot_path}")
+            if self.load_screenshot(screenshot_path):
+                self.status_var.set(f"截屏已保存并加载: {screenshot_path}")
+            else:
+                # 用户在确认框取消（保留当前候选）或读取失败时不得谎报“已加载”
+                self.status_var.set(f"截图已保存但未加载: {screenshot_path}")
         except Exception as exc:
             messagebox.showerror("错误", f"截屏失败: {exc}")
     
@@ -823,10 +871,23 @@ class TemplateBuilderApp:
         os.startfile(target_dir)
 
     def load_screenshot(self, file_path):
+        """加载截图并重置工作区。返回是否真正加载成功。
+
+        两种失败路径：用户在确认框取消（保留当前候选）、文件读取失败。
+        调用方（如截屏保存后的状态提示）须按返回值区分“已加载/未加载”。
+        """
+        # 重新加载会清空当前候选框与撤回栈（不可恢复）：有内容时先确认（审计 P1◐）
+        if self.candidates and not messagebox.askyesno(
+            "确认重新加载",
+            "加载新截图将清空当前的 {} 个候选区域与撤回记录（不可恢复）。\n\n是否继续？".format(
+                len(self.candidates)
+            ),
+        ):
+            return False
         self.source_image_bgr = cv2.imread(file_path)
         if self.source_image_bgr is None:
             messagebox.showerror("读取失败", f"无法读取截图: {file_path}")
-            return
+            return False
 
         self.source_image_rgb = cv2.cvtColor(self.source_image_bgr, cv2.COLOR_BGR2RGB)
         self.candidates = []
@@ -840,6 +901,7 @@ class TemplateBuilderApp:
         self.status_var.set("截图已加载，点击“自动检测”开始切分")
         self.root.update_idletasks()
         self.refresh_canvas()
+        return True
 
     def detect_regions(self):
         if self.source_image_bgr is None:
@@ -929,7 +991,15 @@ class TemplateBuilderApp:
 
     def add_candidate_region(self, region, select_new=True):
         self.candidates.append(region)
-        self.template_names.append(f"{DEFAULT_TEMPLATE_PREFIX}_{len(self.candidates):03d}")
+        # 命名避重：直接取 len 会与"删框后残留的序号"撞名（删掉 #2 后新框又叫 _003），
+        # 批量保存时同名截图互相覆盖、索引只剩一条，却仍报"全部保存成功"（审计 P1-8）。
+        used_names = set(self.template_names)
+        seq = len(self.candidates)
+        candidate_name = "{}_{:03d}".format(DEFAULT_TEMPLATE_PREFIX, seq)
+        while candidate_name in used_names:
+            seq += 1
+            candidate_name = "{}_{:03d}".format(DEFAULT_TEMPLATE_PREFIX, seq)
+        self.template_names.append(candidate_name)
         new_index = len(self.candidates) - 1
         if select_new:
             self.selected_index = new_index
@@ -971,6 +1041,8 @@ class TemplateBuilderApp:
 
     def refresh_canvas(self):
         self.canvas.delete("all")
+        # 全量重建会清掉拖动预览层，同步失效其 item id 缓存（待修改清单 #4）
+        self._preview_items = []
         if self.source_image_rgb is None:
             return
 
@@ -1007,8 +1079,12 @@ class TemplateBuilderApp:
                 color = "#ffd166"
             else:
                 color = "#ff6b6b"
-            self.canvas.create_rectangle(x1, y1, x2, y2, outline=color, width=2)
-            self.canvas.create_text(x1 + 4, y1 + 4, text=str(index + 1), anchor=tk.NW, fill=color)
+            self.canvas.create_rectangle(
+                x1, y1, x2, y2, outline=color, width=2,
+                tags=("cand", "cand_{}".format(index)))
+            self.canvas.create_text(
+                x1 + 4, y1 + 4, text=str(index + 1), anchor=tk.NW, fill=color,
+                tags=("cand", "cand_{}".format(index)))
 
             if index == self.selected_index:
                 handle_radius = HANDLE_SIZE
@@ -1030,6 +1106,7 @@ class TemplateBuilderApp:
                         hy + handle_radius,
                         fill="#00ff7f",
                         outline="#003b24",
+                        tags=("cand", "cand_{}".format(index)),
                     )
 
         if self.temp_region is not None:
@@ -1047,6 +1124,57 @@ class TemplateBuilderApp:
             y2 = int((self.selection_region.y + self.selection_region.h) * self.scale)
             self.canvas.create_rectangle(x1, y1, x2, y2, outline="#74c0fc", width=2, dash=(6, 4))
             self.canvas.create_text(x1 + 4, y1 + 4, text="select", anchor=tk.NW, fill="#74c0fc")
+
+    def _region_display_coords(self, region):
+        """图像坐标 → 画布显示坐标（与 refresh_canvas 的缩放规则一致）。"""
+        scale = self.scale
+        return (
+            int(region.x * scale),
+            int(region.y * scale),
+            int((region.x + region.w) * scale),
+            int((region.y + region.h) * scale),
+        )
+
+    def _draw_canvas_preview_layer(self):
+        """拖动期增量预览层：只重画瞬态形状，不触碰底图与候选框静态层（待修改清单 #4）。
+
+        拖动的每一帧此前都全量 refresh_canvas（重 resize 底图 + 重画全部候选框），
+        框多/图大时明显卡顿。现在静态层保持不动，瞬态形状（临时框/选择框/被拖框）
+        在独立预览层逐帧重画，松手时由 on_canvas_release 统一收敛。
+        """
+        canvas = self.canvas
+        for item_id in getattr(self, "_preview_items", []):
+            canvas.delete(item_id)
+        self._preview_items = []
+        if self.source_image_rgb is None:
+            return
+
+        if self.drag_action == "drawing" and self.temp_region is not None:
+            x1, y1, x2, y2 = self._region_display_coords(self.temp_region)
+            self._preview_items.append(canvas.create_rectangle(
+                x1, y1, x2, y2, outline="#4dabf7", width=2, dash=(5, 3), tags=("preview",)))
+            self._preview_items.append(canvas.create_text(
+                x1 + 4, y1 + 4, text="new", anchor=tk.NW, fill="#4dabf7", tags=("preview",)))
+        elif self.drag_action == "selecting" and self.selection_region is not None:
+            x1, y1, x2, y2 = self._region_display_coords(self.selection_region)
+            self._preview_items.append(canvas.create_rectangle(
+                x1, y1, x2, y2, outline="#74c0fc", width=2, dash=(6, 4), tags=("preview",)))
+            self._preview_items.append(canvas.create_text(
+                x1 + 4, y1 + 4, text="select", anchor=tk.NW, fill="#74c0fc", tags=("preview",)))
+        elif (self.drag_action in {"moving", "resizing"}
+                and self.drag_current_index is not None
+                and 0 <= self.drag_current_index < len(self.candidates)):
+            # 隐藏被拖框的静态层（矩形/序号/手柄同 tag），否则拖动中出现两个框
+            # 且手柄留在旧位置（审计 P2）。松手 refresh_canvas 重建即恢复。
+            canvas.itemconfigure("cand_{}".format(self.drag_current_index), state="hidden")
+            region = self.candidates[self.drag_current_index]
+            x1, y1, x2, y2 = self._region_display_coords(region)
+            # 被拖框用选中色画在预览层，盖住静态层的旧位置；松手后 refresh_canvas 收敛
+            self._preview_items.append(canvas.create_rectangle(
+                x1, y1, x2, y2, outline="#00ff7f", width=2, tags=("preview",)))
+            self._preview_items.append(canvas.create_text(
+                x1 + 4, y1 + 4, text=str(self.drag_current_index + 1),
+                anchor=tk.NW, fill="#00ff7f", tags=("preview",)))
 
     def on_canvas_press(self, event):
         if self.source_image_rgb is None:
@@ -1161,12 +1289,12 @@ class TemplateBuilderApp:
 
         if self.drag_action == "drawing":
             self.temp_region = self.build_region_from_points(start_x, start_y, x, y)
-            self.refresh_canvas()
+            self._draw_canvas_preview_layer()
             return
 
         if self.drag_action == "selecting":
             self.selection_region = self.build_region_from_points(start_x, start_y, x, y)
-            self.refresh_canvas()
+            self._draw_canvas_preview_layer()
             return
 
         if self.drag_current_index is None or self.drag_start_region is None:
@@ -1184,9 +1312,8 @@ class TemplateBuilderApp:
                 y,
             )
 
-        self.refresh_canvas()
-        self.refresh_listbox()
-        self.update_preview()
+        # 拖动期只走增量预览层；列表与预览图在松手时统一刷新（待修改清单 #4）
+        self._draw_canvas_preview_layer()
 
     def on_canvas_release(self, event):
         if self.source_image_rgb is None:
@@ -1228,10 +1355,16 @@ class TemplateBuilderApp:
         elif self.drag_action in {"moving", "resizing"} and self.drag_current_index is not None:
             if self.drag_moved and self.pre_drag_snapshot is not None:
                 self.push_undo_state(self.pre_drag_snapshot)
+            self.refresh_canvas()
             self.refresh_listbox()
             self.update_preview()
             action_text = "移动" if self.drag_action == "moving" else "调整"
             self.status_var.set(f"已{action_text}框 #{self.drag_current_index + 1}")
+
+        # 拖动期的预览图层松手时一次性收敛到静态层（各分支已刷新则此处为空操作）
+        if getattr(self, "_preview_items", None):
+            self._preview_items = []
+            self.refresh_canvas()
 
         self.drag_action = None
         self.drag_start = None
@@ -1243,9 +1376,25 @@ class TemplateBuilderApp:
         self.selection_additive = False
         self.pre_drag_snapshot = None
 
+    def _commit_file_name_entry(self, _event=None):
+        """把输入框中的文件名提交给当前选中候选（Entry 失焦/回车时触发）。"""
+        if self.selected_index is None or not (0 <= self.selected_index < len(self.template_names)):
+            return
+        typed = sanitize_template_name(self.file_name_var.get().strip(), "")
+        if not typed or typed == self.template_names[self.selected_index]:
+            return
+        self.template_names[self.selected_index] = typed
+        self.refresh_listbox()
+
     def on_listbox_select(self, _event):
         selected = self.listbox.curselection()
         if selected:
+            # 先把输入框里未提交的改名提交给【原选中候选】再切换：
+            # 实测（tk 8.6 真实事件流）点击列表时 <<ListboxSelect>> 先于
+            # <FocusOut> 触发 —— 若只靠失焦提交，此处 file_name_var 已被新
+            # 候选的名字覆盖，手工改名仍会静默丢失（session-21 实证修正）。
+            # _commit_file_name_entry 幂等：无未提交改动时为空操作。
+            self._commit_file_name_entry()
             self.selected_indices = set(selected)
             self.selected_index = selected[-1]
             self.file_name_var.set(self.template_names[self.selected_index])
@@ -1381,18 +1530,16 @@ class TemplateBuilderApp:
         self.status_var.set("OCR 不可用，请先安装 Tesseract OCR")
         return False
 
-    def suggest_name_for_index(self, index):
+    def suggest_name_for_index(self, index, timeout=None):
         if index < 0 or index >= len(self.candidates):
             return ""
 
         region = self.candidates[index]
         crop = self.source_image_rgb[region.y:region.y + region.h, region.x:region.x + region.w]
         crop_image = Image.fromarray(crop)
-        raw_text = extract_text_with_ocr(crop_image)
-        fallback_name = f"{DEFAULT_TEMPLATE_PREFIX}_{index + 1:03d}"
-        if raw_text:
-            return sanitize_template_name(raw_text, fallback_name)
-        return fallback_name
+        raw_text = extract_text_with_ocr(crop_image, timeout=timeout)
+        name, _timed_out = ocr_name_from_raw(raw_text, index)
+        return name
 
     def ocr_name_current(self):
         self.sync_selection_from_listbox()
@@ -1404,7 +1551,8 @@ class TemplateBuilderApp:
 
         try:
             self.push_undo_state()
-            suggested_name = self.suggest_name_for_index(self.selected_index)
+            suggested_name = self.suggest_name_for_index(
+                self.selected_index, timeout=OCR_NAME_TIMEOUT)
             self.template_names[self.selected_index] = suggested_name
             self.file_name_var.set(suggested_name)
             self.refresh_listbox()
@@ -1415,6 +1563,13 @@ class TemplateBuilderApp:
             self.status_var.set(f"OCR 命名当前失败: {exc}")
 
     def ocr_name_selected(self):
+        # 运行中再次点击 = 请求取消（逐框边界生效，见 worker 循环）
+        thread = getattr(self, "_ocr_thread", None)
+        if thread is not None and thread.is_alive():
+            self._ocr_cancel.set()
+            self.status_var.set("正在取消 OCR 批量命名（等待当前框完成）...")
+            return
+
         self.sync_selection_from_listbox()
         if not self.selected_indices:
             messagebox.showwarning("提示", "请先在右侧列表中选择一个或多个候选区域")
@@ -1422,22 +1577,117 @@ class TemplateBuilderApp:
         if not self.ensure_ocr_available():
             return
 
-        try:
-            self.push_undo_state()
-            renamed_count = 0
-            for index in sorted(self.selected_indices):
-                suggested_name = self.suggest_name_for_index(index)
-                self.template_names[index] = suggested_name
-                renamed_count += 1
+        # 撤回快照仍在主线程一次性执行（待修改清单 #3 要求）
+        self.push_undo_state()
 
-            if self.selected_index is not None:
+        # 主线程快照裁剪图：worker 只依赖局部数据，不与 UI 共享可变状态
+        jobs = []
+        for index in sorted(self.selected_indices):
+            region = self.candidates[index]
+            crop = self.source_image_rgb[region.y:region.y + region.h, region.x:region.x + region.w]
+            jobs.append((index, Image.fromarray(crop)))
+        total = len(jobs)
+
+        self._ocr_cancel = threading.Event()
+        self._ocr_events = queue.Queue()
+        self._ocr_btn_text_backup = self.btn_ocr_name_selected.cget("text")
+        self.btn_ocr_name_selected.config(text="⨂ 取消命名")
+
+        def _worker():
+            processed = 0
+            timed_out = 0
+            for index, crop_image in jobs:
+                if self._ocr_cancel.is_set():
+                    self._ocr_events.put(
+                        lambda p=processed, t=total, k=timed_out:
+                        self._ocr_batch_finished(
+                            processed=p, total=t, timed_out=k, cancelled=True))
+                    return
+                try:
+                    raw_text = extract_text_with_ocr(crop_image, timeout=OCR_NAME_TIMEOUT)
+                except Exception as exc:  # noqa: BLE001
+                    msg = str(exc)
+                    self._ocr_events.put(
+                        lambda m=msg: self._ocr_batch_finished(error=m))
+                    return
+                name, box_timed_out = ocr_name_from_raw(raw_text, index)
+                timed_out += 1 if box_timed_out else 0
+                processed += 1
+                self._ocr_events.put(
+                    lambda i=index, n=name, p=processed, t=total, k=timed_out:
+                    self._ocr_apply_one(index=i, name=n, processed=p, total=t, timed_out=k))
+            self._ocr_events.put(
+                lambda p=processed, t=total, k=timed_out:
+                self._ocr_batch_finished(processed=p, total=t, timed_out=k))
+
+        self._ocr_thread = threading.Thread(target=_worker, daemon=True)
+        self._ocr_thread.start()
+        # 轮询链从主线程启动（worker 不跨线程调 after，见 txt_merge 同款模式）
+        self.root.after(80, self._drain_ocr_events)
+
+    def _drain_ocr_events(self):
+        """主线程排空 OCR worker 事件队列；线程存活或队列非空则续订下一轮。"""
+        while True:
+            try:
+                fn = self._ocr_events.get_nowait()
+            except queue.Empty:
+                break
+            fn()
+        thread = getattr(self, "_ocr_thread", None)
+        if (thread is not None and thread.is_alive()) or not self._ocr_events.empty():
+            self.root.after(80, self._drain_ocr_events)
+
+    def _ocr_apply_one(self, index, name, processed, total, timed_out):
+        """主线程：写回单框命名并刷新列表与进度。"""
+        if 0 <= index < len(self.template_names):
+            self.template_names[index] = name
+        self.refresh_listbox()
+        suffix = f"（超时 {timed_out}）" if timed_out else ""
+        self.status_var.set(
+            f"OCR 批量命名中... {processed}/{total}{suffix}")
+
+    def _ocr_batch_finished(self, processed=0, total=0, timed_out=0,
+                            cancelled=False, error=None):
+        """OCR 批量命名收尾（仅主线程执行）：恢复按钮 + 三态反馈。"""
+        self.btn_ocr_name_selected.config(text=self._ocr_btn_text_backup)
+        if error is not None:
+            messagebox.showerror("OCR 批量命名失败", f"OCR 命名选中失败：\n{error}")
+            self.status_var.set(f"OCR 批量命名失败: {error}")
+            return
+        if cancelled:
+            suffix = f"（超时 {timed_out}）" if timed_out else ""
+            self.status_var.set(
+                f"OCR 批量命名已取消（完成 {processed}/{total}{suffix}）")
+            messagebox.showinfo(
+                "已取消",
+                f"OCR 批量命名已取消，完成 {processed}/{total} 个候选区域。")
+            # 收敛：已写入的 template_names 与名称框/列表保持一致（审计 P3）
+            if self.selected_index is not None and 0 <= self.selected_index < len(self.template_names):
                 self.file_name_var.set(self.template_names[self.selected_index])
             self.refresh_listbox()
-            self.set_selected_indices(self.selected_indices, active_index=self.selected_index)
-            self.status_var.set(f"OCR 批量命名完成，共处理 {renamed_count} 个候选区域")
-        except Exception as exc:
-            messagebox.showerror("OCR 批量命名失败", f"OCR 命名选中失败：\n{exc}")
-            self.status_var.set(f"OCR 批量命名失败: {exc}")
+            return
+        if self.selected_index is not None and 0 <= self.selected_index < len(self.template_names):
+            self.file_name_var.set(self.template_names[self.selected_index])
+        self.refresh_listbox()
+        self.set_selected_indices(self.selected_indices, active_index=self.selected_index)
+        suffix = f"（超时 {timed_out}）" if timed_out else ""
+        self.status_var.set(
+            f"OCR 批量命名完成，共处理 {processed} 个候选区域{suffix}")
+
+    def _confirm_overwrite_template(self, output_path):
+        """同名模板 PNG 覆盖确认：首次冲突询问一次，之后沿用（覆盖/跳过）。
+
+        返回 True=允许写盘；False=跳过。（每次保存动作开始时重置策略。）
+        """
+        policy = getattr(self, "_overwrite_policy", None)
+        if policy is not None:
+            return policy
+        answer = messagebox.askyesno(
+            "同名模板已存在",
+            "{}\n\n是否覆盖？\n（「否」将跳过本次保存中所有同名模板）".format(output_path),
+        )
+        self._overwrite_policy = bool(answer)
+        return bool(answer)
 
     def save_region_by_index(self, index, file_name):
         if index < 0 or index >= len(self.candidates):
@@ -1453,11 +1703,23 @@ class TemplateBuilderApp:
         os.makedirs(output_dir, exist_ok=True)
 
         output_path = os.path.join(output_dir, f"{file_name}.png")
+        if os.path.exists(output_path) and not self._confirm_overwrite_template(output_path):
+            return None
         crop_image.save(output_path)
-        self._update_index_file(output_root, category, file_name, region, output_path)
+        try:
+            self._update_index_file(output_root, category, file_name, region, output_path)
+        except Exception as exc:
+            # 索引写失败：回滚刚落盘的图片，避免"有图无索引"的半成品静默存在（审计 P1◐）
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
+            messagebox.showerror("保存失败", "图片已回滚（索引写入失败）：\n{}".format(exc))
+            return None
         return output_path
 
     def save_current_template(self):
+        self._overwrite_policy = None  # 本次保存的覆盖策略在首次冲突时决定
         region, crop_image = self.get_selected_crop()
         if region is None or crop_image is None:
             messagebox.showwarning("提示", "请先选择一个候选区域")
@@ -1485,6 +1747,7 @@ class TemplateBuilderApp:
             self.select_next()
 
     def save_selected_templates(self):
+        self._overwrite_policy = None  # 本次批量保存的覆盖策略在首次冲突时决定
         if not self.selected_indices:
             messagebox.showwarning("提示", "请先在右侧列表中选择一个或多个候选区域")
             return
@@ -1779,9 +2042,15 @@ class TemplateBuilderApp:
         self.delete_indices(set(self.selected_indices))
         self.status_var.set("已删除选中框")
 
-    def on_delete_key(self, _event):
+    def on_delete_key(self, event):
+        # 焦点在文本输入类控件（文件名 Entry、批量前缀等）或下拉框时，
+        # Del 只应作用于该输入控件，不误删候选框（审计 P2）。
+        widget_name = type(getattr(event, "widget", None)).__name__
+        if widget_name in ("Entry", "TEntry", "Text", "Combobox", "TCombobox", "Spinbox", "TSpinbox"):
+            return None
         if self.selected_indices:
             self.delete_selected_regions()
+        return None
 
     def _update_index_file(self, output_root, category, file_name, region, output_path):
         category = normalize_template_category(category)
@@ -1817,8 +2086,12 @@ class TemplateBuilderApp:
 
     def open_output_dir(self):
         output_root = self.output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR
-        os.makedirs(output_root, exist_ok=True)
-        os.startfile(output_root)
+        try:
+            os.makedirs(output_root, exist_ok=True)
+            os.startfile(output_root)
+        except Exception as exc:
+            # 路径异常/无关联程序时此前静默失效（"点了没反应"，审计 P1◐）
+            messagebox.showerror("打开目录失败", "{}\n\n{}".format(output_root, exc))
 
 
 def main():

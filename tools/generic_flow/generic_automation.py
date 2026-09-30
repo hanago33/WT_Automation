@@ -443,6 +443,17 @@ class MonitorWindow:
             self.root.focus_force()
         except Exception:
             pass
+        # 提示性置顶 3 秒后自动回退：此前设置后永不撤销，监视窗长期压在
+        # 其他窗口之上并抢焦点（审计 P2）
+        def _release_notice_topmost():
+            try:
+                self._set_topmost(False)
+            except Exception:
+                pass
+        try:
+            self.root.after(3000, _release_notice_topmost)
+        except Exception:
+            pass
 
     def log(self, message, kind="info"):
         if kind not in ("info", "success", "error", "warning"):
@@ -455,6 +466,13 @@ class MonitorWindow:
         else:
             self.text_widget.insert(tk.END, message, kind)
         self.text_widget.insert(tk.END, "\n")
+        # 行数上限：长流程日志持续膨胀会拖慢滚动与重绘（审计 P2）
+        try:
+            total_lines = int(self.text_widget.index("end-1c").split(".")[0])
+            if total_lines > 1000:
+                self.text_widget.delete("1.0", "{}.0".format(total_lines - 1000 + 1))
+        except Exception:
+            pass
         self.text_widget.see(tk.END)
         self.text_widget.config(state=tk.DISABLED)
         # 注意：不再调用 self.root.update()。本方法可能被后台自动化线程调用，
@@ -497,23 +515,26 @@ class MonitorWindow:
 def _ui_safe_call(callback):
     """线程安全地把 Tk 回调调度到主线程执行。
 
-    monitor 模式下主线程运行 mainloop，用 after 调度；若主线程不在 mainloop
-    （如 --no-monitor / 主线程同步执行），则直接调用兜底。
-    背景：run_automation 在后台自动化线程中运行，直接调用 Tk widget 方法
-    （尤其 root.update()/root.title()）会跨线程重入 Tcl 事件循环，导致原生崩溃。
+    调度一律优先 after；after 不可用（无 monitor 窗口 / 窗口已销毁）时，
+    仅在「当前即主线程」的情况下直接调用兜底 —— 后台线程绝不直接触碰 Tk
+    （跨线程重入 Tcl 会原生崩溃，与本函数注释一致；审计 P2 指出旧实现的
+    "直接调用兜底"对后台线程同样生效，自相矛盾；且 winfo_exists 本身也是
+    跨线程 Tcl 调用，一并去掉）。
     """
     mw = monitor_window
     if mw is not None and getattr(mw, "root", None) is not None:
         try:
-            if mw.root.winfo_exists():
-                mw.root.after(0, callback)
-                return True
+            mw.root.after(0, callback)
+            return True
         except Exception:
             pass
-    try:
-        callback()
-    except Exception:
-        pass
+    import threading as _th
+    if _th.current_thread() is _th.main_thread():
+        try:
+            callback()
+            return True
+        except Exception:
+            return False
     return False
 
 
@@ -523,12 +544,16 @@ def log_step(step_name):
     log_line = f"[{timestamp}] {step_name}"
     print(log_line, end="\n")
 
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(log_line + "\n")
-        try:
-            wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
-        except Exception:
-            pass
+    # 写日志文件失败（被占用/只读/磁盘满）不应让整轮流程跟着失败（审计 P2）
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(log_line + "\n")
+    except OSError:
+        pass
+    try:
+        wt_run_status.publish(activity=step_name, last_log=log_line, source="WT_AUT_recorded")
+    except Exception:
+        pass
 
     if monitor_window:
         if any(k in step_name for k in ("失败", "错误")):
@@ -2779,9 +2804,14 @@ def main():
 	# 这里提前在主线程创建一次，run_automation 内 _init_taskbar_progress() 发现已存在会跳过。
 	_init_taskbar_progress()
 
+	_stop_requested_at = {"t": None}
+	_force_prompt_state = {"pending": False}
+
 	def _request_stop():
 		# 拦截关闭按钮：先请求自动化优雅停止并落盘运行报告，而不是销毁窗口硬杀 daemon 线程
 		_STOP_REQUESTED.set()
+		if _stop_requested_at["t"] is None:
+			_stop_requested_at["t"] = time.time()
 		monitor_window.log("关闭请求已收到：当前步骤完成后停止并落盘报告", kind="warning")
 
 	run_finished = threading.Event()
@@ -2821,6 +2851,32 @@ def main():
 			except Exception:
 				pass
 			return
+		# 强退兜底：请求停止后线程长时间无响应（步骤卡在目标软件调用中）时，
+		# 周期提供"强制退出"选择，避免窗口永远关不掉（审计 P2）
+		if _STOP_REQUESTED.is_set() and not _force_prompt_state["pending"]:
+			waited = time.time() - (_stop_requested_at["t"] or time.time())
+			if waited >= 15:
+				_force_prompt_state["pending"] = True
+				try:
+					from tkinter import messagebox
+					force = messagebox.askyesno(
+						"流程未响应",
+						"已请求停止，但流程在 {:.0f} 秒内仍未退出（可能卡在目标软件的调用中）。\n\n"
+						"是否强制退出？强制退出会跳过收尾，运行报告可能不完整。".format(waited),
+						parent=monitor_window.root,
+					)
+				except Exception:
+					force = False
+				if force:
+					print("[force-exit] 用户选择强制退出（流程未响应）")
+					try:
+						monitor_window.root.destroy()
+					except Exception:
+						pass
+					os._exit(_automation_exit_code["code"] or 1)
+				# 用户选择继续等待：10 秒后再询问一次
+				_force_prompt_state["pending"] = False
+				_stop_requested_at["t"] = time.time() - 5.0
 		monitor_window.root.after(200, _poll_exit)
 
 	monitor_window.root.protocol("WM_DELETE_WINDOW", _request_stop)

@@ -1,0 +1,95 @@
+{
+  "default": "opencode-ai",
+  "profiles": {
+    "opencode-ai": {
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "api_key": "YOUR-API-KEY",
+      "model": "deepseek-v4-flash",
+      "timeout": 120,
+      "max_retries": 3,
+      "retry_backoff": 2.0,
+      "retry_codes": "429,500,502,503,504"
+    },
+    "claude-haiku-4-5": {
+      "base_url": "https://cdn.xiavier.com/v1",
+      "api_key": "YOUR-API-KEY",
+      "model": "claude-haiku-4-5-20251001",
+      "timeout": 120,
+      "max_retries": 3,
+      "retry_backoff": 2.0,
+      "retry_codes": "429,500,502,503,504"
+    },
+    "默认配置": {
+      "base_url": "https://maas-api.unisound.com/v1",
+      "api_key": "YOUR-API-KEY",
+      "model": "glm-5.2",
+      "timeout": 120,
+      "max_retries": 3,
+      "retry_backoff": 2.0,
+      "retry_codes": "429,500,502,503,504"
+    },
+    "GLM": {
+      "base_url": "https://maas-api.unisound.com/v1",
+      "api_key": "YOUR-API-KEY",
+      "model": "glm-5.2",
+      "timeout": 120,
+      "max_retries": 3,
+      "retry_backoff": 2.0,
+      "retry_codes": "429,500,502,503,504"
+    },
+    "gpt-5.4": {
+      "base_url": "https://api.xiavier.com/",
+      "api_key": "YOUR-API-KEY",
+      "model": "gpt-5.4",
+      "timeout": 120,
+      "max_retries": 3,
+      "retry_backoff": 2.0,
+      "retry_codes": "429,500,502,503,504"
+    },
+    "gpt-5.6": {
+      "base_url": "https://api.xiavier.com/",
+      "api_key": "YOUR-API-KEY",
+      "model": "gpt-5.6-terra",
+      "timeout": 120,
+      "max_retries": 3,
+      "retry_backoff": 2.0,
+      "retry_codes": "429,500,502,503,504"
+    },
+    "Opus": {
+      "base_url": "https://maas-api.unisound.com/v1",
+      "api_key": "YOUR-API-KEY",
+      "model": "glm-5.2",
+      "timeout": 120,
+      "max_retries": 3,
+      "retry_backoff": 2.0,
+      "retry_codes": "429,500,502,503,504"
+    },
+    "opus-4.8": {
+      "base_url": "https://api.xiavier.com/",
+      "api_key": "YOUR-API-KEY",
+      "model": "claude-opus-4-8",
+      "timeout": 120,
+      "max_retries": 3,
+      "retry_backoff": 2.0,
+      "retry_codes": "429,500,502,503,504"
+    },
+    "gpt-5.3-codex": {
+      "base_url": "https://api.xiavier.com/",
+      "api_key": "YOUR-API-KEY",
+      "model": "gpt-5.3-codex",
+      "timeout": 120,
+      "max_retries": 3,
+      "retry_backoff": 2.0,
+      "retry_codes": "429,500,502,503,504"
+    },
+    "deepseek-v4-flash": {
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "api_key": "YOUR-API-KEY",
+      "model": "deepseek-v4-flash",
+      "timeout": 120,
+      "max_retries": 3,
+      "retry_backoff": 2.0,
+      "retry_codes": "429,500,502,503,504"
+    }
+  }
+}

@@ -34,21 +34,26 @@
 
 ## 新 Worktree 初始化检查单
 
-新 worktree 检出自带 git 跟踪文件，但以下 **被 gitignore 的必需文件不会出现**。开始工作前从主目录拷贝（相对仓库根）：
+新 worktree 检出自带 git 跟踪文件（含 `control_live_detector.py`，自 2026-09-30 起已纳入版本控制），
+但以下 **被 gitignore 的必需文件不会出现**。开始工作前从主目录拷贝（相对仓库根），
+或按 `.example` 模板新建后填入密钥：
 
 ```bash
 # Windows（Git Bash）
 cp /d/My_RF_Project/WT_Automation/WT_AUTOMATION_Agent/_gui_config.json \
    /d/My_RF_Project/WT_Automation/WT_AUTOMATION_Agent/model_profiles.json \
    WT_AUTOMATION_Agent/
-cp /d/My_RF_Project/WT_Automation/control_live_detector.py .
+# 密钥文件跨机共享：见私有仓库 wt_automation_secrets（两份 JSON 的唯一可信副本）
 ```
 
 | 文件 | 用途 | 必需性 |
 |---|---|---|
 | `WT_AUTOMATION_Agent/_gui_config.json` | Agent 运行配置（含 API Key） | 用 Agent 功能时必需 |
 | `WT_AUTOMATION_Agent/model_profiles.json` | LLM 模型档案（含 API Key） | 用 Agent 功能时必需 |
-| `control_live_detector.py` | 开发机专用调试脚本，`tests/test_control_live_detector.py` 依赖它 | **跑全套测试必需** |
+| `control_live_detector.py` | 实时检测器（`tests/test_control_live_detector.py` 依赖它） | 随仓库分发，无需拷贝 |
+
+> 密钥文件 schema 参考：同目录 `_gui_config.example.json` / `model_profiles.example.json`
+> （占位符 `YOUR-API-KEY`）。真实密钥永不入库。
 
 ## 分支与提交规范
 
@@ -100,7 +105,8 @@ git branch -D ai/session-N
 ## 维护者操作（人类）
 
 - **开新 AI 会话**：`git worktree add ../WT_automation_ai2 -b ai/session-2`（在主目录执行，新目录自动创建）。
-- **拷密钥**（见检查单）：两个 Agent 配置 + `control_live_detector.py`。
+- **拷密钥**（见检查单）：两个 Agent 配置 JSON（跨机共享走私有仓库 `wt_automation_secrets`；
+  `control_live_detector.py` 已随仓库分发，无需拷贝）。
 - **审查合并**：见上节。
 - **推送 GitHub**：合并到 main 后由人类执行 `git push`（远程 `origin` = github.com/hanago33/WT_Automation）。
 - **定期清理**：`git worktree list` 查看现有会话，废弃的及时移除。

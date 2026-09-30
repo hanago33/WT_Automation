@@ -10,6 +10,7 @@ import pyautogui
 from pywinauto_recorder.player import send_keys
 
 from wt_action_schema import step_policy_on_fail_to_legacy
+import wt_logging
 
 try:
     import image_template_index
@@ -22,10 +23,33 @@ _GET_FLOW_PACKAGE = lambda package_id: {}
 _GET_STEP_PARAMS = lambda step_id: {}
 _RESOLVE_DYNAMIC_VALUE = lambda value, step_id, context: value
 _LOG_STEP = lambda message: None
+# 可选的级别感知记录器 (level, message) -> None；未注入时 _log_at() 按
+# wt_logging 阈值门控后退回 _LOG_STEP，保持既有单参数契约不变。
+_LOG_AT = None
+
+
+def _log_at(level, message):
+    """按级别输出日志（级别感知）。"""
+    if _LOG_AT is not None:
+        try:
+            _LOG_AT(level, message)
+            return
+        except Exception:
+            pass
+    if wt_logging.is_enabled(level):
+        _LOG_STEP(message)
+
+
+def _log_debug(message):
+    """DEBUG 级日志：默认不输出，需 WT_LOG_LEVEL=DEBUG 或 WT_DEBUG_EVENTS=1。"""
+    _log_at(wt_logging.DEBUG, message)
+
+
 _CLICK_FLOW_CONTROL = lambda *args, **kwargs: False
 _CLICK_RELATIVE_REGION = lambda *args, **kwargs: (False, {})
 _CLICK_RELATIVE_ANCHOR = lambda *args, **kwargs: (False, {})
 _CHECK_ALL_TOGGLES = lambda *args, **kwargs: False
+_SELECT_LIST_ITEMS = lambda *args, **kwargs: None
 _FOCUS_FLOW_CONTROL = lambda *args, **kwargs: False
 _TYPE_TEXT_INTO_FLOW_CONTROL = lambda *args, **kwargs: False
 _TYPE_TEXT_INTO_RELATIVE_REGION = lambda *args, **kwargs: (False, {})
@@ -146,10 +170,12 @@ def configure_flow_executor(
     get_step_params=None,
     resolve_dynamic_value=None,
     log_step=None,
+    log_at=None,
     click_flow_control=None,
     click_relative_region=None,
     click_relative_anchor=None,
     check_all_toggles=None,
+    select_list_items=None,
     focus_flow_control=None,
     type_text_into_flow_control=None,
     type_text_into_relative_region=None,
@@ -168,7 +194,8 @@ def configure_flow_executor(
 ):
     global _GET_STEP_DEFINITION, _GET_FLOW_PACKAGE, _GET_STEP_PARAMS
     global _RESOLVE_DYNAMIC_VALUE, _LOG_STEP, _CLICK_FLOW_CONTROL, _CLICK_RELATIVE_REGION
-    global _CLICK_RELATIVE_ANCHOR, _CHECK_ALL_TOGGLES
+    global _LOG_AT
+    global _CLICK_RELATIVE_ANCHOR, _CHECK_ALL_TOGGLES, _SELECT_LIST_ITEMS
     global _FOCUS_FLOW_CONTROL, _TYPE_TEXT_INTO_FLOW_CONTROL, _TYPE_TEXT_INTO_RELATIVE_REGION
     global _SELECT_DROPDOWN_ITEM_RUNTIME
     global _DRAG_BETWEEN_FLOW_CONTROLS, _MOUSE_WHEEL_ON_FLOW_CONTROL
@@ -187,6 +214,8 @@ def configure_flow_executor(
         _RESOLVE_DYNAMIC_VALUE = resolve_dynamic_value
     if callable(log_step):
         _LOG_STEP = log_step
+    if callable(log_at):
+        _LOG_AT = log_at
     if callable(click_flow_control):
         _CLICK_FLOW_CONTROL = click_flow_control
     if callable(click_relative_region):
@@ -195,6 +224,8 @@ def configure_flow_executor(
         _CLICK_RELATIVE_ANCHOR = click_relative_anchor
     if callable(check_all_toggles):
         _CHECK_ALL_TOGGLES = check_all_toggles
+    if callable(select_list_items):
+        _SELECT_LIST_ITEMS = select_list_items
     if callable(focus_flow_control):
         _FOCUS_FLOW_CONTROL = focus_flow_control
     if callable(type_text_into_flow_control):
@@ -288,6 +319,11 @@ def _is_unreadable_value_control(control_id, step_definition=None):
       - Text/TextBlock/全文检索：标签文本，读到的不是输入框的值
       - 无 label_text 消歧的 textbox：目标可能是多个同名输入框之一，读到的
         可能是错误控件或离屏控件
+      - 泛化 automationId 的 textbox（即使有 label_text 消歧）：WPF 数字框
+        （wohler 指数等 RadNumericInput）键入成功后 ValuePattern/重定位/渲染
+        文本三级兜底全部读不到目标值（内网 step_11 实测：name 已显示 '1'
+        仍断言失败 8s），且泛化 id 重定位兜底反而常落到别的空输入框上。
+        自动断言在这类控件上只产出假失败，不拦截真实输入错误。
     """
     if not control_id:
         return False
@@ -324,12 +360,25 @@ def _is_unreadable_value_control(control_id, step_definition=None):
         "control_type,text",
         "controltype.text",
         "text,",
+        # 下拉选项项（ListBoxItem/ListItem/MenuItem）：supportedPatterns 常为空、
+        # 无 ValuePattern，点击选中后读不到显示值，auto-assert 必然假失败
+        # （症状：select_dropdown_item_runtime 已点击成功却反复定位轮询
+        # condition=nonempty 直到超时，每步拖慢 10s+ 且误报 failed）。
+        "listboxitem",
+        "listitem",
+        "menuitem",
     ]
     for marker in unreadable_markers:
         if marker in normalized:
             return True
     # textbox 无 label_text 消歧：目标可能是多个同名输入框之一
     if "textbox" in normalized and "label" not in normalized and "label_text" not in normalized:
+        return True
+    # 泛化 automationId 的 textbox + label_text 消歧（wohler 指数/海拔等 WPF
+    # 数字框）：键入成功但三级读值兜底全失败（内网 step_11 假失败实证），
+    # 自动断言只剩假失败价值。豁免语义 = 键入动作成功即通过（断言仅在
+    # 动作成功后评估，见 _resolve_continue_when 调用点）。
+    if "textbox" in normalized and (",edit," in normalized or "controltype edit" in normalized):
         return True
     return False
 
@@ -1066,6 +1115,22 @@ def _scroll_at_point(center, delta):
         pyautogui.scroll(0)
 
 
+def _is_degenerate_click_point(center):
+    """坐标兜底出口守卫：拒绝空值/屏幕左上角盲点 (0,0)。
+
+    防止 fallback 链把物理点击落到屏幕角落——那会把鼠标停在 (0,0)，
+    触发 pyautogui 失效保护（FAILSAFE=True）导致后续步骤连锁失败。
+    """
+    if not center:
+        return True
+    try:
+        x = int(center[0])
+        y = int(center[1])
+    except (TypeError, ValueError, IndexError):
+        return True
+    return x <= 0 and y <= 0
+
+
 def _perform_coordinate_action(action_name, center, text="", delta=0):
     """在屏幕坐标 center 上执行与 action_name 对应的鼠标/键盘动作。
 
@@ -1073,6 +1138,13 @@ def _perform_coordinate_action(action_name, center, text="", delta=0):
     """
     if action_name == "select_dropdown_item_runtime":
         _LOG_STEP("Warning: refusing raw coordinate click for select_dropdown_item_runtime")
+        return
+    if _is_degenerate_click_point(center):
+        # 盲点 (0,0) 直接拒绝：不派发任何鼠标动作，避免把鼠标停在屏幕角落
+        _LOG_STEP(
+            "coordinate fallback refused degenerate point: action={}, center={}".format(
+                action_name, center)
+        )
         return
     if action_name == "click":
         pyautogui.click(center[0], center[1])
@@ -1409,9 +1481,12 @@ def run_action_step(step_id, context):
         if not control_id:
             raise ValueError(f"action 步骤缺少 controlId: {step_id}")
         condition = str(action_config.get("condition", "exists")).strip().lower() or "exists"
-        # 守护线程 + 看门狗：wait_for_flow_control_condition 内部单次 UIA COM 调用可能在
-        # "应用忙"时阻塞不返回（窗口响应探测有盲区），看门狗超时强制失败让流程继续。
-        # 与 wt_flow_executor 同款修复。
+        # 守护线程 + 看门狗：wait_for_flow_control_condition 每轮 find_flow_control 传
+        # 极短 timeout（0.4s），其内部 deadline 在循环顶部检查，无法中断"应用忙"期间
+        # 单次阻塞的 UIA COM 调用（窗口响应探测拦不住"消息泵响应但 UIA 查询挂"的盲区，
+        # 实测复制综合后挂起 487-742s）。wait 返回 bool、无 wrapper 跨线程泄漏，故把
+        # 整个 wait 放进守护线程是安全的（同 click_relative_anchor 模式）；看门狗超时
+        # 强制失败，由上层 onError=continue 继续流程，避免 wait 无限等待。
         _wait_box = {"value": False, "error": ""}
         _wait_done = threading.Event()
 
@@ -1433,6 +1508,7 @@ def run_action_step(step_id, context):
 
         _wait_worker = threading.Thread(target=_do_wait_call, daemon=True)
         _wait_worker.start()
+        # 看门狗总预算：配置超时 + 60s 缓冲（容忍 wait 内部单次挂起自恢复的额外时间）。
         _wait_budget = float(timeout_seconds or 0)
         _watchdog_secs = max(30.0, _wait_budget + 60.0)
         if not _wait_done.wait(_watchdog_secs):
@@ -1475,6 +1551,28 @@ def run_action_step(step_id, context):
         message = str(action_config.get("message", text)).strip()
         _LOG_STEP(message or f"action log: {step_id}")
         result = message
+    elif action_name == "select_list_items":
+        if not control_id:
+            raise ValueError(f"action select_list_items 缺少 controlId: {step_id}")
+        summary = _call_with_control_map_path(
+            _SELECT_LIST_ITEMS,
+            step_definition,
+            step_id,
+            control_id,
+            timeout_seconds=timeout_seconds,
+            window_title_hint=window_title_hint,
+            target_items=text,
+        )
+        if not summary:
+            raise RuntimeError(
+                f"action select_list_items 未命中: step={step_id}, control={control_id}"
+            )
+        _LOG_STEP(
+            "已执行 select_list_items: step={step}, control={control}, result={result}".format(
+                step=step_id, control=control_id, result=summary
+            )
+        )
+        result = summary
     elif action_name == "check_all_toggles":
         if not control_id:
             raise ValueError(f"action check_all_toggles 缺少 controlId: {step_id}")
@@ -1581,6 +1679,11 @@ def run_action_step_with_template_fallback(step_id, context, original_error=None
         # offsetX/offsetY（截图本身已包含目标位置，叠加会导致点偏）。
         # 若确需额外偏移，可用通用 positionOffset 字段。
         target_point = (int(center[0]), int(center[1]))
+        if _is_degenerate_click_point(target_point):
+            raise RuntimeError(
+                "template fallback 拒绝退化点击点(盲点 (0,0)): "
+                "step={}, point={}".format(step_id, target_point)
+            )
         if str(action_config.get("clickKind", "")).strip().lower() == "double":
             pyautogui.doubleClick(target_point[0], target_point[1])
         else:
@@ -2032,6 +2135,13 @@ def execute_step_by_id(step_id, execution_plan_map, context, skip_setup=False):
             total_attempts = configured_retry_count + 1
             summary_parts.append(f"attempt={step_extra.get('attemptCount')}/{total_attempts}")
         _LOG_STEP("步骤结束: " + ", ".join(summary_parts))
+        # 步内诊断限流标记复位：气象弹窗诊断按"每步一次"限流，步骤结束必须清除，
+        # 否则远程队列复跑同名步骤时诊断被永久跳过（见 wt_flow_locator 注释）。
+        try:
+            from wt_flow_locator import clear_step_diagnostic_state
+            clear_step_diagnostic_state(step_id)
+        except Exception:
+            pass
         _REPORT_STEP_RESULT(
             context.get("run_report"),
             step_id,
