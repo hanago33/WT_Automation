@@ -9,9 +9,21 @@ UI 调用时均显式传参，默认值从不参与实际行为。本模块抽�
 纯函数模块：仅依赖标准库，不依赖 tkinter / pywin32，可在无显示环境下单测。
 """
 import os
+import threading
 
 # 常见文本编码，按优先级尝试解码（与原两份实现逐项一致）
 _ENCODINGS = ["utf-8", "gbk", "gb18030", "utf-16", "big5", "latin-1"]
+
+
+class MergeCancelled(Exception):
+    """合并被 cancel_event 取消（在逐文件边界抛出，done=已完成文件数）。
+
+    取消时不写输出文件：目标路径若已存在则保持原样。
+    """
+
+    def __init__(self, done=0):
+        super().__init__("cancelled after {} file(s)".format(done))
+        self.done = done
 
 
 def read_text_file(path):
@@ -36,6 +48,8 @@ def merge_txt_files(
     separator="",
     remove_empty_lines=False,
     output_encoding="utf-8-sig",
+    progress_callback=None,
+    cancel_event=None,
 ):
     """按顺序合并多个 txt 文件到输出文件，保持内容原样。
 
@@ -45,11 +59,21 @@ def merge_txt_files(
       separator          : 非空时在每个文件之间插入该自定义分隔行
       remove_empty_lines : True 时删除所有空行
       output_encoding    : 输出编码（utf-8-sig / gbk 等）
+      progress_callback  : 可选，每合并完一个文件回调 progress_callback(done, total)
+                           （待修改清单 #2：供 UI 线程外汇报进度）
+      cancel_event       : 可选 threading.Event，逐文件边界检查；置位后抛
+                           MergeCancelled(done=已完成数)，此时**不写输出文件**
 
     返回 (合并文件数, 总字符数)。
     """
+    total = len(file_paths)
     parts = []
+    done = 0
     for i, path in enumerate(file_paths):
+        # 取消检查在逐文件边界（待修改清单 #2）
+        if cancel_event is not None and cancel_event.is_set():
+            raise MergeCancelled(done=done)
+
         content, _ = read_text_file(path)
 
         # 文件之间的衔接（换行 / 分隔符）
@@ -64,6 +88,10 @@ def merge_txt_files(
             parts.append(os.path.basename(path) + "\n")
 
         parts.append(content)
+
+        done = i + 1
+        if progress_callback is not None:
+            progress_callback(done, total)
 
     merged = "".join(parts)
 

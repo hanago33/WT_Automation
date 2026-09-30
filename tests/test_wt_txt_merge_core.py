@@ -174,3 +174,58 @@ def test_read_text_file_encoding_chain(tmp_path):
         ref_content, ref_enc = _reference_read_text_file(str(path))
         assert (content, enc) == (ref_content, ref_enc)
     assert wt_txt_merge_core.read_text_file(str(f_raw))[1] == "latin-1"
+
+
+# ── #2：进度回调与取消（待修改清单 #2：合并线程化的核心支撑） ────────────────────
+
+def test_progress_callback_count_and_order(sample_files, tmp_path):
+    import threading
+    calls = []
+    out = tmp_path / "out.txt"
+    cancel = threading.Event()
+    wt_txt_merge_core.merge_txt_files(
+        sample_files, str(out),
+        progress_callback=lambda done, total: calls.append((done, total)),
+        cancel_event=cancel,
+    )
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+    assert out.exists()
+
+
+def test_cancel_before_start_raises_done_zero_and_no_output(sample_files, tmp_path):
+    import threading
+    out = tmp_path / "out.txt"
+    cancel = threading.Event()
+    cancel.set()  # 启动前就请求取消
+    with pytest.raises(wt_txt_merge_core.MergeCancelled) as excinfo:
+        wt_txt_merge_core.merge_txt_files(sample_files, str(out), cancel_event=cancel)
+    assert excinfo.value.done == 0
+    assert not out.exists()  # 取消时不写输出文件
+
+
+def test_cancel_midway_stops_at_file_boundary(sample_files, tmp_path):
+    import threading
+    out = tmp_path / "out.txt"
+    cancel = threading.Event()
+
+    def progress(done, total):
+        if done == 1:
+            cancel.set()  # 第 1 个文件完成后请求取消
+
+    with pytest.raises(wt_txt_merge_core.MergeCancelled) as excinfo:
+        wt_txt_merge_core.merge_txt_files(
+            sample_files, str(out),
+            progress_callback=progress, cancel_event=cancel,
+        )
+    assert excinfo.value.done == 1
+    assert not out.exists()
+
+
+def test_without_cancel_behaviour_unchanged(sample_files, tmp_path):
+    out = tmp_path / "out.txt"
+    count, chars = wt_txt_merge_core.merge_txt_files(sample_files, str(out))
+    # 核心默认 newline_between=True，基准须显式对齐后再比较
+    ref_count, ref_chars = _reference_merge_txt_files(
+        sample_files, str(tmp_path / "ref.txt"), newline_between=True)
+    assert (count, chars) == (ref_count, ref_chars)
+    assert out.exists()

@@ -4,12 +4,26 @@
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import tkinter as tk
 from unittest.mock import patch
 
 import txt_merge_tool as tmt
+import wt_txt_merge_core
 from _tk_support import shared_tk_root
+
+
+def _make_temp_files(temp_dir, n=3):
+    """生成 n 个非空输入文件，返回路径列表。"""
+    paths = []
+    for i in range(n):
+        p = os.path.join(temp_dir, f"f{i}.txt")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(f"内容 {i}\n" * 30)
+        paths.append(p)
+    return paths
 
 
 class TestTxtMergeLogic(unittest.TestCase):
@@ -119,6 +133,71 @@ class TestTxtMergeAppHeadless(unittest.TestCase):
         self.assertEqual(self.app.btn_merge["text"], "★ 开始合并文件")
         self.assertTrue(self.app.listbox.winfo_exists())
         self.assertTrue(self.app.btn_merge.winfo_exists())
+
+    def _pump_until(self, predicate, timeout=5.0):
+        """泵事件循环直到 predicate 成立；再补几轮让 after(0) 派发的收尾执行完。"""
+        deadline = time.time() + timeout
+        while not predicate() and time.time() < deadline:
+            self.root.update()
+            time.sleep(0.01)
+        for _ in range(30):
+            self.root.update()
+            time.sleep(0.01)
+
+    def test_merge_runs_off_ui_thread_and_restores_button(self):
+        """#2 双向断言：合并必须在 worker 线程执行（基线同步实现时此测试失败）。"""
+        out_path = os.path.join(self.temp_dir.name, "merged_out.txt")
+        self.app._append_paths(_make_temp_files(self.temp_dir.name))
+        seen = {}
+        worker_done = threading.Event()
+        real_merge = wt_txt_merge_core.merge_txt_files
+
+        def fake_core(paths, out, **kwargs):
+            seen["thread"] = threading.current_thread()
+            result = real_merge(paths, out, **kwargs)
+            worker_done.set()
+            return result
+
+        with patch("txt_merge_tool.filedialog.asksaveasfilename", return_value=out_path), \
+             patch("txt_merge_tool.messagebox.showinfo"), \
+             patch("txt_merge_tool.merge_txt_files", side_effect=fake_core):
+            self.app.merge()
+            self._pump_until(worker_done.is_set)
+
+        self.assertTrue(worker_done.is_set())
+        self.assertIsNot(seen["thread"], threading.main_thread())
+        self.assertTrue(os.path.isfile(out_path))
+        self.assertEqual(self.app.btn_merge.cget("text"), "★ 开始合并文件")
+        self.assertIn("合并完成", self.app.status.cget("text"))
+
+    def test_second_click_requests_cancel_and_reports(self):
+        """#2：运行中再次点击 = 置位取消事件；收尾走「已取消」分支并恢复按钮。"""
+        out_path = os.path.join(self.temp_dir.name, "merged_cancel.txt")
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_core(paths, out, cancel_event=None, **kwargs):
+            started.set()
+            if cancel_event is not None:
+                cancel_event.wait(5)  # 模拟大文件合并卡住，等取消请求
+            raise wt_txt_merge_core.MergeCancelled(done=0)
+
+        self.app._append_paths(_make_temp_files(self.temp_dir.name, n=2))
+        with patch("txt_merge_tool.filedialog.asksaveasfilename", return_value=out_path), \
+             patch("txt_merge_tool.messagebox.showinfo"), \
+             patch("txt_merge_tool.messagebox.showerror"), \
+             patch("txt_merge_tool.merge_txt_files", side_effect=slow_core):
+            self.app.merge()
+            self._pump_until(started.is_set)
+            self.assertEqual(self.app.btn_merge.cget("text"), "⨂ 取消合并")
+
+            self.app.merge()  # 第二次点击 = 请求取消
+            self.assertTrue(self.app._merge_cancel.is_set())
+            release.set()
+            self._pump_until(lambda: not self.app._merge_thread.is_alive())
+
+        self.assertEqual(self.app.btn_merge.cget("text"), "★ 开始合并文件")
+        self.assertIn("已取消", self.app.status.cget("text"))
 
 
 if __name__ == "__main__":

@@ -13,7 +13,9 @@ txt_merge_tool.py —— 多个 txt 文档合并工具（现代化 UI 版本）
 """
 
 import os
+import queue
 import sys
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -33,7 +35,7 @@ except Exception:
     _HAS_WT_THEME = False
 
 # 合并核心统一到 wt_txt_merge_core（待修改清单 #5）：本模块与 text_tools 共用唯一实现
-from wt_txt_merge_core import merge_txt_files, read_text_file
+from wt_txt_merge_core import merge_txt_files, read_text_file, MergeCancelled
 
 # 拖拽支持：优先用 tkinterdnd2，否则用 pywin32 的 OLE 拖拽
 _HAS_DND = False
@@ -596,6 +598,13 @@ class TxtMergeApp:
 
     # ---------- 合并 ----------
     def merge(self):
+        # 运行中再次点击 = 请求取消（逐文件边界生效，见 wt_txt_merge_core）
+        thread = getattr(self, "_merge_thread", None)
+        if thread is not None and thread.is_alive():
+            self._merge_cancel.set()
+            self.status.config(text="正在取消合并（等待当前文件完成）...")
+            return
+
         if not self.files:
             messagebox.showwarning("提示", "请先添加要合并的文本文件。")
             return
@@ -608,35 +617,91 @@ class TxtMergeApp:
         if not output:
             return
 
-        self.btn_merge.configure(state=tk.DISABLED)
-        self.status.config(text="正在读取并合并文件，请稍候...")
-        self.root.update_idletasks()
+        # 选项与文件清单在主线程一次性快照，worker 只用局部数据
+        options = dict(
+            newline_between=self.join_var.get() == "newline",
+            add_headers=self.header_var.get(),
+            separator=self.sep_var.get().strip(),
+            remove_empty_lines=self.empty_var.get(),
+            output_encoding=self.enc_var.get(),
+        )
+        paths = list(self.files)
+        total = len(paths)
+        cancel_event = threading.Event()
+        self._merge_cancel = cancel_event
+        self._merge_output = output
+        self._merge_events = queue.Queue()
 
-        try:
-            count, total_chars = merge_txt_files(
-                self.files,
-                output,
-                newline_between=self.join_var.get() == "newline",
-                add_headers=self.header_var.get(),
-                separator=self.sep_var.get().strip(),
-                remove_empty_lines=self.empty_var.get(),
-                output_encoding=self.enc_var.get(),
-            )
-            out_sz = os.path.getsize(output) if os.path.exists(output) else 0
-            sz_str = f"{out_sz / 1024:.1f} KB" if out_sz < 1024 * 1024 else f"{out_sz / (1024 * 1024):.2f} MB"
-            self.status.config(text=f"合并完成！已生成 {os.path.basename(output)} ({sz_str})")
+        def _progress(done, total_count):
+            # worker 不碰任何 Tk 控件：进度/结果一律投递队列，由主线程轮询执行
+            self._merge_events.put(
+                lambda: self.status.config(text=f"正在合并... {done}/{total_count}"))
+
+        def _worker():
+            try:
+                count, total_chars = merge_txt_files(
+                    paths,
+                    output,
+                    progress_callback=_progress,
+                    cancel_event=cancel_event,
+                    **options,
+                )
+            except MergeCancelled as exc:
+                # except 块结束时 exc 会被删除，先取出值再进闭包（延迟执行）
+                done_count = exc.done
+                self._merge_events.put(lambda: self._merge_finished(
+                    output, cancelled=True, done=done_count, total=total))
+            except Exception as e:  # noqa: BLE001
+                msg = str(e)
+                self._merge_events.put(
+                    lambda: self._merge_finished(output, error=msg))
+            else:
+                self._merge_events.put(lambda: self._merge_finished(
+                    output, count=count, total_chars=total_chars))
+
+        self.btn_merge.configure(text="⨂ 取消合并")
+        self.status.config(text="正在读取并合并文件，请稍候...")
+        self._merge_thread = threading.Thread(target=_worker, daemon=True)
+        self._merge_thread.start()
+        # 轮询链从主线程启动（跨线程直接调 after 受 tkinter 线程限制不可靠）
+        self.root.after(80, self._drain_merge_events)
+
+    def _drain_merge_events(self):
+        """主线程排空 worker 事件队列；合并线程存活或队列非空则续订下一轮。"""
+        while True:
+            try:
+                fn = self._merge_events.get_nowait()
+            except queue.Empty:
+                break
+            fn()
+        thread = getattr(self, "_merge_thread", None)
+        if (thread is not None and thread.is_alive()) or not self._merge_events.empty():
+            self.root.after(80, self._drain_merge_events)
+
+    def _merge_finished(self, output, count=0, total_chars=0, cancelled=False,
+                        done=0, total=None, error=None):
+        """合并收尾（仅主线程执行）：恢复按钮 + 三态结果反馈（成功/失败/取消）。"""
+        self.btn_merge.configure(text="★ 开始合并文件")
+        if error is not None:
+            messagebox.showerror("合并失败", f"合并过程中发生错误：\n{error}")
+            self.status.config(text=f"合并失败: {error}")
+            return
+        if cancelled:
+            total = total if total else len(self.files)
+            self.status.config(text=f"已取消（完成 {done}/{total}）")
             messagebox.showinfo(
-                "合并成功",
-                f"成功合并 {count} 个文本文件！\n\n"
-                f"• 输出路径: {output}\n"
-                f"• 总字符数: {total_chars:,} 字符\n"
-                f"• 文件大小: {sz_str}",
-            )
-        except Exception as e:  # noqa: BLE001
-            messagebox.showerror("合并失败", f"合并过程中发生错误：\n{e}")
-            self.status.config(text=f"合并失败: {e}")
-        finally:
-            self.btn_merge.configure(state=tk.NORMAL)
+                "已取消", f"合并已取消，完成 {done}/{total} 个文件。")
+            return
+        out_sz = os.path.getsize(output) if os.path.exists(output) else 0
+        sz_str = f"{out_sz / 1024:.1f} KB" if out_sz < 1024 * 1024 else f"{out_sz / (1024 * 1024):.2f} MB"
+        self.status.config(text=f"合并完成！已生成 {os.path.basename(output)} ({sz_str})")
+        messagebox.showinfo(
+            "合并成功",
+            f"成功合并 {count} 个文本文件！\n\n"
+            f"• 输出路径: {output}\n"
+            f"• 总字符数: {total_chars:,} 字符\n"
+            f"• 文件大小: {sz_str}",
+        )
 
 
 def main():
