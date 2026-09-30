@@ -8,6 +8,7 @@ import io
 import json
 import os
 import threading
+import time
 import tkinter as tk
 import urllib.error
 import urllib.parse
@@ -789,6 +790,10 @@ class TaskQueueWindow:
             pady=3,
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+        # 顶部右侧网络延迟徽标
+        self.monitor_ping_badge = wt_theme.create_badge(top, "⏱️ 等待探测", tone="muted")
+        self.monitor_ping_badge.pack(side=tk.RIGHT, padx=(8, 0))
+
         hint = tk.Label(
             top,
             text="提示：本页显示服务器进程状态（8767 监控服务）",
@@ -797,50 +802,146 @@ class TaskQueueWindow:
             font=("Microsoft YaHei UI", 8),
             anchor="e",
         )
-        hint.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(8, 0))
+        hint.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(8, 8))
 
-        status_card = wt_theme.create_card_frame(parent, padx=12, pady=10)
-        status_card.pack(fill=tk.X, padx=8, pady=(2, 6))
-
-        tk.Label(
-            status_card,
-            text="运行状态（只读，来自 8767 监控服务）",
-            font=("Microsoft YaHei UI", 9, "bold"),
-            bg=pal["card"],
-            fg=pal["text"],
-        ).pack(anchor="w", pady=(0, 6))
-
-        grid_frame = tk.Frame(status_card, bg=pal["card"])
-        grid_frame.pack(fill=tk.X)
+        # ── 4 块现代化指标卡片网格 ──
+        cards_frame = tk.Frame(parent, bg=pal["bg"])
+        cards_frame.pack(fill=tk.X, padx=8, pady=(2, 6))
+        for col_idx in range(4):
+            cards_frame.columnconfigure(col_idx, weight=1, uniform="mcard")
 
         self.monitor_conn_var = tk.StringVar(value="未连接")
+        self.monitor_ping_var = tk.StringVar(value="等待探测")
         self.run_status_var = tk.StringVar(value="未知")
         self.activity_var = tk.StringVar(value="-")
-        self.error_var = tk.StringVar(value="-")
         self.updated_var = tk.StringVar(value="-")
-        rows = [
-            ("连接状态", self.monitor_conn_var),
-            ("运行状态", self.run_status_var),
-            ("当前活动", self.activity_var),
-            ("最后错误", self.error_var),
-            ("更新时间", self.updated_var),
-        ]
-        for row_index, (label, var) in enumerate(rows):
-            tk.Label(
-                grid_frame,
-                text=label,
-                bg=pal["card"],
-                fg=pal["muted"],
-                font=("Microsoft YaHei UI", 9),
-            ).grid(row=row_index, column=0, sticky="w", padx=(0, 14), pady=2)
-            tk.Label(
-                grid_frame,
-                textvariable=var,
-                bg=pal["card"],
-                fg=pal["text"],
-                font=("Microsoft YaHei UI", 9, "bold" if row_index <= 1 else "normal"),
-            ).grid(row=row_index, column=1, sticky="w")
+        self.monitor_heartbeat_var = tk.StringVar(value="轮询周期 2s")
+        self.monitor_health_var = tk.StringVar(value="待检测")
+        self.error_var = tk.StringVar(value="-")
 
+        # 卡片 1：连接状态
+        card0 = wt_theme.create_card_frame(cards_frame, padx=10, pady=8)
+        card0.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        tk.Label(
+            card0,
+            text="🔌 监控服务连接",
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w")
+        self.monitor_conn_lbl = tk.Label(
+            card0,
+            textvariable=self.monitor_conn_var,
+            bg=pal["card"],
+            fg=pal["text"],
+            font=("Microsoft YaHei UI", 11, "bold"),
+            anchor="w",
+        )
+        self.monitor_conn_lbl.pack(anchor="w", pady=(3, 1))
+        tk.Label(
+            card0,
+            textvariable=self.monitor_ping_var,
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+            anchor="w",
+        ).pack(anchor="w")
+
+        # 卡片 2：运行状态
+        card1 = wt_theme.create_card_frame(cards_frame, padx=10, pady=8)
+        card1.grid(row=0, column=1, sticky="nsew", padx=4)
+        tk.Label(
+            card1,
+            text="⚡ 任务运行状态",
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w")
+        self.monitor_status_lbl = tk.Label(
+            card1,
+            textvariable=self.run_status_var,
+            bg=pal["card"],
+            fg=pal["text"],
+            font=("Microsoft YaHei UI", 11, "bold"),
+            anchor="w",
+        )
+        self.monitor_status_lbl.pack(anchor="w", pady=(3, 1))
+        tk.Label(
+            card1,
+            textvariable=self.activity_var,
+            bg=pal["card"],
+            fg=pal["text_secondary"],
+            font=("Microsoft YaHei UI", 8),
+            anchor="w",
+        ).pack(anchor="w")
+
+        # 卡片 3：状态心跳
+        card2 = wt_theme.create_card_frame(cards_frame, padx=10, pady=8)
+        card2.grid(row=0, column=2, sticky="nsew", padx=4)
+        tk.Label(
+            card2,
+            text="⏱️ 状态心跳监测",
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w")
+        tk.Label(
+            card2,
+            textvariable=self.updated_var,
+            bg=pal["card"],
+            fg=pal["text"],
+            font=("Consolas", 10, "bold"),
+            anchor="w",
+        ).pack(anchor="w", pady=(3, 1))
+        tk.Label(
+            card2,
+            textvariable=self.monitor_heartbeat_var,
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+            anchor="w",
+        ).pack(anchor="w")
+
+        # 卡片 4：健康诊断
+        card3 = wt_theme.create_card_frame(cards_frame, padx=10, pady=8)
+        card3.grid(row=0, column=3, sticky="nsew", padx=(4, 0))
+        tk.Label(
+            card3,
+            text="🛡️ 系统健康诊断",
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w")
+        self.monitor_health_lbl = tk.Label(
+            card3,
+            textvariable=self.monitor_health_var,
+            bg=pal["card"],
+            fg=pal["text"],
+            font=("Microsoft YaHei UI", 11, "bold"),
+            anchor="w",
+        )
+        self.monitor_health_lbl.pack(anchor="w", pady=(3, 1))
+        err_row = tk.Frame(card3, bg=pal["card"])
+        err_row.pack(fill=tk.X)
+        tk.Label(
+            err_row,
+            textvariable=self.error_var,
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+            anchor="w",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        wt_theme.create_flat_button(
+            err_row,
+            text="📋 复制",
+            command=self._copy_monitor_error_detail,
+            tone="subtle",
+            padx=4,
+            pady=1,
+            font=("Microsoft YaHei UI", 7),
+        ).pack(side=tk.RIGHT)
+
+        # ── 运行日志卡片与智能工具栏 ──
         log_card = wt_theme.create_card_frame(parent, padx=8, pady=6)
         log_card.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
@@ -848,11 +949,86 @@ class TaskQueueWindow:
         log_header.pack(fill=tk.X, padx=2, pady=(0, 4))
         tk.Label(
             log_header,
-            text="运行日志（只读，最后 300 行）",
+            text="📋 运行日志（只读，最后 300 行）",
             font=("Microsoft YaHei UI", 9, "bold"),
             bg=pal["card"],
             fg=pal["text"],
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        # 搜索过滤
+        tk.Label(
+            log_header,
+            text="🔍",
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
         ).pack(side=tk.LEFT)
+        self.monitor_search_var = tk.StringVar(value="")
+        search_entry = tk.Entry(
+            log_header,
+            textvariable=self.monitor_search_var,
+            width=14,
+            font=("Microsoft YaHei UI", 8),
+            relief=tk.SOLID,
+            bd=1,
+        )
+        search_entry.pack(side=tk.LEFT, padx=(2, 2))
+        self.monitor_search_var.trace_add("write", lambda *_: self._on_monitor_log_filter_changed())
+        wt_theme.create_flat_button(
+            log_header,
+            text="✕",
+            command=lambda: self.monitor_search_var.set(""),
+            tone="subtle",
+            padx=4,
+            pady=1,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        # 级别筛选
+        self.monitor_level_var = tk.StringVar(value="全部")
+        level_cb = ttk.Combobox(
+            log_header,
+            textvariable=self.monitor_level_var,
+            values=["全部", "仅错误", "仅警告", "仅信息"],
+            width=8,
+            state="readonly",
+            font=("Microsoft YaHei UI", 8),
+        )
+        level_cb.pack(side=tk.LEFT, padx=(0, 8))
+        level_cb.bind("<<ComboboxSelected>>", lambda _: self._on_monitor_log_filter_changed())
+
+        # 右侧操作
+        self.monitor_pause_scroll_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            log_header,
+            text="⏸ 暂停滚屏",
+            variable=self.monitor_pause_scroll_var,
+            bg=pal["card"],
+            fg=pal["text"],
+            activebackground=pal["card"],
+            selectcolor=pal["card"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        wt_theme.create_flat_button(
+            log_header,
+            text="📋 复制可见日志",
+            command=self._copy_monitor_visible_logs,
+            tone="secondary",
+            padx=8,
+            pady=2,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        wt_theme.create_flat_button(
+            log_header,
+            text="🧹 清屏",
+            command=self._clear_monitor_log_view,
+            tone="subtle",
+            padx=6,
+            pady=2,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.RIGHT)
 
         text_frame = tk.Frame(log_card, bg=pal["terminal_bg"])
         text_frame.pack(fill=tk.BOTH, expand=True)
@@ -1437,15 +1613,17 @@ class TaskQueueWindow:
         self._fetching = False
 
     def _monitor_fetch_worker(self):
+        t0 = time.perf_counter()
         try:
             status_payload = self._get_json_monitor("/api/status")
+            ping_ms = int(max(0, (time.perf_counter() - t0) * 1000))
             logs_payload = self._get_json_monitor("/api/logs?tail=300")
         except Exception as exc:
             self._post_ui(lambda e=exc: self._mark_monitor_offline(str(e)))
             self._monitor_fetching = False
             return
         self._post_ui(
-            lambda: self._apply_monitor_payload(status_payload, logs_payload)
+            lambda: self._apply_monitor_payload(status_payload, logs_payload, ping_ms=ping_ms)
         )
         self._monitor_fetching = False
 
@@ -1567,15 +1745,52 @@ class TaskQueueWindow:
         # 列表刷新后所选任务状态可能已变化（如 pending→running），同步按钮可用性
         self._update_control_buttons()
 
-    def _apply_monitor_payload(self, status_payload, logs_payload):
+    def _apply_monitor_payload(self, status_payload, logs_payload, ping_ms=None):
+        pal = wt_theme.get_palette()
         self.monitor_conn_var.set("已连接")
         self._monitor_fail_streak = 0
+        if ping_ms is not None:
+            if hasattr(self, "monitor_ping_var"):
+                self.monitor_ping_var.set(f"延迟: {ping_ms} ms")
+            tone = "success" if ping_ms < 60 else ("warning" if ping_ms < 300 else "danger")
+            if hasattr(self, "monitor_ping_badge") and hasattr(self.monitor_ping_badge, "set_badge"):
+                self.monitor_ping_badge.set_badge(f"⏱️ {ping_ms} ms", tone)
+
         status = str(status_payload.get("status", "unknown"))
-        self.run_status_var.set(MONITOR_STATUS_LABELS.get(status, status))
+        status_text = MONITOR_STATUS_LABELS.get(status, status)
+        self.run_status_var.set(status_text)
+        if hasattr(self, "monitor_status_lbl"):
+            st_color = pal["success_text"] if status in ("idle", "success") else (
+                pal["primary_text"] if status == "running" else (
+                    pal["danger_text"] if status == "failed" else pal["text"]
+                )
+            )
+            self.monitor_status_lbl.configure(fg=st_color)
+
         self.activity_var.set(str(status_payload.get("activity") or "-"))
-        self.error_var.set(str(status_payload.get("error") or "-"))
+        raw_err = str(status_payload.get("error") or "").strip()
+        self._raw_monitor_error = raw_err
+        if raw_err and raw_err != "-":
+            clean_err = self._friendly_error(raw_err)
+            self.error_var.set(clean_err)
+            if hasattr(self, "monitor_health_var"):
+                self.monitor_health_var.set("⚠️ 存在异常")
+            if hasattr(self, "monitor_health_lbl"):
+                self.monitor_health_lbl.configure(fg=pal["danger_text"])
+        else:
+            self.error_var.set("无异常")
+            if hasattr(self, "monitor_health_var"):
+                self.monitor_health_var.set("✓ 运行正常")
+            if hasattr(self, "monitor_health_lbl"):
+                self.monitor_health_lbl.configure(fg=pal["success_text"])
+
         self.updated_var.set(str(status_payload.get("updatedAt") or "-"))
-        self._render_monitor_logs(logs_payload.get("lines", []))
+        if hasattr(self, "monitor_heartbeat_var"):
+            self.monitor_heartbeat_var.set("实时同步正常")
+
+        lines = logs_payload.get("lines", [])
+        self._cached_monitor_logs = list(lines)
+        self._render_monitor_logs(lines)
 
     def _apply_stats(self, stats):
         if not stats:
@@ -1930,9 +2145,65 @@ class TaskQueueWindow:
         )
 
     def _render_monitor_logs(self, lines):
-        self._append_lines_incremental(
-            self.monitor_log_text, lines, "_monitor_log_rendered_lines"
-        )
+        query = (getattr(self, "monitor_search_var", None) and self.monitor_search_var.get() or "").strip().lower()
+        level_filter = (getattr(self, "monitor_level_var", None) and self.monitor_level_var.get() or "全部").strip()
+        is_filtered = bool(query or level_filter != "全部")
+
+        if not is_filtered:
+            self._append_lines_incremental(
+                self.monitor_log_text, lines, "_monitor_log_rendered_lines"
+            )
+            return
+
+        filtered = []
+        for line in lines:
+            s_line = str(line)
+            if query and query not in s_line.lower():
+                continue
+            if level_filter == "仅错误":
+                if self._classify_line(s_line) != "error":
+                    continue
+            elif level_filter == "仅警告":
+                if self._classify_line(s_line) not in ("warning", "error"):
+                    continue
+            elif level_filter == "仅信息":
+                if self._classify_line(s_line) not in ("info", "success", "system"):
+                    continue
+            filtered.append(s_line)
+
+        self._monitor_log_rendered_lines = None
+        self.monitor_log_text.config(state=tk.NORMAL)
+        self.monitor_log_text.delete("1.0", tk.END)
+        for line in filtered:
+            self.monitor_log_text.insert(tk.END, line + "\n", self._classify_line(line))
+        self.monitor_log_text.config(state=tk.DISABLED)
+
+        if not (hasattr(self, "monitor_pause_scroll_var") and self.monitor_pause_scroll_var.get()):
+            self.monitor_log_text.see(tk.END)
+
+    def _on_monitor_log_filter_changed(self):
+        lines = getattr(self, "_cached_monitor_logs", [])
+        self._render_monitor_logs(lines)
+
+    def _copy_monitor_visible_logs(self):
+        text = self.monitor_log_text.get("1.0", "end-1c")
+        if not text:
+            return
+        self.window.clipboard_clear()
+        self.window.clipboard_append(text)
+
+    def _copy_monitor_error_detail(self):
+        err = getattr(self, "_raw_monitor_error", "") or self.error_var.get()
+        if err and err != "-":
+            self.window.clipboard_clear()
+            self.window.clipboard_append(err)
+
+    def _clear_monitor_log_view(self):
+        self._cached_monitor_logs = []
+        self._monitor_log_rendered_lines = 0
+        self.monitor_log_text.config(state=tk.NORMAL)
+        self.monitor_log_text.delete("1.0", tk.END)
+        self.monitor_log_text.config(state=tk.DISABLED)
 
     @staticmethod
     def _detect_log_shift(rendered_lines, incoming_lines):
@@ -2015,7 +2286,8 @@ class TaskQueueWindow:
         if excess > 0:
             widget.delete("1.0", "%d.0" % (excess + 1))
         widget.config(state=tk.DISABLED)
-        widget.see(tk.END)
+        if not (widget == getattr(self, "monitor_log_text", None) and getattr(self, "monitor_pause_scroll_var", None) and self.monitor_pause_scroll_var.get()):
+            widget.see(tk.END)
         setattr(self, state_attr, len(text_lines))
 
     def _append_stream_lines(self, widget, delta_lines, state_attr):
@@ -2069,12 +2341,27 @@ class TaskQueueWindow:
         self.conn_var.set("未连接：{}".format(self._friendly_error(message)))
 
     def _mark_monitor_offline(self, message):
+        pal = wt_theme.get_palette()
         self._monitor_fail_streak += 1
-        self.monitor_conn_var.set("未连接：{}".format(self._friendly_error(message)))
+        friendly = self._friendly_error(message)
+        self._raw_monitor_error = message
+        self.monitor_conn_var.set("未连接：{}".format(friendly))
+        if hasattr(self, "monitor_ping_var"):
+            self.monitor_ping_var.set("服务离线")
+        if hasattr(self, "monitor_ping_badge") and hasattr(self.monitor_ping_badge, "set_badge"):
+            self.monitor_ping_badge.set_badge("⏱️ 离线", "danger")
         self.run_status_var.set("未知")
+        if hasattr(self, "monitor_status_lbl"):
+            self.monitor_status_lbl.configure(fg=pal["muted"])
         self.activity_var.set("-")
-        self.error_var.set("-")
+        self.error_var.set(friendly)
+        if hasattr(self, "monitor_health_var"):
+            self.monitor_health_var.set("⚠️ 服务离线")
+        if hasattr(self, "monitor_health_lbl"):
+            self.monitor_health_lbl.configure(fg=pal["danger_text"])
         self.updated_var.set("-")
+        if hasattr(self, "monitor_heartbeat_var"):
+            self.monitor_heartbeat_var.set("等待服务启动")
 
     def _post_ui(self, callback):
         try:
