@@ -25,6 +25,13 @@ from tkinter import filedialog, messagebox, scrolledtext
 from . import uiapeek_client as up
 from . import axewindows_client as aw
 
+try:
+    import wt_ui_state
+except ImportError:  # 包外直跑时补项目根
+    import sys as _sys
+    _sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+    import wt_ui_state
+
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 CONFIG_FILE = os.path.join(REPO_ROOT, "external_capture_config.json")
 DEFAULT_UIAPEEK_BASE_URL = up.DEFAULT_BASE_URL
@@ -142,6 +149,7 @@ class ExternalCaptureDialog:
         self.window.configure(bg=self.theme.get("bg", "#eef3f9"))
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
+        self._restore_ui_state()
         self.window.after(300, self._refresh_service_status)
 
     # ------------------------------------------------------------------ UI
@@ -727,11 +735,25 @@ class ExternalCaptureDialog:
         except Exception:
             pass
 
+    def _restore_ui_state(self):
+        """恢复窗口几何；路径/地址由 _persist_paths 的配置文件管理，不在此重复。"""
+        try:
+            wt_ui_state.apply_window_geometry(
+                self.window, wt_ui_state.load("external_capture_panel").get("geometry"))
+        except Exception:
+            pass
+
     def _on_close(self):
         # 关闭对话框时不停 UiaPeek 服务（用户可能想继续用），仅释放窗口；
         # 但先把（可能手工输入的）路径/地址落盘，避免关窗即丢。
         try:
             self._persist_paths()
+        except Exception:
+            pass
+        # 窗口几何走统一的 ui_state 落盘（与路径配置分文件，无写盘冲突）
+        try:
+            wt_ui_state.save("external_capture_panel", {
+                "geometry": wt_ui_state.capture_window_geometry(self.window)})
         except Exception:
             pass
         self.window.destroy()

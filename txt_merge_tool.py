@@ -35,6 +35,7 @@ except Exception:
 
 # 合并核心统一到 wt_txt_merge_core（待修改清单 #5）：本模块与 text_tools 共用唯一实现
 from wt_txt_merge_core import merge_txt_files, read_text_file, MergeCancelled
+import wt_ui_state
 
 # 拖拽支持：优先用 tkinterdnd2，否则用 pywin32 的 OLE 拖拽
 _HAS_DND = False
@@ -690,6 +691,43 @@ class TxtMergeApp:
         if (thread is not None and thread.is_alive()) or not self._merge_events.empty():
             self.root.after(80, self._drain_merge_events)
 
+    # ── 界面状态持久化（待修改清单 #6） ──
+    UI_STATE_KEY = "txt_merge"
+
+    def _collect_ui_state(self):
+        return {
+            "geometry": wt_ui_state.capture_window_geometry(self),
+            "join": self.join_var.get(),
+            "headers": self.header_var.get(),
+            "separator": self.sep_var.get(),
+            "remove_empty": self.empty_var.get(),
+            "encoding": self.enc_var.get(),
+        }
+
+    def _apply_ui_state(self, state):
+        if not state:
+            return
+
+        def _set(var, key):
+            if key in state:
+                try:
+                    var.set(state[key])
+                except Exception:
+                    pass
+
+        _set(self.join_var, "join")
+        _set(self.header_var, "headers")
+        _set(self.sep_var, "separator")
+        _set(self.empty_var, "remove_empty")
+        _set(self.enc_var, "encoding")
+        wt_ui_state.apply_window_geometry(self, state.get("geometry"))
+
+    def _on_close(self):
+        try:
+            wt_ui_state.save(self.UI_STATE_KEY, self._collect_ui_state())
+        finally:
+            self.destroy()
+
     def _merge_finished(self, output, count=0, total_chars=0, cancelled=False,
                         done=0, total=None, error=None):
         """合并收尾（仅主线程执行）：恢复按钮 + 三态结果反馈（成功/失败/取消）。"""
@@ -743,6 +781,8 @@ def main():
         except Exception:  # noqa: BLE001
             ole_ready = False
     app = TxtMergeApp(root)
+    app._apply_ui_state(wt_ui_state.load(TxtMergeApp.UI_STATE_KEY))
+    app.protocol("WM_DELETE_WINDOW", app._on_close)
     try:
         root.mainloop()
     finally:

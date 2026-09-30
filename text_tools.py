@@ -45,6 +45,7 @@ class BatchCancelled(Exception):
 # 共用唯一实现，下方仅保留 text_tools 历史默认值（newline_between=False）的差异适配。
 # 注意经由模块属性调用（而非 from-import 按值绑定），保证测试可以 patch 核心。
 import wt_txt_merge_core
+import wt_ui_state
 
 
 def read_text_file(path):
@@ -1333,6 +1334,8 @@ class TextToolsCard(ttk.Frame):
 # =====================================================================
 
 class App:
+    UI_STATE_KEY = "text_tools"
+
     def __init__(self, root):
         self.root = root
         root.title("文本处理工具")
@@ -1351,6 +1354,80 @@ class App:
         self.notebook.add(self.csv_card, text="CSV 转换")
         self.notebook.add(self.tools_card, text="文本工具")
 
+    def _collect_ui_state(self):
+        """窗口几何 + 各卡片选项（轻量标量；文件列表属业务数据不落盘）。"""
+        state = {"geometry": wt_ui_state.capture_window_geometry(self.root)}
+        state.update({
+            "txt_join": self.txt_card.join_var.get(),
+            "txt_headers": self.txt_card.header_var.get(),
+            "txt_separator": self.txt_card.sep_var.get(),
+            "txt_remove_empty": self.txt_card.empty_var.get(),
+            "txt_encoding": self.txt_card.enc_var.get(),
+            "csv_conv": self.csv_card.conv_var.get(),
+            "csv_merge": self.csv_card.merge_var.get(),
+            "csv_merged_header": self.csv_card.merge_single_header.get(),
+            "csv_txt_encoding": self.csv_card.txt_enc_var.get(),
+            "csv_out_dir": self.csv_card.out_dir or "",
+            "tools_op": self.tools_card.op_var.get(),
+            "tools_out_encoding": self.tools_card.out_enc.get(),
+            "tools_split_lines": self.tools_card.split_var.get(),
+            "tools_filter_kw": self.tools_card.filter_kw.get(),
+            "tools_filter_mode": self.tools_card.filter_mode.get(),
+            "tools_replace_old": self.tools_card.replace_old.get(),
+            "tools_replace_new": self.tools_card.replace_new.get(),
+            "tools_affix_pre": self.tools_card.affix_pre.get(),
+            "tools_affix_suf": self.tools_card.affix_suf.get(),
+            "tools_case_mode": self.tools_card.case_mode.get(),
+            "tools_enc_target": self.tools_card.enc_target.get(),
+            "tools_out_dir": self.tools_card.out_dir or "",
+        })
+        return state
+
+    def _apply_ui_state(self, state):
+        if not state:
+            return
+
+        def _set(var, key):
+            if key in state:
+                try:
+                    var.set(state[key])
+                except Exception:
+                    pass
+
+        _set(self.txt_card.join_var, "txt_join")
+        _set(self.txt_card.header_var, "txt_headers")
+        _set(self.txt_card.sep_var, "txt_separator")
+        _set(self.txt_card.empty_var, "txt_remove_empty")
+        _set(self.txt_card.enc_var, "txt_encoding")
+        _set(self.csv_card.conv_var, "csv_conv")
+        _set(self.csv_card.merge_var, "csv_merge")
+        _set(self.csv_card.merge_single_header, "csv_merged_header")
+        _set(self.csv_card.txt_enc_var, "csv_txt_encoding")
+        if state.get("csv_out_dir"):
+            self.csv_card.out_dir = state["csv_out_dir"]
+            self.csv_card.var_out.set(state["csv_out_dir"])
+        _set(self.tools_card.op_var, "tools_op")
+        _set(self.tools_card.out_enc, "tools_out_encoding")
+        _set(self.tools_card.split_var, "tools_split_lines")
+        _set(self.tools_card.filter_kw, "tools_filter_kw")
+        _set(self.tools_card.filter_mode, "tools_filter_mode")
+        _set(self.tools_card.replace_old, "tools_replace_old")
+        _set(self.tools_card.replace_new, "tools_replace_new")
+        _set(self.tools_card.affix_pre, "tools_affix_pre")
+        _set(self.tools_card.affix_suf, "tools_affix_suf")
+        _set(self.tools_card.case_mode, "tools_case_mode")
+        _set(self.tools_card.enc_target, "tools_enc_target")
+        if state.get("tools_out_dir"):
+            self.tools_card.out_dir = state["tools_out_dir"]
+            self.tools_card.var_out.set(state["tools_out_dir"])
+        wt_ui_state.apply_window_geometry(self.root, state.get("geometry"))
+
+    def _on_close(self):
+        try:
+            wt_ui_state.save(self.UI_STATE_KEY, self._collect_ui_state())
+        finally:
+            self.root.destroy()
+
 
 def main():
     if _HAS_DND:
@@ -1358,6 +1435,8 @@ def main():
     else:
         root = tk.Tk()
     app = App(root)
+    app._apply_ui_state(wt_ui_state.load(App.UI_STATE_KEY))
+    root.protocol("WM_DELETE_WINDOW", app._on_close)
     root.mainloop()
 
 

@@ -25,6 +25,7 @@ for p in (HERE, ROOT):
         sys.path.insert(0, p)
 
 import generic_automation  # 通用化主程序副本
+import wt_ui_state
 
 _TARGET_PROCESS_KEYWORD = ""  # 通用化：目标进程名关键词，由配置注入（提权检测用）
 
@@ -289,13 +290,41 @@ class GenericLauncherUI:
         finally:
             self._running = False
 
+    # ── 界面状态持久化（待修改清单 #6） ──
+    UI_STATE_KEY = "generic_launcher"
+
+    def _collect_ui_state(self):
+        state = {"geometry": wt_ui_state.capture_window_geometry(self.root)}
+        for key, var in (("exe", self.exe_var), ("title", self.title_var), ("flow", self.flow_var)):
+            state[key] = var.get()
+        return state
+
+    def _apply_ui_state(self, state):
+        if not state:
+            return
+        for key, var in (("exe", self.exe_var), ("title", self.title_var), ("flow", self.flow_var)):
+            if state.get(key):
+                try:
+                    var.set(state[key])
+                except Exception:
+                    pass
+        wt_ui_state.apply_window_geometry(self.root, state.get("geometry"))
+
+    def _on_close(self):
+        try:
+            wt_ui_state.save(self.UI_STATE_KEY, self._collect_ui_state())
+        finally:
+            self.root.destroy()
+
 
 def main():
     # 启动期：若目标软件以管理员运行，先尝试提权（通用化，按配置关键词；此处尚未配置则用默认不提权）
     if _TARGET_PROCESS_KEYWORD and _maybe_relaunch_elevated():
         return  # 已触发 UAC 提权重启，原进程退出
     app = tk.Tk()
-    GenericLauncherUI(app)
+    ui = GenericLauncherUI(app)
+    ui._apply_ui_state(wt_ui_state.load(GenericLauncherUI.UI_STATE_KEY))
+    app.protocol("WM_DELETE_WINDOW", ui._on_close)
     app.mainloop()
 
 
