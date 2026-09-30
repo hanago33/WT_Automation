@@ -738,9 +738,13 @@ class TxtMergeApp:
             return
         if cancelled:
             total = total if total else len(self.files)
-            self.status.config(text=f"已取消（完成 {done}/{total}）")
+            # 取消时核心不写输出：明确告知目标文件保持原样，避免误判产物已更新（审计 P3）
+            self.status.config(
+                text=f"已取消（完成 {done}/{total}）——输出未写入，原文件保持原样")
             messagebox.showinfo(
-                "已取消", f"合并已取消，完成 {done}/{total} 个文件。")
+                "已取消",
+                f"合并已取消，完成 {done}/{total} 个文件。\n"
+                f"输出未写入：目标文件保持原样。")
             return
         out_sz = os.path.getsize(output) if os.path.exists(output) else 0
         sz_str = f"{out_sz / 1024:.1f} KB" if out_sz < 1024 * 1024 else f"{out_sz / (1024 * 1024):.2f} MB"

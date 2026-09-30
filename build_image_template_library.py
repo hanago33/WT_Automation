@@ -385,6 +385,11 @@ def extract_text_with_ocr(crop_image, timeout=None):
             )
             if text.strip():
                 return text.strip()
+        except RuntimeError as exc:
+            # pytesseract 的 timeout 到期即抛 RuntimeError：不再回退 CLI 重跑同一
+            # 时限（单框最坏 2×timeout），直接按超时返回 None
+            if "timeout" in str(exc).lower():
+                return None
         except Exception:
             pass
 
@@ -1074,8 +1079,12 @@ class TemplateBuilderApp:
                 color = "#ffd166"
             else:
                 color = "#ff6b6b"
-            self.canvas.create_rectangle(x1, y1, x2, y2, outline=color, width=2)
-            self.canvas.create_text(x1 + 4, y1 + 4, text=str(index + 1), anchor=tk.NW, fill=color)
+            self.canvas.create_rectangle(
+                x1, y1, x2, y2, outline=color, width=2,
+                tags=("cand", "cand_{}".format(index)))
+            self.canvas.create_text(
+                x1 + 4, y1 + 4, text=str(index + 1), anchor=tk.NW, fill=color,
+                tags=("cand", "cand_{}".format(index)))
 
             if index == self.selected_index:
                 handle_radius = HANDLE_SIZE
@@ -1097,6 +1106,7 @@ class TemplateBuilderApp:
                         hy + handle_radius,
                         fill="#00ff7f",
                         outline="#003b24",
+                        tags=("cand", "cand_{}".format(index)),
                     )
 
         if self.temp_region is not None:
@@ -1154,6 +1164,9 @@ class TemplateBuilderApp:
         elif (self.drag_action in {"moving", "resizing"}
                 and self.drag_current_index is not None
                 and 0 <= self.drag_current_index < len(self.candidates)):
+            # 隐藏被拖框的静态层（矩形/序号/手柄同 tag），否则拖动中出现两个框
+            # 且手柄留在旧位置（审计 P2）。松手 refresh_canvas 重建即恢复。
+            canvas.itemconfigure("cand_{}".format(self.drag_current_index), state="hidden")
             region = self.candidates[self.drag_current_index]
             x1, y1, x2, y2 = self._region_display_coords(region)
             # 被拖框用选中色画在预览层，盖住静态层的旧位置；松手后 refresh_canvas 收敛
@@ -1648,6 +1661,10 @@ class TemplateBuilderApp:
             messagebox.showinfo(
                 "已取消",
                 f"OCR 批量命名已取消，完成 {processed}/{total} 个候选区域。")
+            # 收敛：已写入的 template_names 与名称框/列表保持一致（审计 P3）
+            if self.selected_index is not None and 0 <= self.selected_index < len(self.template_names):
+                self.file_name_var.set(self.template_names[self.selected_index])
+            self.refresh_listbox()
             return
         if self.selected_index is not None and 0 <= self.selected_index < len(self.template_names):
             self.file_name_var.set(self.template_names[self.selected_index])
