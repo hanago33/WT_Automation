@@ -417,9 +417,24 @@ def main():
         points.extend(parse_coordinate_file(args.jwd, category="JWD"))
 
     if not points:
-        default_dir = r"C:\Users\14830\Desktop\20241227黑龙江依兰泰霆项目\03-WT输入"
-        if os.path.isdir(default_dir):
-            points.extend(parse_points_from_input_dir(default_dir))
+        # 未显式指定输入时，退一步在桌面下找唯一的「*/03-WT输入」目录：先前实现写死了某台
+        # 机器的项目绝对路径（换机即失效，也违反「禁止本机绝对路径入库」）。多个/零个候选
+        # 都不猜，保持原有错误提示让用户用 --dir / --cft / --jwd 显式指定。
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        candidates = []
+        if os.path.isdir(desktop):
+            candidates = [
+                os.path.join(desktop, name, "03-WT输入")
+                for name in sorted(os.listdir(desktop))
+                if os.path.isdir(os.path.join(desktop, name, "03-WT输入"))
+            ]
+        if len(candidates) == 1:
+            print("[提示] 未指定输入，自动使用桌面下的目录：{}".format(candidates[0]))
+            points.extend(parse_points_from_input_dir(candidates[0]))
+        elif len(candidates) > 1:
+            print("[提示] 桌面下发现多个 03-WT输入 目录，请用 --dir 指定其一：")
+            for item in candidates:
+                print("    {}".format(item))
 
     if not points:
         print("[错误] 未能加载到有效的机位点或测风塔坐标。请指定 --cft, --jwd 或 --dir。")

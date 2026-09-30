@@ -66,7 +66,9 @@ LOG_ARCHIVE_DIR = os.path.join(BASE_DIR, "debug_archives")
 RUN_REPORT_DIR = os.path.join(BASE_DIR, "logs", "run_reports")
 LAST_RUN_REPORT_FILE = os.path.join(BASE_DIR, "logs", "last_run_report.json")
 LAUNCHER_STATE_FILE = os.path.join(BASE_DIR, "launcher_state.json")
-DEFAULT_UI_TARS_REPO_ROOT = r"C:\Users\14830\UI-TARS-desktop"
+# UI-TARS 桌面端仓库默认位置：按当前用户主目录推导（写死 C:\Users\<某人> 换机即失效，
+# 且属「本机绝对路径入库」）；仍可被 launcher_state / 环境变量 / project_settings 覆盖。
+DEFAULT_UI_TARS_REPO_ROOT = os.path.join(os.path.expanduser("~"), "UI-TARS-desktop")
 DEFAULT_UI_TARS_CONFIG = os.path.join(os.path.expanduser("~"), ".ui-tars-cli.json")
 MAX_RECENT_MODELS = 8
 DEFAULT_RECORDER_DIR = r"D:\Pywinauto Recorder\pywinauto_recorder"
