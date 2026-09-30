@@ -1242,58 +1242,243 @@ class ControlPickerDialog:
         self._library_controls = list(library_controls or [])
         self._displayed_controls = []
         self._displayed_sources = []
+        self._source_filter = "all"  # "all" | "flow" | "library"
 
-        self.window = _make_dialog_window(parent, "选择锚点控件", 700, 500, min_width=560, min_height=380)
+        self.window = _make_dialog_window(parent, "选择锚点控件", 980, 620, min_width=820, min_height=500)
+        self.window.configure(bg=EDITOR_THEME.get("bg", "#f8fafc"))
 
-        # ── 搜索框 ──
-        search_frame = tk.Frame(self.window, padx=8, pady=6)
-        search_frame.pack(fill=tk.X)
-        tk.Label(search_frame, text="搜索：").pack(side=tk.LEFT)
+        root_frame = tk.Frame(self.window, bg=EDITOR_THEME.get("bg", "#f8fafc"), padx=12, pady=10)
+        root_frame.pack(fill=tk.BOTH, expand=True)
+
+        # ── 顶栏筛选区（搜索框 + 来源分段器 + 匹配徽标） ──
+        filter_bar = tk.Frame(
+            root_frame,
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            padx=12,
+            pady=8,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        filter_bar.pack(fill=tk.X, pady=(0, 8))
+
+        tk.Label(
+            filter_bar,
+            text="🔍 搜索：",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).pack(side=tk.LEFT)
+
         self._search_var = tk.StringVar()
         self._search_var.trace_add("write", self._on_search_changed)
-        self._search_entry = tk.Entry(search_frame, textvariable=self._search_var, width=40)
-        self._search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        self._search_entry = tk.Entry(
+            filter_bar,
+            textvariable=self._search_var,
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            width=28,
+        )
+        self._search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6), ipady=3)
 
-        # ── 来源开关 ──
-        include_frame = tk.Frame(self.window, padx=8)
-        include_frame.pack(fill=tk.X)
-        self._include_library_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(
-            include_frame,
-            text="同时显示控件库控件（选中控件库控件会自动导入当前步骤）",
-            variable=self._include_library_var,
-            command=self._refresh_display,
-            cursor="hand2",
-        ).pack(side=tk.LEFT, pady=(2, 4))
+        def _clear_search():
+            self._search_var.set("")
+            self._search_entry.focus_set()
 
-        # ── 控件列表 ──
-        list_frame = tk.Frame(self.window, padx=8)
-        list_frame.pack(fill=tk.BOTH, expand=True)
-        columns = ("id", "name", "control_type", "label_text", "source")
+        wt_theme.create_flat_button(
+            filter_bar,
+            "✕ 清除",
+            _clear_search,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=2,
+        ).pack(side=tk.LEFT, padx=(0, 14))
+
+        # 来源分段器按钮组
+        tk.Label(
+            filter_bar,
+            text="来源：",
+            font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("muted", "#64748b"),
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        self._btn_filter_all = wt_theme.create_flat_button(
+            filter_bar,
+            f"全部 ({len(self._flow_controls) + len(self._library_controls)})",
+            lambda: self._set_source_filter("all"),
+            tone="primary",
+            font=("Microsoft YaHei UI", 8),
+            padx=8,
+            pady=2,
+        )
+        self._btn_filter_all.pack(side=tk.LEFT, padx=(0, 4))
+
+        self._btn_filter_flow = wt_theme.create_flat_button(
+            filter_bar,
+            f"流程步骤 ({len(self._flow_controls)})",
+            lambda: self._set_source_filter("flow"),
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=8,
+            pady=2,
+        )
+        self._btn_filter_flow.pack(side=tk.LEFT, padx=(0, 4))
+
+        self._btn_filter_lib = wt_theme.create_flat_button(
+            filter_bar,
+            f"控件库 ({len(self._library_controls)})",
+            lambda: self._set_source_filter("library"),
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=8,
+            pady=2,
+        )
+        self._btn_filter_lib.pack(side=tk.LEFT, padx=(0, 8))
+
+        # 匹配计数徽标
+        self._match_count_var = tk.StringVar(value="")
+        tk.Label(
+            filter_bar,
+            textvariable=self._match_count_var,
+            font=("Microsoft YaHei UI", 8),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("primary", "#2563eb"),
+            padx=8,
+            pady=2,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        ).pack(side=tk.RIGHT)
+
+        # ── 中部左右双栏（左列表 + 右属性即时透视） ──
+        split_frame = tk.Frame(root_frame, bg=EDITOR_THEME.get("bg", "#f8fafc"))
+        split_frame.pack(fill=tk.BOTH, expand=True)
+
+        left_frame = tk.Frame(
+            split_frame,
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+
+        columns = ("id", "name", "control_type", "source")
         self._tree, _scrollbar = _make_treeview(
-            list_frame,
+            left_frame,
             columns,
-            headings={"id": "ID", "name": "名称", "control_type": "控件类型", "label_text": "labelText", "source": "来源"},
-            widths={"id": 140, "name": 140, "control_type": 100, "label_text": 160, "source": 70},
+            headings={"id": "ID", "name": "名称", "control_type": "控件类型", "source": "来源"},
+            widths={"id": 140, "name": 150, "control_type": 100, "source": 75},
         )
         self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         _scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self._tree.bind("<Double-1>", self._on_double_click)
+        self._tree.bind("<<TreeviewSelect>>", self._on_tree_select)
 
-        # ── 按钮 ──
-        _make_button_row(self.window, [
-            ("确定", self._on_confirm, {"bg": "#d1fae5"}),
-            ("取消", self._on_cancel, {}),
-        ])
+        # 右侧：控件属性即时诊断卡片
+        right_frame = tk.Frame(
+            split_frame,
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            width=360,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            padx=12,
+            pady=10,
+        )
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH)
+        right_frame.pack_propagate(False)
 
+        tk.Label(
+            right_frame,
+            text="🏷️ 控件即时诊断属性",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            anchor="w",
+        ).pack(fill=tk.X, pady=(0, 8))
+
+        # 属性展示容器
+        self._detail_holder = tk.Frame(right_frame, bg=EDITOR_THEME.get("card", "#ffffff"))
+        self._detail_holder.pack(fill=tk.BOTH, expand=True)
+
+        self._preview_vars = {
+            "id": tk.StringVar(value="-"),
+            "name": tk.StringVar(value="-"),
+            "windowTitle": tk.StringVar(value="-"),
+            "targetMethod": tk.StringVar(value="-"),
+            "targetValue": tk.StringVar(value="-"),
+            "controlType": tk.StringVar(value="-"),
+            "source": tk.StringVar(value="-"),
+        }
+
+        # ── 底部操作与提示栏 ──
+        bottom_bar = tk.Frame(root_frame, bg=EDITOR_THEME.get("bg", "#f8fafc"))
+        bottom_bar.pack(fill=tk.X, pady=(8, 0))
+
+        tk.Label(
+            bottom_bar,
+            text="💡 双击行快速选定；选中「控件库」控件将自动导入为当前步骤锚点。",
+            font=("Microsoft YaHei UI", 8),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("muted", "#64748b"),
+        ).pack(side=tk.LEFT)
+
+        wt_theme.create_flat_button(
+            bottom_bar,
+            "确定选择",
+            self._on_confirm,
+            tone="primary",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=16,
+            pady=5,
+        ).pack(side=tk.RIGHT)
+
+        wt_theme.create_flat_button(
+            bottom_bar,
+            "取消",
+            self._on_cancel,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=14,
+            pady=5,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        self._show_empty_preview()
         self._refresh_display()
         self._search_entry.focus_set()
 
     # ── 内部方法 ──
 
+    def _set_source_filter(self, filter_mode):
+        self._source_filter = filter_mode
+        tones = {
+            "all": ("primary" if filter_mode == "all" else "secondary"),
+            "flow": ("primary" if filter_mode == "flow" else "secondary"),
+            "library": ("primary" if filter_mode == "library" else "secondary"),
+        }
+        # 更新按钮高亮态
+        self._btn_filter_all.configure(
+            bg=EDITOR_THEME["primary"] if tones["all"] == "primary" else EDITOR_THEME["card"],
+            fg="#ffffff" if tones["all"] == "primary" else EDITOR_THEME["text"],
+        )
+        self._btn_filter_flow.configure(
+            bg=EDITOR_THEME["primary"] if tones["flow"] == "primary" else EDITOR_THEME["card"],
+            fg="#ffffff" if tones["flow"] == "primary" else EDITOR_THEME["text"],
+        )
+        self._btn_filter_lib.configure(
+            bg=EDITOR_THEME["primary"] if tones["library"] == "primary" else EDITOR_THEME["card"],
+            fg="#ffffff" if tones["library"] == "primary" else EDITOR_THEME["text"],
+        )
+        self._refresh_display()
+
     def _all_control_pairs(self):
-        pairs = [(ctrl, "流程") for ctrl in self._flow_controls]
-        if self._include_library_var.get():
+        pairs = []
+        if self._source_filter in ("all", "flow"):
+            pairs.extend((ctrl, "流程") for ctrl in self._flow_controls)
+        if self._source_filter in ("all", "library"):
             pairs.extend((ctrl, "控件库") for ctrl in self._library_controls)
         return pairs
 
@@ -1306,29 +1491,38 @@ class ControlPickerDialog:
                 visible_controls.append(ctrl)
                 visible_sources.append(source)
                 continue
-            if (
-                keyword in str(ctrl.get("id", "")).lower()
-                or keyword in str(ctrl.get("name", "")).lower()
-                or keyword in str((ctrl.get("inspectData") or {}).get("name", "")).lower()
-            ):
+            searchable_text = (
+                str(ctrl.get("id", "")).lower()
+                + " "
+                + str(ctrl.get("name", "")).lower()
+                + " "
+                + str(ctrl.get("windowTitle", "")).lower()
+                + " "
+                + str((ctrl.get("inspectData") or {}).get("name", "")).lower()
+            )
+            if keyword in searchable_text:
                 visible_controls.append(ctrl)
                 visible_sources.append(source)
+
         self._displayed_controls = visible_controls
         self._displayed_sources = visible_sources
+        self._match_count_var.set(f"匹配 {len(visible_controls)} 项")
+
         self._tree.delete(*self._tree.get_children())
         for index, (ctrl, source) in enumerate(zip(visible_controls, visible_sources)):
+            ctrl_type = (ctrl.get("inspectData") or {}).get("controlType", "") or ctrl.get("controlType", "")
             self._tree.insert(
                 "",
                 tk.END,
                 iid=str(index),
                 values=(
                     ctrl.get("id", ""),
-                    ctrl.get("name", ""),
-                    (ctrl.get("inspectData") or {}).get("controlType", ""),
-                    (ctrl.get("inspectData") or {}).get("name", ""),
+                    ctrl.get("name", "") or ctrl.get("displayName", ""),
+                    ctrl_type,
                     source,
                 ),
             )
+        self._show_empty_preview()
 
     def _on_search_changed(self, *_args):
         self._refresh_display()
@@ -1336,13 +1530,85 @@ class ControlPickerDialog:
     def _on_double_click(self, _event):
         self._on_confirm()
 
+    def _show_empty_preview(self):
+        for widget in self._detail_holder.winfo_children():
+            widget.destroy()
+        placeholder = tk.Label(
+            self._detail_holder,
+            text="👈 请在左侧列表中点击选择控件\n\n此处将实时透视回显定位方法、表达式、归属窗口与 Inspect 诊断属性。",
+            font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("muted", "#64748b"),
+            justify=tk.CENTER,
+            wraplength=300,
+        )
+        placeholder.pack(fill=tk.BOTH, expand=True, pady=40)
+
+    def _on_tree_select(self, _event):
+        sel = self._tree.selection()
+        if not sel:
+            self._show_empty_preview()
+            return
+        try:
+            index = int(sel[0])
+            if not (0 <= index < len(self._displayed_controls)):
+                self._show_empty_preview()
+                return
+        except ValueError:
+            self._show_empty_preview()
+            return
+
+        ctrl = self._displayed_controls[index]
+        source = self._displayed_sources[index]
+
+        for widget in self._detail_holder.winfo_children():
+            widget.destroy()
+
+        fields = [
+            ("ID", str(ctrl.get("id", "")).strip() or "-"),
+            ("名称", str(ctrl.get("name", "") or ctrl.get("displayName", "")).strip() or "-"),
+            ("来源", "🌟 " + source),
+            ("归属窗口", str(ctrl.get("windowTitle", "")).strip() or "(当前激活窗口)"),
+            ("定位方法", str(ctrl.get("targetMethod", "") or ctrl.get("recommendedTargetMethod", "")).strip() or "-"),
+            ("定位表达式", str(ctrl.get("targetValue", "") or ctrl.get("recommendedTargetValue", "")).strip() or "-"),
+            ("控件类型", str((ctrl.get("inspectData") or {}).get("controlType", "") or ctrl.get("controlType", "")).strip() or "-"),
+        ]
+
+        for label_text, value in fields:
+            row_frame = tk.Frame(self._detail_holder, bg=EDITOR_THEME.get("card", "#ffffff"))
+            row_frame.pack(fill=tk.X, pady=3)
+            tk.Label(
+                row_frame,
+                text=label_text + "：",
+                font=("Microsoft YaHei UI", 8, "bold"),
+                width=10,
+                anchor="w",
+                bg=EDITOR_THEME.get("card", "#ffffff"),
+                fg=EDITOR_THEME.get("muted", "#64748b"),
+            ).pack(side=tk.LEFT)
+            val_entry = tk.Entry(
+                row_frame,
+                font=("Microsoft YaHei UI", 8),
+                relief=tk.FLAT,
+                bd=0,
+                bg=EDITOR_THEME.get("bg", "#f8fafc"),
+                highlightthickness=1,
+                highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            )
+            val_entry.insert(0, value)
+            val_entry.configure(state="readonly")
+            val_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+
     def _on_confirm(self):
         sel = self._tree.selection()
         if not sel:
             messagebox.showinfo("提示", "请先选择一个控件。", parent=self.window)
             return
-        index = int(sel[0])
-        if not (0 <= index < len(self._displayed_controls)):
+        try:
+            index = int(sel[0])
+            if not (0 <= index < len(self._displayed_controls)):
+                return
+        except ValueError:
             return
         self.selected_control = self._displayed_controls[index]
         self.selected_source = self._displayed_sources[index]
@@ -2522,96 +2788,268 @@ class ControlEditDialog:
     def __init__(self, parent, control):
         self.result = None
         self.control = dict(control)
-        self.window = _make_dialog_window(parent, "编辑控件", 680, 620, min_width=600, min_height=550)
+        self.window = _make_dialog_window(parent, "编辑控件", 740, 660, min_width=640, min_height=580)
+        self.window.configure(bg=EDITOR_THEME.get("bg", "#f8fafc"))
 
-        container = tk.Frame(self.window, padx=15, pady=15)
+        container = tk.Frame(self.window, bg=EDITOR_THEME.get("bg", "#f8fafc"), padx=14, pady=12)
         container.pack(fill=tk.BOTH, expand=True)
 
-        basic_frame = tk.LabelFrame(container, text="基本信息", padx=10, pady=8)
-        basic_frame.pack(fill=tk.X, pady=(0, 10))
-
-        row = 0
         self.var_name = tk.StringVar()
         self.var_role = tk.StringVar()
-        self.var_control_type = tk.StringVar()  # 只读显示，与树形列表的类型列一致
+        self.var_control_type = tk.StringVar()
         self.var_window_title = tk.StringVar()
-
-        tk.Label(basic_frame, text="控件名称").grid(row=row, column=0, sticky="nw", pady=3)
-        tk.Entry(basic_frame, textvariable=self.var_name, width=50).grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=3)
-        row += 1
-
-        tk.Label(basic_frame, text="控制类型").grid(row=row, column=0, sticky="nw", pady=3)
-        tk.Label(basic_frame, textvariable=self.var_control_type, fg=EDITOR_THEME["muted"], anchor="w").grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=3)
-        row += 1
-
-        tk.Label(basic_frame, text="角色/说明").grid(row=row, column=0, sticky="nw", pady=3)
-        tk.Entry(basic_frame, textvariable=self.var_role, width=60).grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=3)
-        row += 1
-
-        tk.Label(basic_frame, text="窗口标题").grid(row=row, column=0, sticky="nw", pady=3)
-        tk.Entry(basic_frame, textvariable=self.var_window_title, width=40).grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=3)
-        row += 1
-
-        basic_frame.columnconfigure(1, weight=1)
-
-        locator_frame = tk.LabelFrame(container, text="定位信息", padx=10, pady=8)
-        locator_frame.pack(fill=tk.X, pady=(0, 10))
-
-        tk.Label(locator_frame, text="定位方法").grid(row=0, column=0, sticky="nw", pady=3)
         self.var_target_method = tk.StringVar()
-        method_combo = ttk.Combobox(
-            locator_frame,
-            textvariable=self.var_target_method,
-            values=["automation_id", "automation_id,control_type", "automation_id,class_name",
-                    "name", "name,control_type", "name,class_name",
-                    "class_name", "class_name,control_type", "control_type",
-                    "handle", "text", "text,control_type"],
-            width=30,
-        )
-        method_combo.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
-        method_combo.configure(state="readonly")
-
-        tk.Label(locator_frame, text="定位值").grid(row=1, column=0, sticky="nw", pady=3)
         self.var_target_value = tk.StringVar()
-        tk.Entry(locator_frame, textvariable=self.var_target_value, width=40).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=3)
-
-        tk.Label(locator_frame, text="UI路径").grid(row=2, column=0, sticky="nw", pady=3)
         self.var_ui_path = tk.StringVar()
-        tk.Entry(locator_frame, textvariable=self.var_ui_path, width=50).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=3)
-
-        locator_frame.columnconfigure(1, weight=1)
-
-        quality_frame = tk.LabelFrame(container, text="质量信息", padx=10, pady=8)
-        quality_frame.pack(fill=tk.X, pady=(0, 10))
-
-        tk.Label(quality_frame, text="质量分级").grid(row=0, column=0, sticky="nw", pady=3)
         self.var_quality = tk.StringVar()
+        self.var_quality_reason = tk.StringVar()
+        self.var_quality_badge = tk.StringVar(value="")
+
+        # ── 1. 基本信息卡片 ──
+        basic_card = tk.LabelFrame(
+            container,
+            text="🏷️ 基本信息",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=12,
+            pady=8,
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        basic_card.pack(fill=tk.X, pady=(0, 8))
+        basic_card.columnconfigure(1, weight=1)
+        basic_card.columnconfigure(3, weight=1)
+
+        # 控件名称 & 控制类型
+        tk.Label(
+            basic_card, text="控件名称 *", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).grid(row=0, column=0, sticky="w", pady=3)
+        name_entry = tk.Entry(
+            basic_card, textvariable=self.var_name, font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        name_entry.grid(row=0, column=1, sticky="ew", padx=(6, 14), pady=3, ipady=2)
+
+        tk.Label(
+            basic_card, text="控制类型", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("muted", "#64748b"),
+        ).grid(row=0, column=2, sticky="w", pady=3)
+        type_label = tk.Label(
+            basic_card, textvariable=self.var_control_type, font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"), fg=EDITOR_THEME.get("muted", "#64748b"),
+            anchor="w", padx=6, pady=2, highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        type_label.grid(row=0, column=3, sticky="ew", padx=(6, 0), pady=3)
+
+        # 角色/说明 & 窗口标题
+        tk.Label(
+            basic_card, text="角色/说明", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).grid(row=1, column=0, sticky="w", pady=3)
+        role_entry = tk.Entry(
+            basic_card, textvariable=self.var_role, font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        role_entry.grid(row=1, column=1, sticky="ew", padx=(6, 14), pady=3, ipady=2)
+
+        tk.Label(
+            basic_card, text="窗口标题", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).grid(row=1, column=2, sticky="w", pady=3)
+        win_entry = tk.Entry(
+            basic_card, textvariable=self.var_window_title, font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        win_entry.grid(row=1, column=3, sticky="ew", padx=(6, 0), pady=3, ipady=2)
+
+        # ── 2. 定位策略卡片 ──
+        locator_card = tk.LabelFrame(
+            container,
+            text="🎯 定位策略",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=12,
+            pady=8,
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        locator_card.pack(fill=tk.X, pady=(0, 8))
+        locator_card.columnconfigure(1, weight=1)
+        locator_card.columnconfigure(3, weight=1)
+
+        tk.Label(
+            locator_card, text="定位方法 *", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).grid(row=0, column=0, sticky="w", pady=3)
+        method_combo = ttk.Combobox(
+            locator_card,
+            textvariable=self.var_target_method,
+            values=[
+                "automation_id", "automation_id,control_type", "automation_id,class_name",
+                "name", "name,control_type", "name,class_name",
+                "class_name", "class_name,control_type", "control_type",
+                "handle", "text", "text,control_type",
+            ],
+            state="readonly",
+            font=("Microsoft YaHei UI", 9),
+        )
+        method_combo.grid(row=0, column=1, sticky="ew", padx=(6, 14), pady=3)
+
+        tk.Label(
+            locator_card, text="定位值 *", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).grid(row=0, column=2, sticky="w", pady=3)
+        val_entry = tk.Entry(
+            locator_card, textvariable=self.var_target_value, font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        val_entry.grid(row=0, column=3, sticky="ew", padx=(6, 0), pady=3, ipady=2)
+
+        tk.Label(
+            locator_card, text="UI 路径", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).grid(row=1, column=0, sticky="w", pady=3)
+        ui_path_entry = tk.Entry(
+            locator_card, textvariable=self.var_ui_path, font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        ui_path_entry.grid(row=1, column=1, columnspan=3, sticky="ew", padx=(6, 0), pady=3, ipady=2)
+
+        # ── 3. 质量分级与工程备注卡片 ──
+        quality_card = tk.LabelFrame(
+            container,
+            text="🛡️ 质量分级与工程备注",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=12,
+            pady=8,
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        quality_card.pack(fill=tk.BOTH, expand=True)
+        quality_card.columnconfigure(1, weight=1)
+        quality_card.columnconfigure(3, weight=1)
+
+        tk.Label(
+            quality_card, text="质量分级", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).grid(row=0, column=0, sticky="w", pady=3)
+
+        q_frame = tk.Frame(quality_card, bg=EDITOR_THEME.get("card", "#ffffff"))
+        q_frame.grid(row=0, column=1, sticky="ew", padx=(6, 14), pady=3)
+
         quality_combo = ttk.Combobox(
-            quality_frame,
+            q_frame,
             textvariable=self.var_quality,
             values=["推荐保留", "建议优化", "谨慎使用", "待验证", "未分类"],
-            width=20,
+            state="readonly",
+            width=14,
+            font=("Microsoft YaHei UI", 9),
         )
-        quality_combo.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
-        quality_combo.configure(state="readonly")
+        quality_combo.pack(side=tk.LEFT)
 
-        tk.Label(quality_frame, text="质量说明").grid(row=1, column=0, sticky="nw", pady=3)
-        self.var_quality_reason = tk.StringVar()
-        tk.Entry(quality_frame, textvariable=self.var_quality_reason, width=40).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=3)
+        self._quality_badge_label = tk.Label(
+            q_frame,
+            textvariable=self.var_quality_badge,
+            font=("Microsoft YaHei UI", 8, "bold"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg="#059669",
+            padx=6,
+            pady=1,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        self._quality_badge_label.pack(side=tk.LEFT, padx=(6, 0))
 
-        quality_frame.columnconfigure(1, weight=1)
+        tk.Label(
+            quality_card, text="质量说明", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).grid(row=0, column=2, sticky="w", pady=3)
+        reason_entry = tk.Entry(
+            quality_card, textvariable=self.var_quality_reason, font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        reason_entry.grid(row=0, column=3, sticky="ew", padx=(6, 0), pady=3, ipady=2)
 
-        notes_frame = tk.LabelFrame(container, text="备注", padx=10, pady=8)
-        notes_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        self.notes_text = tk.Text(notes_frame, height=5, wrap=tk.WORD)
-        self.notes_text.pack(fill=tk.BOTH, expand=True)
+        tk.Label(
+            quality_card, text="工程备注", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("muted", "#64748b"),
+        ).grid(row=1, column=0, sticky="nw", pady=(6, 0))
+        self.notes_text = tk.Text(
+            quality_card, height=4, wrap=tk.WORD, font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        self.notes_text.grid(row=1, column=1, columnspan=3, sticky="nsew", padx=(6, 0), pady=(6, 0))
+        quality_card.rowconfigure(1, weight=1)
 
-        _make_button_row(container, [
-            ("保存", self.on_save, {"bg": "#d1fae5", "width": 12, "side": tk.RIGHT}),
-            ("取消", self.window.destroy, {"width": 12, "side": tk.RIGHT, "pack_padx": (0, 10)}),
-        ], padx=0, pady=0)
+        # ── 底部操作栏 ──
+        bottom_bar = tk.Frame(container, bg=EDITOR_THEME.get("bg", "#f8fafc"))
+        bottom_bar.pack(fill=tk.X, pady=(10, 0))
 
+        tk.Label(
+            bottom_bar,
+            text="💡 保存后将即时更新控件库内存对象并在下次落盘时固化。",
+            font=("Microsoft YaHei UI", 8),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+            fg=EDITOR_THEME.get("muted", "#64748b"),
+        ).pack(side=tk.LEFT)
+
+        wt_theme.create_flat_button(
+            bottom_bar,
+            "保存",
+            self.on_save,
+            tone="primary",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=18,
+            pady=5,
+        ).pack(side=tk.RIGHT)
+
+        wt_theme.create_flat_button(
+            bottom_bar,
+            "取消",
+            self.window.destroy,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=14,
+            pady=5,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        def _on_quality_change(*_a):
+            q = self.var_quality.get().strip()
+            color_map = {
+                "推荐保留": ("✓ 推荐保留", "#059669"),
+                "建议优化": ("⚡ 建议优化", "#d97706"),
+                "谨慎使用": ("⚠️ 谨慎使用", "#dc2626"),
+                "待验证": ("🔍 待验证", "#2563eb"),
+                "未分类": ("⚪ 未分类", "#64748b"),
+            }
+            text, color = color_map.get(q, (q or "未分类", "#64748b"))
+            self.var_quality_badge.set(text)
+            self._quality_badge_label.config(fg=color)
+
+        self.var_quality.trace_add("write", _on_quality_change)
         self._load_control_data()
+        _on_quality_change()
 
     def _load_control_data(self):
         # 兼容 flatControls 和 controlDefinitions 两种数据结构
@@ -2674,6 +3112,7 @@ class ControlEditDialog:
             aux_checks = self.control.get("auxChecks", [])
             if isinstance(aux_checks, list) and aux_checks:
                 notes = " | ".join(str(item) for item in aux_checks)
+        self.notes_text.delete("1.0", tk.END)
         self.notes_text.insert("1.0", notes)
 
     def on_save(self):
@@ -2691,6 +3130,8 @@ class ControlEditDialog:
         flat_item["uiPath"] = self.var_ui_path.get().strip()
         flat_item["qualityTier"] = self.var_quality.get().strip()
         flat_item["qualityReason"] = self.var_quality_reason.get().strip()
+        if hasattr(self, "notes_text") and hasattr(self.notes_text, "get"):
+            flat_item["notes"] = self.notes_text.get("1.0", tk.END).strip()
         # 兼容 inspectData 缺失与显式为 null 两种脏数据：
         # 只判 "not in" 时，JSON 里写成 "inspectData": null 会走到 None["name"] 抛 TypeError。
         if not isinstance(flat_item.get("inspectData"), dict):
@@ -6090,86 +6531,280 @@ class FlowPackageDialog:
                 seen_selected_ids.add(step_id)
         self.selected_step_ids.sort(key=_natural_sort_key)
 
-        self.window = _make_dialog_window(parent, "流程包编辑", 920, 620)
+        self.available_displayed_ids = []
+        self.selected_displayed_ids = []
+
+        self.window = _make_dialog_window(parent, "流程包编辑", 1000, 700, min_width=880, min_height=580)
+        self.window.configure(bg=EDITOR_THEME.get("bg", "#f8fafc"))
 
         self.var_id = tk.StringVar(value=str(self.package.get("id", "")).strip())
         self.var_name = tk.StringVar(value=str(self.package.get("name", "")).strip())
+        self.var_avail_filter = tk.StringVar()
+        self.var_sel_filter = tk.StringVar()
+        self.var_avail_count = tk.StringVar(value="")
+        self.var_sel_count = tk.StringVar(value="")
 
-        container = tk.Frame(self.window, padx=12, pady=12)
+        container = tk.Frame(self.window, bg=EDITOR_THEME.get("bg", "#f8fafc"), padx=14, pady=12)
         container.pack(fill=tk.BOTH, expand=True)
 
-        form = tk.LabelFrame(container, text="基本信息", padx=10, pady=10)
-        form.pack(fill=tk.X)
+        # ── 流程包基本信息卡片 ──
+        form = tk.LabelFrame(
+            container,
+            text="🏷️ 流程包基本信息",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=12,
+            pady=10,
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        form.pack(fill=tk.X, pady=(0, 10))
         form.columnconfigure(1, weight=1)
-        tk.Label(form, text="流程包ID").grid(row=0, column=0, sticky="w", pady=4)
-        tk.Entry(form, textvariable=self.var_id).grid(row=0, column=1, sticky="ew", padx=(8, 0), pady=4)
-        tk.Label(form, text="流程包名称").grid(row=1, column=0, sticky="w", pady=4)
-        tk.Entry(form, textvariable=self.var_name).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=4)
+        form.columnconfigure(3, weight=1)
 
-        tk.Label(container, text="流程包说明").pack(anchor="w", pady=(10, 0))
-        self.description_text = tk.Text(container, height=4, wrap=tk.WORD)
-        self.description_text.pack(fill=tk.X, pady=(4, 0))
+        tk.Label(
+            form, text="流程包 ID *", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).grid(row=0, column=0, sticky="w", pady=3)
+        id_entry = tk.Entry(
+            form, textvariable=self.var_id, font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        id_entry.grid(row=0, column=1, sticky="ew", padx=(8, 16), pady=3, ipady=3)
+
+        tk.Label(
+            form, text="流程包名称 *", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).grid(row=0, column=2, sticky="w", pady=3)
+        name_entry = tk.Entry(
+            form, textvariable=self.var_name, font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        name_entry.grid(row=0, column=3, sticky="ew", padx=(8, 0), pady=3, ipady=3)
+
+        tk.Label(
+            form, text="说明描述", font=("Microsoft YaHei UI", 9),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("muted", "#64748b"),
+        ).grid(row=1, column=0, sticky="nw", pady=(6, 0))
+        self.description_text = tk.Text(
+            form, height=3, wrap=tk.WORD, font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        self.description_text.grid(row=1, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=(6, 0))
         self.description_text.insert("1.0", str(self.package.get("description", "")).strip())
 
-        step_frame = tk.LabelFrame(container, text="包含步骤", padx=10, pady=10)
-        step_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-        tk.Label(
-            step_frame,
-            text="左侧默认按步骤ID排序展示全部可选步骤；右侧是流程包内实际执行顺序，可用上移/下移调整。双击列表项可定位到主编辑器左侧步骤树。",
-            fg=EDITOR_THEME["muted"],
-            justify=tk.LEFT,
-            anchor="w",
-        ).pack(fill=tk.X)
+        # ── 步骤穿梭框卡片 ──
+        step_frame = tk.LabelFrame(
+            container,
+            text="🔄 包含步骤（双栏穿梭编排）",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=12,
+            pady=10,
+            bg=EDITOR_THEME.get("card", "#ffffff"),
+            fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        step_frame.pack(fill=tk.BOTH, expand=True)
 
-        list_frame = tk.Frame(step_frame)
-        list_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        list_frame = tk.Frame(step_frame, bg=EDITOR_THEME.get("card", "#ffffff"))
+        list_frame.pack(fill=tk.BOTH, expand=True)
         list_frame.columnconfigure(0, weight=1)
         list_frame.columnconfigure(1, weight=0)
         list_frame.columnconfigure(2, weight=1)
         list_frame.rowconfigure(1, weight=1)
 
-        tk.Label(list_frame, text="可选步骤（默认按步骤ID排序）").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        tk.Label(list_frame, text="流程包内步骤（执行顺序）").grid(row=0, column=2, sticky="w", pady=(0, 6))
+        # ── 左栏：可选步骤池 ──
+        left_header = tk.Frame(list_frame, bg=EDITOR_THEME.get("card", "#ffffff"))
+        left_header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
-        available_frame = tk.Frame(list_frame)
-        available_frame.grid(row=1, column=0, sticky="nsew")
-        self.available_step_listbox = tk.Listbox(available_frame, selectmode=tk.EXTENDED, exportselection=False)
-        self.available_step_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tk.Label(
+            left_header, text="可选步骤池", font=("Microsoft YaHei UI", 9, "bold"),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).pack(side=tk.LEFT)
+
+        tk.Label(
+            left_header, textvariable=self.var_avail_count, font=("Microsoft YaHei UI", 8),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"), fg=EDITOR_THEME.get("muted", "#64748b"),
+            padx=6, pady=1, highlightthickness=1, highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        wt_theme.create_flat_button(
+            left_header, "清空选择", lambda: self.available_step_listbox.selection_clear(0, tk.END),
+            tone="secondary", font=("Microsoft YaHei UI", 8), padx=6, pady=1,
+        ).pack(side=tk.RIGHT)
+        wt_theme.create_flat_button(
+            left_header, "全选", lambda: self.available_step_listbox.selection_set(0, tk.END),
+            tone="secondary", font=("Microsoft YaHei UI", 8), padx=6, pady=1,
+        ).pack(side=tk.RIGHT, padx=(0, 6))
+
+        # 左栏搜索条 + 列表容器
+        available_outer = tk.Frame(list_frame, bg=EDITOR_THEME.get("card", "#ffffff"))
+        available_outer.grid(row=1, column=0, sticky="nsew")
+
+        avail_filter_row = tk.Frame(available_outer, bg=EDITOR_THEME.get("card", "#ffffff"))
+        avail_filter_row.pack(fill=tk.X, pady=(0, 4))
+        avail_filter_entry = tk.Entry(
+            avail_filter_row, textvariable=self.var_avail_filter, font=("Microsoft YaHei UI", 8),
+            relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        avail_filter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        wt_theme.create_flat_button(
+            avail_filter_row, "✕", lambda: self.var_avail_filter.set(""),
+            tone="secondary", font=("Microsoft YaHei UI", 8), padx=6, pady=1,
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        available_frame = tk.Frame(
+            available_outer, bg=EDITOR_THEME.get("card", "#ffffff"),
+            highlightthickness=1, highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        available_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.available_step_listbox = tk.Listbox(
+            available_frame, selectmode=tk.EXTENDED, activestyle="none", exportselection=False,
+            font=("Microsoft YaHei UI", 9), relief=tk.FLAT, bd=0, highlightthickness=0,
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            selectbackground=EDITOR_THEME.get("primary", "#2563eb"), selectforeground="#ffffff",
+        )
+        self.available_step_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
         available_scrollbar = ttk.Scrollbar(available_frame, orient="vertical", command=self.available_step_listbox.yview)
         available_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.available_step_listbox.configure(yscrollcommand=available_scrollbar.set)
 
-        middle_button_frame = tk.Frame(list_frame)
-        middle_button_frame.grid(row=1, column=1, sticky="ns", padx=10)
-        tk.Button(middle_button_frame, text="加入 ->", command=self.add_selected_steps_to_package).pack(fill=tk.X, pady=(40, 6))
-        tk.Button(middle_button_frame, text="<- 移除", command=self.remove_selected_steps_from_package).pack(fill=tk.X)
+        # ── 中间操作列（现代方向穿梭按钮） ──
+        middle_button_frame = tk.Frame(list_frame, bg=EDITOR_THEME.get("card", "#ffffff"))
+        middle_button_frame.grid(row=1, column=1, sticky="ns", padx=12)
 
-        selected_frame = tk.Frame(list_frame)
-        selected_frame.grid(row=1, column=2, sticky="nsew")
-        self.selected_step_listbox = tk.Listbox(selected_frame, selectmode=tk.EXTENDED, exportselection=False)
-        self.selected_step_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tk.Frame(middle_button_frame, bg=EDITOR_THEME.get("card", "#ffffff")).pack(fill=tk.BOTH, expand=True)
+
+        wt_theme.create_flat_button(
+            middle_button_frame, " > ", self.add_selected_steps_to_package,
+            tone="primary", font=("Microsoft YaHei UI", 9, "bold"), padx=10, pady=4,
+        ).pack(fill=tk.X, pady=3)
+        wt_theme.create_flat_button(
+            middle_button_frame, " >> ", self.add_all_steps_to_package,
+            tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=4,
+        ).pack(fill=tk.X, pady=3)
+        wt_theme.create_flat_button(
+            middle_button_frame, " < ", self.remove_selected_steps_from_package,
+            tone="secondary", font=("Microsoft YaHei UI", 9, "bold"), padx=10, pady=4,
+        ).pack(fill=tk.X, pady=3)
+        wt_theme.create_flat_button(
+            middle_button_frame, " << ", self.remove_all_steps_from_package,
+            tone="secondary", font=("Microsoft YaHei UI", 9), padx=10, pady=4,
+        ).pack(fill=tk.X, pady=3)
+
+        tk.Frame(middle_button_frame, bg=EDITOR_THEME.get("card", "#ffffff")).pack(fill=tk.BOTH, expand=True)
+
+        # ── 右栏：流程包执行序列 ──
+        right_header = tk.Frame(list_frame, bg=EDITOR_THEME.get("card", "#ffffff"))
+        right_header.grid(row=0, column=2, sticky="ew", pady=(0, 6))
+
+        tk.Label(
+            right_header, text="流程包执行序列", font=("Microsoft YaHei UI", 9, "bold"),
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+        ).pack(side=tk.LEFT)
+
+        tk.Label(
+            right_header, textvariable=self.var_sel_count, font=("Microsoft YaHei UI", 8),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"), fg=EDITOR_THEME.get("primary", "#2563eb"),
+            padx=6, pady=1, highlightthickness=1, highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        wt_theme.create_flat_button(
+            right_header, "清空选择", lambda: self.selected_step_listbox.selection_clear(0, tk.END),
+            tone="secondary", font=("Microsoft YaHei UI", 8), padx=6, pady=1,
+        ).pack(side=tk.RIGHT)
+        wt_theme.create_flat_button(
+            right_header, "全选", lambda: self.selected_step_listbox.selection_set(0, tk.END),
+            tone="secondary", font=("Microsoft YaHei UI", 8), padx=6, pady=1,
+        ).pack(side=tk.RIGHT, padx=(0, 6))
+
+        # 右栏搜索条 + 列表容器
+        selected_outer = tk.Frame(list_frame, bg=EDITOR_THEME.get("card", "#ffffff"))
+        selected_outer.grid(row=1, column=2, sticky="nsew")
+
+        sel_filter_row = tk.Frame(selected_outer, bg=EDITOR_THEME.get("card", "#ffffff"))
+        sel_filter_row.pack(fill=tk.X, pady=(0, 4))
+        sel_filter_entry = tk.Entry(
+            sel_filter_row, textvariable=self.var_sel_filter, font=("Microsoft YaHei UI", 8),
+            relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+            bg=EDITOR_THEME.get("bg", "#f8fafc"),
+        )
+        sel_filter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        wt_theme.create_flat_button(
+            sel_filter_row, "✕", lambda: self.var_sel_filter.set(""),
+            tone="secondary", font=("Microsoft YaHei UI", 8), padx=6, pady=1,
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        selected_frame = tk.Frame(
+            selected_outer, bg=EDITOR_THEME.get("card", "#ffffff"),
+            highlightthickness=1, highlightbackground=EDITOR_THEME.get("border", "#e2e8f0"),
+        )
+        selected_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.selected_step_listbox = tk.Listbox(
+            selected_frame, selectmode=tk.EXTENDED, activestyle="none", exportselection=False,
+            font=("Microsoft YaHei UI", 9), relief=tk.FLAT, bd=0, highlightthickness=0,
+            bg=EDITOR_THEME.get("card", "#ffffff"), fg=EDITOR_THEME.get("text", "#1f2d3d"),
+            selectbackground=EDITOR_THEME.get("primary", "#2563eb"), selectforeground="#ffffff",
+        )
+        self.selected_step_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
         selected_scrollbar = ttk.Scrollbar(selected_frame, orient="vertical", command=self.selected_step_listbox.yview)
         selected_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.selected_step_listbox.configure(yscrollcommand=selected_scrollbar.set)
 
-        selected_order_button_row = tk.Frame(list_frame)
-        selected_order_button_row.grid(row=2, column=2, sticky="e", pady=(8, 0))
-        tk.Button(selected_order_button_row, text="按ID排序", command=self.sort_selected_package_steps_by_id).pack(side=tk.LEFT)
-        tk.Button(selected_order_button_row, text="上移", command=lambda: self.move_selected_package_steps(-1)).pack(side=tk.LEFT)
-        tk.Button(selected_order_button_row, text="下移", command=lambda: self.move_selected_package_steps(1)).pack(side=tk.LEFT, padx=(8, 0))
+        # 右栏底部排序微调条
+        order_bar = tk.Frame(list_frame, bg=EDITOR_THEME.get("card", "#ffffff"))
+        order_bar.grid(row=2, column=2, sticky="e", pady=(8, 0))
 
-        self.available_step_listbox.bind("<Double-1>", lambda _event: self.focus_selected_step_in_editor())
-        self.selected_step_listbox.bind("<Double-1>", lambda _event: self.focus_selected_step_in_editor())
+        wt_theme.create_flat_button(
+            order_bar, "⬆ 上移", lambda: self.move_selected_package_steps(-1),
+            tone="secondary", font=("Microsoft YaHei UI", 8), padx=8, pady=2,
+        ).pack(side=tk.LEFT)
+        wt_theme.create_flat_button(
+            order_bar, "⬇ 下移", lambda: self.move_selected_package_steps(1),
+            tone="secondary", font=("Microsoft YaHei UI", 8), padx=8, pady=2,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        wt_theme.create_flat_button(
+            order_bar, "🔀 按ID排序", self.sort_selected_package_steps_by_id,
+            tone="secondary", font=("Microsoft YaHei UI", 8), padx=8, pady=2,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        # ── 底部操作栏 ──
+        bottom_bar = tk.Frame(container, bg=EDITOR_THEME.get("bg", "#f8fafc"))
+        bottom_bar.pack(fill=tk.X, pady=(10, 0))
+
+        wt_theme.create_flat_button(
+            bottom_bar, "🎯 定位到步骤树", self.focus_selected_step_in_editor,
+            tone="secondary", font=("Microsoft YaHei UI", 9), padx=12, pady=5,
+        ).pack(side=tk.LEFT)
+
+        wt_theme.create_flat_button(
+            bottom_bar, "保存流程包", self.on_save,
+            tone="primary", font=("Microsoft YaHei UI", 9, "bold"), padx=18, pady=5,
+        ).pack(side=tk.RIGHT)
+
+        wt_theme.create_flat_button(
+            bottom_bar, "取消", self.window.destroy,
+            tone="secondary", font=("Microsoft YaHei UI", 9), padx=14, pady=5,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        self.available_step_listbox.bind("<Double-1>", lambda _e: self.add_selected_steps_to_package())
+        self.selected_step_listbox.bind("<Double-1>", lambda _e: self.remove_selected_steps_from_package())
+        self.var_avail_filter.trace_add("write", lambda *_a: self._refresh_available_step_listbox())
+        self.var_sel_filter.trace_add("write", lambda *_a: self._refresh_selected_step_listbox())
+
         self._refresh_available_step_listbox()
         self._refresh_selected_step_listbox()
-
-        _make_button_row(container, [
-            ("全选可选步骤", lambda: self.available_step_listbox.selection_set(0, tk.END), {}),
-            ("清空可选选择", lambda: self.available_step_listbox.selection_clear(0, tk.END), {"pack_padx": (8, 0)}),
-            ("定位到步骤", self.focus_selected_step_in_editor, {"pack_padx": (8, 0)}),
-            ("保存", self.on_save, {"bg": "#d1fae5", "side": tk.RIGHT}),
-            ("取消", self.window.destroy, {"side": tk.RIGHT, "pack_padx": (0, 8)}),
-        ], padx=0, pady=(12, 0))
 
     def _format_step_display(self, step_id):
         step = self.available_step_map.get(str(step_id).strip(), {})
@@ -6180,13 +6815,8 @@ class FlowPackageDialog:
         if not hasattr(self, "available_step_listbox"):
             return
         selected_set = set(self.selected_step_ids)
-        preserved_ids = {
-            self.available_step_ids[index]
-            for index in self.available_step_listbox.curselection()
-            if 0 <= index < len(self.available_step_ids)
-        }
-        self.available_step_listbox.delete(0, tk.END)
-        self.available_step_ids = sorted(
+        filter_kw = self.var_avail_filter.get().strip().lower()
+        all_avail = sorted(
             [
                 step_id
                 for step_id in self.available_step_map.keys()
@@ -6194,36 +6824,56 @@ class FlowPackageDialog:
             ],
             key=_natural_sort_key,
         )
-        for index, step_id in enumerate(self.available_step_ids):
-            self.available_step_listbox.insert(tk.END, self._format_step_display(step_id))
+        self.available_step_ids = all_avail
+        preserved_ids = {
+            self.available_displayed_ids[index]
+            for index in self.available_step_listbox.curselection()
+            if 0 <= index < len(self.available_displayed_ids)
+        }
+        self.available_step_listbox.delete(0, tk.END)
+        del self.available_displayed_ids[:]
+        for step_id in all_avail:
+            display_str = self._format_step_display(step_id)
+            if filter_kw and filter_kw not in display_str.lower():
+                continue
+            self.available_displayed_ids.append(step_id)
+            self.available_step_listbox.insert(tk.END, "  " + display_str)
             if step_id in preserved_ids:
-                self.available_step_listbox.selection_set(index)
+                self.available_step_listbox.selection_set(tk.END)
+        self.var_avail_count.set(f"可选 {len(self.available_displayed_ids)} / {len(all_avail)} 项")
 
     def _refresh_selected_step_listbox(self):
         if not hasattr(self, "selected_step_listbox"):
             return
+        filter_kw = self.var_sel_filter.get().strip().lower()
         preserved_ids = {
-            self.selected_step_ids[index]
+            self.selected_displayed_ids[index]
             for index in self.selected_step_listbox.curselection()
-            if 0 <= index < len(self.selected_step_ids)
+            if 0 <= index < len(self.selected_displayed_ids)
         }
         self.selected_step_listbox.delete(0, tk.END)
-        for index, step_id in enumerate(self.selected_step_ids):
-            self.selected_step_listbox.insert(tk.END, self._format_step_display(step_id))
+        del self.selected_displayed_ids[:]
+        for step_id in self.selected_step_ids:
+            display_str = self._format_step_display(step_id)
+            if filter_kw and filter_kw not in display_str.lower():
+                continue
+            self.selected_displayed_ids.append(step_id)
+            self.selected_step_listbox.insert(tk.END, "  " + display_str)
             if step_id in preserved_ids:
-                self.selected_step_listbox.selection_set(index)
+                self.selected_step_listbox.selection_set(tk.END)
+        self.var_sel_count.set(f"已选 {len(self.selected_displayed_ids)} / {len(self.selected_step_ids)} 项")
 
     def _get_active_step_id(self):
         selected_indices = self.selected_step_listbox.curselection() if hasattr(self, "selected_step_listbox") else ()
         if selected_indices:
             index = selected_indices[0]
-            if 0 <= index < len(self.selected_step_ids):
-                return str(self.selected_step_ids[index]).strip()
+            if 0 <= index < len(self.selected_displayed_ids):
+                return str(self.selected_displayed_ids[index]).strip()
         available_indices = self.available_step_listbox.curselection() if hasattr(self, "available_step_listbox") else ()
         if available_indices:
             index = available_indices[0]
-            if 0 <= index < len(self.available_step_ids):
-                return str(self.available_step_ids[index]).strip()
+            if 0 <= index < len(self.available_displayed_ids):
+                return str(self.available_displayed_ids[index]).strip()
         return ""
 
     def add_selected_steps_to_package(self):
@@ -6234,9 +6884,9 @@ class FlowPackageDialog:
         selected_set = set(self.selected_step_ids)
         added_ids = []
         for index in selected_indices:
-            if not (0 <= index < len(self.available_step_ids)):
+            if not (0 <= index < len(self.available_displayed_ids)):
                 continue
-            step_id = self.available_step_ids[index]
+            step_id = self.available_displayed_ids[index]
             if step_id not in selected_set:
                 self.selected_step_ids.append(step_id)
                 selected_set.add(step_id)
@@ -6244,11 +6894,21 @@ class FlowPackageDialog:
         self.selected_step_ids.sort(key=_natural_sort_key)
         self._refresh_available_step_listbox()
         self._refresh_selected_step_listbox()
-        new_selection_indexes = [
-            index for index, step_id in enumerate(self.selected_step_ids) if step_id in set(added_ids)
-        ]
-        for index in new_selection_indexes:
-            self.selected_step_listbox.selection_set(index)
+        for index, step_id in enumerate(self.selected_displayed_ids):
+            if step_id in set(added_ids):
+                self.selected_step_listbox.selection_set(index)
+
+    def add_all_steps_to_package(self):
+        if not self.available_displayed_ids:
+            return
+        selected_set = set(self.selected_step_ids)
+        for step_id in self.available_displayed_ids:
+            if step_id not in selected_set:
+                self.selected_step_ids.append(step_id)
+                selected_set.add(step_id)
+        self.selected_step_ids.sort(key=_natural_sort_key)
+        self._refresh_available_step_listbox()
+        self._refresh_selected_step_listbox()
 
     def remove_selected_steps_from_package(self):
         selected_indices = list(self.selected_step_listbox.curselection())
@@ -6256,12 +6916,22 @@ class FlowPackageDialog:
             messagebox.showinfo("提示", "请先在右侧流程包步骤里选择一个或多个步骤。", parent=self.window)
             return
         selected_id_set = {
-            self.selected_step_ids[index]
+            self.selected_displayed_ids[index]
             for index in selected_indices
-            if 0 <= index < len(self.selected_step_ids)
+            if 0 <= index < len(self.selected_displayed_ids)
         }
         self.selected_step_ids = [
             step_id for step_id in self.selected_step_ids if step_id not in selected_id_set
+        ]
+        self._refresh_available_step_listbox()
+        self._refresh_selected_step_listbox()
+
+    def remove_all_steps_from_package(self):
+        if not self.selected_displayed_ids:
+            return
+        remove_set = set(self.selected_displayed_ids)
+        self.selected_step_ids = [
+            step_id for step_id in self.selected_step_ids if step_id not in remove_set
         ]
         self._refresh_available_step_listbox()
         self._refresh_selected_step_listbox()
@@ -6271,28 +6941,31 @@ class FlowPackageDialog:
         if not selected_indices:
             messagebox.showinfo("提示", "请先选择右侧流程包里的一个或多个步骤。", parent=self.window)
             return
-        normalized_direction = -1 if int(direction or 0) < 0 else 1
-        selected_set = set(selected_indices)
         selected_step_id_set = {
-            self.selected_step_ids[index]
+            self.selected_displayed_ids[index]
             for index in selected_indices
-            if 0 <= index < len(self.selected_step_ids)
+            if 0 <= index < len(self.selected_displayed_ids)
         }
+        normalized_direction = -1 if int(direction or 0) < 0 else 1
         moved = False
         if normalized_direction < 0:
             for index in range(1, len(self.selected_step_ids)):
-                if index in selected_set and (index - 1) not in selected_set:
+                step_id = self.selected_step_ids[index]
+                prev_id = self.selected_step_ids[index - 1]
+                if step_id in selected_step_id_set and prev_id not in selected_step_id_set:
                     self.selected_step_ids[index - 1], self.selected_step_ids[index] = self.selected_step_ids[index], self.selected_step_ids[index - 1]
                     moved = True
         else:
             for index in range(len(self.selected_step_ids) - 2, -1, -1):
-                if index in selected_set and (index + 1) not in selected_set:
+                step_id = self.selected_step_ids[index]
+                next_id = self.selected_step_ids[index + 1]
+                if step_id in selected_step_id_set and next_id not in selected_step_id_set:
                     self.selected_step_ids[index], self.selected_step_ids[index + 1] = self.selected_step_ids[index + 1], self.selected_step_ids[index]
                     moved = True
         if not moved:
             return
         self._refresh_selected_step_listbox()
-        for index, step_id in enumerate(self.selected_step_ids):
+        for index, step_id in enumerate(self.selected_displayed_ids):
             if step_id in selected_step_id_set:
                 self.selected_step_listbox.selection_set(index)
 
@@ -6300,13 +6973,13 @@ class FlowPackageDialog:
         if not self.selected_step_ids:
             return
         selected_id_set = {
-            self.selected_step_ids[index]
+            self.selected_displayed_ids[index]
             for index in self.selected_step_listbox.curselection()
-            if 0 <= index < len(self.selected_step_ids)
+            if 0 <= index < len(self.selected_displayed_ids)
         }
         self.selected_step_ids = sorted(self.selected_step_ids, key=_natural_sort_key)
         self._refresh_selected_step_listbox()
-        for index, step_id in enumerate(self.selected_step_ids):
+        for index, step_id in enumerate(self.selected_displayed_ids):
             if step_id in selected_id_set:
                 self.selected_step_listbox.selection_set(index)
 

@@ -3895,75 +3895,202 @@ class LauncherApp:
         if not meta:
             return
         theme = self.theme
+        defaults_set = set(meta.get("defaults", ()))
         dialog = tk.Toplevel(self.root)
-        dialog.title("管理下拉选项 — {}".format(meta["title"]))
+        dialog.title("管理下拉预设 — {}".format(meta["title"]))
         dialog.transient(self.root)
         dialog.grab_set()
-        wt_dpi.geometry(dialog, 560, 540)
-        dialog.minsize(wt_dpi.scale(500), wt_dpi.scale(440))
-        dialog.configure(bg=theme["bg"])
+        wt_dpi.geometry(dialog, 640, 600)
+        dialog.minsize(wt_dpi.scale(560), wt_dpi.scale(500))
+        dialog.configure(bg=theme.get("bg", "#f8fafc"))
+
+        container = tk.Frame(dialog, bg=theme.get("bg", "#f8fafc"), padx=16, pady=14)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        # ── 顶栏标题与统计徽标 ──
+        header_frame = tk.Frame(container, bg=theme.get("bg", "#f8fafc"))
+        header_frame.pack(fill=tk.X, pady=(0, 8))
 
         tk.Label(
-            dialog, text="{} 下拉选项".format(meta["title"]),
-            font=("Microsoft YaHei UI", 12, "bold"), bg=theme["bg"], fg=theme["text"],
-        ).pack(anchor="w", padx=14, pady=(12, 2))
-        hint_var = tk.StringVar(value="")
-        tk.Label(
-            dialog, textvariable=hint_var, font=("Microsoft YaHei UI", 9),
-            bg=theme["bg"], fg=theme["muted"], justify=tk.LEFT, anchor="w",
-        ).pack(anchor="w", fill=tk.X, padx=14, pady=(0, 6))
+            header_frame,
+            text="🏷️ {} 预设管理".format(meta["title"]),
+            font=("Microsoft YaHei UI", 12, "bold"),
+            bg=theme.get("bg", "#f8fafc"),
+            fg=theme.get("text", "#1f2d3d"),
+        ).pack(side=tk.LEFT)
 
-        list_wrap = tk.Frame(dialog, bg=theme["bg"])
-        list_wrap.pack(fill=tk.BOTH, expand=True, padx=14)
-        listbox = tk.Listbox(
-            list_wrap, selectmode=tk.EXTENDED, activestyle="none", exportselection=False,
-            font=("Microsoft YaHei UI", 10), relief=tk.FLAT, bd=0,
-            highlightthickness=1, highlightbackground=theme.get("border", "#e2e8f0"),
-            bg=theme["card"], fg=theme["text"],
-            selectbackground=theme["primary"], selectforeground="#ffffff",
+        stats_var = tk.StringVar(value="")
+        stats_label = tk.Label(
+            header_frame,
+            textvariable=stats_var,
+            font=("Microsoft YaHei UI", 9),
+            bg=theme.get("card", "#ffffff"),
+            fg=theme.get("primary", "#2563eb"),
+            padx=8,
+            pady=2,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=theme.get("border", "#e2e8f0"),
         )
-        scroll = tk.Scrollbar(list_wrap, orient=tk.VERTICAL, command=listbox.yview, relief=tk.FLAT)
+        stats_label.pack(side=tk.RIGHT)
+
+        # ── 快捷操作卡片（即时筛选 + 内联快速添加） ──
+        action_card = tk.Frame(
+            container,
+            bg=theme.get("card", "#ffffff"),
+            padx=12,
+            pady=10,
+            highlightthickness=1,
+            highlightbackground=theme.get("border", "#e2e8f0"),
+        )
+        action_card.pack(fill=tk.X, pady=(0, 10))
+        action_card.columnconfigure(1, weight=1)
+        action_card.columnconfigure(3, weight=1)
+
+        # 筛选栏
+        tk.Label(
+            action_card,
+            text="🔍 筛选",
+            font=("Microsoft YaHei UI", 9),
+            bg=theme.get("card", "#ffffff"),
+            fg=theme.get("muted", "#64748b"),
+        ).grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
+
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(
+            action_card,
+            textvariable=search_var,
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=theme.get("border", "#e2e8f0"),
+            bg=theme.get("bg", "#f8fafc"),
+        )
+        search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 6), pady=2, ipady=3)
+
+        def _clear_search():
+            search_var.set("")
+            search_entry.focus_set()
+
+        wt_theme.create_flat_button(
+            action_card,
+            "✕ 清除",
+            _clear_search,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=2,
+        ).grid(row=0, column=2, padx=(0, 12), pady=2)
+
+        # 快速添加栏
+        tk.Label(
+            action_card,
+            text="➕ 新增",
+            font=("Microsoft YaHei UI", 9),
+            bg=theme.get("card", "#ffffff"),
+            fg=theme.get("muted", "#64748b"),
+        ).grid(row=0, column=3, sticky="w", padx=(0, 6), pady=2)
+
+        add_var = tk.StringVar()
+        add_entry = tk.Entry(
+            action_card,
+            textvariable=add_var,
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=theme.get("border", "#e2e8f0"),
+            bg=theme.get("bg", "#f8fafc"),
+        )
+        add_entry.grid(row=0, column=4, sticky="ew", padx=(0, 6), pady=2, ipady=3)
+
+        # ── 选项列表区 ──
+        list_card = tk.Frame(
+            container,
+            bg=theme.get("card", "#ffffff"),
+            highlightthickness=1,
+            highlightbackground=theme.get("border", "#e2e8f0"),
+        )
+        list_card.pack(fill=tk.BOTH, expand=True)
+
+        listbox = tk.Listbox(
+            list_card,
+            selectmode=tk.EXTENDED,
+            activestyle="none",
+            exportselection=False,
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=0,
+            bg=theme.get("card", "#ffffff"),
+            fg=theme.get("text", "#1f2d3d"),
+            selectbackground=theme.get("primary", "#2563eb"),
+            selectforeground="#ffffff",
+        )
+        scroll = ttk.Scrollbar(list_card, orient=tk.VERTICAL, command=listbox.yview)
         listbox.configure(yscrollcommand=scroll.set)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
 
+        # ── 状态与提示区 ──
         status_var = tk.StringVar(value="")
         status_label = tk.Label(
-            dialog, textvariable=status_var, font=("Microsoft YaHei UI", 9),
-            bg=theme["bg"], fg=theme["muted"], justify=tk.LEFT, anchor="w", wraplength=520,
+            container,
+            textvariable=status_var,
+            font=("Microsoft YaHei UI", 9),
+            bg=theme.get("bg", "#f8fafc"),
+            fg=theme.get("muted", "#64748b"),
+            justify=tk.LEFT,
+            anchor="w",
+            wraplength=580,
         )
-        status_label.pack(anchor="w", fill=tk.X, padx=14, pady=(6, 0))
+        status_label.pack(anchor="w", fill=tk.X, pady=(6, 4))
+
+        # 当前展示列表与原始真实选项的对应缓存
+        displayed_items = []
 
         def _current_options():
             return self._simple_option_values(kind)
 
         def _selected():
-            return [listbox.get(i) for i in listbox.curselection()]
-
-        def _refresh():
-            listbox.delete(0, tk.END)
-            options = _current_options()
-            for item in options:
-                listbox.insert(tk.END, item)
-            if options:
-                hint_var.set("共 {} 项；列表顺序即下拉框显示顺序。双击可重命名，Delete 键删除选中项。".format(len(options)))
-            else:
-                hint_var.set("当前没有任何选项；可点「新建」添加，或点「恢复默认」还原内置选项。")
+            sel = listbox.curselection()
+            return [displayed_items[i] for i in sel if 0 <= i < len(displayed_items)]
 
         def _set_local_status(text, kind_name="idle"):
             colors = {
-                "idle": theme["muted"], "success": theme.get("success", "#059669"),
-                "warning": theme.get("warning", "#b45309"), "error": theme["danger"],
+                "idle": theme.get("muted", "#64748b"),
+                "success": theme.get("success", "#059669"),
+                "warning": theme.get("warning", "#b45309"),
+                "error": theme.get("danger", "#dc2626"),
             }
             status_var.set(text)
-            status_label.config(fg=colors.get(kind_name, theme["muted"]))
+            status_label.config(fg=colors.get(kind_name, theme.get("muted", "#64748b")))
+
+        def _refresh():
+            del displayed_items[:]
+            listbox.delete(0, tk.END)
+            options = _current_options()
+            filter_kw = search_var.get().strip().lower()
+            builtin_cnt = sum(1 for x in options if x in defaults_set)
+            custom_cnt = len(options) - builtin_cnt
+            stats_var.set("共 {} 项（内置 {} / 自定义 {}）".format(len(options), builtin_cnt, custom_cnt))
+
+            for item in options:
+                if filter_kw and filter_kw not in item.lower():
+                    continue
+                displayed_items.append(item)
+                tag_label = " [内置]" if item in defaults_set else " [自定义]"
+                listbox.insert(tk.END, "  {} {}".format(item, tag_label))
+
+            if filter_kw:
+                _set_local_status("筛选中：已匹配 {} / {} 项".format(len(displayed_items), len(options)), "idle")
+            elif not options:
+                _set_local_status("当前暂无选项，可在上方输入框快速新增或点「恢复默认」。", "warning")
+            else:
+                _set_local_status("就绪。双击项可重命名，Delete 键删除选中项，拖动或使用上下移调整顺序。", "idle")
 
         def _apply(status, value="", count=1, report=True):
-            """规则执行后统一收口：刷新列表 + 同步主对话框 + 本地提示。
-
-            ``report=False`` 用于调用方（如 _simple_remove_options）已经向主状态栏
-            上报过的场景，避免同一条消息写两遍。
-            """
             self._simple_refresh_option_combo(kind, combo)
             _refresh()
             text = wt_simple_options.describe_result(kind, status, value, count)
@@ -3971,47 +4098,82 @@ class LauncherApp:
             if report:
                 self._simple_report_option_result(kind, status, value, count)
 
-        def _on_add():
-            value = simpledialog.askstring(
-                "新建{}".format(meta["title"]), meta["prompt"], parent=dialog)
-            if value is None:
+        def _on_quick_add(_event=None):
+            value = add_var.get().strip()
+            if not value:
+                _set_local_status("新增选项名称不能为空", "warning")
+                add_entry.focus_set()
                 return
             options, status = wt_simple_options.add_option(_current_options(), value)
             cleaned = wt_simple_options.clean_value(value)
             if status == wt_simple_options.RESULT_ADDED:
                 self._simple_set_option_values(kind, options)
+                add_var.set("")
+                if search_var.get():
+                    search_var.set("")
             elif status in (wt_simple_options.RESULT_EMPTY, wt_simple_options.RESULT_TOO_LONG):
                 _set_local_status(
                     wt_simple_options.describe_result(kind, status),
-                    wt_simple_options.status_kind_for(status))
+                    wt_simple_options.status_kind_for(status),
+                )
                 return
             _apply(status, cleaned)
             if target_var is not None and cleaned and status == wt_simple_options.RESULT_ADDED:
                 target_var.set(cleaned)
+            # 选中并滚动到新增项
+            try:
+                idx = displayed_items.index(cleaned)
+                listbox.selection_clear(0, tk.END)
+                listbox.selection_set(idx)
+                listbox.see(idx)
+            except ValueError:
+                pass
+
+        wt_theme.create_flat_button(
+            action_card,
+            "➕ 添加",
+            _on_quick_add,
+            tone="primary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=2,
+        ).grid(row=0, column=5, pady=2)
+        add_entry.bind("<Return>", _on_quick_add)
 
         def _on_rename():
             selected = _selected()
             if len(selected) != 1:
-                _set_local_status("请先选中恰好一项再重命名。", "warning")
+                _set_local_status("请先在列表中选中恰好一项再进行重命名。", "warning")
                 return
             old_value = selected[0]
             new_value = simpledialog.askstring(
-                "重命名{}".format(meta["title"]), "输入新的名称：",
-                initialvalue=old_value, parent=dialog)
+                "重命名{}".format(meta["title"]),
+                "输入新的名称：",
+                initialvalue=old_value,
+                parent=dialog,
+            )
             if new_value is None:
                 return
             options, status = wt_simple_options.rename_option(
-                _current_options(), old_value, new_value)
+                _current_options(), old_value, new_value,
+            )
             if status == wt_simple_options.RESULT_RENAMED:
                 self._simple_set_option_values(kind, options)
-                # 当前字段用的就是被重命名项时，跟着改成新名，避免字段与列表脱节
                 if target_var is not None and str(target_var.get() or "").strip() == old_value:
                     target_var.set(wt_simple_options.clean_value(new_value))
                 _apply(status, new_value)
+                try:
+                    idx = displayed_items.index(wt_simple_options.clean_value(new_value))
+                    listbox.selection_clear(0, tk.END)
+                    listbox.selection_set(idx)
+                    listbox.see(idx)
+                except ValueError:
+                    pass
             else:
                 _set_local_status(
                     wt_simple_options.describe_result(kind, status, new_value),
-                    wt_simple_options.status_kind_for(status))
+                    wt_simple_options.status_kind_for(status),
+                )
 
         def _on_delete():
             selected = _selected()
@@ -4019,7 +4181,6 @@ class LauncherApp:
                 _set_local_status("请先选中要删除的选项（可按住 Ctrl / Shift 多选）。", "warning")
                 return
             if self._simple_remove_options(kind, selected, target_var, combo, confirm=True):
-                # _simple_remove_options 已上报主状态栏，这里只刷新本地列表与提示
                 _apply(wt_simple_options.RESULT_REMOVED, selected[0], len(selected), report=False)
 
         def _on_move(delta):
@@ -4032,9 +4193,8 @@ class LauncherApp:
             if status == wt_simple_options.RESULT_MOVED:
                 self._simple_set_option_values(kind, options)
                 _apply(status)
-                # 移动后保持选中，便于连续调整
                 try:
-                    index = _current_options().index(value)
+                    index = displayed_items.index(value)
                     listbox.selection_clear(0, tk.END)
                     listbox.selection_set(index)
                     listbox.see(index)
@@ -4043,51 +4203,95 @@ class LauncherApp:
             else:
                 _set_local_status(
                     wt_simple_options.describe_result(kind, status, value),
-                    wt_simple_options.status_kind_for(status))
+                    wt_simple_options.status_kind_for(status),
+                )
 
         def _on_reset():
-            defaults = list(meta["defaults"])
+            defaults = list(meta.get("defaults", ()))
             if not messagebox.askyesno(
                 "恢复默认选项",
                 "将「{}」下拉选项恢复为内置默认 {} 项：\n\n{}\n\n"
                 "当前自定义选项（含新增与排序）会被替换，是否继续？".format(
-                    meta["title"], len(defaults), "、".join(defaults)),
+                    meta["title"], len(defaults), "、".join(defaults)
+                ),
+                parent=dialog,
             ):
                 return
             self._simple_set_option_values(kind, wt_simple_options.reset_options(defaults))
             _apply(wt_simple_options.RESULT_RESET, "、".join(defaults), len(defaults))
 
         def _on_close():
-            # 每次编辑都已即时落盘并上报，关闭时无需再提示
             dialog.destroy()
 
-        # ── 操作按钮区 ──
-        btns = tk.Frame(dialog, bg=theme["bg"])
-        btns.pack(fill=tk.X, padx=14, pady=(10, 4))
+        # ── 底部操作工具栏 ──
+        btns_row = tk.Frame(container, bg=theme.get("bg", "#f8fafc"))
+        btns_row.pack(fill=tk.X, pady=(6, 0))
 
-        def _mk_button(parent, text, command, primary=False):
-            return tk.Button(
-                parent, text=text, command=command, cursor="hand2", relief=tk.FLAT,
-                padx=12, pady=5,
-                bg=theme["primary"] if primary else theme["secondary"],
-                fg="#ffffff" if primary else theme["text"],
-            )
+        wt_theme.create_flat_button(
+            btns_row,
+            "✏️ 重命名",
+            _on_rename,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT)
 
-        row1 = tk.Frame(btns, bg=theme["bg"])
-        row1.pack(fill=tk.X)
-        _mk_button(row1, "新建", _on_add, primary=True).pack(side=tk.LEFT)
-        _mk_button(row1, "重命名", _on_rename).pack(side=tk.LEFT, padx=(6, 0))
-        _mk_button(row1, "删除", _on_delete).pack(side=tk.LEFT, padx=(6, 0))
-        row2 = tk.Frame(btns, bg=theme["bg"])
-        row2.pack(fill=tk.X, pady=(6, 0))
-        _mk_button(row2, "上移", lambda: _on_move(-1)).pack(side=tk.LEFT)
-        _mk_button(row2, "下移", lambda: _on_move(1)).pack(side=tk.LEFT, padx=(6, 0))
-        _mk_button(row2, "恢复默认", _on_reset).pack(side=tk.LEFT, padx=(6, 0))
-        _mk_button(row2, "关闭", _on_close).pack(side=tk.RIGHT)
+        wt_theme.create_flat_button(
+            btns_row,
+            "⬆ 上移",
+            lambda: _on_move(-1),
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
+        wt_theme.create_flat_button(
+            btns_row,
+            "⬇ 下移",
+            lambda: _on_move(1),
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        wt_theme.create_flat_button(
+            btns_row,
+            "🔄 恢复默认",
+            _on_reset,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
+        wt_theme.create_flat_button(
+            btns_row,
+            "关闭",
+            _on_close,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=14,
+            pady=4,
+        ).pack(side=tk.RIGHT)
+
+        wt_theme.create_flat_button(
+            btns_row,
+            "🗑️ 删除",
+            _on_delete,
+            tone="danger",
+            font=("Microsoft YaHei UI", 9),
+            padx=12,
+            pady=4,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        search_var.trace_add("write", lambda *_a: _refresh())
         listbox.bind("<Double-Button-1>", lambda _e: _on_rename())
         listbox.bind("<Delete>", lambda _e: _on_delete())
         listbox.bind("<Return>", lambda _e: _on_rename())
+        dialog.bind("<Escape>", lambda _e: _on_close())
         dialog.protocol("WM_DELETE_WINDOW", _on_close)
         _refresh()
 
