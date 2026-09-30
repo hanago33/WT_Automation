@@ -1735,99 +1735,315 @@ class RelativeRegionHelperDialog:
 
 
 class ServerMonitorWindow:
-    """只读服务器监控窗口。"""
+    """只读服务器监控窗口（现代化运维仪表盘）。"""
     def __init__(self, master, initial_url, on_url_change=None):
         self.on_url_change = on_url_change
         self.base_url = (initial_url or SERVER_MONITOR_DEFAULT_URL).strip().rstrip("/")
         self._fetching = False
         self._after_id = None
         self._closing = False
+        self._raw_error = ""
+        self._cached_log_lines = []
 
         self.window = tk.Toplevel(master)
-        self.window.title("服务器监控（只读）")
-        self.window.configure(bg="#f4f7fb")
-        self.window.geometry("760x620")
-        self.window.minsize(640, 480)
+        self.window.title("服务器监控（只读仪表盘）")
+        pal = wt_theme.get_palette()
+        self.window.configure(bg=pal["bg"])
+        self.window.geometry("880x680")
+        self.window.minsize(760, 520)
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        top = tk.Frame(self.window, bg="#eaf1fb", padx=10, pady=8)
-        top.pack(fill=tk.X)
-        tk.Label(top, text="服务器地址", bg="#eaf1fb", fg="#1f2937").pack(side=tk.LEFT)
-        self.url_var = tk.StringVar(value=self.base_url)
-        tk.Entry(top, textvariable=self.url_var, width=42).pack(side=tk.LEFT, padx=8)
-        tk.Button(
-            top,
-            text="刷新",
-            command=self._apply_url_and_refresh,
-            bg="#dbeafe",
-            fg="#1f2937",
-            relief=tk.FLAT,
+        # ── 顶部控制栏 ──
+        top = tk.Frame(
+            self.window,
+            bg=pal["surface"],
+            highlightthickness=1,
+            highlightbackground=pal["border"],
             padx=12,
-            pady=4,
-            cursor="hand2",
+            pady=8,
+        )
+        top.pack(fill=tk.X, padx=10, pady=(10, 6))
+
+        tk.Label(
+            top,
+            text="服务器地址",
+            bg=pal["surface"],
+            fg=pal["text"],
+            font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side=tk.LEFT)
+        self.url_var = tk.StringVar(value=self.base_url)
+        url_entry = tk.Entry(
+            top,
+            textvariable=self.url_var,
+            width=36,
+            font=("Consolas", 9),
+            relief=tk.SOLID,
+            bd=1,
+            highlightthickness=0,
+        )
+        url_entry.pack(side=tk.LEFT, padx=(8, 10))
+
+        wt_theme.create_flat_button(
+            top,
+            text="🔄 刷新探测",
+            command=self._apply_url_and_refresh,
+            tone="primary",
+            padx=12,
+            pady=3,
+        ).pack(side=tk.LEFT)
+
         self.auto_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
             top,
             text="自动刷新 (2s)",
             variable=self.auto_var,
-            bg="#eaf1fb",
-            fg="#1f2937",
-            activebackground="#eaf1fb",
-            selectcolor="#ffffff",
-        ).pack(side=tk.LEFT, padx=(10, 0))
+            bg=pal["surface"],
+            fg=pal["text"],
+            activebackground=pal["surface"],
+            selectcolor=pal["surface"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(12, 0))
 
-        status_frame = tk.LabelFrame(
-            self.window,
-            text="运行状态",
-            padx=10,
-            pady=8,
-            bg="#ffffff",
-            fg="#1f2937",
-            bd=1,
-            relief=tk.GROOVE,
-        )
-        status_frame.pack(fill=tk.X, padx=10, pady=8)
+        # 顶部右侧网络延迟徽标
+        self.ping_badge = wt_theme.create_badge(top, "⏱️ 等待探测", tone="muted")
+        self.ping_badge.pack(side=tk.RIGHT)
+
+        # ── 4 块现代化指标卡片网格 ──
+        cards_frame = tk.Frame(self.window, bg=pal["bg"])
+        cards_frame.pack(fill=tk.X, padx=10, pady=(0, 6))
+        for col_idx in range(4):
+            cards_frame.columnconfigure(col_idx, weight=1, uniform="metric_card")
+
         self.conn_var = tk.StringVar(value="未连接")
+        self.ping_var = tk.StringVar(value="等待探测")
         self.run_status_var = tk.StringVar(value="未知")
         self.activity_var = tk.StringVar(value="-")
-        self.error_var = tk.StringVar(value="-")
         self.updated_var = tk.StringVar(value="-")
-        rows = [
-            ("连接状态", self.conn_var),
-            ("运行状态", self.run_status_var),
-            ("当前活动", self.activity_var),
-            ("最后错误", self.error_var),
-            ("更新时间", self.updated_var),
-        ]
-        for row_index, (label, var) in enumerate(rows):
-            tk.Label(status_frame, text=label, bg="#ffffff", fg="#64748b").grid(
-                row=row_index, column=0, sticky="w", padx=(0, 10), pady=2
-            )
-            tk.Label(status_frame, textvariable=var, bg="#ffffff", fg="#1f2937").grid(
-                row=row_index, column=1, sticky="w"
-            )
+        self.heartbeat_var = tk.StringVar(value="轮询周期 2s")
+        self.health_var = tk.StringVar(value="待检测")
+        self.error_var = tk.StringVar(value="-")
 
-        log_frame = tk.LabelFrame(
-            self.window,
-            text="运行日志",
-            padx=6,
-            pady=6,
-            bg="#ffffff",
-            fg="#1f2937",
-            bd=1,
-            relief=tk.GROOVE,
+        # 卡片 1：服务连接
+        card0 = wt_theme.create_card_frame(cards_frame, padx=10, pady=8)
+        card0.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        tk.Label(
+            card0,
+            text="🔌 服务连接",
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w")
+        self.conn_lbl = tk.Label(
+            card0,
+            textvariable=self.conn_var,
+            bg=pal["card"],
+            fg=pal["text"],
+            font=("Microsoft YaHei UI", 11, "bold"),
+            anchor="w",
         )
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        text_frame = tk.Frame(log_frame, bg="#111418")
-        text_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.conn_lbl.pack(anchor="w", pady=(3, 1))
+        tk.Label(
+            card0,
+            textvariable=self.ping_var,
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+            anchor="w",
+        ).pack(anchor="w")
+
+        # 卡片 2：运行状态
+        card1 = wt_theme.create_card_frame(cards_frame, padx=10, pady=8)
+        card1.grid(row=0, column=1, sticky="nsew", padx=4)
+        tk.Label(
+            card1,
+            text="⚡ 任务运行状态",
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w")
+        self.run_status_lbl = tk.Label(
+            card1,
+            textvariable=self.run_status_var,
+            bg=pal["card"],
+            fg=pal["text"],
+            font=("Microsoft YaHei UI", 11, "bold"),
+            anchor="w",
+        )
+        self.run_status_lbl.pack(anchor="w", pady=(3, 1))
+        tk.Label(
+            card1,
+            textvariable=self.activity_var,
+            bg=pal["card"],
+            fg=pal["text_secondary"],
+            font=("Microsoft YaHei UI", 8),
+            anchor="w",
+        ).pack(anchor="w")
+
+        # 卡片 3：状态心跳
+        card2 = wt_theme.create_card_frame(cards_frame, padx=10, pady=8)
+        card2.grid(row=0, column=2, sticky="nsew", padx=4)
+        tk.Label(
+            card2,
+            text="⏱️ 状态心跳监测",
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w")
+        tk.Label(
+            card2,
+            textvariable=self.updated_var,
+            bg=pal["card"],
+            fg=pal["text"],
+            font=("Consolas", 10, "bold"),
+            anchor="w",
+        ).pack(anchor="w", pady=(3, 1))
+        tk.Label(
+            card2,
+            textvariable=self.heartbeat_var,
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+            anchor="w",
+        ).pack(anchor="w")
+
+        # 卡片 4：健康诊断
+        card3 = wt_theme.create_card_frame(cards_frame, padx=10, pady=8)
+        card3.grid(row=0, column=3, sticky="nsew", padx=(4, 0))
+        tk.Label(
+            card3,
+            text="🛡️ 系统健康诊断",
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(anchor="w")
+        self.health_lbl = tk.Label(
+            card3,
+            textvariable=self.health_var,
+            bg=pal["card"],
+            fg=pal["text"],
+            font=("Microsoft YaHei UI", 11, "bold"),
+            anchor="w",
+        )
+        self.health_lbl.pack(anchor="w", pady=(3, 1))
+        err_row = tk.Frame(card3, bg=pal["card"])
+        err_row.pack(fill=tk.X)
+        tk.Label(
+            err_row,
+            textvariable=self.error_var,
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+            anchor="w",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        wt_theme.create_flat_button(
+            err_row,
+            text="📋 复制",
+            command=self._copy_error_detail,
+            tone="subtle",
+            padx=4,
+            pady=1,
+            font=("Microsoft YaHei UI", 7),
+        ).pack(side=tk.RIGHT)
+
+        # ── 运行日志卡片与智能工具栏 ──
+        log_card = wt_theme.create_card_frame(self.window, padx=8, pady=8)
+        log_card.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        log_toolbar = tk.Frame(log_card, bg=pal["card"])
+        log_toolbar.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            log_toolbar,
+            text="📋 运行日志 (最后 300 行)",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=pal["card"],
+            fg=pal["text"],
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        # 搜索过滤
+        tk.Label(
+            log_toolbar,
+            text="🔍",
+            bg=pal["card"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT)
+        self.log_search_var = tk.StringVar(value="")
+        search_entry = tk.Entry(
+            log_toolbar,
+            textvariable=self.log_search_var,
+            width=16,
+            font=("Microsoft YaHei UI", 8),
+            relief=tk.SOLID,
+            bd=1,
+        )
+        search_entry.pack(side=tk.LEFT, padx=(2, 2))
+        self.log_search_var.trace_add("write", lambda *_: self._filter_and_render_logs())
+        wt_theme.create_flat_button(
+            log_toolbar,
+            text="✕",
+            command=lambda: self.log_search_var.set(""),
+            tone="subtle",
+            padx=4,
+            pady=1,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        # 级别筛选
+        self.level_filter_var = tk.StringVar(value="全部")
+        level_cb = ttk.Combobox(
+            log_toolbar,
+            textvariable=self.level_filter_var,
+            values=["全部", "仅错误", "仅警告", "仅信息"],
+            width=8,
+            state="readonly",
+            font=("Microsoft YaHei UI", 8),
+        )
+        level_cb.pack(side=tk.LEFT, padx=(0, 10))
+        level_cb.bind("<<ComboboxSelected>>", lambda _: self._filter_and_render_logs())
+
+        # 右侧操作
+        self.pause_scroll_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            log_toolbar,
+            text="⏸ 暂停滚屏",
+            variable=self.pause_scroll_var,
+            bg=pal["card"],
+            fg=pal["text"],
+            activebackground=pal["card"],
+            selectcolor=pal["card"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        wt_theme.create_flat_button(
+            log_toolbar,
+            text="📋 复制可见日志",
+            command=self._copy_visible_logs,
+            tone="secondary",
+            padx=8,
+            pady=2,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        wt_theme.create_flat_button(
+            log_toolbar,
+            text="🧹 清屏",
+            command=self._clear_logs_view,
+            tone="subtle",
+            padx=6,
+            pady=2,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.RIGHT)
+
+        text_frame = tk.Frame(log_card, bg=pal["terminal_bg"])
+        text_frame.pack(fill=tk.BOTH, expand=True)
         self.log_text = tk.Text(
             text_frame,
             wrap=tk.WORD,
             state=tk.DISABLED,
-            bg="#111418",
-            fg="#e6edf3",
-            insertbackground="#e6edf3",
+            bg=pal["terminal_bg"],
+            fg=pal["terminal_fg"],
+            insertbackground=pal["terminal_fg"],
             font=("Consolas", 9),
             relief=tk.FLAT,
             padx=8,
@@ -1838,13 +2054,27 @@ class ServerMonitorWindow:
         # 滚动条先 pack（防止内容长行挤压滚动条，与队列窗口日志区修复保持一致）
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        # 日志配色统一从 wt_theme 取（深底变体），不再就地硬编码 ——
-        # 改造前同一系统存在 4 套互不相同的日志配色。
+
+        # 日志配色统一从 wt_theme 取（深底变体），保持 1 处调用
         wt_logging.configure_log_tags(
             self.log_text, dark=True, font_family="Consolas", font_size=9
         )
 
         self._after_id = self.window.after(2000, self._poll_loop)
+
+    @staticmethod
+    def _friendly_error(error_text):
+        text = str(error_text or "").strip()
+        lowered = text.lower()
+        if "10061" in text or "actively refused" in lowered or "connection refused" in lowered:
+            return "监控服务未启动 (8767端口未监听)"
+        if "timed out" in lowered or "10060" in text:
+            return "连接超时：8767 端口未响应"
+        if "10054" in text or "reset by peer" in lowered:
+            return "连接被重置：服务器已重启"
+        if "name or service not known" in lowered or "getaddrinfo" in lowered:
+            return "无法解析监控服务地址"
+        return text
 
     def _apply_url_and_refresh(self):
         url = self.url_var.get().strip().rstrip("/")
@@ -1861,14 +2091,16 @@ class ServerMonitorWindow:
         threading.Thread(target=self._fetch_worker, daemon=True).start()
 
     def _fetch_worker(self):
+        t0 = time.perf_counter()
         try:
             status_payload = self._get_json("/api/status")
+            ping_ms = int(max(0, (time.perf_counter() - t0) * 1000))
             logs_payload = self._get_json("/api/logs?tail=300")
         except Exception as exc:
             self._post_ui(lambda: self._mark_offline(str(exc)))
             self._fetching = False
             return
-        self._post_ui(lambda: self._apply_payload(status_payload, logs_payload))
+        self._post_ui(lambda: self._apply_payload(status_payload, logs_payload, ping_ms=ping_ms))
         self._fetching = False
 
     def _get_json(self, path):
@@ -1883,8 +2115,14 @@ class ServerMonitorWindow:
         except Exception:
             pass
 
-    def _apply_payload(self, status_payload, logs_payload):
+    def _apply_payload(self, status_payload, logs_payload, ping_ms=None):
+        pal = wt_theme.get_palette()
         self.conn_var.set("已连接")
+        if ping_ms is not None:
+            self.ping_var.set(f"延迟: {ping_ms} ms")
+            tone = "success" if ping_ms < 60 else ("warning" if ping_ms < 300 else "danger")
+            if hasattr(self, "ping_badge") and hasattr(self.ping_badge, "set_badge"):
+                self.ping_badge.set_badge(f"⏱️ {ping_ms} ms", tone)
         status = str(status_payload.get("status", "unknown"))
         labels = {
             "idle": "空闲",
@@ -1893,19 +2131,91 @@ class ServerMonitorWindow:
             "failed": "失败",
             "unknown": "未知",
         }
-        self.run_status_var.set(labels.get(status, status))
+        status_text = labels.get(status, status)
+        self.run_status_var.set(status_text)
+        if hasattr(self, "run_status_lbl"):
+            st_color = pal["success_text"] if status in ("idle", "success") else (
+                pal["primary_text"] if status == "running" else (
+                    pal["danger_text"] if status == "failed" else pal["text"]
+                )
+            )
+            self.run_status_lbl.configure(fg=st_color)
+
         self.activity_var.set(str(status_payload.get("activity") or "-"))
-        self.error_var.set(str(status_payload.get("error") or "-"))
+        raw_err = str(status_payload.get("error") or "").strip()
+        self._raw_error = raw_err
+        if raw_err and raw_err != "-":
+            clean_err = self._friendly_error(raw_err)
+            self.error_var.set(clean_err)
+            self.health_var.set("⚠️ 存在异常")
+            if hasattr(self, "health_lbl"):
+                self.health_lbl.configure(fg=pal["danger_text"])
+        else:
+            self.error_var.set("无异常")
+            self.health_var.set("✓ 运行正常")
+            if hasattr(self, "health_lbl"):
+                self.health_lbl.configure(fg=pal["success_text"])
+
         self.updated_var.set(str(status_payload.get("updatedAt") or "-"))
-        self._render_logs(logs_payload.get("lines", []))
+        self.heartbeat_var.set("实时同步正常")
+        self._cached_log_lines = list(logs_payload.get("lines", []))
+        self._filter_and_render_logs()
 
     def _render_logs(self, lines):
+        self._cached_log_lines = list(lines)
+        self._filter_and_render_logs()
+
+    def _filter_and_render_logs(self):
+        query = (self.log_search_var.get() or "").strip().lower()
+        level_filter = (self.level_filter_var.get() or "全部").strip()
+
+        filtered = []
+        for line in self._cached_log_lines:
+            s_line = str(line)
+            if query and query not in s_line.lower():
+                continue
+            if level_filter == "仅错误":
+                if self._classify_line(s_line) != "error":
+                    continue
+            elif level_filter == "仅警告":
+                if self._classify_line(s_line) not in ("warning", "error"):
+                    continue
+            elif level_filter == "仅信息":
+                if self._classify_line(s_line) not in ("info", "success", "system"):
+                    continue
+            filtered.append(s_line)
+
+        current_content = self.log_text.get("1.0", "end-1c")
+        new_content = "\n".join(filtered)
+        if current_content == new_content:
+            return
+
         self.log_text.config(state=tk.NORMAL)
         self.log_text.delete("1.0", tk.END)
-        for line in lines:
-            self.log_text.insert(tk.END, str(line) + "\n", self._classify_line(str(line)))
+        for line in filtered:
+            self.log_text.insert(tk.END, line + "\n", self._classify_line(line))
         self.log_text.config(state=tk.DISABLED)
-        self.log_text.see(tk.END)
+        if not self.pause_scroll_var.get():
+            self.log_text.see(tk.END)
+
+    def _copy_visible_logs(self):
+        text = self.log_text.get("1.0", "end-1c")
+        if not text:
+            return
+        self.window.clipboard_clear()
+        self.window.clipboard_append(text)
+
+    def _copy_error_detail(self):
+        err = self._raw_error or self.error_var.get()
+        if err and err != "-":
+            self.window.clipboard_clear()
+            self.window.clipboard_append(err)
+
+    def _clear_logs_view(self):
+        self._cached_log_lines = []
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.delete("1.0", tk.END)
+        self.log_text.config(state=tk.DISABLED)
 
     @staticmethod
     def _classify_line(line):
@@ -1914,11 +2224,23 @@ class ServerMonitorWindow:
         return wt_logging.tag_for_line(line)
 
     def _mark_offline(self, error_text):
-        self.conn_var.set(f"未连接：{error_text}")
+        pal = wt_theme.get_palette()
+        self._raw_error = error_text
+        friendly = self._friendly_error(error_text)
+        self.conn_var.set(f"未连接")
+        self.ping_var.set("服务离线")
+        if hasattr(self, "ping_badge") and hasattr(self.ping_badge, "set_badge"):
+            self.ping_badge.set_badge("⏱️ 离线", "danger")
         self.run_status_var.set("未知")
+        if hasattr(self, "run_status_lbl"):
+            self.run_status_lbl.configure(fg=pal["muted"])
         self.activity_var.set("-")
-        self.error_var.set("-")
+        self.error_var.set(friendly)
+        self.health_var.set("⚠️ 服务离线")
+        if hasattr(self, "health_lbl"):
+            self.health_lbl.configure(fg=pal["danger_text"])
         self.updated_var.set("-")
+        self.heartbeat_var.set("等待服务启动")
 
     def _poll_loop(self):
         if self._closing:
