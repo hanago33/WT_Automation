@@ -1036,6 +1036,8 @@ class TemplateBuilderApp:
 
     def refresh_canvas(self):
         self.canvas.delete("all")
+        # 全量重建会清掉拖动预览层，同步失效其 item id 缓存（待修改清单 #4）
+        self._preview_items = []
         if self.source_image_rgb is None:
             return
 
@@ -1112,6 +1114,54 @@ class TemplateBuilderApp:
             y2 = int((self.selection_region.y + self.selection_region.h) * self.scale)
             self.canvas.create_rectangle(x1, y1, x2, y2, outline="#74c0fc", width=2, dash=(6, 4))
             self.canvas.create_text(x1 + 4, y1 + 4, text="select", anchor=tk.NW, fill="#74c0fc")
+
+    def _region_display_coords(self, region):
+        """图像坐标 → 画布显示坐标（与 refresh_canvas 的缩放规则一致）。"""
+        scale = self.scale
+        return (
+            int(region.x * scale),
+            int(region.y * scale),
+            int((region.x + region.w) * scale),
+            int((region.y + region.h) * scale),
+        )
+
+    def _draw_canvas_preview_layer(self):
+        """拖动期增量预览层：只重画瞬态形状，不触碰底图与候选框静态层（待修改清单 #4）。
+
+        拖动的每一帧此前都全量 refresh_canvas（重 resize 底图 + 重画全部候选框），
+        框多/图大时明显卡顿。现在静态层保持不动，瞬态形状（临时框/选择框/被拖框）
+        在独立预览层逐帧重画，松手时由 on_canvas_release 统一收敛。
+        """
+        canvas = self.canvas
+        for item_id in getattr(self, "_preview_items", []):
+            canvas.delete(item_id)
+        self._preview_items = []
+        if self.source_image_rgb is None:
+            return
+
+        if self.drag_action == "drawing" and self.temp_region is not None:
+            x1, y1, x2, y2 = self._region_display_coords(self.temp_region)
+            self._preview_items.append(canvas.create_rectangle(
+                x1, y1, x2, y2, outline="#4dabf7", width=2, dash=(5, 3), tags=("preview",)))
+            self._preview_items.append(canvas.create_text(
+                x1 + 4, y1 + 4, text="new", anchor=tk.NW, fill="#4dabf7", tags=("preview",)))
+        elif self.drag_action == "selecting" and self.selection_region is not None:
+            x1, y1, x2, y2 = self._region_display_coords(self.selection_region)
+            self._preview_items.append(canvas.create_rectangle(
+                x1, y1, x2, y2, outline="#74c0fc", width=2, dash=(6, 4), tags=("preview",)))
+            self._preview_items.append(canvas.create_text(
+                x1 + 4, y1 + 4, text="select", anchor=tk.NW, fill="#74c0fc", tags=("preview",)))
+        elif (self.drag_action in {"moving", "resizing"}
+                and self.drag_current_index is not None
+                and 0 <= self.drag_current_index < len(self.candidates)):
+            region = self.candidates[self.drag_current_index]
+            x1, y1, x2, y2 = self._region_display_coords(region)
+            # 被拖框用选中色画在预览层，盖住静态层的旧位置；松手后 refresh_canvas 收敛
+            self._preview_items.append(canvas.create_rectangle(
+                x1, y1, x2, y2, outline="#00ff7f", width=2, tags=("preview",)))
+            self._preview_items.append(canvas.create_text(
+                x1 + 4, y1 + 4, text=str(self.drag_current_index + 1),
+                anchor=tk.NW, fill="#00ff7f", tags=("preview",)))
 
     def on_canvas_press(self, event):
         if self.source_image_rgb is None:
@@ -1226,12 +1276,12 @@ class TemplateBuilderApp:
 
         if self.drag_action == "drawing":
             self.temp_region = self.build_region_from_points(start_x, start_y, x, y)
-            self.refresh_canvas()
+            self._draw_canvas_preview_layer()
             return
 
         if self.drag_action == "selecting":
             self.selection_region = self.build_region_from_points(start_x, start_y, x, y)
-            self.refresh_canvas()
+            self._draw_canvas_preview_layer()
             return
 
         if self.drag_current_index is None or self.drag_start_region is None:
@@ -1249,9 +1299,8 @@ class TemplateBuilderApp:
                 y,
             )
 
-        self.refresh_canvas()
-        self.refresh_listbox()
-        self.update_preview()
+        # 拖动期只走增量预览层；列表与预览图在松手时统一刷新（待修改清单 #4）
+        self._draw_canvas_preview_layer()
 
     def on_canvas_release(self, event):
         if self.source_image_rgb is None:
@@ -1293,10 +1342,16 @@ class TemplateBuilderApp:
         elif self.drag_action in {"moving", "resizing"} and self.drag_current_index is not None:
             if self.drag_moved and self.pre_drag_snapshot is not None:
                 self.push_undo_state(self.pre_drag_snapshot)
+            self.refresh_canvas()
             self.refresh_listbox()
             self.update_preview()
             action_text = "移动" if self.drag_action == "moving" else "调整"
             self.status_var.set(f"已{action_text}框 #{self.drag_current_index + 1}")
+
+        # 拖动期的预览图层松手时一次性收敛到静态层（各分支已刷新则此处为空操作）
+        if getattr(self, "_preview_items", None):
+            self._preview_items = []
+            self.refresh_canvas()
 
         self.drag_action = None
         self.drag_start = None
