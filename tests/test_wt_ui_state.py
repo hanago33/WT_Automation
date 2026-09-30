@@ -121,3 +121,35 @@ def test_apply_window_geometry_skips_when_missing():
     assert win.called is None
     assert wt_ui_state.apply_window_geometry(win, "800x600+10+20")
     assert win.called == "800x600+10+20"
+
+
+def test_sanitize_defaults_to_probed_virtual_screen(monkeypatch):
+    """审计 P2 回归：不传 virtual_rect 时必须探测真实虚拟桌面。
+
+    2K/4K 机器上右侧屏幕的合法窗口不得被 1920×1080 写死兜底误杀。
+    """
+    monkeypatch.setattr(wt_ui_state, "virtual_screen_rect", lambda: (0, 0, 2560, 1440))
+    assert wt_ui_state.sanitize_geometry("800x600+2000+100") == "800x600+2000+100"
+    assert wt_ui_state.sanitize_geometry("1200x1400+100+50") == "1200x1400+100+50"
+
+
+def test_sanitize_falls_back_when_probe_unavailable(monkeypatch):
+    """探测失败时才退回 1920×1080 近似。"""
+    monkeypatch.setattr(wt_ui_state, "virtual_screen_rect", lambda: None)
+    assert wt_ui_state.sanitize_geometry("800x600+2000+100") == "800x600+40+40"
+
+
+def test_save_tmp_file_is_pid_suffixed(state_file, monkeypatch):
+    """多进程同时关窗不争用同一 .tmp（审计 P3）。"""
+    import wt_ui_state as m
+    seen = {}
+    real_replace = os.replace
+
+    def spy_replace(src, dst):
+        seen["tmp"] = os.path.basename(src)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(m.os, "replace", spy_replace)
+    wt_ui_state.save("tool_a", {"k": "v"})
+    assert ".tmp" in seen["tmp"]
+    assert str(os.getpid()) in seen["tmp"]

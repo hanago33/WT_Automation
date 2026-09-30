@@ -92,6 +92,8 @@ else:
         "wt_logging.py",
         "wt_log_query.py",
         "wt_simple_options.py",
+        "wt_txt_merge_core.py",  # 待修改清单 #5：TXT 合并统一核心
+        "wt_ui_state.py",  # 待修改清单 #6：界面状态持久化
     }
     for core in CORE_RUNTIME_FILES:
         if os.path.exists(os.path.join(REPO, core)):

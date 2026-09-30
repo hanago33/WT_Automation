@@ -6,8 +6,9 @@
 窗口不得落在不可见区域。只持久化 str/int/float/bool，不存业务数据。
 
 为什么集中一个文件：项目已有 _gui_config.json / txt2wtg_gui_config.json 两处
-先例，若每个窗口再各存一份会继续碎片化；本模块是唯一的第三处（也是最后一处），
-新窗口一律走 load/save。
+先例，若每个窗口再各存一份会继续碎片化；本模块是唯一的第三处（也是最后一处）。
+已接入：text_tools / txt_merge_tool / generic_launcher / launcher_panel（几何），
+后续新窗口与存量窗口建议优先走 load/save 接入。
 写盘采用临时文件 + os.replace 原子替换（沿用项目写盘安全惯例）。
 """
 import json
@@ -56,7 +57,8 @@ def save(tool_key, state):
             data = {}
         data[tool_key] = clean
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        tmp_path = path + ".tmp"
+        # 临时文件带 pid：多个工具进程同时关窗时不争用同一 .tmp
+        tmp_path = "{}.{}.tmp".format(path, os.getpid())
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, path)
@@ -85,7 +87,9 @@ def sanitize_geometry(geom, virtual_rect=None):
     """把 "WxH+X+Y" 夹回可见区域；完全不可见时复位到安全位置。
 
     多显示器拔插后，保存的坐标可能指向已消失的屏幕。virtual_rect 缺省时
-    按主屏 (0, 0, 1920, 1080) 近似。无法解析时返回 None（调用方跳过恢复）。
+    自动探测 Windows 虚拟桌面（多显示器拼接区域），探测失败才退回 1920×1080
+    近似——若写死兜底，2K/4K 机器上右侧屏幕的合法窗口会被误判不可见。
+    无法解析时返回 None（调用方跳过恢复）。
     """
     match = _GEOM_RE.match(str(geom or ""))
     if not match:
@@ -94,7 +98,8 @@ def sanitize_geometry(geom, virtual_rect=None):
     if virtual_rect:
         vx, vy, vw, vh = virtual_rect
     else:
-        vx, vy, vw, vh = 0, 0, 1920, 1080
+        probed = virtual_screen_rect()
+        vx, vy, vw, vh = probed if probed else (0, 0, 1920, 1080)
     width = min(max(width, 320), vw)
     height = min(max(height, 240), vh)
     visible = (
