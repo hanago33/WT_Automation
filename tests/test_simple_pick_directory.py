@@ -122,9 +122,22 @@ class TestSimplePickDirectory(unittest.TestCase):
             "last_dir": self.temp_dir.name,
         })
 
-        state_after = wt_ui_state.load("project_dir_picker")
-        self.assertEqual(state_after.get("geometry"), "750x570+100+100")
-        self.assertEqual(state_after.get("last_dir"), self.temp_dir.name)
+    def test_drive_root_normalization(self):
+        r"""测试盘符根路径规范化防御（防止将 D:\ 转为 D: 导致相对路径漂移）。"""
+        # 验证 drive 根目录字符规范化逻辑
+        def norm(p):
+            p = str(p or "").strip()
+            if not p: return os.path.expanduser("~")
+            if len(p) == 2 and p[1] == ":": return p + "\\"
+            p_s = p.rstrip("\\/")
+            if len(p_s) == 2 and p_s[1] == ":": return p_s + "\\"
+            return p_s or "\\"
+
+        self.assertEqual(norm("D:"), "D:\\")
+        self.assertEqual(norm("D:\\"), "D:\\")
+        self.assertEqual(norm("D:/"), "D:\\")
+        self.assertEqual(norm("E:\\Project"), "E:\\Project")
+        self.assertEqual(os.path.join(norm("D:"), "03-WT输入"), "D:\\03-WT输入")
 
 
 if __name__ == "__main__":

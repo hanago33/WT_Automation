@@ -2941,8 +2941,20 @@ class LauncherApp:
                 badge_icon.config(fg=theme["muted"])
                 badge_text.config(text="{}检测异常: {}".format(prefix, exc), fg=theme["muted"])
 
+        def _normalize_dir_path(p):
+            p = str(p or "").strip()
+            if not p:
+                return os.path.expanduser("~")
+            # 盘符根目录（如 "D:" 或 "D:\"）必须保留反斜杠，避免被转成 Windows 驱动器相对路径
+            if len(p) == 2 and p[1] == ":":
+                return p + "\\"
+            p_stripped = p.rstrip("\\/")
+            if len(p_stripped) == 2 and p_stripped[1] == ":":
+                return p_stripped + "\\"
+            return p_stripped or "\\"
+
         def _refresh():
-            cur = path_var.get().strip().rstrip("\\/")
+            cur = _normalize_dir_path(path_var.get())
             entries = []
             try:
                 if cur and os.path.isdir(cur):
@@ -2950,12 +2962,12 @@ class LauncherApp:
                         d for d in os.listdir(cur)
                         if os.path.isdir(os.path.join(cur, d))
                     )
-            except OSError:
+            except Exception:
                 entries = []
             listbox.delete(0, tk.END)
             for d in entries:
                 listbox.insert(tk.END, "📁 {}".format(d))
-            path_var.set(cur or os.path.expanduser("~"))
+            path_var.set(cur)
             _update_compliance_badge(cur, is_selected_child=False)
 
         def _get_selected_name():
@@ -2969,15 +2981,15 @@ class LauncherApp:
             name = _get_selected_name()
             if not name:
                 return
-            cur = path_var.get().strip().rstrip("\\/")
-            path_var.set(os.path.join(cur, name))
+            cur = _normalize_dir_path(path_var.get())
+            path_var.set(_normalize_dir_path(os.path.join(cur, name)))
             _refresh()
 
         def _go_up():
             cur = os.path.abspath(path_var.get().strip() or os.path.expanduser("~"))
             parent = os.path.dirname(cur)
             if parent and parent != cur:
-                path_var.set(parent)
+                path_var.set(_normalize_dir_path(parent))
                 _refresh()
 
         def _on_entry_return(_event=None):
@@ -2985,9 +2997,9 @@ class LauncherApp:
 
         def _on_listbox_select(_event=None):
             name = _get_selected_name()
-            cur = path_var.get().strip().rstrip("\\/")
+            cur = _normalize_dir_path(path_var.get())
             if name:
-                sub_dir = os.path.join(cur, name)
+                sub_dir = _normalize_dir_path(os.path.join(cur, name))
                 _update_compliance_badge(sub_dir, is_selected_child=True)
             else:
                 _update_compliance_badge(cur, is_selected_child=False)
@@ -3005,7 +3017,7 @@ class LauncherApp:
                   padx=8, pady=3, cursor="hand2").pack(side=tk.LEFT, padx=(4, 0))
 
         def _ok():
-            path = path_var.get().strip().rstrip("\\/")
+            path = _normalize_dir_path(path_var.get())
             if not path or not os.path.isdir(path):
                 messagebox.showwarning("提示", "目录不存在：\n{}".format(path), parent=dialog)
                 return
@@ -3160,6 +3172,8 @@ class LauncherApp:
         tab1_canvas.configure(yscrollcommand=tab1_scroll.set)
         tab1_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         tab1_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        _WHEEL_ROUTER.register(tab1_canvas)
+        _WHEEL_ROUTER.bind_root(dialog)
 
         entries = {}
         tk.Label(
@@ -3390,12 +3404,16 @@ class LauncherApp:
         def _recalculate_spatial():
             work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
             if not work_dir or not os.path.isdir(work_dir):
+                feedback_icon.config(fg=theme.get("danger", "#dc2626"))
+                feedback_text.config(text="✗ 未找到有效的项目工作目录", fg=theme.get("danger", "#dc2626"))
                 messagebox.showinfo("提示", "未找到有效的项目工作目录。")
                 return
             try:
                 import wt_spatial_domain_calc
                 pts = wt_spatial_domain_calc.parse_points_from_input_dir(os.path.join(work_dir, "03-WT输入"))
                 if not pts:
+                    feedback_icon.config(fg=theme.get("danger", "#dc2626"))
+                    feedback_text.config(text="⚠️ 未在项目 03-WT输入 目录下找到机位点或测风塔坐标文件！", fg=theme.get("danger", "#dc2626"))
                     messagebox.showwarning("提示", "未在项目 03-WT输入 目录下找到机位点或测风塔坐标文件！")
                     return
                 calc = wt_spatial_domain_calc.calculate_spatial_domain(pts, buffer_m=2500.0)

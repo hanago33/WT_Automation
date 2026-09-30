@@ -167,6 +167,53 @@ class TestControlLocatorTesterDialog(unittest.TestCase):
         self.assertEqual(saved.get("locator_method"), "class_name")
         self.assertEqual(saved.get("locator_value"), "EditControl")
 
+    def test_resolve_target_window_desync_recovery(self):
+        """测试用户手动修改窗口标题时，自动纠偏并解绑不一致的旧 hwnd。"""
+        dlg = self._create_dialog()
+        dlg._all_windows = [
+            {"title": "记事本", "hwnd": 1001},
+            {"title": "计算器", "hwnd": 1002},
+        ]
+        dlg._selected_hwnd = 1001  # 先前选中了记事本
+
+        mock_locator = mock.MagicMock()
+        mock_locator.iter_visible_top_level_windows.return_value = dlg._all_windows
+        mock_calc_wrapper = mock.MagicMock()
+        mock_locator.wrap_window_by_handle.side_effect = lambda hwnd: mock_calc_wrapper if hwnd == 1002 else None
+
+        # 用户手输改为 "计算器"
+        target_win, err = dlg._resolve_target_window(mock_locator, "计算器")
+        self.assertIsNotNone(target_win)
+        self.assertIsNone(err)
+        self.assertEqual(dlg._selected_hwnd, 1002)
+
+    def test_window_double_click_triggers_test(self):
+        """测试双击窗口列表项在已填定位值时顺势触发检验。"""
+        dlg = self._create_dialog()
+        dlg._all_windows = [{"title": "主窗口", "className": "TkTop", "hwnd": 2001}]
+        dlg._apply_window_filter()
+        dlg.window_listbox.selection_set(0)
+        dlg.var_locator_value.set("btn_test")
+
+        with mock.patch.object(dlg, "_test_locator") as mock_test:
+            dlg._on_window_double_click()
+            mock_test.assert_called_once()
+
+    def test_overlays_cleaned_on_close(self):
+        """测试关窗时自动清理所有活跃的高亮透视浮层。"""
+        dlg = self._create_dialog()
+
+        class DummyRect:
+            left = 50
+            top = 50
+            right = 100
+            bottom = 80
+
+        ov = dlg._flash_highlight(DummyRect())
+        self.assertIn(ov, dlg._active_overlays)
+        dlg._on_close()
+        self.assertEqual(len(dlg._active_overlays), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2712,6 +2712,7 @@ class ControlLocatorTesterDialog:
         self._selected_hwnd = None
         self._last_matched_rect = None
         self._last_matched_name = ""
+        self._active_overlays = []
 
         self.window = _make_dialog_window(
             parent,
@@ -2908,6 +2909,7 @@ class ControlLocatorTesterDialog:
         )
         self.window_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.window_listbox.bind("<<ListboxSelect>>", self._on_window_select)
+        self.window_listbox.bind("<Double-Button-1>", self._on_window_double_click)
 
         win_scroll = ttk.Scrollbar(list_box_frame, orient="vertical", command=self.window_listbox.yview)
         win_scroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -3288,6 +3290,53 @@ class ControlLocatorTesterDialog:
                 break
         self.var_status.set(f"已锁定目标窗口：{title}")
 
+    def _on_window_double_click(self, event=None):
+        """窗口双击快捷事件：锁定窗口，若已填定位值则顺势触发检验"""
+        self._on_window_select(event)
+        if self.var_locator_value.get().strip():
+            self._test_locator()
+
+    def _resolve_target_window(self, flow_locator, target_title):
+        """根据 hwnd 或标题精准解析并包装目标窗口（防标题手输与选中 hwnd 脱节）"""
+        target_window = None
+        if self._selected_hwnd:
+            selected_win_title = ""
+            for w in self._all_windows:
+                if w.get("hwnd") == self._selected_hwnd:
+                    selected_win_title = w.get("title", "")
+                    break
+            # 校验输入框中的标题是否与当前选中的 hwnd 一致
+            if selected_win_title and (not target_title or target_title.lower() in selected_win_title.lower()):
+                target_window = flow_locator.wrap_window_by_handle(self._selected_hwnd)
+            else:
+                self._selected_hwnd = None
+
+        if target_window is None:
+            all_windows = [
+                w for w in flow_locator.iter_visible_top_level_windows()
+                if (w.get("title") or "").strip()
+            ]
+            if target_title:
+                matched = [
+                    w for w in all_windows
+                    if target_title.lower() in (w.get("title") or "").lower()
+                ]
+            else:
+                matched = all_windows
+
+            if not matched:
+                msg = f"未找到标题包含 '{target_title}' 的顶层窗口" if target_title else "未找到任何可用顶层窗口"
+                return None, msg
+
+            target_window = flow_locator.wrap_window_by_handle(matched[0].get("hwnd"))
+            if target_window:
+                self._selected_hwnd = matched[0].get("hwnd")
+
+        if target_window is None:
+            return None, "目标窗口 UIA 包装失败，请重试或更换目标窗口"
+
+        return target_window, None
+
     def _select_from_library(self):
         """从控件库选择控件"""
         try:
@@ -3322,7 +3371,7 @@ class ControlLocatorTesterDialog:
             w = max(12, right - left)
             h = max(12, bottom - top)
 
-            if w > 10000 or h > 10000 or right < -5000 or bottom < -5000:
+            if w <= 0 or h <= 0 or w > 10000 or h > 10000 or left < -5000 or top < -5000 or right < -5000 or bottom < -5000:
                 messagebox.showwarning(
                     "坐标异常",
                     f"控件包围盒坐标异常 ({left}, {top}, {w}×{h})，可能窗口已最小化或处于屏幕外部。",
@@ -3359,8 +3408,12 @@ class ControlLocatorTesterDialog:
                 font=("Microsoft YaHei UI", 9, "bold"),
             )
 
+            self._active_overlays.append(overlay)
+
             def _cleanup():
                 try:
+                    if overlay in self._active_overlays:
+                        self._active_overlays.remove(overlay)
                     overlay.destroy()
                 except Exception:
                     pass
@@ -3397,41 +3450,13 @@ class ControlLocatorTesterDialog:
         try:
             import wt_flow_locator as flow_locator
 
-            target_window = None
-            if self._selected_hwnd:
-                target_window = flow_locator.wrap_window_by_handle(self._selected_hwnd)
-
-            if target_window is None:
-                all_windows = [
-                    w for w in flow_locator.iter_visible_top_level_windows()
-                    if (w.get("title") or "").strip()
-                ]
-                if target_title:
-                    matched = [
-                        w for w in all_windows
-                        if target_title.lower() in (w.get("title") or "").lower()
-                    ]
-                else:
-                    matched = all_windows
-
-                if not matched:
-                    elapsed_ms = (time.perf_counter() - t0) * 1000.0
-                    msg = f"未找到标题包含 '{target_title}' 的顶层窗口" if target_title else "未找到任何可用顶层窗口"
-                    self._update_result_view(
-                        status="未找到窗口",
-                        elapsed_ms=elapsed_ms,
-                        error=msg,
-                    )
-                    return
-
-                target_window = flow_locator.wrap_window_by_handle(matched[0].get("hwnd"))
-
+            target_window, err_msg = self._resolve_target_window(flow_locator, target_title)
             if target_window is None:
                 elapsed_ms = (time.perf_counter() - t0) * 1000.0
                 self._update_result_view(
-                    status="窗口包装失败",
+                    status="窗口无法定位",
                     elapsed_ms=elapsed_ms,
-                    error="目标窗口 UIA 包装失败，请重试或更换目标窗口",
+                    error=err_msg,
                 )
                 return
 
@@ -3557,26 +3582,10 @@ class ControlLocatorTesterDialog:
         try:
             import wt_flow_locator as flow_locator
 
-            target_window = None
-            if self._selected_hwnd:
-                target_window = flow_locator.wrap_window_by_handle(self._selected_hwnd)
-
+            target_window, err_msg = self._resolve_target_window(flow_locator, target_title)
             if target_window is None:
-                all_windows = [
-                    w for w in flow_locator.iter_visible_top_level_windows()
-                    if (w.get("title") or "").strip()
-                ]
-                matched = [
-                    w for w in all_windows
-                    if not target_title or target_title.lower() in (w.get("title") or "").lower()
-                ]
-                if not matched:
-                    self._update_result_view(status="未找到窗口", elapsed_ms=0, error="未找到目标窗口")
-                    return
-                target_window = flow_locator.wrap_window_by_handle(matched[0].get("hwnd"))
-
-            if target_window is None:
-                self._update_result_view(status="包装失败", elapsed_ms=0, error="目标窗口 UIA 包装失败")
+                elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                self._update_result_view(status="窗口无法定位", elapsed_ms=elapsed_ms, error=err_msg)
                 return
 
             search_props = {}
@@ -3838,6 +3847,12 @@ class ControlLocatorTesterDialog:
     def _on_close(self):
         """关闭窗口时的清理与状态保存"""
         self._save_ui_state()
+        for ov in list(self._active_overlays):
+            try:
+                ov.destroy()
+            except Exception:
+                pass
+        self._active_overlays.clear()
         self.window.destroy()
 
 
