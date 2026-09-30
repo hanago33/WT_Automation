@@ -51,6 +51,9 @@ def _scan_index_files(index: dict[str, str]) -> None:
                 continue
             category = str(t.get("category", "")).strip() or "default"
             image_path = str(t.get("image_path", "")).strip()
+            if image_path and not os.path.isabs(image_path):
+                # 索引里存的是相对项目根的 "/" 分隔路径（可跨机器）；此处还原为绝对路径
+                image_path = os.path.join(PROJECT_ROOT, *image_path.replace("\\", "/").split("/"))
             if not image_path or not os.path.exists(image_path):
                 image_path = os.path.join(dirpath, category, file_name + ".png")
             if not os.path.exists(image_path):

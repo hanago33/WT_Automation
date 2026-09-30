@@ -54,7 +54,7 @@ def main():
     print("== Meteodyn 安装探测 ==")
     candidates = [
         r"C:\Program Files\Meteodyn\MeteodynUniverse\MUPSmartClient.exe",
-        r"C:\Users\14830\Desktop\Meteodyn Universe.lnk",
+        os.path.join(os.path.expanduser("~"), "Desktop", "Meteodyn Universe.lnk"),
     ]
     for path in candidates:
         print("{} -> {}".format(path, "存在" if os.path.exists(path) else "不存在"))

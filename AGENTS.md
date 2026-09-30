@@ -66,6 +66,21 @@ cp /d/My_RF_Project/WT_Automation/WT_AUTOMATION_Agent/_gui_config.json \
 - 提交前必须运行 `python -m pytest tests/ -q` 并全绿。因环境缺失（见检查单）导致的收集错误不算绿。
 - **禁止 squash 式巨提交**：一个功能单元一个 commit；一次会话多个功能就多个 commit，每个都要能独立说清改了什么。
 
+## 主目录同步纪律（单向）
+
+`WT_Automation`（主目录）是唯一可信源，**只接受「主干 → 主目录」的单向整文件同步**：
+
+1. **同步前先盘点**：在主干克隆里执行 `python tools/check_maindir_sync.py`
+   （默认取同级 `WT_Automation`，可用 `--maindir` 指定，`--report` 落盘报告），
+   得到 M(需覆盖) / A(需新增) / D(主目录独有) 三分类。
+2. **M 项出现「本地变体」（主目录版本是主干从未提交过的内容）或 D 项非空时，禁止自动覆盖**：
+   先查清来源再决定，避免把主目录独有改动或人工拷贝的内容回灌主干。
+3. **同步动作固定为**：`git checkout origin/main -- .`（M + A）→ D 项按语义 `git rm`
+   （主干确已删除）或 `git rm --cached`（退出跟踪但保留本地文件）→
+   跑 `python -m pytest tests/ -q` 全绿 → 一条 `chore: 主目录同步主干 <sha>` 提交。
+4. **禁止**把主目录文件手工拷回主干：正确方向永远是「worktree → 主干 → 主目录」
+   （2026-09-30 的三处工作区脏改动即由反方向拷贝造成）。
+
 ## 禁止事项
 
 无论在哪个目录：
@@ -73,7 +88,9 @@ cp /d/My_RF_Project/WT_Automation/WT_AUTOMATION_Agent/_gui_config.json \
 - **禁止** 在主目录 `WT_Automation` 修改任何代码（维护者明确要求并知悉的除外——例如让 AI 帮忙合并冲突）。
 - **禁止** 执行 `git merge` 到 main、`git push`、`git rebase` 主目录 main、`git reset --hard`（reset 仅限 worktree 内、且仅针对自己会话的提交）。
 - **禁止** 生成根目录散落的调试残留文件（`_diag_*.py`、`_tmp_*`、`_*.log` 等）。临时文件放系统临时目录，工作完成后清理。
-- **禁止** 把 API Key、令牌、本机绝对路径写入任何被 git 跟踪的文件。
+- **禁止** 把 API Key、令牌、本机绝对路径写入任何被 git 跟踪的文件。模板/控件索引等数据文件
+  只存**相对项目根**的路径，由 reader 按项目根还原（见 `image_template_index.py` 与
+  `build_image_template_library.repo_relative_path`）。
 - **禁止** 修改 `.gitignore` 中关于密钥与运行时状态的既有规则。
 - **禁止** 提交体积大的生成产物（截图、录像、构建产物）。
 

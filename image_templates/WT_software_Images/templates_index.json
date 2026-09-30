@@ -2,7 +2,7 @@
   "meta": {
     "templateCount": 9,
     "categoryCount": 1,
-    "lastUpdated": "2026-08-24T17:33:52"
+    "lastUpdated": "2026-09-30T16:58:56"
   },
   "categories": [
     {
@@ -14,9 +14,9 @@
     {
       "category": "projection",
       "file_name": "WT",
-      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\projection\\WT.png",
-      "relative_image_path": "projection\\WT.png",
-      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260805_101208.png",
+      "image_path": "image_templates/WT_software_Images/projection/WT.png",
+      "relative_image_path": "WT.png",
+      "source_screenshot": "image_templates/WT_software_Images/screenshot_20260805_101208.png",
       "region": {
         "x": 1624,
         "y": 796,
@@ -28,9 +28,9 @@
     {
       "category": "projection",
       "file_name": "template_001",
-      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\projection\\template_001.png",
-      "relative_image_path": "projection\\template_001.png",
-      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260630_204448.png",
+      "image_path": "image_templates/WT_software_Images/projection/template_001.png",
+      "relative_image_path": "template_001.png",
+      "source_screenshot": "image_templates/WT_software_Images/screenshot_20260630_204448.png",
       "region": {
         "x": 1008,
         "y": 563,
@@ -42,9 +42,9 @@
     {
       "category": "projection",
       "file_name": "名称",
-      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\projection\\名称.png",
-      "relative_image_path": "projection\\名称.png",
-      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260626_190205.png",
+      "image_path": "image_templates/WT_software_Images/projection/名称.png",
+      "relative_image_path": "名称.png",
+      "source_screenshot": "image_templates/WT_software_Images/screenshot_20260626_190205.png",
       "region": {
         "x": 375,
         "y": 784,
@@ -56,9 +56,9 @@
     {
       "category": "projection",
       "file_name": "地表海拔",
-      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\projection\\地表海拔.png",
-      "relative_image_path": "projection\\地表海拔.png",
-      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260626_190205.png",
+      "image_path": "image_templates/WT_software_Images/projection/地表海拔.png",
+      "relative_image_path": "地表海拔.png",
+      "source_screenshot": "image_templates/WT_software_Images/screenshot_20260626_190205.png",
       "region": {
         "x": 354,
         "y": 840,
@@ -70,9 +70,9 @@
     {
       "category": "projection",
       "file_name": "平均风速",
-      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\projection\\平均风速.png",
-      "relative_image_path": "projection\\平均风速.png",
-      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260630_204448.png",
+      "image_path": "image_templates/WT_software_Images/projection/平均风速.png",
+      "relative_image_path": "平均风速.png",
+      "source_screenshot": "image_templates/WT_software_Images/screenshot_20260630_204448.png",
       "region": {
         "x": 1010,
         "y": 563,
@@ -84,9 +84,9 @@
     {
       "category": "projection",
       "file_name": "新建一个综合",
-      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\projection\\新建一个综合.png",
-      "relative_image_path": "projection\\新建一个综合.png",
-      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260824_173306.png",
+      "image_path": "image_templates/WT_software_Images/projection/新建一个综合.png",
+      "relative_image_path": "新建一个综合.png",
+      "source_screenshot": "image_templates/WT_software_Images/screenshot_20260824_173306.png",
       "region": {
         "x": 319,
         "y": 181,
@@ -98,9 +98,9 @@
     {
       "category": "projection",
       "file_name": "日期时间",
-      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\projection\\日期时间.png",
-      "relative_image_path": "projection\\日期时间.png",
-      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260630_204639.png",
+      "image_path": "image_templates/WT_software_Images/projection/日期时间.png",
+      "relative_image_path": "日期时间.png",
+      "source_screenshot": "image_templates/WT_software_Images/screenshot_20260630_204639.png",
       "region": {
         "x": 833,
         "y": 384,
@@ -112,9 +112,9 @@
     {
       "category": "projection",
       "file_name": "私有",
-      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\projection\\私有.png",
-      "relative_image_path": "projection\\私有.png",
-      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260630_171238.png",
+      "image_path": "image_templates/WT_software_Images/projection/私有.png",
+      "relative_image_path": "私有.png",
+      "source_screenshot": "image_templates/WT_software_Images/screenshot_20260630_171238.png",
       "region": {
         "x": 840,
         "y": 1005,
@@ -126,9 +126,9 @@
     {
       "category": "projection",
       "file_name": "访问级别",
-      "image_path": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\projection\\访问级别.png",
-      "relative_image_path": "projection\\访问级别.png",
-      "source_screenshot": "D:\\My_RF_Project\\WT_Automation\\image_templates\\WT_software_Images\\screenshot_20260626_190205.png",
+      "image_path": "image_templates/WT_software_Images/projection/访问级别.png",
+      "relative_image_path": "访问级别.png",
+      "source_screenshot": "image_templates/WT_software_Images/screenshot_20260626_190205.png",
       "region": {
         "x": 372,
         "y": 891,

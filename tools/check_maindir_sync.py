@@ -11,10 +11,13 @@
        否  → 存在本地独有改动，**必须先人工审**再覆盖；
   3. D 项非空即视为漂移：主目录有主干没有的内容，先查来源再同步。
 
+注意：比较的是「主目录 HEAD 树」与「主干 ref 树」这两个**已提交**状态，不含双方未提交的
+工作区改动；因此应在「主干提交并推送」之后、「主目录同步提交」之前运行。
+
 用法（在主干仓库里执行；--maindir 指向主目录工作区）：
 
-    python tools/check_maindir_sync.py --maindir D:\\My_RF_Project\\WT_Automation
-    python tools/check_maindir_sync.py --maindir ... --ref origin/main --report sync.txt
+    python tools/check_maindir_sync.py                       # 默认取主干克隆的同级 WT_Automation
+    python tools/check_maindir_sync.py --maindir <路径> --ref origin/main --report sync.txt
 
 退出码：0=已一致（可跳过同步）；1=存在漂移；2=环境/参数错误。
 """
@@ -23,7 +26,11 @@ import os
 import subprocess
 import sys
 
-DEFAULT_MAINDIR = r"D:\My_RF_Project\WT_Automation"
+# 默认主目录 = 主干克隆的同级目录 WT_Automation（约定布局：<workspace>\WT_Automation 与
+# <workspace>\WT_Automation_github / WT_automation_ai* 并列）。刻意不写死本机绝对路径——
+# 本脚本随 git 分发，写死路径既换机失效，也违反 AGENTS.md「禁止本机绝对路径入库」。
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_MAINDIR = os.path.join(os.path.dirname(REPO_ROOT), "WT_Automation")
 DEFAULT_REF = "origin/main"
 
 
@@ -138,7 +145,7 @@ def main(argv=None):
 
     maindir = os.path.abspath(args.maindir)
     if not os.path.isdir(maindir):
-        print("[错误] 主目录不存在：{}".format(maindir))
+        print("[错误] 主目录不存在：{}（可用 --maindir 指定）".format(maindir))
         return 2
 
     try:
