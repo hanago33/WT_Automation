@@ -291,5 +291,187 @@ class TextToolsWorkerRunTests(unittest.TestCase):
         self.assertIn("已取消：完成 1/2", self.card.log_text.get("1.0", "end"))
 
 
+# ── 审计收尾回归：worker 零 Tk 读取 / 缺省 skip / 接入层键名往返 / TxtMergeCard worker ──
+
+class _FakeVar:
+    def __init__(self, value=""):
+        self._v = value
+
+    def get(self):
+        return self._v
+
+    def set(self, value):
+        self._v = value
+
+
+class _FakeCard:
+    """最小替身：只带被测代码读写的属性。"""
+
+
+class WorkerTkIsolationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tk, cls.root = shared_tk_root()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _write(self, name, content):
+        p = os.path.join(self.tmp.name, name)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(content)
+        return p
+
+    def test_process_one_never_touches_tk_when_params_given(self):
+        """params 提供时 worker 零 Tk 读取（基线 dict.get 默认值急切求值 → 失败）。"""
+        card = object.__new__(text_tools.TextToolsCard)
+        card.log = lambda _m: None
+        # 故意不挂任何 Tk 变量
+        params = dict(
+            split_lines="1000", filter_kw="", filter_mode="keep",
+            replace_old="甲", replace_new="X", affix_pre="", affix_suf="",
+            case_mode="upper", enc_target="utf-8",
+        )
+        src = self._write("in.txt", "甲乙丙\n")
+        out_dir = self.tmp.name
+        card._process_one(src, out_dir, "replace", "utf-8-sig", params)
+        with open(os.path.join(out_dir, "in_替换.txt"), "r", encoding="utf-8-sig") as f:
+            self.assertIn("X乙丙", f.read())
+
+    def test_confirm_overwrite_defaults_to_skip_without_prescan(self):
+        """绕过预扫描的异常路径缺省 skip：宁可少写盘，不静默覆盖（审计 P2）。"""
+        card = object.__new__(text_tools.CsvConvertCard)
+        with patch.object(text_tools.os.path, "exists", return_value=True):
+            self.assertFalse(card._confirm_overwrite("x.xlsx"))
+
+    def test_app_ui_state_collect_apply_roundtrip(self):
+        """接入层键名往返：_collect 的键必须被 _apply 认领（审计 P3：键名写错不可发现）。"""
+        from types import SimpleNamespace
+
+        app = object.__new__(text_tools.App)
+        app.root = SimpleNamespace(winfo_geometry=lambda: "680x600+6+28")
+        app.txt_card = _FakeCard()
+        app.csv_card = _FakeCard()
+        app.tools_card = _FakeCard()
+
+        app.txt_card.join_var = _FakeVar("newline")
+        app.txt_card.header_var = _FakeVar(True)
+        app.txt_card.sep_var = _FakeVar("==")
+        app.txt_card.empty_var = _FakeVar(True)
+        app.txt_card.enc_var = _FakeVar("gbk")
+        app.csv_card.conv_var = _FakeVar("txt")
+        app.csv_card.merge_var = _FakeVar("one")
+        app.csv_card.merge_single_header = _FakeVar(False)
+        app.csv_card.txt_enc_var = _FakeVar("gbk")
+        app.csv_card.out_dir = r"C:\out\csv"
+        app.csv_card.var_out = _FakeVar(r"C:\out\csv")
+        app.tools_card.op_var = _FakeVar("replace")
+        app.tools_card.out_enc = _FakeVar("utf-8")
+        app.tools_card.split_var = _FakeVar("20")
+        app.tools_card.filter_kw = _FakeVar("kw")
+        app.tools_card.filter_mode = _FakeVar("drop")
+        app.tools_card.replace_old = _FakeVar("old")
+        app.tools_card.replace_new = _FakeVar("new")
+        app.tools_card.affix_pre = _FakeVar("[")
+        app.tools_card.affix_suf = _FakeVar("]")
+        app.tools_card.case_mode = _FakeVar("lower")
+        app.tools_card.enc_target = _FakeVar("big5")
+        app.tools_card.out_dir = r"C:\out	xt"
+        app.tools_card.var_out = _FakeVar(r"C:\out	xt")
+
+        state = app._collect_ui_state()
+        self.assertEqual(state["geometry"], "680x600+6+28")
+
+        # 全新替身（全部默认值），应用同一份 state 后应与收集时一致
+        fresh_csv = _FakeCard()
+        fresh_csv.var_out = _FakeVar("")
+        fresh_tools = _FakeCard()
+        fresh_tools.var_out = _FakeVar("")
+        app2 = object.__new__(text_tools.App)
+        app2.root = app.root
+        app2.txt_card = _FakeCard()
+        app2.txt_card.join_var = _FakeVar()
+        app2.txt_card.header_var = _FakeVar()
+        app2.txt_card.sep_var = _FakeVar()
+        app2.txt_card.empty_var = _FakeVar()
+        app2.txt_card.enc_var = _FakeVar()
+        app2.csv_card = fresh_csv
+        app2.csv_card.conv_var = _FakeVar()
+        app2.csv_card.merge_var = _FakeVar()
+        app2.csv_card.merge_single_header = _FakeVar()
+        app2.csv_card.txt_enc_var = _FakeVar()
+        app2.tools_card = fresh_tools
+        app2.tools_card.op_var = _FakeVar()
+        app2.tools_card.out_enc = _FakeVar()
+        app2.tools_card.split_var = _FakeVar()
+        app2.tools_card.filter_kw = _FakeVar()
+        app2.tools_card.filter_mode = _FakeVar()
+        app2.tools_card.replace_old = _FakeVar()
+        app2.tools_card.replace_new = _FakeVar()
+        app2.tools_card.affix_pre = _FakeVar()
+        app2.tools_card.affix_suf = _FakeVar()
+        app2.tools_card.case_mode = _FakeVar()
+        app2.tools_card.enc_target = _FakeVar()
+
+        app2._apply_ui_state(state)
+
+        self.assertEqual(app2.txt_card.join_var.get(), "newline")
+        self.assertEqual(app2.txt_card.header_var.get(), True)
+        self.assertEqual(app2.csv_card.conv_var.get(), "txt")
+        self.assertEqual(app2.csv_card.merge_var.get(), "one")
+        self.assertEqual(app2.csv_card.merge_single_header.get(), False)
+        self.assertEqual(app2.csv_card.out_dir, r"C:\out\csv")
+        self.assertEqual(app2.tools_card.op_var.get(), "replace")
+        self.assertEqual(app2.tools_card.filter_mode.get(), "drop")
+        self.assertEqual(app2.tools_card.affix_pre.get(), "[")
+        self.assertEqual(app2.tools_card.out_dir, r"C:\out	xt")
+
+
+class TxtMergeCardWorkerTests(unittest.TestCase):
+    """TxtMergeCard.merge（text_tools 侧卡片）同步实现线程化后的行为。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tk, cls.root = shared_tk_root()
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.card = text_tools.TxtMergeCard(self.root)
+        self.files = []
+        for i in range(2):
+            p = os.path.join(self.tmp.name, f"t{i}.txt")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("甲乙丙\n")
+            self.files.append(p)
+        self.card.files = list(self.files)
+        self.out = os.path.join(self.tmp.name, "merged.txt")
+
+    def test_merge_runs_on_worker_thread(self):
+        """双向断言：基线同步实现时失败。"""
+        seen = {}
+        real_merge = text_tools.merge_txt_files
+
+        def spy(paths, out, **kwargs):
+            seen["thread"] = threading.current_thread()
+            return real_merge(paths, out, **kwargs)
+
+        with patch("text_tools.filedialog.asksaveasfilename", return_value=self.out),                 patch("text_tools.messagebox.showinfo"),                 patch("text_tools.merge_txt_files", side_effect=spy):
+            self.card.merge()
+            deadline = time.time() + 5
+            while "thread" not in seen and time.time() < deadline:
+                self.root.update()
+                time.sleep(0.01)
+            for _ in range(30):
+                self.root.update()
+                time.sleep(0.01)
+
+        self.assertIsNot(seen["thread"], threading.main_thread())
+        self.assertTrue(os.path.isfile(self.out))
+        self.assertEqual(self.card.btn_merge.cget("text"), "合并为单个 txt")
+        self.assertIn("合并完成", self.card.status.cget("text"))
+
+
 if __name__ == "__main__":
     unittest.main()
