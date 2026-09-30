@@ -40,6 +40,7 @@ import wt_task_queue_window
 import wt_project_workdir_parser
 import wt_simple_options
 import wt_mast_config_xml
+import wt_ui_state
 from wt_flow_graph import FlowGraphWindow
 
 
@@ -2786,25 +2787,159 @@ class LauncherApp:
         此处用 Toplevel + 目录列表自行实现，完全绕开原生对话框。
         """
         initial = str(getattr(self, "project_work_dir", "") or "").strip()
+        saved_state = wt_ui_state.load("project_dir_picker")
         if not initial or not os.path.isdir(initial):
-            initial = os.path.expanduser("~")
+            last_dir = str(saved_state.get("last_dir") or "").strip()
+            if last_dir and os.path.isdir(last_dir):
+                initial = last_dir
+            else:
+                initial = os.path.expanduser("~")
         result = {"path": ""}
 
         dialog = tk.Toplevel(self.root)
         dialog.title("选择市场项目工作文件夹（含 03-WT输入 / 04-WT输出）")
         dialog.transient(self.root)
         dialog.grab_set()
-        wt_dpi.geometry(dialog, 680, 520)
-        dialog.minsize(wt_dpi.scale(560), wt_dpi.scale(400))
+        saved_geom = saved_state.get("geometry")
+        if saved_geom:
+            wt_ui_state.apply_window_geometry(dialog, saved_geom)
+        else:
+            wt_dpi.geometry(dialog, 740, 560)
+        dialog.minsize(wt_dpi.scale(600), wt_dpi.scale(440))
         dialog.configure(bg=self.theme["bg"])
         theme = self.theme
 
+        def _save_picker_state():
+            try:
+                wt_ui_state.save("project_dir_picker", {
+                    "geometry": wt_ui_state.capture_window_geometry(dialog),
+                    "last_dir": path_var.get().strip(),
+                })
+            except Exception:
+                pass
+
         path_var = tk.StringVar(value=initial)
+
+        # ── 1. 顶部快捷跳转芯片栏 ──
+        chip_bar = tk.Frame(dialog, bg=theme["bg"])
+        chip_bar.pack(fill=tk.X, padx=14, pady=(10, 4))
+        tk.Label(
+            chip_bar, text="快捷跳转:", font=("Microsoft YaHei UI", 9, "bold"),
+            bg=theme["bg"], fg=theme["muted"]
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        def _jump_to(target_dir):
+            if target_dir and os.path.isdir(target_dir):
+                path_var.set(target_dir)
+                _refresh()
+
+        # 可用盘符
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive_root = "{}:\\".format(letter)
+            if os.path.isdir(drive_root):
+                tk.Button(
+                    chip_bar, text="{}: 盘".format(letter),
+                    command=lambda d=drive_root: _jump_to(d),
+                    bg=theme["secondary"], fg=theme["text"],
+                    font=("Microsoft YaHei UI", 8),
+                    relief=tk.FLAT, padx=6, pady=2, cursor="hand2"
+                ).pack(side=tk.LEFT, padx=2)
+
+        # 桌面快捷
+        desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
+        if os.path.isdir(desktop_path):
+            tk.Button(
+                chip_bar, text="🖥️ 桌面",
+                command=lambda: _jump_to(desktop_path),
+                bg=theme["secondary"], fg=theme["text"],
+                font=("Microsoft YaHei UI", 8),
+                relief=tk.FLAT, padx=8, pady=2, cursor="hand2"
+            ).pack(side=tk.LEFT, padx=(6, 2))
+
+            # 智能探测桌面下的 WT 工程候选
+            desktop_candidates = []
+            try:
+                for sub in sorted(os.listdir(desktop_path)):
+                    sub_full = os.path.join(desktop_path, sub)
+                    if os.path.isdir(sub_full) and (
+                        os.path.isdir(os.path.join(sub_full, "03-WT输入")) or
+                        os.path.isdir(os.path.join(sub_full, "04-WT输出"))
+                    ):
+                        desktop_candidates.append(sub_full)
+            except OSError:
+                pass
+            for cand in desktop_candidates[:2]:
+                cand_name = os.path.basename(cand)
+                chip_text = "⚡ {}…".format(cand_name[:10]) if len(cand_name) > 10 else "⚡ {}".format(cand_name)
+                tk.Button(
+                    chip_bar, text=chip_text,
+                    command=lambda d=cand: _jump_to(d),
+                    bg="#ecfdf5", fg="#059669",
+                    font=("Microsoft YaHei UI", 8, "bold"),
+                    relief=tk.FLAT, padx=8, pady=2, cursor="hand2"
+                ).pack(side=tk.LEFT, padx=2)
+
+        # ── 2. 路径输入与导航栏 ──
+        top_row = tk.Frame(dialog, bg=theme["bg"])
+        top_row.pack(fill=tk.X, padx=14, pady=(4, 4))
+        tk.Label(top_row, text="当前路径", width=8, anchor="w",
+                 bg=theme["bg"], fg=theme["text"], font=("Microsoft YaHei UI", 9, "bold")).pack(side=tk.LEFT)
+        entry = tk.Entry(top_row, textvariable=path_var, font=("Microsoft YaHei UI", 10),
+                         bg=theme["card"], fg=theme["text"], relief=tk.FLAT, bd=0,
+                         highlightthickness=1, highlightbackground=theme.get("border", "#d7e0ee"))
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
+
+        # ── 3. 目录列表容器 ──
+        list_wrap = tk.Frame(dialog, bg=theme["bg"])
+        list_wrap.pack(fill=tk.BOTH, expand=True, padx=14, pady=(4, 4))
         listbox = tk.Listbox(
-            dialog, font=("Microsoft YaHei UI", 10), bg="#ffffff", fg=theme["text"],
-            selectbackground=theme["primary"], selectforeground="white", activestyle="none",
+            list_wrap, font=("Microsoft YaHei UI", 10), bg=theme["card"], fg=theme["text"],
+            selectbackground=theme["primary"], selectforeground="#ffffff", activestyle="none",
+            relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=theme.get("border", "#d7e0ee"),
         )
-        listbox.pack(fill=tk.BOTH, expand=True, padx=14, pady=(6, 4))
+        scroll = tk.Scrollbar(list_wrap, orient=tk.VERTICAL, command=listbox.yview, relief=tk.FLAT)
+        listbox.configure(yscrollcommand=scroll.set)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # ── 4. 合规性即时探针 (Live Compliance Badge) ──
+        badge_frame = tk.Frame(dialog, bg=theme["bg"])
+        badge_frame.pack(fill=tk.X, padx=14, pady=(4, 2))
+        badge_icon = tk.Label(badge_frame, text="●", font=("Microsoft YaHei UI", 10), bg=theme["bg"], fg=theme["muted"])
+        badge_icon.pack(side=tk.LEFT, padx=(0, 4))
+        badge_text = tk.Label(
+            badge_frame, text="正在检测目录…", font=("Microsoft YaHei UI", 9),
+            bg=theme["bg"], fg=theme["muted"], anchor="w"
+        )
+        badge_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        def _update_compliance_badge(target_dir, is_selected_child=False):
+            prefix = "所选子目录：" if is_selected_child else "当前目录："
+            if not target_dir or not os.path.isdir(target_dir):
+                badge_icon.config(fg=theme.get("danger", "#dc2626"))
+                badge_text.config(text="{}目录不存在或无法访问".format(prefix), fg=theme.get("danger", "#dc2626"))
+                return
+            try:
+                diag = wt_project_workdir_parser.diagnose_project_work_dir(target_dir)
+                if diag.get("input_root_exists") and diag.get("output_root_exists"):
+                    counts = diag.get("file_counts") or {}
+                    info_str = " (含 {} txt, {} wtg, {} tif)".format(
+                        counts.get("txt", 0), counts.get("wtg", 0), counts.get("tif", 0)
+                    ) if counts else ""
+                    badge_icon.config(fg="#059669")
+                    badge_text.config(text="{}✓ 标准项目目录（含 03-WT输入 与 04-WT输出{}）".format(prefix, info_str), fg="#059669")
+                elif diag.get("input_root_exists"):
+                    badge_icon.config(fg="#b45309")
+                    badge_text.config(text="{}⚠️ 包含 03-WT输入（未发现 04-WT输出，运行时可自动生成）".format(prefix), fg="#b45309")
+                elif diag.get("output_root_exists"):
+                    badge_icon.config(fg="#b45309")
+                    badge_text.config(text="{}⚠️ 包含 04-WT输出（缺少 03-WT输入）".format(prefix), fg="#b45309")
+                else:
+                    badge_icon.config(fg=theme["muted"])
+                    badge_text.config(text="{}普通文件夹（未检测到 03-WT输入 / 04-WT输出）".format(prefix), fg=theme["muted"])
+            except Exception as exc:
+                badge_icon.config(fg=theme["muted"])
+                badge_text.config(text="{}检测异常: {}".format(prefix, exc), fg=theme["muted"])
 
         def _refresh():
             cur = path_var.get().strip().rstrip("\\/")
@@ -2819,14 +2954,21 @@ class LauncherApp:
                 entries = []
             listbox.delete(0, tk.END)
             for d in entries:
-                listbox.insert(tk.END, d)
+                listbox.insert(tk.END, "📁 {}".format(d))
             path_var.set(cur or os.path.expanduser("~"))
+            _update_compliance_badge(cur, is_selected_child=False)
 
-        def _enter():
+        def _get_selected_name():
             sel = listbox.curselection()
             if not sel:
+                return None
+            item = listbox.get(sel[0])
+            return item[2:].strip() if item.startswith("📁 ") else item.strip()
+
+        def _enter():
+            name = _get_selected_name()
+            if not name:
                 return
-            name = listbox.get(sel[0])
             cur = path_var.get().strip().rstrip("\\/")
             path_var.set(os.path.join(cur, name))
             _refresh()
@@ -2840,6 +2982,27 @@ class LauncherApp:
 
         def _on_entry_return(_event=None):
             _refresh()
+
+        def _on_listbox_select(_event=None):
+            name = _get_selected_name()
+            cur = path_var.get().strip().rstrip("\\/")
+            if name:
+                sub_dir = os.path.join(cur, name)
+                _update_compliance_badge(sub_dir, is_selected_child=True)
+            else:
+                _update_compliance_badge(cur, is_selected_child=False)
+
+        entry.bind("<Return>", _on_entry_return)
+        listbox.bind("<<ListboxSelect>>", _on_listbox_select)
+        listbox.bind("<Double-Button-1>", lambda _e: _enter())
+        listbox.bind("<Return>", lambda _e: _enter())
+
+        tk.Button(top_row, text="↑ 上一级", command=_go_up,
+                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+                  padx=10, pady=3, cursor="hand2").pack(side=tk.LEFT, padx=(6, 0))
+        tk.Button(top_row, text="⟳ 刷新", command=_refresh,
+                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+                  padx=8, pady=3, cursor="hand2").pack(side=tk.LEFT, padx=(4, 0))
 
         def _ok():
             path = path_var.get().strip().rstrip("\\/")
@@ -2860,41 +3023,35 @@ class LauncherApp:
                 ):
                     return
             result["path"] = path
+            _save_picker_state()
             dialog.destroy()
 
         def _cancel():
+            _save_picker_state()
             dialog.destroy()
 
         def _on_close():
+            _save_picker_state()
             dialog.destroy()
 
-        top_row = tk.Frame(dialog, bg=theme["bg"])
-        top_row.pack(fill=tk.X, padx=14, pady=(12, 4))
-        tk.Label(top_row, text="目录", width=6, anchor="w",
-                 bg=theme["bg"], fg=theme["muted"]).pack(side=tk.LEFT)
-        entry = tk.Entry(top_row, textvariable=path_var, font=("Microsoft YaHei UI", 10))
-        entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        entry.bind("<Return>", _on_entry_return)
-
-        nav_row = tk.Frame(dialog, bg=theme["bg"])
-        nav_row.pack(fill=tk.X, padx=14, pady=(0, 4))
-        tk.Button(nav_row, text="↑ 上一级", command=_go_up,
-                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-                  padx=10, pady=4, cursor="hand2").pack(side=tk.LEFT)
-        tk.Label(nav_row, text="双击目录进入", bg=theme["bg"],
-                 fg=theme["muted"], font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT, padx=(10, 0))
-
-        listbox.bind("<Double-Button-1>", lambda _e: _enter())
-        listbox.bind("<Return>", lambda _e: _enter())
-
+        # ── 5. 底部操作栏 ──
         bottom = tk.Frame(dialog, bg=theme["bg"])
-        bottom.pack(fill=tk.X, padx=14, pady=10)
-        tk.Button(bottom, text="选择此目录", command=_ok,
-                  bg="#059669", fg="white", relief=tk.FLAT, padx=18, pady=6,
-                  cursor="hand2").pack(side=tk.LEFT)
-        tk.Button(bottom, text="取消", command=_cancel,
-                  bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-                  padx=18, pady=6, cursor="hand2").pack(side=tk.LEFT, padx=(8, 0))
+        bottom.pack(fill=tk.X, padx=14, pady=(6, 12))
+        tk.Button(
+            bottom, text="选择此目录", command=_ok,
+            bg="#059669", fg="white", font=("Microsoft YaHei UI", 10, "bold"),
+            relief=tk.FLAT, padx=20, pady=6, cursor="hand2"
+        ).pack(side=tk.LEFT)
+        tk.Button(
+            bottom, text="进入子目录", command=_enter,
+            bg=theme["secondary"], fg=theme["text"], font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, padx=12, pady=6, cursor="hand2"
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        tk.Button(
+            bottom, text="取消", command=_cancel,
+            bg=theme["secondary"], fg=theme["text"], font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, padx=14, pady=6, cursor="hand2"
+        ).pack(side=tk.RIGHT)
 
         dialog.protocol("WM_DELETE_WINDOW", _on_close)
         _refresh()
