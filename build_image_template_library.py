@@ -36,6 +36,7 @@ except Exception:
     pytesseract = None
 
 
+PROJECT_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "image_templates", "WT_software_Images")
 INDEX_FILE_NAME = "templates_index.json"
 CANVAS_MAX_WIDTH = 1100
@@ -265,6 +266,45 @@ def safe_relpath(target_path, base_path):
         return os.path.basename(target_path)
 
 
+def repo_relative_path(path, project_root=None):
+    """项目内的绝对路径 → 相对项目根的 "/" 分隔路径；项目外/无法相对时返回空串。
+
+    templates_index.json 会随 git 分发到别的机器，写本机绝对路径既换机即失效，也违反
+    AGENTS.md「禁止把本机绝对路径写入被跟踪文件」。同一仓库内用相对路径即可解析，
+    需要绝对路径时由 reader（image_template_index）按项目根拼回。
+    """
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    root = os.path.abspath(project_root or PROJECT_ROOT_DIR)
+    try:
+        absolute = os.path.abspath(text)
+        relative = os.path.relpath(absolute, root)
+    except (ValueError, OSError):   # 跨盘符等无法相对化的情况
+        relative = None
+    if relative is not None and not relative.startswith("..") and not os.path.isabs(relative):
+        return relative.replace("\\", "/")
+    # 兜底：历史索引来自别的机器/盘符（如 D:\...\WT_Automation\image_templates\...）时，
+    # 按 image_templates/ 之后的部分归一化——索引记录一定指向 image_templates 内部。
+    normalized = os.path.abspath(text).replace("\\", "/")
+    marker = "/image_templates/"
+    position = normalized.lower().find(marker)
+    if position >= 0:
+        return "image_templates/" + normalized[position + len(marker):]
+    return ""
+
+
+def repo_absolute_path(path, project_root=None):
+    """索引里的相对/绝对路径 → 本机绝对路径（相对值按项目根解析）。"""
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    if os.path.isabs(text):
+        return text
+    root = os.path.abspath(project_root or PROJECT_ROOT_DIR)
+    return os.path.join(root, *text.replace("\\", "/").split("/"))
+
+
 def rebuild_template_index(output_root, index_data):
     raw_templates = index_data.get("templates", []) if isinstance(index_data, dict) else []
     templates = []
@@ -274,12 +314,15 @@ def rebuild_template_index(output_root, index_data):
             continue
         category = normalize_template_category(item.get("category", "default"))
         image_path = str(item.get("image_path", "")).strip()
+        image_abs = repo_absolute_path(image_path)      # 兼容历史索引里的绝对路径
+        source_screenshot = str(item.get("source_screenshot", "")).strip()
         record = {
             "category": category,
             "file_name": str(item.get("file_name", "")).strip(),
-            "image_path": image_path,
-            "relative_image_path": safe_relpath(image_path, output_root) if image_path else "",
-            "source_screenshot": str(item.get("source_screenshot", "")).strip(),
+            # 落盘一律相对项目根（历史绝对路径在此收敛，避免继续把本机路径写进跟踪文件）
+            "image_path": repo_relative_path(image_abs) or image_path,
+            "relative_image_path": safe_relpath(image_abs, output_root) if image_path else "",
+            "source_screenshot": repo_relative_path(source_screenshot) or source_screenshot,
             "region": item.get("region", {}),
             "updatedAt": str(item.get("updatedAt", "")).strip() or datetime.now().isoformat(timespec="seconds"),
         }
@@ -1917,7 +1960,7 @@ class TemplateBuilderApp:
 
         image_height, image_width = self.source_image_rgb.shape[:2]
         layout_data = {
-            "source_screenshot": screenshot_path,
+            "source_screenshot": repo_relative_path(screenshot_path) or screenshot_path,
             "category": self.category_var.get().strip() or "default",
             "image_width": image_width,
             "image_height": image_height,
@@ -2058,12 +2101,14 @@ class TemplateBuilderApp:
         if "templates" not in index_data or not isinstance(index_data.get("templates"), list):
             index_data["templates"] = []
 
+        screenshot_path = self.screenshot_path_var.get().strip()
         record = {
             "category": category,
             "file_name": file_name,
-            "image_path": output_path,
+            # 只写相对项目根的路径：索引随 git 走，写本机绝对路径换机即失效（AGENTS.md 禁止）
+            "image_path": repo_relative_path(output_path) or output_path,
             "relative_image_path": safe_relpath(output_path, output_root),
-            "source_screenshot": self.screenshot_path_var.get().strip(),
+            "source_screenshot": repo_relative_path(screenshot_path) or screenshot_path,
             "region": region.as_dict(),
             "updatedAt": datetime.now().isoformat(timespec="seconds"),
         }
