@@ -339,6 +339,36 @@ class WorkerTkIsolationTests(unittest.TestCase):
         with open(os.path.join(out_dir, "in_替换.txt"), "r", encoding="utf-8-sig") as f:
             self.assertIn("X乙丙", f.read())
 
+    def test_process_one_partial_params_uses_empty_defaults_without_tk(self):
+        """部分 params（缺 op 需要的键）：以空串兜底给出业务提示，不 KeyError、不回头读 Tk。"""
+        card = object.__new__(text_tools.TextToolsCard)
+        card.log = lambda _m: None
+        src = self._write("in2.txt", "甲乙丙\n")
+        with self.assertRaises(ValueError) as ctx:
+            card._process_one(src, self.tmp.name, "replace", "utf-8-sig",
+                              {"filter_kw": "与 replace 无关的键"})
+        self.assertIn("查找", str(ctx.exception))
+
+    def test_build_merged_single_sheet_progress_uses_snapshot_total(self):
+        """审计复核 P3：进度上限取传入快照长度，而非实时 self.csv_files。"""
+        card = object.__new__(text_tools.CsvConvertCard)
+        card.log = lambda _m: None
+        card._cancel_event = threading.Event()
+        card._batch_failed = 0
+        card._confirm_overwrite = lambda _dst: True
+        srcs = []
+        for i in range(2):
+            p = os.path.join(self.tmp.name, f"d{i}.csv")
+            with open(p, "w", encoding="utf-8", newline="") as f:
+                f.write("名称,数值\n甲,1\n")
+            srcs.append(p)
+        card.csv_files = ["不存在的实时列表项.csv"]  # 与快照故意不同，用于暴露漏改
+
+        seen = []
+        card._build_merged_single_sheet(
+            self.tmp.name, lambda cur, total: seen.append((cur, total)), srcs)
+        self.assertEqual(seen, [(1, 2), (2, 2)])
+
     def test_confirm_overwrite_defaults_to_skip_without_prescan(self):
         """绕过预扫描的异常路径缺省 skip：宁可少写盘，不静默覆盖（审计 P2）。"""
         card = object.__new__(text_tools.CsvConvertCard)
@@ -457,7 +487,9 @@ class TxtMergeCardWorkerTests(unittest.TestCase):
             seen["thread"] = threading.current_thread()
             return real_merge(paths, out, **kwargs)
 
-        with patch("text_tools.filedialog.asksaveasfilename", return_value=self.out),                 patch("text_tools.messagebox.showinfo"),                 patch("text_tools.merge_txt_files", side_effect=spy):
+        with patch("text_tools.filedialog.asksaveasfilename", return_value=self.out), \
+             patch("text_tools.messagebox.showinfo"), \
+             patch("text_tools.merge_txt_files", side_effect=spy):
             self.card.merge()
             deadline = time.time() + 5
             while "thread" not in seen and time.time() < deadline:
@@ -470,6 +502,32 @@ class TxtMergeCardWorkerTests(unittest.TestCase):
         self.assertIsNot(seen["thread"], threading.main_thread())
         self.assertTrue(os.path.isfile(self.out))
         self.assertEqual(self.card.btn_merge.cget("text"), "合并为单个 txt")
+        self.assertIn("合并完成", self.card.status.cget("text"))
+
+    def test_merge_passes_progress_callback_to_core(self):
+        """审计复核 P3：卡片把 progress_callback 透传核心，否则没有 N/M 进度。"""
+        seen = {}
+        real_merge = text_tools.merge_txt_files
+
+        def spy(paths, out, progress_callback=None, **kwargs):
+            seen["has_progress"] = progress_callback is not None
+            if progress_callback is not None:
+                progress_callback(1, len(paths))  # 不得抛异常
+            return real_merge(paths, out, **kwargs)
+
+        with patch("text_tools.filedialog.asksaveasfilename", return_value=self.out), \
+             patch("text_tools.messagebox.showinfo"), \
+             patch("text_tools.merge_txt_files", side_effect=spy):
+            self.card.merge()
+            deadline = time.time() + 5
+            while "has_progress" not in seen and time.time() < deadline:
+                self.root.update()
+                time.sleep(0.01)
+            for _ in range(30):
+                self.root.update()
+                time.sleep(0.01)
+
+        self.assertTrue(seen.get("has_progress"))
         self.assertIn("合并完成", self.card.status.cget("text"))
 
 

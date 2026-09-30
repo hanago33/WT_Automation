@@ -354,10 +354,18 @@ class TxtMergeCard(ttk.Frame):
         self.btn_merge.configure(text="⨂ 取消合并")
         self.status.config(text="正在合并...")
 
+        def _progress(done, total_count):
+            # worker 只投递文本，由主线程更新（与 txt_merge_tool 同款纪律）
+            self._merge_events.put(
+                lambda d=done, t=total_count: self.status.config(
+                    text=f"正在合并... {d}/{t}"))
+
         def _worker():
             try:
                 count, total_chars = merge_txt_files(
-                    paths, output, cancel_event=self._merge_cancel, **options)
+                    paths, output,
+                    progress_callback=_progress,
+                    cancel_event=self._merge_cancel, **options)
             except wt_txt_merge_core.MergeCancelled as exc:
                 done = exc.done
                 self._merge_events.put(lambda d=done, t=total: self._merge_finish(
@@ -894,7 +902,7 @@ class CsvConvertCard(ttk.Frame):
         wb = Workbook()
         ws = wb.active
         ws.title = "合并数据"
-        total = len(self.csv_files)
+        total = len(files)  # 与迭代同一份快照（审计复审核对：此前漏改，进度上限仍取实时列表）
         current_row = 1
         for idx, src in enumerate(files, start=1):
             if self._cancel_event.is_set():
@@ -1037,6 +1045,22 @@ def convert_encoding_file(path, out_path, target_encoding="utf-8-sig"):
     with open(out_path, "w", encoding=target_encoding, newline="") as f:
         f.write(content)
     return len(content.splitlines())
+
+
+# _process_one 需要的选项键：主线程快照必须全量给出；worker 内只按固定键读
+# params，缺失键以空串兜底（不回读 Tk，见 _process_one 注释）
+_PROCESS_PARAM_KEYS = (
+    "split_lines",
+    "filter_kw",
+    "filter_mode",
+    "replace_old",
+    "replace_new",
+    "affix_pre",
+    "affix_suf",
+    "case_mode",
+    "enc_target",
+)
+_PROCESS_PARAM_DEFAULTS = {key: "" for key in _PROCESS_PARAM_KEYS}
 
 
 class TextToolsCard(ttk.Frame):
@@ -1248,19 +1272,9 @@ class TextToolsCard(ttk.Frame):
         out_dir = self.out_dir or os.path.dirname(self.files[0]) or "."
         os.makedirs(out_dir, exist_ok=True)
 
-        # 选项在主线程一次性快照：_process_one 原本在循环内读多个 Tk 变量，
+        # 选项在主线程一次性快照（与 _process_one 的补齐路径共用同一份定义），
         # worker 中禁止触碰 Tk（待修改清单 #1）
-        params = dict(
-            split_lines=self.split_var.get(),
-            filter_kw=self.filter_kw.get(),
-            filter_mode=self.filter_mode.get(),
-            replace_old=self.replace_old.get(),
-            replace_new=self.replace_new.get(),
-            affix_pre=self.affix_pre.get(),
-            affix_suf=self.affix_suf.get(),
-            case_mode=self.case_mode.get(),
-            enc_target=self.enc_target.get(),
-        )
+        params = self._snapshot_process_params()
         op = self.op_var.get()
         enc = self.out_enc.get()
         files = list(self.files)
@@ -1346,24 +1360,31 @@ class TextToolsCard(ttk.Frame):
             self.log(f"处理失败：全部 {total} 个文件均失败。")
             messagebox.showerror("处理失败", f"全部 {total} 个文件均处理失败，详见日志。")
 
+    def _snapshot_process_params(self):
+        """主线程快照 _process_one 需要的全部选项（worker 内禁止调用：会读 Tk）。"""
+        return dict(
+            split_lines=self.split_var.get(),
+            filter_kw=self.filter_kw.get(),
+            filter_mode=self.filter_mode.get(),
+            replace_old=self.replace_old.get(),
+            replace_new=self.replace_new.get(),
+            affix_pre=self.affix_pre.get(),
+            affix_suf=self.affix_suf.get(),
+            case_mode=self.case_mode.get(),
+            enc_target=self.enc_target.get(),
+        )
+
     def _process_one(self, src, out_dir, op, enc, params=None):
         """处理单个文件。params 为 run() 在主线程快照的选项字典。
 
-        worker 内禁止触碰 Tk 变量：params 缺失（旧式直接调用，主线程）时
-        在此一次性补齐快照，函数体一律只读 params。
+        worker 内禁止触碰 Tk 变量：params 为 None 且当前在主线程（旧式直接调用）
+        时在此补齐整份快照；只给了一部分时，缺失键以空串兜底、**不回头读 Tk**
+        （此前用 params.get(key) or self.xxx.get()，字段留空时会静默落回 Tk）。
+        因此函数体只按固定键读 params。
         """
-        if params is None:
-            params = dict(
-                split_lines=self.split_var.get(),
-                filter_kw=self.filter_kw.get(),
-                filter_mode=self.filter_mode.get(),
-                replace_old=self.replace_old.get(),
-                replace_new=self.replace_new.get(),
-                affix_pre=self.affix_pre.get(),
-                affix_suf=self.affix_suf.get(),
-                case_mode=self.case_mode.get(),
-                enc_target=self.enc_target.get(),
-            )
+        if params is None and threading.current_thread() is threading.main_thread():
+            params = self._snapshot_process_params()
+        params = dict(_PROCESS_PARAM_DEFAULTS, **(params or {}))
         base = os.path.splitext(os.path.basename(src))[0]
         if op == "dedupe":
             dst = os.path.join(out_dir, base + "_去重.txt")

@@ -103,6 +103,35 @@ class TemplateCanvasDragTests(unittest.TestCase):
         self.assertFalse(self.app.canvas.find_withtag("preview"))
         self.assertIsNone(self.app.drag_action)
 
+    def test_moving_drag_hides_static_layer_and_restores_on_release(self):
+        """审计复核 P2：被拖框的静态层（框 + 序号 + 手柄同 tag）拖动期必须隐藏。
+
+        此前只在预览层叠加新框，旧框与 8 个手柄仍留在旧位置 → 界面上出现两个框。
+        """
+        self.app.candidates = [B.CandidateRegion(x=10, y=10, w=30, h=20)]
+        self.app.template_names = ["template_001"]
+        self.app.selected_index = 0
+        self.app.refresh_canvas()
+        static_items = self.app.canvas.find_withtag("cand_0")
+        self.assertGreater(len(static_items), 2)  # 框 + 序号 + 手柄都在同一 tag 下
+
+        self.app.drag_action = "moving"
+        self.app.drag_start = (10, 10)
+        self.app.drag_start_region = B.CandidateRegion(x=10, y=10, w=30, h=20)
+        self.app.drag_current_index = 0
+        for i in range(3):
+            self.app.on_canvas_drag(self._ev(11 + i, 10))
+        self.assertEqual(
+            {self.app.canvas.itemcget(item, "state") for item in static_items}, {"hidden"})
+        self.assertTrue(self.app.canvas.find_withtag("preview"))
+
+        self.app.on_canvas_release(self._ev(13, 10))
+        restored = self.app.canvas.find_withtag("cand_0")
+        self.assertEqual(len(restored), len(static_items))
+        self.assertEqual(
+            {self.app.canvas.itemcget(item, "state") for item in restored}, {""})
+        self.assertFalse(self.app.canvas.find_withtag("preview"))
+
 
 if __name__ == "__main__":
     unittest.main()

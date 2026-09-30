@@ -65,6 +65,49 @@ class RunTesseractCliTimeoutTests(unittest.TestCase):
             self.assertEqual(B.run_tesseract_cli(self.image), "")
 
 
+class ExtractTextTimeoutRetryTests(unittest.TestCase):
+    """#3 审计复核：pytesseract 超时不再回退 CLI 重跑同一时限（最坏 2×timeout）。
+
+    修复靠 pytesseract 超时异常文案（当前版本为 "Tesseract process timeout"）识别，
+    这三条断言把「只在超时时短路、其余异常仍回退 CLI」的语义锁住。
+    """
+
+    def setUp(self):
+        self.image = B.Image.new("L", (20, 10))
+
+    def test_pytesseract_timeout_returns_none_without_cli_retry(self):
+        class _TimeoutTess:
+            def image_to_string(self, *_a, **_kw):
+                raise RuntimeError("Tesseract process timeout")
+
+        cli_calls = []
+        with patch.object(B, "pytesseract", _TimeoutTess()), \
+             patch.object(B, "run_tesseract_cli",
+                          side_effect=lambda *a, **kw: cli_calls.append(a) or "CLI-TEXT"):
+            self.assertIsNone(B.extract_text_with_ocr(self.image, timeout=1.0))
+        self.assertEqual(cli_calls, [])  # 超时即返回 None：CLI 零调用，无 2×timeout
+
+    def test_non_timeout_runtime_error_still_falls_back_to_cli(self):
+        """非超时 RuntimeError（如 tesseract 未安装）不得被误判为超时。"""
+        class _BrokenTess:
+            def image_to_string(self, *_a, **_kw):
+                raise RuntimeError("tesseract is not installed")
+
+        with patch.object(B, "pytesseract", _BrokenTess()), \
+             patch.object(B, "run_tesseract_cli", return_value="CLI-TEXT"):
+            self.assertEqual(B.extract_text_with_ocr(self.image, timeout=1.0), "CLI-TEXT")
+
+    def test_missing_timeout_kwarg_still_falls_back_to_cli(self):
+        """老版本 pytesseract 无 timeout 形参（TypeError）时仍回退 CLI。"""
+        class _NoTimeoutTess:
+            def image_to_string(self, *_a, **_kw):
+                raise TypeError("unexpected keyword argument 'timeout'")
+
+        with patch.object(B, "pytesseract", _NoTimeoutTess()), \
+             patch.object(B, "run_tesseract_cli", return_value="CLI-TEXT"):
+            self.assertEqual(B.extract_text_with_ocr(self.image, timeout=1.0), "CLI-TEXT")
+
+
 class OcrBatchNamingTests(unittest.TestCase):
     """批量 OCR 命名：worker 执行、逐框回写、取消路径（双向断言见注释）。"""
 
