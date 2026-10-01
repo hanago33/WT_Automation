@@ -1137,48 +1137,259 @@ class NewDefaultChainDialog:
         self.result = None  # {"directory": str, "name": str, "path": str}
         self.var_directory = tk.StringVar(value=(last_directory or BASE_DIR))
         self.var_name = tk.StringVar(value=(last_name or ""))
+        self.warn_var = tk.StringVar()
+        self.probe_status_var = tk.StringVar(value="正在探测路径合规性...")
         self._build_window()
 
     def _build_window(self):
-        self.window = tk.Toplevel(self.parent)
-        self.window.title("新建默认链路 - 选择保存位置与名称")
-        self.window.transient(self.parent)
-        self.window.grab_set()
-        self.window.resizable(False, False)
-        self.window.protocol("WM_DELETE_WINDOW", self.on_cancel)
+        pal = EDITOR_THEME
+        self.window = _make_dialog_window(
+            self.parent,
+            "✨ 新建流程链路定义",
+            width=680,
+            height=460,
+            min_width=580,
+            min_height=380,
+            on_close=self.on_cancel,
+        )
 
-        frm = ttk.Frame(self.window, padding=(14, 12))
-        frm.grid(row=0, column=0, sticky="nsew")
+        root_frame = tk.Frame(self.window, bg=pal["bg"], padx=16, pady=14)
+        root_frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(frm, text="保存位置（目录）：").grid(row=0, column=0, sticky="w", pady=(2, 2))
-        dir_row = ttk.Frame(frm)
-        dir_row.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        ttk.Entry(dir_row, textvariable=self.var_directory, width=52).grid(row=0, column=0, sticky="ew")
-        ttk.Button(dir_row, text="浏览...", command=self._browse_directory).grid(row=0, column=1, padx=(8, 0))
-        dir_row.columnconfigure(0, weight=1)
+        # ── 顶栏标题与说明 ──
+        header_frame = tk.Frame(root_frame, bg=pal["bg"])
+        header_frame.pack(fill=tk.X, pady=(0, 10))
 
-        ttk.Label(frm, text="文件名称（不含扩展名）：").grid(row=2, column=0, sticky="w", pady=(0, 2))
-        name_entry = ttk.Entry(frm, textvariable=self.var_name, width=52)
-        name_entry.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        tk.Label(
+            header_frame,
+            text="✨ 新建流程链路定义",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            bg=pal["bg"],
+            fg=pal["text"],
+        ).pack(anchor="w")
+
+        tk.Label(
+            header_frame,
+            text="指定链路保存目录与文件名称，支持常用工作区胶囊快捷填入及重名即时探测。",
+            font=("Microsoft YaHei UI", 9),
+            bg=pal["bg"],
+            fg=pal["muted"],
+        ).pack(anchor="w", pady=(2, 0))
+
+        # ── 卡片 1：保存位置与快捷胶囊 ──
+        dir_card = tk.LabelFrame(
+            root_frame,
+            text=" 📁 保存目录位置 ",
+            bg=pal["card"],
+            fg=pal["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.SOLID,
+            padx=12,
+            pady=10,
+            highlightthickness=0,
+        )
+        dir_card.pack(fill=tk.X, pady=(0, 10))
+
+        dir_input_row = tk.Frame(dir_card, bg=pal["card"])
+        dir_input_row.pack(fill=tk.X)
+
+        dir_entry = ttk.Entry(dir_input_row, textvariable=self.var_directory, font=("Microsoft YaHei UI", 9))
+        dir_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+
+        browse_btn = wt_theme.create_flat_button(
+            dir_input_row,
+            text="📂 浏览...",
+            command=self._browse_directory,
+            tone="secondary",
+            padx=10,
+            pady=3,
+        )
+        browse_btn.pack(side=tk.RIGHT)
+
+        # 快捷直达胶囊栏
+        chips_frame = tk.Frame(dir_card, bg=pal["card"])
+        chips_frame.pack(fill=tk.X, pady=(8, 0))
+
+        tk.Label(
+            chips_frame,
+            text="快捷直达:",
+            font=("Microsoft YaHei UI", 8),
+            bg=pal["card"],
+            fg=pal["muted"],
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        workspace_dir = os.path.join(BASE_DIR, "workspace")
+        quick_locations = [
+            ("📁 当前工作区", workspace_dir if os.path.isdir(workspace_dir) else BASE_DIR),
+            ("⚡ 项目根目录", BASE_DIR),
+            ("🖥️ 桌面", os.path.join(os.path.expanduser("~"), "Desktop")),
+        ]
+        # 扫描存在的盘符
+        for drive in ("D:", "E:", "C:"):
+            drive_path = drive + "\\"
+            if os.path.exists(drive_path):
+                quick_locations.append((f"{drive} 盘", drive_path))
+
+        for chip_text, chip_path in quick_locations[:5]:
+            btn = tk.Button(
+                chips_frame,
+                text=chip_text,
+                command=lambda p=chip_path: self._set_directory(p),
+                bg=pal.get("panel_soft", "#f8fafc"),
+                fg=pal["text"],
+                relief=tk.FLAT,
+                bd=0,
+                padx=8,
+                pady=2,
+                cursor="hand2",
+                font=("Microsoft YaHei UI", 8),
+                activebackground=pal.get("primary_soft", "#dbeafe"),
+                activeforeground=pal["primary"],
+                highlightthickness=1,
+                highlightbackground=pal["border"],
+            )
+            btn.pack(side=tk.LEFT, padx=3)
+
+        # ── 卡片 2：文件名称与命名预设 ──
+        name_card = tk.LabelFrame(
+            root_frame,
+            text=" 📄 链路文件名称 ",
+            bg=pal["card"],
+            fg=pal["primary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bd=1,
+            relief=tk.SOLID,
+            padx=12,
+            pady=10,
+            highlightthickness=0,
+        )
+        name_card.pack(fill=tk.X, pady=(0, 10))
+
+        name_input_row = tk.Frame(name_card, bg=pal["card"])
+        name_input_row.pack(fill=tk.X)
+
+        name_entry = ttk.Entry(name_input_row, textvariable=self.var_name, font=("Microsoft YaHei UI", 9))
+        name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
         name_entry.focus_set()
         if self.var_name.get():
             name_entry.select_range(0, "end")
 
-        self.warn_var = tk.StringVar()
-        ttk.Label(frm, textvariable=self.warn_var, foreground="#dc2626").grid(row=4, column=0, sticky="w", pady=(0, 10))
+        tk.Label(
+            name_input_row,
+            text=".json",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=pal["card"],
+            fg=pal["muted"],
+        ).pack(side=tk.RIGHT)
+
+        preset_row = tk.Frame(name_card, bg=pal["card"])
+        preset_row.pack(fill=tk.X, pady=(8, 0))
+
+        tk.Label(
+            preset_row,
+            text="命名预设:",
+            font=("Microsoft YaHei UI", 8),
+            bg=pal["card"],
+            fg=pal["muted"],
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        for preset_text, preset_val in (
+            ("标准全流程", "flow_standard"),
+            ("参数扫描子流程", "flow_param_scan"),
+            ("快捷测试链路", "flow_quick_test"),
+        ):
+            pbtn = tk.Button(
+                preset_row,
+                text=preset_text,
+                command=lambda v=preset_val: self._set_name(v),
+                bg=pal.get("panel_soft", "#f8fafc"),
+                fg=pal["text"],
+                relief=tk.FLAT,
+                bd=0,
+                padx=8,
+                pady=2,
+                cursor="hand2",
+                font=("Microsoft YaHei UI", 8),
+                activebackground=pal.get("primary_soft", "#dbeafe"),
+                activeforeground=pal["primary"],
+                highlightthickness=1,
+                highlightbackground=pal["border"],
+            )
+            pbtn.pack(side=tk.LEFT, padx=3)
+
+        # ── 探针反馈指示条 ──
+        probe_strip = tk.Frame(
+            root_frame,
+            bg=pal.get("panel_soft", "#f8fafc"),
+            padx=10,
+            pady=6,
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+        )
+        probe_strip.pack(fill=tk.X, pady=(0, 12))
+
+        self.probe_icon_label = tk.Label(
+            probe_strip,
+            text="✓",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=probe_strip["bg"],
+            fg=pal["success"],
+        )
+        self.probe_icon_label.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.probe_msg_label = tk.Label(
+            probe_strip,
+            textvariable=self.probe_status_var,
+            font=("Microsoft YaHei UI", 8),
+            bg=probe_strip["bg"],
+            fg=pal["text"],
+            anchor="w",
+        )
+        self.probe_msg_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         self.var_directory.trace_add("write", self._refresh_warning)
         self.var_name.trace_add("write", self._refresh_warning)
         self._refresh_warning()
 
-        btn_row = ttk.Frame(frm)
-        btn_row.grid(row=5, column=0, sticky="e", pady=(2, 0))
-        ttk.Button(btn_row, text="取消", command=self.on_cancel).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(btn_row, text="确定新建", command=self.on_ok).grid(row=0, column=1)
+        # ── 底部操作按钮 ──
+        btn_row = tk.Frame(root_frame, bg=pal["bg"])
+        btn_row.pack(fill=tk.X, side=tk.BOTTOM)
 
-        frm.columnconfigure(0, weight=1)
+        cancel_btn = wt_theme.create_flat_button(
+            btn_row,
+            text="取消 (Esc)",
+            command=self.on_cancel,
+            tone="secondary",
+            padx=16,
+            pady=5,
+        )
+        cancel_btn.pack(side=tk.RIGHT, padx=(8, 0))
+
+        ok_btn = wt_theme.create_flat_button(
+            btn_row,
+            text="确定新建 (Enter)",
+            command=self.on_ok,
+            tone="primary",
+            padx=20,
+            pady=5,
+        )
+        ok_btn.pack(side=tk.RIGHT)
+
+        # 绑定键盘加速键
+        self.window.bind("<Return>", lambda _e: self.on_ok())
+        self.window.bind("<Escape>", lambda _e: self.on_cancel())
+
         self.window.update_idletasks()
-        self.window.geometry("")
         self.window.wait_window(self.window)
+
+    def _set_directory(self, path):
+        self.var_directory.set(path)
+        self._refresh_warning()
+
+    def _set_name(self, name):
+        self.var_name.set(name)
+        self._refresh_warning()
 
     def _browse_directory(self):
         initial = self.var_directory.get() or BASE_DIR
@@ -1197,11 +1408,27 @@ class NewDefaultChainDialog:
         return os.path.join(directory, name)
 
     def _refresh_warning(self, *args):
+        pal = EDITOR_THEME
         path = self._build_path()
-        if path and os.path.exists(path):
-            self.warn_var.set("⚠ 该路径已存在文件，新建后保存将覆盖原有内容。")
+        if not (self.var_directory.get() or "").strip() or not (self.var_name.get() or "").strip():
+            self.warn_var.set("")
+            self.probe_status_var.set("请填写保存目录与文件名称。")
+            if hasattr(self, "probe_icon_label"):
+                self.probe_icon_label.config(text="ℹ", fg=pal["muted"])
+                self.probe_msg_label.config(fg=pal["muted"])
+        elif path and os.path.exists(path):
+            warn_msg = "⚠ 该路径已存在文件，新建后保存将覆盖原有内容。"
+            self.warn_var.set(warn_msg)
+            self.probe_status_var.set(f"同名文件已存在：{os.path.basename(path)}，确定后将提示覆盖。")
+            if hasattr(self, "probe_icon_label"):
+                self.probe_icon_label.config(text="⚠", fg=pal["warning"])
+                self.probe_msg_label.config(fg=pal["warning_text"])
         else:
             self.warn_var.set("")
+            self.probe_status_var.set(f"目标路径就绪：{path}，确认后可直接新建。")
+            if hasattr(self, "probe_icon_label"):
+                self.probe_icon_label.config(text="✓", fg=pal["success"])
+                self.probe_msg_label.config(fg=pal["success_text"])
 
     def on_ok(self):
         directory = (self.var_directory.get() or "").strip()
@@ -1668,14 +1895,16 @@ class ControlEditorDialog:
         self.applied = False
         self._loading = True
         self.on_import_anchor_control = on_import_anchor_control
+        self.control_library = control_library or []
 
         self.window = _make_dialog_window(
             parent,
             f"细分控件编辑 - {step_name or '未命名步骤'}",
-            1180, 860,
+            1200, 880,
             min_width=980, min_height=720,
             on_close=self.on_cancel,
         )
+        self.window.configure(bg=EDITOR_THEME.get("bg", "#f8fafc"))
 
         self.var_id = tk.StringVar(value=self.control.get("id", ""))
         self.var_name = tk.StringVar(value=self.control.get("name", ""))
@@ -1715,7 +1944,6 @@ class ControlEditorDialog:
         self.var_previous = tk.StringVar(value=inspect_data.get("previous", ""))
 
         tab_nav = self.control.get("tabNavigation", {}) or {}
-        self.control_library = control_library or []
         self.var_tab_anchor_id = tk.StringVar(value=tab_nav.get("anchorControlId", ""))
         self.var_tab_direction = tk.StringVar(value=tab_nav.get("direction", "forward"))
         self.var_tab_steps = tk.StringVar(value=str(tab_nav.get("steps", "")))
@@ -1723,6 +1951,9 @@ class ControlEditorDialog:
         self.var_tab_click_twice = tk.BooleanVar(value=bool(tab_nav.get("clickTwiceToExpand", False)))
 
         self.status_var = tk.StringVar(value="可粘贴 Inspect 原始文本后自动解析。")
+        self.validation_badge_var = tk.StringVar(value="正在分析定位...")
+        self.search_filter_var = tk.StringVar(value="")
+        self._parsed_field_rows = []
 
         self._build_ui()
         self._set_text(self.raw_text, self.control.get("rawInspectText", ""))
@@ -1735,103 +1966,304 @@ class ControlEditorDialog:
             self.parse_current_text()
         self.dirty = False
         self._loading = False
+        self._refresh_validation_state()
+
+        # 监听字段变化
+        for v in (self.var_id, self.var_name, self.var_target_method, self.var_target_value):
+            v.trace_add("write", lambda *_: self._on_validation_field_change())
 
     def _build_ui(self):
-        toolbar = tk.Frame(self.window, padx=10, pady=8, bg=EDITOR_THEME["toolbar"])
-        toolbar.pack(fill=tk.X)
-        tk.Button(toolbar, text="从剪贴板解析 Inspect", command=self.import_from_clipboard).pack(side=tk.LEFT, padx=3)
-        tk.Button(toolbar, text="从文本文件导入", command=self.import_from_file).pack(side=tk.LEFT, padx=3)
-        tk.Button(toolbar, text="按当前文本重新解析", command=self.parse_current_text).pack(side=tk.LEFT, padx=3)
-        tk.Button(toolbar, text="生成推荐定位", command=self.apply_recommended_locator).pack(side=tk.LEFT, padx=3)
-        tk.Button(toolbar, text="保存当前控件", command=self.apply_changes, bg="#eff6ff").pack(side=tk.LEFT, padx=3)
-        tk.Button(toolbar, text="保存并关闭", command=self.on_confirm, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Label(toolbar, textvariable=self.status_var, bg=EDITOR_THEME["toolbar"], fg=EDITOR_THEME["muted"]).pack(side=tk.RIGHT)
+        pal = EDITOR_THEME
 
-        body = tk.Frame(self.window, padx=10, pady=10)
+        # ── 顶栏标题与实时校验 Badge ──
+        header = tk.Frame(self.window, bg=pal.get("bg", "#f8fafc"), padx=14, pady=10)
+        header.pack(fill=tk.X)
+
+        title_col = tk.Frame(header, bg=pal.get("bg", "#f8fafc"))
+        title_col.pack(side=tk.LEFT, fill=tk.Y)
+
+        tk.Label(
+            title_col,
+            text="🎯 细分控件精确配置",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            bg=pal.get("bg", "#f8fafc"),
+            fg=pal.get("text", "#1f2d3d"),
+        ).pack(anchor="w")
+
+        tk.Label(
+            title_col,
+            text="支持 Inspect 文本多源解析、属性筛选检索、推荐定位生成与即时验证。",
+            font=("Microsoft YaHei UI", 9),
+            bg=pal.get("bg", "#f8fafc"),
+            fg=pal.get("muted", "#64748b"),
+        ).pack(anchor="w", pady=(2, 0))
+
+        self.validation_badge_label = tk.Label(
+            header,
+            textvariable=self.validation_badge_var,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=pal.get("panel_soft", "#f1f5f9"),
+            fg=pal.get("muted", "#64748b"),
+            padx=10,
+            pady=4,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
+        self.validation_badge_label.pack(side=tk.RIGHT, pady=4)
+
+        # ── 操作工具栏 ──
+        toolbar = tk.Frame(
+            self.window,
+            padx=14,
+            pady=6,
+            bg=pal.get("toolbar", "#ffffff"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
+        toolbar.pack(fill=tk.X)
+
+        btn_specs = [
+            ("📋 从剪贴板解析", self.import_from_clipboard, "secondary"),
+            ("📂 从文本文件导入", self.import_from_file, "secondary"),
+            ("🔄 重新解析", self.parse_current_text, "secondary"),
+            ("💡 生成推荐定位", self.apply_recommended_locator, "secondary"),
+            ("🧪 校验此定位", self.test_current_locator, "secondary"),
+            ("📋 复制定位表达", self.copy_locator_expression, "secondary"),
+            ("💾 保存当前控件", self.apply_changes, "secondary"),
+            ("✔ 保存并关闭", self.on_confirm, "primary"),
+        ]
+        for text, cmd, tone in btn_specs:
+            btn = wt_theme.create_flat_button(toolbar, text=text, command=cmd, tone=tone, padx=8, pady=3)
+            btn.pack(side=tk.LEFT, padx=3)
+
+        tk.Label(
+            toolbar,
+            textvariable=self.status_var,
+            bg=pal.get("toolbar", "#ffffff"),
+            fg=pal.get("muted", "#64748b"),
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.RIGHT, padx=6)
+
+        # ── 选项卡主体 ──
+        body = tk.Frame(self.window, padx=12, pady=10, bg=pal.get("bg", "#f8fafc"))
         body.pack(fill=tk.BOTH, expand=True)
+
         notebook = ttk.Notebook(body)
         notebook.pack(fill=tk.BOTH, expand=True)
 
-        basic_tab = tk.Frame(notebook, padx=10, pady=10)
-        inspect_tab = tk.Frame(notebook, padx=10, pady=10)
-        detail_tab = tk.Frame(notebook, padx=10, pady=10)
-        notebook.add(basic_tab, text="基本信息")
-        notebook.add(inspect_tab, text="Inspect 解析")
-        notebook.add(detail_tab, text="结构与备注")
+        basic_tab = tk.Frame(notebook, padx=10, pady=10, bg=pal.get("bg", "#f8fafc"))
+        inspect_tab = tk.Frame(notebook, padx=10, pady=10, bg=pal.get("bg", "#f8fafc"))
+        detail_tab = tk.Frame(notebook, padx=10, pady=10, bg=pal.get("bg", "#f8fafc"))
 
-        basic = tk.LabelFrame(basic_tab, text="控件基本信息", padx=10, pady=10)
-        basic.pack(fill=tk.BOTH, expand=True)
-        basic.columnconfigure(1, weight=1)
-        basic.columnconfigure(3, weight=1)
+        notebook.add(basic_tab, text="  🎯 基本与定位  ")
+        notebook.add(inspect_tab, text="  🔍 Inspect 解析  ")
+        notebook.add(detail_tab, text="  🌲 结构与备注  ")
 
-        row = 0
-        self._grid_label_entry(basic, "控件ID *", self.var_id, row, 0)
-        self._grid_label_entry(basic, "控件别名", self.var_name, row, 2)
-        row += 1
-        self._grid_label_entry(basic, "控件用途", self.var_role, row, 0)
-        self._grid_label_entry(basic, "所属窗口", self.var_window_title, row, 2)
-        row += 1
-        self._grid_label_entry(basic, "target_method *", self.var_target_method, row, 0)
-        self._grid_label_entry(basic, "target_value *", self.var_target_value, row, 2)
-        row += 1
-        self._grid_label_entry(basic, "templateKey", self.var_template_key, row, 0)
-        self._grid_label_entry(basic, "UIPath", self.var_ui_path, row, 2)
-        row += 1
-        self._grid_label_entry(basic, "labelText", self.var_label_text, row, 0)
-        self._grid_label_entry(basic, "relatedLabelName", self.var_related_label_name, row, 2)
-        row += 1
-        tk.Checkbutton(basic, text="启用该控件", variable=self.var_enabled).grid(row=row, column=0, sticky="w", pady=4)
+        # ────────── Tab 1: 基本与定位 ──────────
+        # 1. 基本属性卡片
+        basic_card = tk.LabelFrame(
+            basic_tab,
+            text="🏷️ 基本属性",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=12,
+            pady=8,
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
+        basic_card.pack(fill=tk.X, pady=(0, 8))
+        basic_card.columnconfigure(1, weight=1)
+        basic_card.columnconfigure(3, weight=1)
+
+        self._grid_label_entry(basic_card, "控件ID *", self.var_id, 0, 0)
+        self._grid_label_entry(basic_card, "控件别名", self.var_name, 0, 2)
+        self._grid_label_entry(basic_card, "控件用途", self.var_role, 1, 0)
+        self._grid_label_entry(basic_card, "所属窗口", self.var_window_title, 1, 2)
+
+        chk_wrap = tk.Frame(basic_card, bg=pal.get("card", "#ffffff"))
+        chk_wrap.grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 2))
+        tk.Checkbutton(
+            chk_wrap,
+            text="启用该控件定义",
+            variable=self.var_enabled,
+            bg=pal.get("card", "#ffffff"),
+            activebackground=pal.get("card", "#ffffff"),
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT)
+
+        # 2. 定位策略卡片
+        loc_card = tk.LabelFrame(
+            basic_tab,
+            text="🎯 定位策略 (带 * 至少保证 ID、target_method、target_value 完整)",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=12,
+            pady=8,
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
+        loc_card.pack(fill=tk.X, pady=(0, 8))
+        loc_card.columnconfigure(1, weight=1)
+        loc_card.columnconfigure(3, weight=1)
+
         tk.Label(
-            basic,
-            text="带 * 为定位必填项，至少要保证控件ID、target_method、target_value 完整。",
-            fg="#666666",
-            justify=tk.LEFT,
-            anchor="w",
-        ).grid(row=row + 1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+            loc_card, text="target_method *", font=("Microsoft YaHei UI", 9),
+            bg=pal.get("card", "#ffffff"), fg=pal.get("text", "#1f2d3d"),
+        ).grid(row=0, column=0, sticky="w", pady=4)
+        method_combo = ttk.Combobox(
+            loc_card,
+            textvariable=self.var_target_method,
+            values=[
+                "automation_id", "name", "class_name", "title",
+                "control_type", "xpath", "coords", "template_key", "custom",
+            ],
+            font=("Microsoft YaHei UI", 9),
+        )
+        method_combo.grid(row=0, column=1, sticky="ew", padx=(8, 12), pady=4)
 
-        # ── Tab 导航降级配置（可选） ──
-        tab_nav_frame = tk.LabelFrame(basic, text="Tab 导航降级（可选，用于 WPF 不可见输入框）", padx=8, pady=6)
-        tab_nav_frame.grid(row=row + 2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        self._grid_label_entry(loc_card, "target_value *", self.var_target_value, 0, 2)
+        self._grid_label_entry(loc_card, "templateKey", self.var_template_key, 1, 0)
+        self._grid_label_entry(loc_card, "UIPath", self.var_ui_path, 1, 2)
+        self._grid_label_entry(loc_card, "labelText", self.var_label_text, 2, 0)
+        self._grid_label_entry(loc_card, "relatedLabelName", self.var_related_label_name, 2, 2)
+
+        loc_tools = tk.Frame(loc_card, bg=pal.get("card", "#ffffff"))
+        loc_tools.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 2))
+        wt_theme.create_flat_button(
+            loc_tools, text="💡 生成推荐定位", command=self.apply_recommended_locator, tone="secondary", padx=8, pady=2
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        wt_theme.create_flat_button(
+            loc_tools, text="🧪 校验此定位", command=self.test_current_locator, tone="secondary", padx=8, pady=2
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        wt_theme.create_flat_button(
+            loc_tools, text="📋 复制定位表达", command=self.copy_locator_expression, tone="ghost", padx=8, pady=2
+        ).pack(side=tk.LEFT)
+
+        # 3. Tab 导航降级配置卡片
+        tab_nav_frame = tk.LabelFrame(
+            basic_tab,
+            text="⌨️ Tab 导航降级（可选，用于 WPF 不可见输入框或键盘直达场景）",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=12,
+            pady=8,
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
+        tab_nav_frame.pack(fill=tk.X, pady=(0, 4))
         tab_nav_frame.columnconfigure(1, weight=1)
         tab_nav_frame.columnconfigure(4, weight=1)
+
         self._grid_label_entry(tab_nav_frame, "锚点控件ID", self.var_tab_anchor_id, 0, 0)
-        tk.Button(tab_nav_frame, text="选择...", command=self._pick_anchor_control, width=8).grid(row=0, column=2, sticky="w", padx=(4, 8), pady=4)
+        wt_theme.create_flat_button(
+            tab_nav_frame, text="🔍 选择锚点...", command=self._pick_anchor_control, tone="secondary", padx=8, pady=2
+        ).grid(row=0, column=2, sticky="w", padx=(4, 12), pady=4)
         self._grid_label_entry(tab_nav_frame, "Tab步数", self.var_tab_steps, 0, 3)
-        tk.Label(tab_nav_frame, text="方向").grid(row=1, column=0, sticky="w", pady=2)
+
+        tk.Label(
+            tab_nav_frame, text="Tab方向", font=("Microsoft YaHei UI", 9),
+            bg=pal.get("card", "#ffffff"), fg=pal.get("text", "#1f2d3d"),
+        ).grid(row=1, column=0, sticky="w", pady=4)
         ttk.Combobox(
             tab_nav_frame,
             textvariable=self.var_tab_direction,
             values=["forward", "backward"],
             state="readonly",
             width=12,
-        ).grid(row=1, column=1, sticky="w", pady=2)
-        ttk.Checkbutton(
-            tab_nav_frame,
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=1, column=1, sticky="w", padx=(8, 12), pady=4)
+
+        opt_box = tk.Frame(tab_nav_frame, bg=pal.get("card", "#ffffff"))
+        opt_box.grid(row=2, column=0, columnspan=5, sticky="w", pady=(4, 2))
+        tk.Checkbutton(
+            opt_box,
             text="优先使用 Tab 导航（跳过常规定位尝试）",
             variable=self.var_prefer_tab_nav,
-        ).grid(row=2, column=0, columnspan=4, sticky="w", padx=4, pady=(4, 0))
-        ttk.Checkbutton(
-            tab_nav_frame,
+            bg=pal.get("card", "#ffffff"),
+            activebackground=pal.get("card", "#ffffff"),
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(0, 16))
+        tk.Checkbutton(
+            opt_box,
             text="锚点点击会折叠，需再点一次展开",
             variable=self.var_tab_click_twice,
-        ).grid(row=3, column=0, columnspan=4, sticky="w", padx=4, pady=(2, 0))
+            bg=pal.get("card", "#ffffff"),
+            activebackground=pal.get("card", "#ffffff"),
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT)
+
+        # ────────── Tab 2: Inspect 解析 ──────────
         inspect_tab.columnconfigure(0, weight=1)
         inspect_tab.columnconfigure(1, weight=1)
         inspect_tab.rowconfigure(0, weight=1)
-        left = tk.LabelFrame(inspect_tab, text="Inspect 原始文本", padx=10, pady=10)
+
+        left = tk.LabelFrame(
+            inspect_tab,
+            text="📄 Inspect 原始文本",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=10,
+            pady=8,
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        right = tk.LabelFrame(inspect_tab, text="解析结果 / 关键字段", padx=10, pady=10)
+
+        self.raw_text = scrolledtext.ScrolledText(
+            left, wrap=tk.WORD, font=("Consolas", 9), bd=0, highlightthickness=1, highlightbackground=pal.get("border", "#e2e8f0")
+        )
+        self.raw_text.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+
+        left_tools = tk.Frame(left, bg=pal.get("card", "#ffffff"))
+        left_tools.pack(fill=tk.X)
+        wt_theme.create_flat_button(
+            left_tools, text="📋 从剪贴板粘贴并解析", command=self.import_from_clipboard, tone="secondary", padx=8, pady=2
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        wt_theme.create_flat_button(
+            left_tools, text="🗑️ 清空文本", command=lambda: self._set_text(self.raw_text, ""), tone="ghost", padx=8, pady=2
+        ).pack(side=tk.LEFT)
+
+        right = tk.LabelFrame(
+            inspect_tab,
+            text="🔍 解析结果与关键字段",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=10,
+            pady=8,
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
         right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
-        self.raw_text = scrolledtext.ScrolledText(left, wrap=tk.WORD, font=("Consolas", 10))
-        self.raw_text.pack(fill=tk.BOTH, expand=True)
+        search_bar = tk.Frame(right, bg=pal.get("card", "#ffffff"))
+        search_bar.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(
+            search_bar, text="🔍 筛选属性:", font=("Microsoft YaHei UI", 9),
+            bg=pal.get("card", "#ffffff"), fg=pal.get("muted", "#64748b"),
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        search_entry = tk.Entry(
+            search_bar,
+            textvariable=self.search_filter_var,
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+            bg=pal.get("bg", "#f8fafc"),
+        )
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.search_filter_var.trace_add("write", self._filter_parsed_fields)
 
-        parsed_canvas = tk.Canvas(right, highlightthickness=0, borderwidth=0)
+        parsed_canvas = tk.Canvas(right, highlightthickness=0, borderwidth=0, bg=pal.get("card", "#ffffff"))
         parsed_scrollbar = ttk.Scrollbar(right, orient="vertical", command=parsed_canvas.yview)
         parsed_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         parsed_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         parsed_canvas.configure(yscrollcommand=parsed_scrollbar.set)
-        parsed_inner = tk.Frame(parsed_canvas)
+        parsed_inner = tk.Frame(parsed_canvas, bg=pal.get("card", "#ffffff"))
         parsed_window = parsed_canvas.create_window((0, 0), window=parsed_inner, anchor="nw")
 
         def on_parsed_inner_configure(_event=None):
@@ -1844,74 +2276,205 @@ class ControlEditorDialog:
         parsed_inner.bind("<Configure>", on_parsed_inner_configure)
         parsed_canvas.bind("<Configure>", on_parsed_canvas_configure)
 
-        parsed_inner.columnconfigure(1, weight=1)
-        parsed_inner.columnconfigure(3, weight=1)
-        row = 0
-        self._grid_label_entry(parsed_inner, "How found", self.var_how_found, row, 0)
-        self._grid_label_entry(parsed_inner, "Name", self.var_control_name, row, 2)
-        row += 1
-        self._grid_label_entry(parsed_inner, "ClassName", self.var_class_name, row, 0)
-        self._grid_label_entry(parsed_inner, "ControlType", self.var_control_type, row, 2)
-        row += 1
-        self._grid_label_entry(parsed_inner, "LocalizedType", self.var_localized_control_type, row, 0)
-        self._grid_label_entry(parsed_inner, "AutomationId", self.var_automation_id, row, 2)
-        row += 1
-        self._grid_label_entry(parsed_inner, "FrameworkId", self.var_framework_id, row, 0)
-        self._grid_label_entry(parsed_inner, "NativeHandle", self.var_native_window_handle, row, 2)
-        row += 1
-        self._grid_label_entry(parsed_inner, "BoundingRect", self.var_bounding_rectangle, row, 0)
-        self._grid_label_entry(parsed_inner, "ProcessId", self.var_process_id, row, 2)
-        row += 1
-        self._grid_label_entry(parsed_inner, "RuntimeId", self.var_runtime_id, row, 0)
-        self._grid_label_entry(parsed_inner, "IsEnabled", self.var_is_enabled, row, 2)
-        row += 1
-        self._grid_label_entry(parsed_inner, "IsOffscreen", self.var_is_offscreen, row, 0)
-        self._grid_label_entry(parsed_inner, "KeyboardFocusable", self.var_is_keyboard_focusable, row, 2)
-        row += 1
-        self._grid_label_entry(parsed_inner, "HasKeyboardFocus", self.var_has_keyboard_focus, row, 0)
-        self._grid_label_entry(parsed_inner, "LegacyName", self.var_legacy_name, row, 2)
-        row += 1
-        self._grid_label_entry(parsed_inner, "LegacyRole", self.var_legacy_role, row, 0)
-        self._grid_label_entry(parsed_inner, "LegacyState", self.var_legacy_state, row, 2)
-        row += 1
-        self._grid_label_entry(parsed_inner, "FirstChild", self.var_first_child, row, 0)
-        self._grid_label_entry(parsed_inner, "LastChild", self.var_last_child, row, 2)
-        row += 1
-        self._grid_label_entry(parsed_inner, "Next", self.var_next, row, 0)
-        self._grid_label_entry(parsed_inner, "Previous", self.var_previous, row, 2)
-        row += 1
-        self._grid_label_entry(parsed_inner, "ProviderDescription", self.var_provider_description, row, 0, colspan=3)
+        field_specs = [
+            ("How found", self.var_how_found, None),
+            ("Name", self.var_control_name, "name"),
+            ("ClassName", self.var_class_name, "class_name"),
+            ("ControlType", self.var_control_type, "control_type"),
+            ("LocalizedType", self.var_localized_control_type, None),
+            ("AutomationId", self.var_automation_id, "automation_id"),
+            ("FrameworkId", self.var_framework_id, None),
+            ("NativeHandle", self.var_native_window_handle, "handle"),
+            ("BoundingRect", self.var_bounding_rectangle, None),
+            ("ProcessId", self.var_process_id, None),
+            ("RuntimeId", self.var_runtime_id, None),
+            ("IsEnabled", self.var_is_enabled, None),
+            ("IsOffscreen", self.var_is_offscreen, None),
+            ("KeyboardFocusable", self.var_is_keyboard_focusable, None),
+            ("HasKeyboardFocus", self.var_has_keyboard_focus, None),
+            ("LegacyName", self.var_legacy_name, "name"),
+            ("LegacyRole", self.var_legacy_role, None),
+            ("LegacyState", self.var_legacy_state, None),
+            ("FirstChild", self.var_first_child, None),
+            ("LastChild", self.var_last_child, None),
+            ("Next", self.var_next, None),
+            ("Previous", self.var_previous, None),
+            ("ProviderDescription", self.var_provider_description, None),
+        ]
 
-        detail = tk.LabelFrame(detail_tab, text="辅助判断 / 结构信息 / 备注", padx=10, pady=10)
+        self._parsed_field_rows = []
+        for label, var, qm in field_specs:
+            row_frame = tk.Frame(parsed_inner, bg=pal.get("card", "#ffffff"), pady=2)
+            row_frame.pack(fill=tk.X)
+            lbl = tk.Label(
+                row_frame, text=label, font=("Microsoft YaHei UI", 8),
+                width=16, anchor="w", bg=pal.get("card", "#ffffff"), fg=pal.get("muted", "#64748b"),
+            )
+            lbl.pack(side=tk.LEFT)
+            ent = tk.Entry(
+                row_frame, textvariable=var, font=("Consolas", 8),
+                relief=tk.FLAT, bd=0, highlightthickness=1,
+                highlightbackground=pal.get("border", "#e2e8f0"),
+                bg=pal.get("bg", "#f8fafc"),
+            )
+            ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 4))
+            if qm:
+                qbtn = tk.Button(
+                    row_frame,
+                    text="填入定位",
+                    font=("Microsoft YaHei UI", 7),
+                    bg=pal.get("panel_soft", "#f8fafc"),
+                    fg=pal.get("primary", "#2563eb"),
+                    relief=tk.FLAT,
+                    bd=0,
+                    padx=4,
+                    pady=0,
+                    cursor="hand2",
+                    highlightthickness=1,
+                    highlightbackground=pal.get("border", "#e2e8f0"),
+                    command=lambda m=qm, v=var: self._apply_field_to_locator(m, v.get()),
+                )
+                qbtn.pack(side=tk.RIGHT)
+            self._parsed_field_rows.append((row_frame, label, var))
+
+        # ────────── Tab 3: 结构与备注 ──────────
+        detail = tk.LabelFrame(
+            detail_tab,
+            text="🌲 辅助判断 / 结构信息 / 备注",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=10,
+            pady=10,
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
         detail.pack(fill=tk.BOTH, expand=True)
         detail.columnconfigure(0, weight=1)
         detail.columnconfigure(1, weight=1)
         detail.columnconfigure(2, weight=1)
 
-        tk.Label(detail, text="辅助判断（每行一条）").grid(row=0, column=0, sticky="w")
-        tk.Label(detail, text="Children").grid(row=0, column=1, sticky="w")
-        tk.Label(detail, text="Ancestors").grid(row=0, column=2, sticky="w")
-        self.aux_checks_text = scrolledtext.ScrolledText(detail, height=10, wrap=tk.WORD)
+        tk.Label(detail, text="辅助判断条件（每行一条）", font=("Microsoft YaHei UI", 9), bg=pal.get("card", "#ffffff"), fg=pal.get("text", "#1f2d3d")).grid(row=0, column=0, sticky="w")
+        tk.Label(detail, text="Children (子控件)", font=("Microsoft YaHei UI", 9), bg=pal.get("card", "#ffffff"), fg=pal.get("text", "#1f2d3d")).grid(row=0, column=1, sticky="w")
+        tk.Label(detail, text="Ancestors (父级链)", font=("Microsoft YaHei UI", 9), bg=pal.get("card", "#ffffff"), fg=pal.get("text", "#1f2d3d")).grid(row=0, column=2, sticky="w")
+
+        self.aux_checks_text = scrolledtext.ScrolledText(detail, height=10, wrap=tk.WORD, font=("Consolas", 9), bd=0, highlightthickness=1, highlightbackground=pal.get("border", "#e2e8f0"))
         self.aux_checks_text.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(4, 8))
-        self.children_text = scrolledtext.ScrolledText(detail, height=10, wrap=tk.WORD)
+        self.children_text = scrolledtext.ScrolledText(detail, height=10, wrap=tk.WORD, font=("Consolas", 9), bd=0, highlightthickness=1, highlightbackground=pal.get("border", "#e2e8f0"))
         self.children_text.grid(row=1, column=1, sticky="nsew", padx=(0, 8), pady=(4, 8))
-        self.ancestors_text = scrolledtext.ScrolledText(detail, height=10, wrap=tk.WORD)
+        self.ancestors_text = scrolledtext.ScrolledText(detail, height=10, wrap=tk.WORD, font=("Consolas", 9), bd=0, highlightthickness=1, highlightbackground=pal.get("border", "#e2e8f0"))
         self.ancestors_text.grid(row=1, column=2, sticky="nsew", pady=(4, 8))
 
-        tk.Label(detail, text="Available Patterns").grid(row=2, column=0, sticky="w")
-        tk.Label(detail, text="备注").grid(row=2, column=1, sticky="w")
-        self.patterns_text = scrolledtext.ScrolledText(detail, height=8, wrap=tk.WORD)
+        tk.Label(detail, text="Available Patterns", font=("Microsoft YaHei UI", 9), bg=pal.get("card", "#ffffff"), fg=pal.get("text", "#1f2d3d")).grid(row=2, column=0, sticky="w")
+        tk.Label(detail, text="控件备注说明", font=("Microsoft YaHei UI", 9), bg=pal.get("card", "#ffffff"), fg=pal.get("text", "#1f2d3d")).grid(row=2, column=1, sticky="w")
+        self.patterns_text = scrolledtext.ScrolledText(detail, height=8, wrap=tk.WORD, font=("Consolas", 9), bd=0, highlightthickness=1, highlightbackground=pal.get("border", "#e2e8f0"))
         self.patterns_text.grid(row=3, column=0, sticky="nsew", padx=(0, 8), pady=(4, 0))
-        self.notes_text = scrolledtext.ScrolledText(detail, height=8, wrap=tk.WORD)
+        self.notes_text = scrolledtext.ScrolledText(detail, height=8, wrap=tk.WORD, font=("Microsoft YaHei UI", 9), bd=0, highlightthickness=1, highlightbackground=pal.get("border", "#e2e8f0"))
         self.notes_text.grid(row=3, column=1, columnspan=2, sticky="nsew", pady=(4, 0))
         detail.rowconfigure(1, weight=1)
         detail.rowconfigure(3, weight=1)
 
-        _make_button_row(self.window, [
-            ("应用", self.apply_changes, {"bg": "#eff6ff", "pack_padx": 3}),
-            ("应用并关闭", self.on_confirm, {"bg": "#d1fae5", "pack_padx": 3}),
-            ("取消", self.on_cancel, {"pack_padx": 3}),
-        ], padx=10, pady=10)
+        # ── 底部操作按钮 ──
+        footer = tk.Frame(self.window, padx=14, pady=10, bg=pal.get("bg", "#f8fafc"))
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+
+        wt_theme.create_flat_button(
+            footer, text="取消 (Esc)", command=self.on_cancel, tone="ghost", padx=16, pady=5
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        wt_theme.create_flat_button(
+            footer, text="仅保存修改 (Ctrl+S)", command=self.apply_changes, tone="secondary", padx=16, pady=5
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        wt_theme.create_flat_button(
+            footer, text="保存并关闭 (Enter)", command=self.on_confirm, tone="primary", padx=20, pady=5
+        ).pack(side=tk.RIGHT)
+
+        self.window.bind("<Control-s>", lambda _e: self.apply_changes())
+        self.window.bind("<Escape>", lambda _e: self.on_cancel())
+
+    def _filter_parsed_fields(self, *args):
+        query = (self.search_filter_var.get() or "").strip().lower()
+        for row_frame, label, var in getattr(self, "_parsed_field_rows", []):
+            val_text = str(var.get() or "").lower()
+            if not query or query in label.lower() or query in val_text:
+                row_frame.pack(fill=tk.X, pady=2)
+            else:
+                row_frame.pack_forget()
+
+    def _apply_field_to_locator(self, method, value):
+        val = str(value or "").strip()
+        if not val:
+            if hasattr(self, "status_var") and self.status_var:
+                self.status_var.set("字段内容为空，无法填入定位。")
+            return
+        self.var_target_method.set(method)
+        self.var_target_value.set(val)
+        self._mark_dirty(f"已将 [{method}] 设为目标定位：{val}")
+        self._refresh_validation_state()
+
+    def test_current_locator(self):
+        """打开定位检验透视台实时测试当前定位。"""
+        try:
+            ctl = self.build_control()
+        except ValueError as exc:
+            messagebox.showinfo("无法测试", f"当前定位信息不完整，无法执行检验：\n{exc}", parent=self.window)
+            return
+        try:
+            dialog = ControlLocatorTesterDialog(self.window, initial_control=ctl)
+            self.window.wait_window(dialog.window)
+        except Exception as exc:
+            messagebox.showerror("启动测试失败", f"无法启动定位检验透视台：\n{exc}", parent=self.window)
+
+    def copy_locator_expression(self):
+        """复制当前定位表达式到剪贴板。"""
+        method = self.var_target_method.get().strip()
+        val = self.var_target_value.get().strip()
+        if not method and not val:
+            messagebox.showinfo("提示", "当前 target_method 与 target_value 为空。", parent=self.window)
+            return
+        expr = f"{method}:{val}" if method else val
+        try:
+            self.window.clipboard_clear()
+            self.window.clipboard_append(expr)
+            if hasattr(self, "status_var") and self.status_var:
+                self.status_var.set(f"已复制定位表达式到剪贴板：{expr}")
+        except Exception as exc:
+            messagebox.showerror("复制失败", f"无法写入剪贴板：{exc}", parent=self.window)
+
+    def _on_validation_field_change(self):
+        if not self._loading:
+            self.dirty = True
+        self._refresh_validation_state()
+
+    def _refresh_validation_state(self):
+        pal = EDITOR_THEME
+        ctl_id = (self.var_id.get() or "").strip() if hasattr(self, "var_id") and self.var_id else ""
+        method = (self.var_target_method.get() or "").strip() if hasattr(self, "var_target_method") and self.var_target_method else ""
+        val = (self.var_target_value.get() or "").strip() if hasattr(self, "var_target_value") and self.var_target_value else ""
+
+        if not ctl_id:
+            msg = "❌ 缺少控件ID *"
+            fg = pal.get("danger", "#ef4444")
+            bg = pal.get("danger_soft", "#fee2e2")
+        elif not method:
+            msg = "⚠ 缺少 target_method *"
+            fg = pal.get("warning_text", "#92400e")
+            bg = pal.get("warning_soft", "#fef3c7")
+        elif not val:
+            msg = "⚠ 缺少 target_value *"
+            fg = pal.get("warning_text", "#92400e")
+            bg = pal.get("warning_soft", "#fef3c7")
+        else:
+            msg = f"✓ 定位三要素完整 [{method}]"
+            fg = pal.get("success_text", "#065f46")
+            bg = pal.get("success_soft", "#d1fae5")
+
+        if hasattr(self, "validation_badge_var") and self.validation_badge_var:
+            self.validation_badge_var.set(msg)
+        if hasattr(self, "validation_badge_label") and self.validation_badge_label:
+            try:
+                self.validation_badge_label.config(fg=fg, bg=bg)
+            except Exception:
+                pass
 
     def _pick_anchor_control(self):
         """弹出锚点选择弹窗；选中控件库控件时先导入当前流程步骤再填入锚点ID。"""
@@ -1987,6 +2550,7 @@ class ControlEditorDialog:
         if not self.var_ui_path.get().strip():
             self.var_ui_path.set(self.var_control_name.get().strip())
         self._mark_dirty("已根据当前字段生成推荐定位。")
+        self._refresh_validation_state()
 
     def parse_current_text(self):
         raw_text = self._get_text(self.raw_text)
@@ -2031,6 +2595,7 @@ class ControlEditorDialog:
         if not self.var_ui_path.get().strip():
             self.var_ui_path.set(parsed.get("name", ""))
         self._mark_dirty("已解析 Inspect 文本并回填关键字段。")
+        self._refresh_validation_state()
 
     def build_control(self):
         raw_inspect_text = self._get_text(self.raw_text)
@@ -2109,25 +2674,21 @@ class ControlEditorDialog:
         )
 
     def on_confirm(self):
-        # 只有保存成功才关窗：校验失败时 apply_changes 会提示并返回 False，
-        # 原先无条件 destroy 会让用户「填错就丢输入」。
+        # 只有保存成功才关窗：校验失败时 apply_changes 会提示并返回 False
         if self.apply_changes(close_after=False):
             self.window.destroy()
 
     def _mark_dirty(self, message):
         if self._loading:
-            self.status_var.set(message)
+            if hasattr(self, "status_var") and self.status_var:
+                self.status_var.set(message)
             return
         self.dirty = True
-        self.status_var.set(message)
+        if hasattr(self, "status_var") and self.status_var:
+            self.status_var.set(message)
 
     def apply_changes(self, close_after=False):
-        """保存当前控件。校验失败时提示用户并返回 False（不再静默无反应）。
-
-        `build_control()` 对空 target_method / target_value 会抛 ValueError；
-        原先没有 try，异常直冒到 Tk 按钮回调被吞掉 —— 用户看到的是
-        「点了保存当前控件 / 保存并关闭完全没反应」，也不知道哪里填错了。
-        """
+        """保存当前控件。校验失败时提示用户并返回 False（不再静默无反应）。"""
         try:
             self.result = self.build_control()
         except ValueError as exc:
@@ -2136,7 +2697,10 @@ class ControlEditorDialog:
         self.control = self.result
         self.dirty = False
         self.applied = True
-        self.status_var.set("已保存当前控件修改。")
+        if hasattr(self, "status_var") and self.status_var:
+            self.status_var.set("已保存当前控件修改。")
+        if hasattr(self, "_refresh_validation_state"):
+            self._refresh_validation_state()
         if close_after:
             self.window.destroy()
         return True
@@ -2184,64 +2748,266 @@ class SemiAutoInspectCollectorDialog:
         self.var_target_window = tk.StringVar(value=self.default_window_title or "目标软件")
         self.var_backend = tk.StringVar(value="uia")
 
-        self.window = _make_dialog_window(parent, f"半自动采集 - {step_name or '未命名步骤'}", 980, 760, min_width=860, min_height=640)
+        self._tips_expanded = False
+        self.listener_badge_var = tk.StringVar(value="○ 监听待命")
+        self.candidate_filter_var = tk.StringVar(value="")
+        self.candidate_count_var = tk.StringVar(value="候选控件 (0 个)")
+        self.current_candidate_title_var = tk.StringVar(value="暂无选中候选")
+
+        self.window = _make_dialog_window(
+            parent,
+            f"半自动采集 - {step_name or '未命名步骤'}",
+            1040, 780,
+            min_width=880, min_height=640,
+            on_close=self.on_cancel,
+        )
+        self.window.configure(bg=EDITOR_THEME.get("bg", "#f8fafc"))
 
         self.status_var = tk.StringVar(
             value="推荐操作：使用“交互采集”，直接点击目标软件控件即可抓取（不依赖复制）。"
         )
 
         self._build_ui()
+        self._update_listener_badge()
         self.window.protocol("WM_DELETE_WINDOW", self.on_cancel)
 
     def _build_ui(self):
-        toolbar = tk.Frame(self.window, padx=10, pady=8, bg=EDITOR_THEME["toolbar"])
-        toolbar.pack(fill=tk.X)
-        tk.Button(toolbar, text="开始监听剪贴板", command=self.start_monitor).pack(side=tk.LEFT, padx=3)
-        tk.Button(toolbar, text="停止监听", command=self.stop_monitor).pack(side=tk.LEFT, padx=3)
-        tk.Button(toolbar, text="抓取当前剪贴板一次", command=self.capture_once).pack(side=tk.LEFT, padx=3)
-        tk.Button(toolbar, text="开始交互点击采集", command=self.start_interactive_monitor).pack(side=tk.LEFT, padx=3)
-        tk.Button(toolbar, text="停止交互点击", command=self.stop_interactive_monitor).pack(side=tk.LEFT, padx=3)
-        tk.Button(toolbar, text="编辑选中候选", command=self.edit_selected).pack(side=tk.LEFT, padx=3)
-        tk.Button(toolbar, text="删除选中候选", command=self.delete_selected).pack(side=tk.LEFT, padx=3)
-        tk.Label(toolbar, textvariable=self.status_var, bg=EDITOR_THEME["toolbar"], fg=EDITOR_THEME["muted"]).pack(side=tk.RIGHT)
+        pal = EDITOR_THEME
 
-        tips = tk.LabelFrame(self.window, text="采集说明", padx=10, pady=10)
-        tips.pack(fill=tk.X, padx=10, pady=(10, 0))
+        # ── 顶栏标题与监听状态 Badge ──
+        header = tk.Frame(self.window, bg=pal.get("bg", "#f8fafc"), padx=14, pady=10)
+        header.pack(fill=tk.X)
+
+        title_col = tk.Frame(header, bg=pal.get("bg", "#f8fafc"))
+        title_col.pack(side=tk.LEFT, fill=tk.Y)
+
         tk.Label(
-            tips,
+            title_col,
+            text="⚡ 半自动控件采集器",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            bg=pal.get("bg", "#f8fafc"),
+            fg=pal.get("text", "#1f2d3d"),
+        ).pack(anchor="w")
+
+        tk.Label(
+            title_col,
+            text="支持交互点击抓取与剪贴板监听，自动解析 UIA 属性、生成推荐定位并去重。",
+            font=("Microsoft YaHei UI", 9),
+            bg=pal.get("bg", "#f8fafc"),
+            fg=pal.get("muted", "#64748b"),
+        ).pack(anchor="w", pady=(2, 0))
+
+        self.listener_badge_label = tk.Label(
+            header,
+            textvariable=self.listener_badge_var,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=pal.get("panel_soft", "#f1f5f9"),
+            fg=pal.get("muted", "#64748b"),
+            padx=10,
+            pady=4,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
+        self.listener_badge_label.pack(side=tk.RIGHT, pady=4)
+
+        # ── 折叠式采集指南 ──
+        self.tips_frame = tk.LabelFrame(
+            self.window,
+            text=" 💡 采集指南与模式说明 ",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=12,
+            pady=6,
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("primary", "#2563eb"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
+        self.tips_frame.pack(fill=tk.X, padx=14, pady=(0, 6))
+
+        tips_header = tk.Frame(self.tips_frame, bg=pal.get("card", "#ffffff"))
+        tips_header.pack(fill=tk.X)
+
+        self.tips_summary_label = tk.Label(
+            tips_header,
+            text="提示：首选“交互采集”，直接点击目标控件或按 F8 抓取；也可在 Inspect 中复制文本自动捕获。",
+            font=("Microsoft YaHei UI", 9),
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("muted", "#64748b"),
+            anchor="w",
+        )
+        self.tips_summary_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.tips_toggle_btn = tk.Button(
+            tips_header,
+            text="▼ 展开指南",
+            command=self._toggle_tips,
+            bg=pal.get("panel_soft", "#f8fafc"),
+            fg=pal.get("primary", "#2563eb"),
+            relief=tk.FLAT,
+            bd=0,
+            padx=8,
+            pady=1,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 8),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
+        self.tips_toggle_btn.pack(side=tk.RIGHT)
+
+        self.tips_body_frame = tk.Frame(self.tips_frame, bg=pal.get("card", "#ffffff"), pady=6)
+        tk.Label(
+            self.tips_body_frame,
             text=(
-                "推荐：交互采集（无需 Inspect / Accessibility Insights 复制文本）\n"
-                "1. 填写目标窗口关键字（如 目标软件主窗口）。\n"
+                "【推荐模式：交互采集】（无需切换窗口复制文本）\n"
+                "1. 在下方填写目标窗口关键字（如 目标软件主窗口）。\n"
                 "2. 点击“开始交互点击采集”。\n"
-                "3. 直接在目标软件里点击控件，候选列表会自动增加。\n"
-                "4. 需要不触发点击副作用时，可按 F8 捕获鼠标指向的控件。\n"
-                "\n"
-                "备选：剪贴板采集（适合已能稳定复制属性文本的场景）\n"
-                "1. 在 Inspect 或 Accessibility Insights 中复制控件属性文本。\n"
-                "2. 点击“开始监听剪贴板”，本窗口会自动抓取并解析。"
+                "3. 直接在目标软件里点击控件，候选列表会自动增加；需要不触发点击时可将鼠标悬停并按 F8。\n\n"
+                "【备用模式：剪贴板监听】（适合 Inspect / Accessibility Insights 工具用户）\n"
+                "1. 点击“开始监听剪贴板”。\n"
+                "2. 在 Inspect 中选中控件并复制属性文本 (Ctrl+C)，采集器会自动拦截、解析并去重。"
             ),
             justify=tk.LEFT,
             anchor="w",
-            fg=EDITOR_THEME["muted"],
+            font=("Microsoft YaHei UI", 8),
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("muted", "#64748b"),
         ).pack(fill=tk.X)
 
-        config_row = tk.Frame(self.window, padx=10, pady=8)
-        config_row.pack(fill=tk.X)
-        tk.Label(config_row, text="交互采集目标窗口关键字").pack(side=tk.LEFT)
-        tk.Entry(config_row, textvariable=self.var_target_window).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
-        tk.Label(config_row, text="backend").pack(side=tk.LEFT)
-        ttk.Combobox(config_row, textvariable=self.var_backend, values=["uia", "win32"], width=8, state="readonly").pack(side=tk.LEFT)
+        # ── 交互目标窗口配置卡片 ──
+        config_card = tk.LabelFrame(
+            self.window,
+            text=" 🎯 交互目标窗口配置 ",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=12,
+            pady=6,
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
+        config_card.pack(fill=tk.X, padx=14, pady=(0, 6))
 
-        body = tk.Frame(self.window, padx=10, pady=10)
+        tk.Label(
+            config_card, text="目标窗口关键字:", font=("Microsoft YaHei UI", 9),
+            bg=pal.get("card", "#ffffff"), fg=pal.get("text", "#1f2d3d"),
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        target_ent = tk.Entry(
+            config_card,
+            textvariable=self.var_target_window,
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+            bg=pal.get("bg", "#f8fafc"),
+        )
+        target_ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
+        if self.default_window_title:
+            def _fill_default():
+                self.var_target_window.set(self.default_window_title)
+            tk.Button(
+                config_card,
+                text="填入当前窗口",
+                command=_fill_default,
+                bg=pal.get("panel_soft", "#f8fafc"),
+                fg=pal.get("text", "#1f2d3d"),
+                relief=tk.FLAT, bd=0, padx=6, pady=1,
+                cursor="hand2", font=("Microsoft YaHei UI", 8),
+                highlightthickness=1, highlightbackground=pal.get("border", "#e2e8f0"),
+            ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(
+            config_card, text="backend:", font=("Microsoft YaHei UI", 9),
+            bg=pal.get("card", "#ffffff"), fg=pal.get("muted", "#64748b"),
+        ).pack(side=tk.LEFT, padx=(4, 6))
+        ttk.Combobox(
+            config_card,
+            textvariable=self.var_backend,
+            values=["uia", "win32"],
+            width=8,
+            state="readonly",
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT)
+
+        # ── 工具栏 ──
+        toolbar = tk.Frame(
+            self.window,
+            padx=14,
+            pady=6,
+            bg=pal.get("toolbar", "#ffffff"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
+        toolbar.pack(fill=tk.X)
+
+        btn_specs = [
+            ("▶ 交互点击采集", self.start_interactive_monitor, "primary"),
+            ("⏹ 停止交互", self.stop_interactive_monitor, "ghost"),
+            ("📋 监听剪贴板", self.start_monitor, "secondary"),
+            ("⏹ 停止监听", self.stop_monitor, "ghost"),
+            ("⚡ 抓取一次", self.capture_once, "secondary"),
+            ("✏️ 编辑候选", self.edit_selected, "secondary"),
+            ("🗑️ 删除候选", self.delete_selected, "danger"),
+            ("🧪 检验定位", self.test_selected_locator, "secondary"),
+        ]
+        for text, cmd, tone in btn_specs:
+            btn = wt_theme.create_flat_button(toolbar, text=text, command=cmd, tone=tone, padx=8, pady=3)
+            btn.pack(side=tk.LEFT, padx=3)
+
+        tk.Label(
+            toolbar,
+            textvariable=self.status_var,
+            bg=pal.get("toolbar", "#ffffff"),
+            fg=pal.get("muted", "#64748b"),
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.RIGHT, padx=6)
+
+        # ── 主体面板（左树右详情） ──
+        body = tk.Frame(self.window, padx=14, pady=8, bg=pal.get("bg", "#f8fafc"))
         body.pack(fill=tk.BOTH, expand=True)
 
-        left = tk.LabelFrame(body, text="候选控件", padx=10, pady=10)
+        left = tk.LabelFrame(
+            body,
+            text=" 📋 候选控件列表 ",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=10,
+            pady=8,
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        right = tk.LabelFrame(body, text="候选预览", padx=10, pady=10)
-        right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
 
-        candidate_tree_wrap = tk.Frame(left)
+        # 候选筛选框
+        filter_bar = tk.Frame(left, bg=pal.get("card", "#ffffff"))
+        filter_bar.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            filter_bar, textvariable=self.candidate_count_var, font=("Microsoft YaHei UI", 8, "bold"),
+            bg=pal.get("card", "#ffffff"), fg=pal.get("primary", "#2563eb"),
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        tk.Label(
+            filter_bar, text="🔍", font=("Microsoft YaHei UI", 8),
+            bg=pal.get("card", "#ffffff"), fg=pal.get("muted", "#64748b"),
+        ).pack(side=tk.LEFT)
+
+        filter_entry = tk.Entry(
+            filter_bar,
+            textvariable=self.candidate_filter_var,
+            font=("Microsoft YaHei UI", 8),
+            relief=tk.FLAT, bd=0, highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+            bg=pal.get("bg", "#f8fafc"),
+        )
+        filter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        self.candidate_filter_var.trace_add("write", self._on_filter_changed)
+
+        candidate_tree_wrap = tk.Frame(left, bg=pal.get("card", "#ffffff"))
         candidate_tree_wrap.pack(fill=tk.BOTH, expand=True)
+
         self.candidate_tree = ttk.Treeview(
             candidate_tree_wrap,
             columns=("seq", "name", "locator", "window"),
@@ -2251,10 +3017,10 @@ class SemiAutoInspectCollectorDialog:
         self.candidate_tree.heading("name", text="控件")
         self.candidate_tree.heading("locator", text="推荐定位")
         self.candidate_tree.heading("window", text="窗口")
-        self.candidate_tree.column("seq", width=42, minwidth=42, stretch=False, anchor="center")
-        self.candidate_tree.column("name", width=220, minwidth=160, stretch=False, anchor="w")
-        self.candidate_tree.column("locator", width=280, minwidth=200, stretch=False, anchor="w")
-        self.candidate_tree.column("window", width=240, minwidth=180, stretch=False, anchor="w")
+        self.candidate_tree.column("seq", width=38, minwidth=38, stretch=False, anchor="center")
+        self.candidate_tree.column("name", width=180, minwidth=140, stretch=False, anchor="w")
+        self.candidate_tree.column("locator", width=220, minwidth=180, stretch=False, anchor="w")
+        self.candidate_tree.column("window", width=180, minwidth=140, stretch=False, anchor="w")
         self.candidate_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.candidate_tree.bind("<<TreeviewSelect>>", self._on_candidate_select)
         self.candidate_tree.bind("<Double-1>", lambda _event: self.edit_selected())
@@ -2262,18 +3028,119 @@ class SemiAutoInspectCollectorDialog:
         candidate_scrollbar = ttk.Scrollbar(candidate_tree_wrap, orient="vertical", command=self.candidate_tree.yview)
         candidate_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         candidate_h_scrollbar = ttk.Scrollbar(left, orient="horizontal", command=self.candidate_tree.xview)
-        candidate_h_scrollbar.pack(fill=tk.X, pady=(6, 0))
+        candidate_h_scrollbar.pack(fill=tk.X, pady=(4, 0))
         self.candidate_tree.configure(yscrollcommand=candidate_scrollbar.set, xscrollcommand=candidate_h_scrollbar.set)
 
-        self.preview_text = scrolledtext.ScrolledText(right, wrap=tk.WORD, font=("Consolas", 10))
+        right = tk.LabelFrame(
+            body,
+            text=" 🔍 候选详情与预览 ",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=10,
+            pady=8,
+            bg=pal.get("card", "#ffffff"),
+            fg=pal.get("text", "#1f2d3d"),
+            highlightthickness=1,
+            highlightbackground=pal.get("border", "#e2e8f0"),
+        )
+        right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
+
+        # 预览顶部栏
+        preview_top = tk.Frame(right, bg=pal.get("card", "#ffffff"))
+        preview_top.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            preview_top, textvariable=self.current_candidate_title_var, font=("Microsoft YaHei UI", 9, "bold"),
+            bg=pal.get("card", "#ffffff"), fg=pal.get("text", "#1f2d3d"), anchor="w",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        wt_theme.create_flat_button(
+            preview_top, text="📋 复制定位", command=self.copy_candidate_locator, tone="ghost", padx=6, pady=1
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+        wt_theme.create_flat_button(
+            preview_top, text="✏️ 立即编辑", command=self.edit_selected, tone="secondary", padx=6, pady=1
+        ).pack(side=tk.RIGHT)
+
+        self.preview_text = scrolledtext.ScrolledText(
+            right, wrap=tk.WORD, font=("Consolas", 9), bd=0, highlightthickness=1, highlightbackground=pal.get("border", "#e2e8f0")
+        )
         self.preview_text.pack(fill=tk.BOTH, expand=True)
 
-        action_row = tk.Frame(self.window, padx=10, pady=10)
-        action_row.pack(fill=tk.X)
-        tk.Button(action_row, text="导入所选候选", command=self.import_selected, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row, text="导入全部候选", command=self.import_all, bg="#d1fae5").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row, text="检验定位", command=self.test_selected_locator, bg="#e0e7ff").pack(side=tk.LEFT, padx=3)
-        tk.Button(action_row, text="取消", command=self.on_cancel).pack(side=tk.LEFT, padx=3)
+        # ── 底部操作按钮 ──
+        footer = tk.Frame(self.window, padx=14, pady=10, bg=pal.get("bg", "#f8fafc"))
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+
+        wt_theme.create_flat_button(
+            footer, text="取消 (Esc)", command=self.on_cancel, tone="ghost", padx=16, pady=5
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        wt_theme.create_flat_button(
+            footer, text="导入所选候选 (1)", command=self.import_selected, tone="secondary", padx=16, pady=5
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        wt_theme.create_flat_button(
+            footer, text="导入全部候选", command=self.import_all, tone="primary", padx=20, pady=5
+        ).pack(side=tk.RIGHT)
+
+        self.window.bind("<Escape>", lambda _e: self.on_cancel())
+
+    def _toggle_tips(self):
+        self._tips_expanded = not self._tips_expanded
+        if self._tips_expanded:
+            self.tips_body_frame.pack(fill=tk.X, pady=(4, 0))
+            self.tips_toggle_btn.config(text="▲ 收起指南")
+        else:
+            self.tips_body_frame.pack_forget()
+            self.tips_toggle_btn.config(text="▼ 展开指南")
+
+    def _update_listener_badge(self):
+        if not hasattr(self, "listener_badge_label"):
+            return
+        pal = EDITOR_THEME
+        if self._interactive_monitoring:
+            self.listener_badge_var.set("● 交互点击监听中 (点击或按 F8 抓取)")
+            try:
+                self.listener_badge_label.config(
+                    bg=pal.get("success_soft", "#dcfce7"),
+                    fg=pal.get("success_text", "#166534"),
+                )
+            except Exception:
+                pass
+        elif self._monitoring:
+            self.listener_badge_var.set("● 剪贴板监听中 (在 Inspect 中复制即可抓取)")
+            try:
+                self.listener_badge_label.config(
+                    bg=pal.get("primary_soft", "#dbeafe"),
+                    fg=pal.get("primary_text", "#1e40af"),
+                )
+            except Exception:
+                pass
+        else:
+            self.listener_badge_var.set("○ 监听已停止 (待命)")
+            try:
+                self.listener_badge_label.config(
+                    bg=pal.get("panel_soft", "#f1f5f9"),
+                    fg=pal.get("muted", "#64748b"),
+                )
+            except Exception:
+                pass
+
+    def _on_filter_changed(self, *args):
+        self._refresh_candidates()
+
+    def copy_candidate_locator(self):
+        index = self._get_selected_index()
+        if index is None:
+            messagebox.showinfo("提示", "请先选择一个候选控件。", parent=self.window)
+            return
+        ctrl = self.captured_controls[index]
+        expr = f"{ctrl.get('targetMethod', '')}:{ctrl.get('targetValue', '')}".strip(":")
+        if not expr:
+            messagebox.showinfo("提示", "当前控件无有效推荐定位。", parent=self.window)
+            return
+        try:
+            self.window.clipboard_clear()
+            self.window.clipboard_append(expr)
+            self.status_var.set(f"已复制候选定位表达式：{expr}")
+        except Exception as exc:
+            messagebox.showerror("复制失败", f"无法写入剪贴板：{exc}", parent=self.window)
 
     def test_selected_locator(self):
         """使用当前采集候选的定位信息打开定位检验器。"""
@@ -2295,11 +3162,13 @@ class SemiAutoInspectCollectorDialog:
         self._monitoring = True
         self.status_var.set("已开始监听剪贴板，请在 Inspect 中复制控件文本。")
         self._last_clipboard_text = self._get_clipboard_text().strip()
+        self._update_listener_badge()
         self.window.after(600, self._poll_clipboard)
 
     def stop_monitor(self):
         self._monitoring = False
         self.status_var.set("已停止监听剪贴板。")
+        self._update_listener_badge()
 
     def _find_target_window(self, keyword, backend):
         """按标题关键字找顶层窗口（win32-first：枚举不触碰 UIA，命中后按句柄连接）。"""
@@ -2314,7 +3183,6 @@ class SemiAutoInspectCollectorDialog:
         if not windows:
             raise RuntimeError(f"未找到匹配窗口关键字的顶层窗口：{keyword}")
         windows.sort(key=lambda item: len(item.get("title") or ""))
-        # 只连接命中的单个窗口，避免 Desktop(backend="uia").windows() 全桌面枚举的原生崩溃面
         from pywinauto.application import Application
         target_handle = windows[0]["hwnd"]
         try:
@@ -2382,16 +3250,15 @@ class SemiAutoInspectCollectorDialog:
         keyboard_focusable = _safe_get_value(lambda: getattr(element_info, "keyboard_focusable", ""), "")
         has_keyboard_focus = _safe_get_value(lambda: getattr(element_info, "has_keyboard_focus", ""), "")
         provider_description = str(_safe_get_value(lambda: getattr(element_info, "provider_description", ""), "")).strip()
-        
-        # 提取深层属性 (ValuePattern & TogglePattern)
+
         value_pattern_value = ""
         if hasattr(ctrl, "get_value"):
             value_pattern_value = str(_safe_get_value(lambda: ctrl.get_value(), "")).strip()
-            
+
         toggle_state = ""
         if hasattr(ctrl, "get_toggle_state"):
             toggle_state = str(_safe_get_value(lambda: ctrl.get_toggle_state(), "")).strip()
-            
+
         legacy_name = str(_safe_get_value(lambda: getattr(element_info, "legacy_name", ""), "")).strip()
         if not name and legacy_name:
             name = legacy_name
@@ -2525,8 +3392,8 @@ class SemiAutoInspectCollectorDialog:
         self.stop_interactive_monitor()
         self._interactive_monitoring = True
         self.status_var.set("交互采集中：点击目标控件抓取；按 F8 捕获鼠标指向控件（不触发点击）。")
+        self._update_listener_badge()
 
-        # 首选 pynput（体验更好）；缺失时降级到零依赖的 Windows 原生钩子
         try:
             from pynput import keyboard, mouse
 
@@ -2562,13 +3429,13 @@ class SemiAutoInspectCollectorDialog:
                 self.status_var.set(self.status_var.get() + "（使用系统原生钩子：未安装 pynput）")
             except Exception as exc:
                 self._interactive_monitoring = False
+                self._update_listener_badge()
                 messagebox.showerror(
                     "启动失败",
                     f"交互采集无法启动（pynput 与系统原生钩子均不可用）：\n{exc}",
                     parent=self.window,
                 )
 
-    # ── 交互采集回调（pynput 与原生钩子共用） ──
     def _maybe_capture(self, x, y, how, ts_attr):
         if not self._interactive_monitoring:
             return False
@@ -2606,6 +3473,7 @@ class SemiAutoInspectCollectorDialog:
             except Exception:
                 pass
             self._win32_hook = None
+        self._update_listener_badge()
 
     def _add_interactive_control(self, control):
         raw_text = str(control.get("rawInspectText", "")).strip()
@@ -2676,15 +3544,23 @@ class SemiAutoInspectCollectorDialog:
         self.status_var.set(f"已抓取候选控件：{control.get('name', '')}")
 
     def _refresh_candidates(self):
+        query = (self.candidate_filter_var.get() or "").strip().lower() if hasattr(self, "candidate_filter_var") else ""
         self.candidate_tree.delete(*self.candidate_tree.get_children())
         for index, control in enumerate(self.captured_controls):
+            name = str(control.get("name", "")).strip()
             locator = f"{control.get('targetMethod', '')}:{control.get('targetValue', '')}".strip(":")
+            win = str(control.get("windowTitle", "")).strip()
+            if query and query not in name.lower() and query not in locator.lower() and query not in win.lower():
+                continue
             self.candidate_tree.insert(
                 "",
                 tk.END,
                 iid=str(index),
-                values=(index + 1, control.get("name", ""), locator, control.get("windowTitle", "")),
+                values=(index + 1, name, locator, win),
             )
+        if hasattr(self, "candidate_count_var"):
+            total = len(self.captured_controls)
+            self.candidate_count_var.set(f"候选控件 ({total} 个)")
 
     def _on_candidate_select(self, _event=None):
         selection = self.candidate_tree.selection()
@@ -2697,16 +3573,18 @@ class SemiAutoInspectCollectorDialog:
             return
         control = self.captured_controls[index]
         inspect_data = control.get("inspectData", {})
+        if hasattr(self, "current_candidate_title_var"):
+            self.current_candidate_title_var.set(f"{control.get('name', '未命名')}  [{control.get('targetMethod', '')}:{control.get('targetValue', '')}]")
         lines = [
-            f"控件: {control.get('name', '')}",
-            f"用途: {control.get('role', '')}",
-            f"窗口: {control.get('windowTitle', '')}",
+            f"控件名称: {control.get('name', '')}",
+            f"用途角色: {control.get('role', '')}",
+            f"所属窗口: {control.get('windowTitle', '')}",
             f"推荐定位: {control.get('targetMethod', '')}:{control.get('targetValue', '')}",
             f"ClassName: {inspect_data.get('className', '')}",
             f"ControlType: {normalize_control_type_name(inspect_data.get('controlType', ''), inspect_data.get('localizedControlType', ''))}",
             f"AutomationId: {inspect_data.get('automationId', '')}",
             "",
-            "辅助判断:",
+            "辅助判断条件:",
         ]
         lines.extend(f"- {item}" for item in control.get("auxChecks", []))
         lines.extend(["", "原始 Inspect 文本:", control.get("rawInspectText", "")])
