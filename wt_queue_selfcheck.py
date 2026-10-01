@@ -75,15 +75,36 @@ def wait_service(host, port, token, path, seconds=15):
     return None
 
 
-def local_ipv4s():
+def get_lan_ip_list():
+    """返回本机所有可用 IPv4，物理局域网 IP 排在最前，127.0.0.1 排在最后。"""
     ips = set()
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ips.add(info[4][0])
+            ip = info[4][0]
+            if ip and not ip.startswith("127."):
+                ips.add(ip)
     except OSError:
         pass
-    ips.add("127.0.0.1")
-    return sorted(ips)
+    lan_ips = sorted(list(ips))
+    # 优先筛选 192.168.x.x / 10.x.x.x / 172.16-31.x.x
+    primary = [ip for ip in lan_ips if ip.startswith(("192.168.", "10.", "172."))]
+    others = [ip for ip in lan_ips if ip not in primary]
+    result = primary + others
+    result.append("127.0.0.1")
+    return result
+
+
+def get_primary_lan_ip():
+    """返回本机最主要的局域网 IP（供其他客户端填写）；若无物理局域网则返回 127.0.0.1。"""
+    ips = get_lan_ip_list()
+    for ip in ips:
+        if ip != "127.0.0.1":
+            return ip
+    return "127.0.0.1"
+
+
+def local_ipv4s():
+    return get_lan_ip_list()
 
 
 def ensure_service(script, port, token, name):
@@ -218,6 +239,149 @@ def cmd_check(host, token):
     ))
     print("  然后到 Simple 界面勾选板块 → 提交所选板块到远程队列，即可端到端验证。")
     return 0
+
+
+def start_lan_services(token=DEFAULT_TOKEN, force=True, timeout=15):
+    """供 GUI 或外部程序调用的内网服务一键启动引擎（包含 8768 队列服务与 8767 监控服务）。
+
+    返回 dict:
+    {
+        "ok": bool,
+        "task_ok": bool,
+        "monitor_ok": bool,
+        "primary_ip": str,
+        "all_ips": list,
+        "token": str,
+        "task_url": str,
+        "monitor_url": str,
+        "error": str,
+    }
+    """
+    if force:
+        cmd_stop()
+    ensure_service(SERVER_SCRIPT, PORT, token, "任务队列服务")
+    ensure_service(MONITOR_SCRIPT, MONITOR_PORT, "", "监控服务")
+    health = wait_service("127.0.0.1", PORT, token, "/api/health", seconds=timeout)
+    monitor = wait_service("127.0.0.1", MONITOR_PORT, "", "/api/status", seconds=timeout)
+
+    task_ok = isinstance(health, dict) and health.get("service") == "wt_task_server"
+    monitor_ok = isinstance(monitor, dict) and bool(monitor.get("status") or monitor.get("service"))
+
+    primary_ip = get_primary_lan_ip()
+    all_ips = get_lan_ip_list()
+    error_msg = ""
+    if not task_ok:
+        if health == "UNAUTHORIZED":
+            error_msg = "队列服务已在运行，但令牌不匹配（请重新启动或确认令牌）"
+        else:
+            error_msg = "队列服务在 8768 端口启动超时，请查看 logs/task_server.log"
+    elif not monitor_ok:
+        error_msg = "监控服务在 8767 端口未就绪（队列服务已就绪）"
+
+    return {
+        "ok": task_ok,
+        "task_ok": task_ok,
+        "monitor_ok": monitor_ok,
+        "primary_ip": primary_ip,
+        "all_ips": all_ips,
+        "token": token,
+        "task_url": "http://{}:{}".format(primary_ip, PORT),
+        "monitor_url": "http://{}:{}".format(primary_ip, MONITOR_PORT),
+        "error": error_msg,
+    }
+
+
+def stop_lan_services():
+    """供 GUI 或外部程序调用的停止服务入口，返回被终止的进程数。"""
+    return cmd_stop()
+
+
+def check_lan_connection(host, token=DEFAULT_TOKEN, timeout=4):
+    """检测指定主机连通性，返回结构化诊断报告。"""
+    host = str(host or "").strip()
+    if host.startswith("http://") or host.startswith("https://"):
+        try:
+            parsed = urllib.parse.urlsplit(host)
+            host = parsed.hostname or host
+        except Exception:
+            pass
+    if not host:
+        return {
+            "ok": False,
+            "port_open": False,
+            "auth_ok": False,
+            "ping_ms": 0,
+            "error": "主机地址为空",
+            "diagnosis": "请填写有效的服务器 IP 地址（如 192.168.0.102 或 127.0.0.1）",
+        }
+
+    t0 = time.perf_counter()
+    port8768 = port_open(host, PORT, timeout=timeout)
+    ping_ms = (time.perf_counter() - t0) * 1000
+
+    if not port8768:
+        return {
+            "ok": False,
+            "port_open": False,
+            "auth_ok": False,
+            "ping_ms": ping_ms,
+            "error": "无法连接到 {}:{}（TCP 端口不通）".format(host, PORT),
+            "diagnosis": "无法与目标服务器建立连接。请检查：\n1. 目标电脑是否已点击「启动内网服务」；\n2. 目标 IP 地址是否输入正确；\n3. 目标电脑防火墙是否放行 8768 / 8767 端口。",
+        }
+
+    health = wait_service(host, PORT, token, "/api/health", seconds=3)
+    if health == "UNAUTHORIZED":
+        return {
+            "ok": False,
+            "port_open": True,
+            "auth_ok": False,
+            "ping_ms": ping_ms,
+            "error": "HTTP 401 鉴权失败：服务令牌不匹配",
+            "diagnosis": "目标服务正常运行，但输入的令牌不正确。请将服务令牌修改为服务器启动时配置的令牌（默认 wt2026）。",
+        }
+
+    if not isinstance(health, dict):
+        return {
+            "ok": False,
+            "port_open": True,
+            "auth_ok": True,
+            "ping_ms": ping_ms,
+            "error": "HTTP 响应异常：健康检查未返回有效数据",
+            "diagnosis": "目标端口可能被其他进程占用，或任务队列服务正在异常重启。",
+        }
+
+    port8767 = port_open(host, MONITOR_PORT, timeout=2)
+    monitor_health = wait_service(host, MONITOR_PORT, "", "/api/status", seconds=2) if port8767 else None
+
+    diag = "连接成功！局域网往返延迟 {:.1f}ms，任务队列服务正常".format(ping_ms)
+    if port8767 and isinstance(monitor_health, dict):
+        diag += "，监控管理服务正常。"
+    else:
+        diag += "（监控服务 8767 未就绪，但不影响任务派发）。"
+
+    return {
+        "ok": True,
+        "port_open": True,
+        "auth_ok": True,
+        "ping_ms": ping_ms,
+        "service": health.get("service", "wt_task_server"),
+        "monitor_ok": isinstance(monitor_health, dict),
+        "error": "",
+        "diagnosis": diag,
+    }
+
+
+def get_local_service_status():
+    """获取本机 8768 和 8767 的即时监听状态。"""
+    t_open = port_open("127.0.0.1", PORT, timeout=0.3)
+    m_open = port_open("127.0.0.1", MONITOR_PORT, timeout=0.3)
+    return {
+        "task_running": t_open,
+        "monitor_running": m_open,
+        "is_server_active": t_open or m_open,
+        "primary_ip": get_primary_lan_ip(),
+        "all_ips": get_lan_ip_list(),
+    }
 
 
 def main():

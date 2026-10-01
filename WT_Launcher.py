@@ -37,6 +37,7 @@ from wt_action_schema import ALLOWED_RELATIVE_REGION_ANCHORS
 from wt_flow_validation import validate_flow_definition
 from wt_flow_editor_utils import normalize_control_window_title
 import wt_task_queue_window
+import wt_queue_selfcheck
 import wt_project_workdir_parser
 import wt_simple_options
 import wt_mast_config_xml
@@ -2328,6 +2329,8 @@ class LauncherApp:
         self.task_queue_url = str(raw_task_url).strip().rstrip("/") or TASK_SERVER_DEFAULT_URL
         self.task_queue_user = str(launcher_state.get("taskQueueUser") or "").strip()
         self.task_queue_token = str(launcher_state.get("taskQueueToken") or "").strip()
+        raw_history_urls = launcher_state.get("historyServerUrls") or []
+        self.history_server_urls = [str(u).strip() for u in raw_history_urls if str(u).strip()]
         self.simple_remote_var = tk.BooleanVar(value=bool(launcher_state.get("simpleModeRemote", False)))
         # Simple 远程队列共享状态：轮询线程与主线程都会读写，用可重入锁保护
         self._simple_remote_lock = threading.RLock()
@@ -6311,6 +6314,9 @@ class LauncherApp:
             "检查与日志",
             [
                 ("运行环境检测", self.run_environment_check, True),
+                ("🚀 一键启动内网服务(队列+监控)", self.start_all_lan_services, True),
+                ("⏹️ 一键停止内网服务", self.stop_all_lan_services),
+                ("🩺 内网服务与连通性自检", self.open_lan_connection_diag, True),
                 ("启动监控服务", self.start_server_monitor_service),
                 ("启动任务队列服务", self.start_task_queue_service),
                 ("停止任务队列服务", self.stop_task_queue_service),
@@ -7448,6 +7454,7 @@ class LauncherApp:
                 "taskQueueUrl": getattr(self, "task_queue_url", TASK_SERVER_DEFAULT_URL),
                 "taskQueueUser": getattr(self, "task_queue_user", ""),
                 "taskQueueToken": getattr(self, "task_queue_token", ""),
+                "historyServerUrls": getattr(self, "history_server_urls", []),
                 "uiMode": self.ui_mode_var.get() if hasattr(self, "ui_mode_var") else "advanced",
                 "updatedAt": datetime.now().isoformat(timespec="seconds"),
             },
@@ -10272,7 +10279,14 @@ class LauncherApp:
             attr, port, label = "_task_server_process", TASK_SERVER_PORT, "任务队列服务"
         proc = getattr(self, attr, None)
         if proc is None or proc.poll() is not None:
-            messagebox.showinfo("停止{}".format(label), "当前没有由本控制台启动的{}。".format(label))
+            killed = wt_queue_selfcheck._kill_by_port(port)
+            setattr(self, attr, None)
+            if killed > 0:
+                self._append_log("已停止{}（按端口 {} 清理了 {} 个外部相关进程）。".format(label, port, killed), tag="warning")
+                self.status_var.set("状态：{}已停止".format(label))
+                messagebox.showinfo("停止{}".format(label), "{}已停止（已释放端口 {}）。".format(label, port))
+            else:
+                messagebox.showinfo("停止{}".format(label), "当前未检测到运行中的{}（端口 {} 未被占用）。".format(label, port))
             return
         try:
             subprocess.run(
@@ -10398,6 +10412,116 @@ class LauncherApp:
         finally:
             self._session_repair_running = False
 
+    def _save_history_server_urls(self, urls):
+        self.history_server_urls = list(urls or [])
+        self._schedule_launcher_state_save()
+
+    def start_all_lan_services(self):
+        """一键启动内网服务（队列 8768 + 监控 8767），带 --force 孤儿端口清理与就绪验证。"""
+        token = str(getattr(self, "task_queue_token", "") or "").strip() or "wt2026"
+        self.task_queue_token = token
+        self.status_var.set("状态：正在启动内网队列与监控服务…")
+        self.current_step_var.set("当前步骤：启动内网服务（队列 8768 + 监控 8767）")
+        self._append_log("正在启动内网队列与监控服务（端口 8768/8767）...", tag="info")
+
+        def _work():
+            res = wt_queue_selfcheck.start_lan_services(token=token, force=True, timeout=15)
+            if res.get("ok"):
+                primary_ip = res.get("primary_ip") or "127.0.0.1"
+                task_url = "http://127.0.0.1:8768"
+                share_url = "http://{}:8768".format(primary_ip)
+                self.task_queue_url = task_url
+                self.server_monitor_url = "http://127.0.0.1:8767"
+                cur_history = list(getattr(self, "history_server_urls", []))
+                for u in [task_url, share_url]:
+                    if u not in cur_history:
+                        cur_history.insert(0, u)
+                self.history_server_urls = cur_history[:12]
+                self._schedule_launcher_state_save()
+
+                self.output_queue.put(("log", ("内网队列与监控服务已全部启动成功！本机服务地址: " + share_url, "success")))
+                self.output_queue.put(("status", ("状态：内网队列与监控服务已就绪", "当前步骤：服务就绪，可随时提交远程任务")))
+                try:
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(share_url)
+                    self.root.update()
+                except Exception:
+                    pass
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "内网服务已启动",
+                    "✅ 内网队列与监控服务已成功启动！\n\n"
+                    "• 任务队列服务：http://0.0.0.0:8768 (运行中)\n"
+                    "• 监控管理服务：http://0.0.0.0:8767 (运行中)\n"
+                    "• 服务访问令牌：{}\n\n"
+                    "📌 本机对外服务地址：\n{}\n\n"
+                    "（该地址已自动复制到剪贴板，其他电脑可在总控台填入此地址提交任务）".format(token, share_url),
+                    parent=self.root,
+                ))
+            else:
+                err = res.get("error") or "未知错误"
+                self.output_queue.put(("log", ("内网服务启动异常：" + err, "error")))
+                self.output_queue.put(("status", ("状态：内网服务启动失败", "当前步骤：请排查端口占用或日志")))
+                self.root.after(0, lambda: messagebox.showerror(
+                    "启动失败",
+                    "内网服务启动失败：\n{}\n\n可查看 logs/task_server.log 或使用「内网自检」排查。".format(err),
+                    parent=self.root,
+                ))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def stop_all_lan_services(self):
+        """一键停止本机全部内网服务（队列 8768 + 监控 8767），释放端口。"""
+        if not messagebox.askyesno(
+            "停止内网服务",
+            "确定要停止本机运行的队列服务与监控服务吗？\n"
+            "停止后正在运行的远程任务可能中断，其他电脑将无法提交任务。",
+            parent=self.root,
+        ):
+            return
+        killed = wt_queue_selfcheck.stop_lan_services()
+        setattr(self, "_task_server_process", None)
+        setattr(self, "_monitor_server_process", None)
+        if killed > 0:
+            self._append_log("已停止全部内网服务（共清理 {} 个进程，端口 8768/8767 已释放）。".format(killed), tag="warning")
+            self.status_var.set("状态：内网服务已停止")
+            messagebox.showinfo("服务已停止", "已成功停止内网服务，释放了 {} 个进程。".format(killed), parent=self.root)
+        else:
+            self._append_log("内网服务未在运行（8768/8767 端口均未被占用）。", tag="info")
+            messagebox.showinfo("服务未运行", "当前未检测到运行中的内网服务（端口 8768/8767 未被占用）。", parent=self.root)
+
+    def open_lan_connection_diag(self):
+        """打开内网服务与网络连通性一键交互式诊断窗口。"""
+        def _on_apply(chosen_url, tok):
+            self.task_queue_url = chosen_url
+            if tok:
+                self.task_queue_token = tok
+            self.server_monitor_url = wt_task_queue_window._derive_monitor_url(chosen_url)
+            cur_history = list(getattr(self, "history_server_urls", []))
+            if chosen_url not in cur_history:
+                cur_history.insert(0, chosen_url)
+            self.history_server_urls = cur_history[:12]
+            self._schedule_launcher_state_save()
+            self._append_log("已将任务服务连接地址切换为: {}".format(chosen_url), tag="info")
+            win = getattr(self, "_task_queue_window", None)
+            if win is not None:
+                try:
+                    if win.window.winfo_exists():
+                        win.url_var.set(chosen_url)
+                        win.monitor_url_var.set(self.server_monitor_url)
+                        win.token_var.set(tok)
+                        win._record_history_url(chosen_url)
+                        win._apply_settings_and_refresh()
+                except Exception:
+                    pass
+
+        wt_task_queue_window.open_network_diag_dialog(
+            self.root,
+            default_target=getattr(self, "task_queue_url", TASK_SERVER_DEFAULT_URL),
+            default_token=getattr(self, "task_queue_token", "") or "wt2026",
+            history_urls=getattr(self, "history_server_urls", []),
+            on_apply=_on_apply,
+        )
+
     def open_task_queue(self):
         existing = getattr(self, "_task_queue_window", None)
         if existing is not None:
@@ -10418,6 +10542,8 @@ class LauncherApp:
             on_monitor_url_change=self._save_server_monitor_url,
             on_start_service=self.start_task_monitor_service,
             on_stop_service=self.stop_task_monitor_service,
+            history_urls=getattr(self, "history_server_urls", []),
+            on_history_urls_change=self._save_history_server_urls,
         )
 
     def _schedule_launcher_state_save(self, delay_ms=400):
