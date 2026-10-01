@@ -17,6 +17,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import wt_theme
 import wt_logging
+import wt_queue_selfcheck
 
 
 DEFAULT_URL = "http://127.0.0.1:8768"
@@ -51,17 +52,34 @@ MONITOR_STATUS_LABELS = {
 }
 
 
+def _derive_monitor_url(task_url):
+    """根据任务服务地址自动联动推导监控服务地址（将 8768 端口转换为 8767）。"""
+    url = str(task_url or "").strip().rstrip("/")
+    if not url:
+        return DEFAULT_MONITOR_URL
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = "http://" + url
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        scheme = parsed.scheme or "http"
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port
+        if port == 8768 or port is None:
+            new_netloc = "{}:8767".format(host)
+        else:
+            new_netloc = "{}:8767".format(host)
+        return "{}://{}".format(scheme, new_netloc)
+    except Exception:
+        return DEFAULT_MONITOR_URL
+
+
 def _local_ipv4s():
     """本机全部 IPv4（含 127.0.0.1），用于判定任务服务地址指向哪台机器。"""
-    import socket
-
-    ips = {"127.0.0.1", "localhost"}
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ips.add(info[4][0])
-    except OSError:
-        pass
+    ips = set(wt_queue_selfcheck.get_lan_ip_list())
+    ips.add("127.0.0.1")
+    ips.add("localhost")
     return ips
+
 
 
 def filter_tasks(tasks, status="", keyword=""):
@@ -85,6 +103,192 @@ def filter_tasks(tasks, status="", keyword=""):
     return filtered
 
 
+def open_network_diag_dialog(
+    parent,
+    default_target=None,
+    default_token="wt2026",
+    history_urls=None,
+    on_apply=None,
+):
+    """打开内网服务与网络连通性一键交互式诊断窗口。"""
+    pal = wt_theme.get_palette()
+    diag_win = tk.Toplevel(parent)
+    diag_win.title("内网服务与网络连通性一键自检与诊断")
+    diag_win.geometry("720x540")
+    diag_win.minsize(600, 420)
+    diag_win.configure(bg=pal["bg"])
+
+    top_bar = tk.Frame(
+        diag_win,
+        bg=pal["surface"],
+        padx=12,
+        pady=10,
+        highlightthickness=1,
+        highlightbackground=pal["border"],
+    )
+    top_bar.pack(fill=tk.X, padx=10, pady=(10, 6))
+
+    tk.Label(
+        top_bar,
+        text="目标服务器 IP / 地址:",
+        bg=pal["surface"],
+        fg=pal["text"],
+        font=("Microsoft YaHei UI", 9, "bold"),
+    ).pack(side=tk.LEFT)
+    target_var = tk.StringVar(value=default_target or "http://127.0.0.1:8768")
+    target_combo = ttk.Combobox(
+        top_bar,
+        textvariable=target_var,
+        values=history_urls or ["http://127.0.0.1:8768"],
+        width=24,
+        font=("Microsoft YaHei UI", 9),
+    )
+    target_combo.pack(side=tk.LEFT, padx=(6, 12))
+
+    tk.Label(
+        top_bar,
+        text="服务令牌:",
+        bg=pal["surface"],
+        fg=pal["text"],
+        font=("Microsoft YaHei UI", 9),
+    ).pack(side=tk.LEFT)
+    diag_token_var = tk.StringVar(value=default_token or "wt2026")
+    tk.Entry(
+        top_bar,
+        textvariable=diag_token_var,
+        width=12,
+        bg=pal["card_hover"],
+        relief=tk.FLAT,
+        highlightthickness=1,
+        highlightbackground=pal["border"],
+        font=("Microsoft YaHei UI", 9),
+    ).pack(side=tk.LEFT, padx=(4, 12))
+
+    term_frame = tk.Frame(
+        diag_win,
+        bg="#0f172a",
+        padx=8,
+        pady=8,
+        highlightthickness=1,
+        highlightbackground=pal["border"],
+    )
+    term_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+
+    diag_text = tk.Text(
+        term_frame,
+        bg="#0f172a",
+        fg="#f8fafc",
+        insertbackground="#f8fafc",
+        font=("Consolas", 10),
+        relief=tk.FLAT,
+        wrap=tk.WORD,
+    )
+    scroll = tk.Scrollbar(term_frame, command=diag_text.yview)
+    diag_text.config(yscrollcommand=scroll.set)
+    scroll.pack(side=tk.RIGHT, fill=tk.Y)
+    diag_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    diag_text.tag_configure("info", foreground="#94a3b8")
+    diag_text.tag_configure("ok", foreground="#4ade80", font=("Consolas", 10, "bold"))
+    diag_text.tag_configure("warn", foreground="#facc15")
+    diag_text.tag_configure("err", foreground="#f87171", font=("Consolas", 10, "bold"))
+    diag_text.tag_configure("highlight", foreground="#38bdf8", font=("Consolas", 10, "bold"))
+
+    bot_bar = tk.Frame(diag_win, bg=pal["bg"], padx=10, pady=8)
+    bot_bar.pack(fill=tk.X)
+
+    def _log(msg, tag="info"):
+        diag_text.insert(tk.END, msg + "\n", tag)
+        diag_text.see(tk.END)
+
+    def _run_diag():
+        run_btn.config(state=tk.DISABLED, text="正在诊断...")
+        diag_text.delete("1.0", tk.END)
+        host = target_var.get().strip()
+        token = diag_token_var.get().strip()
+
+        def _worker():
+            _log("=" * 60, "info")
+            _log("  开始网络与内网服务连通性诊断", "highlight")
+            _log("  目标主机: {} | 验证令牌: {}".format(host, token), "info")
+            _log("=" * 60, "info")
+
+            local_ips = wt_queue_selfcheck.get_lan_ip_list()
+            primary = wt_queue_selfcheck.get_primary_lan_ip()
+            _log("\n[步骤 1/4] 本机物理网络环境检查 ...", "info")
+            _log("  ✓ 本机首选局域网 IP: {}".format(primary), "ok")
+            _log("  ✓ 本机全部检测到的 IPv4: {}".format(" / ".join(local_ips)), "info")
+
+            _log("\n[步骤 2/4] 目标主机与端口可达性检测 ...", "info")
+            res = wt_queue_selfcheck.check_lan_connection(host, token=token)
+
+            if res.get("port_open"):
+                _log("  ✓ TCP 8768 端口可达，网络往返延迟: {:.1f} ms".format(res.get("ping_ms", 0)), "ok")
+            else:
+                _log("  ✗ TCP 8768 端口不可达！", "err")
+                _log("    报错信息: {}".format(res.get("error")), "err")
+
+            _log("\n[步骤 3/4] 任务队列服务健康与令牌校验 ...", "info")
+            if res.get("ok"):
+                _log("  ✓ 队列服务健康正常，服务名: {}".format(res.get("service")), "ok")
+                _log("  ✓ Bearer 令牌鉴权验证通过！", "ok")
+            elif res.get("auth_ok") is False:
+                _log("  ✗ 令牌鉴权失败 (HTTP 401)：输入的令牌不正确！", "err")
+            elif res.get("port_open"):
+                _log("  ✗ 队列服务响应异常或未处于健康状态", "err")
+
+            _log("\n[步骤 4/4] 监控服务 (端口 8767) 检测 ...", "info")
+            if res.get("monitor_ok"):
+                _log("  ✓ 监控服务健康正常", "ok")
+            else:
+                _log("  ⚠️ 监控服务未就绪或未开启（不影响任务正常派发）", "warn")
+
+            _log("\n" + "=" * 60, "info")
+            _log("  诊断结论与处置指引：", "highlight")
+            if res.get("ok"):
+                _log("  🎉 双机连通性完全正常！可直接在总控台和监控窗口中操作。", "ok")
+            else:
+                _log("  {}".format(res.get("diagnosis")), "warn")
+            _log("=" * 60, "info")
+
+            diag_win.after(0, lambda: run_btn.config(state=tk.NORMAL, text="重新诊断"))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    run_btn = wt_theme.create_flat_button(
+        top_bar, text="开始诊断", command=_run_diag, tone="primary", padx=12, pady=3
+    )
+    run_btn.pack(side=tk.LEFT)
+
+    def _apply_and_close():
+        chosen = target_var.get().strip()
+        tok = diag_token_var.get().strip()
+        if callable(on_apply) and chosen:
+            on_apply(chosen, tok)
+        diag_win.destroy()
+
+    def _copy_clipboard(txt):
+        try:
+            diag_win.clipboard_clear()
+            diag_win.clipboard_append(txt)
+            diag_win.update()
+        except Exception:
+            pass
+
+    wt_theme.create_flat_button(
+        bot_bar, text="使用此地址并立即连接", command=_apply_and_close, tone="success", padx=12, pady=4
+    ).pack(side=tk.LEFT)
+    wt_theme.create_flat_button(
+        bot_bar, text="复制诊断日志", command=lambda: _copy_clipboard(diag_text.get("1.0", tk.END)), tone="secondary", padx=10, pady=4
+    ).pack(side=tk.LEFT, padx=8)
+    wt_theme.create_flat_button(
+        bot_bar, text="关闭", command=diag_win.destroy, tone="subtle", padx=10, pady=4
+    ).pack(side=tk.RIGHT)
+
+    diag_win.after(100, _run_diag)
+    return diag_win
+
+
 class TaskQueueWindow:
     """任务队列与服务器监控的统一只读/操作窗口。"""
 
@@ -99,11 +303,32 @@ class TaskQueueWindow:
         on_monitor_url_change=None,
         on_start_service=None,
         on_stop_service=None,
+        history_urls=None,
+        on_history_urls_change=None,
     ):
         self.on_settings_change = on_settings_change
         self.on_monitor_url_change = on_monitor_url_change
         self.on_start_service = on_start_service
         self.on_stop_service = on_stop_service
+        self.on_history_urls_change = on_history_urls_change
+        self.primary_lan_ip = wt_queue_selfcheck.get_primary_lan_ip()
+
+        # 初始化历史地址列表（支持记忆与快速切换）
+        default_presets = ["http://127.0.0.1:8768"]
+        if self.primary_lan_ip != "127.0.0.1":
+            default_presets.append("http://{}:8768".format(self.primary_lan_ip))
+        seed_list = []
+        if initial_url:
+            seed_list.append(initial_url)
+        seed_list.extend(list(history_urls or []))
+        seed_list.extend(default_presets)
+        combined = []
+        for u in seed_list:
+            cleaned = str(u).strip().rstrip("/")
+            if cleaned and cleaned not in combined:
+                combined.append(cleaned)
+        self.history_urls = combined[:12]
+
         self.base_url = (initial_url or DEFAULT_URL).strip().rstrip("/") or DEFAULT_URL
         self.monitor_base_url = (
             (initial_monitor_url or DEFAULT_MONITOR_URL).strip().rstrip("/")
@@ -123,15 +348,11 @@ class TaskQueueWindow:
         self._queue_fail_streak = 0
         self._monitor_fail_streak = 0
         self._cached_tasks = []
-        # 运行角色横幅：按任务服务地址判定本窗口在"操作哪台机器的服务"，
-        # 客户端（连远程服务器）与服务器本机（连 127.0.0.1）视觉区分，防误操作。
+        # 运行角色横幅与当前运行角色标识
         self._role_banner_var = tk.StringVar()
-        self._role_banner_label = None
+        self._role_banner_frame = None
         self._local_ips = _local_ipv4s()
         # 线程安全快照：后台线程（轮询/提交/上传/控制）不得直接读取 Tk 变量
-        # —— 跨线程读 Tcl 对象在部分环境会偶发 "main thread is not in main loop"
-        # 或原生崩溃；这里在主线程维护普通值的镜像，worker 只读镜像。
-        # 快照由 _sync_prefs_snapshot 在变量变化时刷新（见 _on_user_changed 等回调）。
         self._prefs_snapshot = {
             "user": str(initial_user or "").strip(),
             "token": str(initial_token or "").strip(),
@@ -142,22 +363,43 @@ class TaskQueueWindow:
         self.window = tk.Toplevel(master)
         self.window.title("任务与服务器监控")
         self.window.configure(bg=pal["bg"])
-        self.window.geometry("1160x740")
-        self.window.minsize(880, 580)
+        self.window.geometry("1180x760")
+        self.window.minsize(920, 600)
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # 角色横幅：地址栏上方整行，颜色 + 文案区分运行角色
-        self._role_banner_label = tk.Label(
-            self.window,
-            textvariable=self._role_banner_var,
-            anchor="w",
-            padx=14,
-            pady=6,
-            font=("Microsoft YaHei UI", 9, "bold"),
-        )
-        self._role_banner_label.pack(fill=tk.X, before=None)
+        # ── 1. 运行角色横幅：鲜明色彩 + 运行角色 + 状态标识 ──
+        self._role_banner_frame = tk.Frame(self.window, padx=14, pady=8)
+        self._role_banner_frame.pack(fill=tk.X, before=None)
 
-        top = tk.Frame(
+        self._role_title_lbl = tk.Label(
+            self._role_banner_frame,
+            text="",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            anchor="w",
+        )
+        self._role_title_lbl.pack(side=tk.LEFT, padx=(0, 10))
+
+        self._role_desc_lbl = tk.Label(
+            self._role_banner_frame,
+            textvariable=self._role_banner_var,
+            font=("Microsoft YaHei UI", 9),
+            anchor="w",
+        )
+        self._role_desc_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self._role_action_btn = tk.Button(
+            self._role_banner_frame,
+            text="",
+            relief=tk.FLAT,
+            font=("Microsoft YaHei UI", 8, "bold"),
+            cursor="hand2",
+            padx=8,
+            pady=2,
+        )
+        self._role_action_btn.pack(side=tk.RIGHT, padx=(8, 0))
+
+        # ── 2. 连接目标与内网服务控制面板（双行清晰规划） ──
+        self.top_frame = tk.Frame(
             self.window,
             bg=pal["surface"],
             highlightthickness=1,
@@ -165,28 +407,33 @@ class TaskQueueWindow:
             padx=10,
             pady=6,
         )
-        top.pack(fill=tk.X, padx=8, pady=(4, 2))
+        self.top_frame.pack(fill=tk.X, padx=8, pady=(4, 2))
+
+        # 第一行：连接目标、凭证与刷新
+        row1 = tk.Frame(self.top_frame, bg=pal["surface"])
+        row1.pack(fill=tk.X, pady=(0, 4))
+
         tk.Label(
-            top,
+            row1,
             text="任务服务",
             bg=pal["surface"],
             fg=pal["text_secondary"],
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side=tk.LEFT)
         self.url_var = tk.StringVar(value=self.base_url)
-        tk.Entry(
-            top,
+        self.url_combo = ttk.Combobox(
+            row1,
             textvariable=self.url_var,
-            width=20,
-            bg=pal["card_hover"],
-            relief=tk.FLAT,
-            highlightthickness=1,
-            highlightbackground=pal["border"],
+            values=self.history_urls,
+            width=24,
             font=("Microsoft YaHei UI", 9),
-        ).pack(side=tk.LEFT, padx=(4, 8))
+        )
+        self.url_combo.pack(side=tk.LEFT, padx=(4, 8))
+        self.url_combo.bind("<<ComboboxSelected>>", self._on_url_combo_selected)
+        self.url_combo.bind("<Return>", lambda _e: self._apply_settings_and_refresh())
 
         tk.Label(
-            top,
+            row1,
             text="用户名",
             bg=pal["surface"],
             fg=pal["text_secondary"],
@@ -194,7 +441,7 @@ class TaskQueueWindow:
         ).pack(side=tk.LEFT)
         self.user_var = tk.StringVar(value=initial_user or "")
         tk.Entry(
-            top,
+            row1,
             textvariable=self.user_var,
             width=10,
             bg=pal["card_hover"],
@@ -205,7 +452,7 @@ class TaskQueueWindow:
         ).pack(side=tk.LEFT, padx=(4, 8))
 
         tk.Label(
-            top,
+            row1,
             text="服务令牌",
             bg=pal["surface"],
             fg=pal["text_secondary"],
@@ -213,9 +460,9 @@ class TaskQueueWindow:
         ).pack(side=tk.LEFT)
         self.token_var = tk.StringVar(value=initial_token or "")
         tk.Entry(
-            top,
+            row1,
             textvariable=self.token_var,
-            width=14,
+            width=12,
             show="*",
             bg=pal["card_hover"],
             relief=tk.FLAT,
@@ -225,7 +472,7 @@ class TaskQueueWindow:
         ).pack(side=tk.LEFT, padx=(4, 8))
 
         tk.Label(
-            top,
+            row1,
             text="监控地址",
             bg=pal["surface"],
             fg=pal["text_secondary"],
@@ -233,7 +480,7 @@ class TaskQueueWindow:
         ).pack(side=tk.LEFT)
         self.monitor_url_var = tk.StringVar(value=self.monitor_base_url)
         tk.Entry(
-            top,
+            row1,
             textvariable=self.monitor_url_var,
             width=20,
             bg=pal["card_hover"],
@@ -244,31 +491,140 @@ class TaskQueueWindow:
         ).pack(side=tk.LEFT, padx=(4, 8))
 
         wt_theme.create_flat_button(
-            top,
-            text="刷新连接",
+            row1,
+            text="🔄 刷新连接",
             command=self._apply_settings_and_refresh,
             tone="primary",
             padx=10,
             pady=3,
-        ).pack(side=tk.LEFT, padx=(0, 8))
+        ).pack(side=tk.LEFT, padx=(0, 6))
 
         wt_theme.create_flat_button(
-            top,
-            text="启动服务",
-            command=lambda: self._service_action("start", "task"),
-            tone="success",
-            padx=8,
-            pady=3,
-        ).pack(side=tk.LEFT, padx=(0, 4))
-
-        wt_theme.create_flat_button(
-            top,
-            text="停止服务",
-            command=lambda: self._service_action("stop", "task"),
-            tone="danger",
+            row1,
+            text="🩺 网络诊断",
+            command=lambda: self.open_network_diag_dialog(),
+            tone="secondary",
             padx=8,
             pady=3,
         ).pack(side=tk.LEFT)
+
+        # 第二行：内网服务引擎控制 + 本机局域网 IP 显示与复制
+        row2 = tk.Frame(self.top_frame, bg=pal["surface"])
+        row2.pack(fill=tk.X, pady=(2, 0))
+
+        tk.Label(
+            row2,
+            text="内网服务控制:",
+            bg=pal["surface"],
+            fg=pal["text_secondary"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        wt_theme.create_flat_button(
+            row2,
+            text="🚀 一键启动内网服务",
+            command=self.start_lan_services_action,
+            tone="success",
+            padx=10,
+            pady=2,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        wt_theme.create_flat_button(
+            row2,
+            text="⏹️ 停止服务",
+            command=self.stop_lan_services_action,
+            tone="danger",
+            padx=8,
+            pady=2,
+        ).pack(side=tk.LEFT, padx=(0, 16))
+
+        local_service_url = "http://{}:8768".format(self.primary_lan_ip)
+        tk.Label(
+            row2,
+            text="📌 本机局域网地址:",
+            bg=pal["surface"],
+            fg=pal["text_secondary"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT)
+
+        ip_lbl = tk.Label(
+            row2,
+            text=local_service_url,
+            bg=pal["surface"],
+            fg=pal["primary_text"],
+            font=("Consolas", 9, "bold"),
+        )
+        ip_lbl.pack(side=tk.LEFT, padx=(3, 4))
+
+        copy_btn = wt_theme.create_flat_button(
+            row2,
+            text="📋 复制",
+            command=lambda: self._copy_text(local_service_url, copy_btn),
+            tone="subtle",
+            padx=6,
+            pady=1,
+            font=("Microsoft YaHei UI", 8),
+        )
+        copy_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+        tk.Label(
+            row2,
+            text="（供其他电脑在任务服务栏填入）",
+            bg=pal["surface"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT)
+
+        # ── 3. 连接异常显式诊断警示条（默认收起，异常展开） ──
+        self._diag_banner_visible = False
+        self._diag_banner_text_var = tk.StringVar(value="")
+        self._diag_banner_frame = tk.Frame(
+            self.window,
+            bg="#fef2f2",
+            highlightthickness=1,
+            highlightbackground="#f87171",
+            padx=12,
+            pady=6,
+        )
+
+        tk.Label(
+            self._diag_banner_frame,
+            textvariable=self._diag_banner_text_var,
+            bg="#fef2f2",
+            fg="#991b1b",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            anchor="w",
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        wt_theme.create_flat_button(
+            self._diag_banner_frame,
+            text="🔍 点击一键排查原因",
+            command=lambda: self.open_network_diag_dialog(),
+            tone="danger",
+            padx=8,
+            pady=2,
+            font=("Microsoft YaHei UI", 8, "bold"),
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+
+        wt_theme.create_flat_button(
+            self._diag_banner_frame,
+            text="🚀 本机启动服务",
+            command=self.start_lan_services_action,
+            tone="success",
+            padx=8,
+            pady=2,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+
+        wt_theme.create_flat_button(
+            self._diag_banner_frame,
+            text="✕ 忽略",
+            command=self._hide_diag_banner,
+            tone="subtle",
+            padx=6,
+            pady=2,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.RIGHT)
 
         self.url_var.trace_add("write", self._on_settings_text_changed)
         self.user_var.trace_add("write", self._on_user_changed)
@@ -276,16 +632,6 @@ class TaskQueueWindow:
         self.monitor_url_var.trace_add("write", self._on_monitor_url_changed)
         # 变量初值同步到线程安全快照（此后由上述回调持续维护）
         self._sync_prefs_snapshot()
-
-        hint = tk.Label(
-            top,
-            text="先填用户名/令牌再刷新",
-            bg=pal["surface"],
-            fg=pal["muted"],
-            font=("Microsoft YaHei UI", 8),
-            anchor="e",
-        )
-        hint.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(8, 0))
 
         self.notebook = ttk.Notebook(self.window)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 8))
@@ -306,63 +652,269 @@ class TaskQueueWindow:
         self.window.after(200, self.refresh_flows)
         self._refresh_role_banner()
 
+    def _copy_text(self, text, button_widget=None):
+        try:
+            self.window.clipboard_clear()
+            self.window.clipboard_append(text)
+            self.window.update()
+            if button_widget is not None:
+                orig_text = button_widget.cget("text")
+                button_widget.config(text="✓ 已复制!")
+                self.window.after(1800, lambda: button_widget.config(text=orig_text))
+            return True
+        except Exception:
+            return False
 
-    def _resolve_role(self):
+    def _on_url_combo_selected(self, _event=None):
+        new_url = self.url_var.get().strip()
+        if new_url:
+            derived_mon = _derive_monitor_url(new_url)
+            self.monitor_url_var.set(derived_mon)
+            self._record_history_url(new_url)
+            self._apply_settings_and_refresh()
+
+    def _record_history_url(self, url):
+        cleaned = str(url or "").strip().rstrip("/")
+        if not cleaned:
+            return
+        if cleaned in self.history_urls:
+            self.history_urls.remove(cleaned)
+        self.history_urls.insert(0, cleaned)
+        self.history_urls = self.history_urls[:12]
+        if hasattr(self, "url_combo"):
+            self.url_combo["values"] = self.history_urls
+        if self.on_history_urls_change:
+            try:
+                self.on_history_urls_change(self.history_urls)
+            except Exception:
+                pass
+
+    def _show_diag_banner(self, error_message, is_queue=True):
+        if not hasattr(self, "_diag_banner_frame"):
+            return
+        service_name = "任务服务 (8768)" if is_queue else "监控服务 (8767)"
+        target_url = self.base_url if is_queue else self.monitor_base_url
+        friendly = self._friendly_error(error_message)
+        self._diag_banner_text_var.set(
+            "⚠️ 无法连接至 {} [{}]：{}".format(service_name, target_url, friendly)
+        )
+        if not getattr(self, "_diag_banner_visible", False):
+            self._diag_banner_frame.pack(fill=tk.X, padx=8, pady=(2, 4), after=self.top_frame)
+            self._diag_banner_visible = True
+
+    def _hide_diag_banner(self):
+        if hasattr(self, "_diag_banner_frame") and getattr(self, "_diag_banner_visible", False):
+            self._diag_banner_frame.pack_forget()
+            self._diag_banner_visible = False
+
+    def open_network_diag_dialog(self, default_target=None):
+        """打开内网服务与网络连通性一键交互式诊断窗口。"""
+        def _on_apply(url, tok):
+            self.url_var.set(url)
+            self.monitor_url_var.set(_derive_monitor_url(url))
+            self.token_var.set(tok)
+            self._record_history_url(url)
+            self._apply_settings_and_refresh()
+
+        open_network_diag_dialog(
+            self.window,
+            default_target=default_target or self.base_url,
+            default_token=self.token_var.get() or "wt2026",
+            history_urls=self.history_urls,
+            on_apply=_on_apply,
+        )
+
+    def start_lan_services_action(self):
+        """一键启动本机内网服务（队列 8768 + 监控 8767），带 --force 级别孤儿端口清理。"""
+        token = str(self.token_var.get() or "wt2026").strip()
+        if not messagebox.askyesno(
+            "启动内网服务",
+            "确定要在本机启动内网队列服务(8768)与监控服务(8767)吗？\n"
+            "系统将自动清理端口残留，并在本机后台启动服务供局域网协作。",
+            parent=self.window,
+        ):
+            return
+
+        def _worker():
+            res = wt_queue_selfcheck.start_lan_services(token=token, force=True, timeout=15)
+
+            def _ui():
+                if res["ok"]:
+                    primary_ip = res["primary_ip"]
+                    task_url = "http://127.0.0.1:8768"
+                    mon_url = "http://127.0.0.1:8767"
+                    self.url_var.set(task_url)
+                    self.monitor_url_var.set(mon_url)
+                    self._record_history_url(task_url)
+                    self._record_history_url("http://{}:8768".format(primary_ip))
+                    self._apply_settings_and_refresh()
+
+                    share_url = "http://{}:8768".format(primary_ip)
+                    self._copy_text(share_url)
+
+                    messagebox.showinfo(
+                        "内网服务启动成功",
+                        "✅ 本机内网服务已成功启动！\n\n"
+                        "• 任务队列服务：http://0.0.0.0:8768 (运行中)\n"
+                        "• 监控管理服务：http://0.0.0.0:8767 (运行中)\n"
+                        "• 服务访问令牌：{}\n\n"
+                        "📌 本机内网服务地址：\n{}\n\n"
+                        "（该地址已自动复制到系统剪贴板，供其他电脑填写连接）".format(token, share_url),
+                        parent=self.window,
+                    )
+                else:
+                    err = res.get("error") or "启动超时或异常"
+                    messagebox.showerror(
+                        "启动内网服务失败",
+                        "启动失败：\n{}\n\n请检查 logs/task_server.log 或使用「网络诊断」排查。".format(err),
+                        parent=self.window,
+                    )
+
+            self.window.after(0, _ui)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def stop_lan_services_action(self):
+        """一键停止本机运行的内网服务。"""
+        if not messagebox.askyesno(
+            "停止内网服务",
+            "确定要停止本机运行的队列与监控服务吗？\n停止后正在运行的任务可能中断，其他客户端将无法提交任务。",
+            parent=self.window,
+        ):
+            return
+        killed = wt_queue_selfcheck.stop_lan_services()
+        self._refresh_role_banner()
+        self._apply_settings_and_refresh()
+        messagebox.showinfo(
+            "服务已停止",
+            "已成功停止本机内网服务（清理了 {} 个相关进程）。".format(killed),
+            parent=self.window,
+        )
+
+    def _resolve_role(self, url=None):
         """按任务服务地址判定本窗口的运行角色。
 
-        返回 (role, text)：
-        - "server"：地址指向本机（127.0.0.1/localhost/本机任一 IP）→ 服务器本机控制台
-        - "client"：地址指向其他机器 → 远程客户端
-        - "unknown"：地址解析失败
+        返回 (role, desc) 2 元组：
+        - "server"：地址指向本机（127.0.0.1/localhost/本机局域网 IP）
+        - "client"：地址指向远程服务器
+        - "unknown"：未配置有效地址
         """
-        url = (self.base_url or "").strip()
+        if url is None:
+            url = (self.base_url or "").strip()
+        else:
+            url = str(url or "").strip()
         try:
-            host = urllib.parse.urlparse(url).hostname or ""
+            parsed = urllib.parse.urlsplit(url)
+            host = parsed.hostname or ""
         except ValueError:
             host = ""
         if not host:
-            return "unknown", ""
+            return "unknown", "未配置任务服务地址——请填写服务器地址后刷新"
+
+        primary_ip = getattr(self, "primary_lan_ip", "127.0.0.1")
         if host in self._local_ips:
-            return (
-                "server",
-                "服务器本机控制台 —— 任务队列服务运行在本机，操作直接影响本机 MUP",
-            )
-        return (
-            "client",
-            "远程客户端 —— 任务将发送到服务器 {} 执行（本机 IP：{}）".format(
-                host, " / ".join(sorted(ip for ip in self._local_ips if ip not in ("127.0.0.1", "localhost"))[:3]) or "未知"
-            ),
-        )
+            status = wt_queue_selfcheck.get_local_service_status()
+            if status.get("task_running"):
+                token = str(getattr(self, "token_var", None) and self.token_var.get() or "wt2026").strip()
+                desc = "服务器本机控制台 —— 服务监听 0.0.0.0:8768 / 8767 | 本机内网地址: http://{}:8768 | 令牌: {}".format(primary_ip, token)
+            else:
+                desc = "服务器本机控制台 —— 本地单机模式 (127.0.0.1:8768) | 点击右侧可一键对外启动为内网服务器"
+            return "server", desc
+
+        desc = "远程客户端 —— 任务将发送到服务器 {} 执行（本机 IP：{}）".format(host, primary_ip)
+        return "client", desc
 
     def _refresh_role_banner(self):
-        """按当前任务服务地址刷新角色横幅与窗口标题（地址一变立刻重判）。"""
-        role, text = self._resolve_role()
-        if self._role_banner_label is not None:
-            if role == "server":
-                self._role_banner_label.config(
-                    textvariable=self._role_banner_var,
-                    bg="#dcfce7",
-                    fg="#14532d",
+        """按当前任务服务地址与本机服务监听状态刷新角色横幅与窗口标题。"""
+        role, desc = self._resolve_role()
+        url = (self.base_url or "").strip()
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            host = parsed.hostname or "127.0.0.1"
+        except ValueError:
+            host = "127.0.0.1"
+        primary_ip = getattr(self, "primary_lan_ip", "127.0.0.1")
+        token = str(getattr(self, "token_var", None) and self.token_var.get() or "wt2026").strip()
+
+        if role == "server":
+            status = wt_queue_selfcheck.get_local_service_status()
+            if status.get("task_running"):
+                bg = "#064e3b"  # 翡翠墨绿
+                fg = "#ffffff"
+                desc_fg = "#a7f3d0"
+                btn_bg = "#047857"
+                btn_fg = "#ffffff"
+                title_text = "🖥️【本机服务器模式】对外服务中"
+                self._role_banner_var.set(
+                    "  服务器本机控制台 —— 服务监听 0.0.0.0:8768 / 8767 | 本机内网地址: http://{}:8768 | 令牌: {}".format(primary_ip, token)
                 )
-            elif role == "client":
-                self._role_banner_label.config(
-                    textvariable=self._role_banner_var,
-                    bg="#dbeafe",
-                    fg="#1e40af",
-                )
+                if hasattr(self, "_role_action_btn") and self._role_action_btn:
+                    self._role_action_btn.config(
+                        text="📋 复制本机服务地址",
+                        command=lambda: self._copy_text("http://{}:8768".format(primary_ip), self._role_action_btn),
+                        bg=btn_bg,
+                        fg=btn_fg,
+                        activebackground="#059669",
+                    )
+                    self._role_action_btn.pack(side=tk.RIGHT, padx=(8, 0))
+                win_title = "任务与服务器监控 【服务器本机】[🖥️ 本机服务器模式 - IP: {}]".format(primary_ip)
             else:
-                self._role_banner_label.config(
-                    textvariable=self._role_banner_var,
-                    bg="#f1f5f9",
-                    fg="#475569",
+                bg = "#1e293b"  # 板岩灰
+                fg = "#f8fafc"
+                desc_fg = "#94a3b8"
+                btn_bg = "#334155"
+                btn_fg = "#f8fafc"
+                title_text = "💻【本地单机模式】"
+                self._role_banner_var.set(
+                    "  服务器本机控制台 —— 当前连接至本机 (127.0.0.1:8768) | 点击右侧可一键对外启动为内网服务器"
                 )
-        if not text:
-            text = "未配置任务服务地址——请填写服务器地址后刷新"
-        self._role_banner_var.set("  {}".format(text))
-        title_suffix = "【服务器本机】" if role == "server" else (
-            "【远程客户端】" if role == "client" else ""
-        )
-        self.window.title("任务与服务器监控 {}".format(title_suffix).strip())
+                if hasattr(self, "_role_action_btn") and self._role_action_btn:
+                    self._role_action_btn.config(
+                        text="🚀 一键启动内网服务",
+                        command=self.start_lan_services_action,
+                        bg=btn_bg,
+                        fg=btn_fg,
+                        activebackground="#475569",
+                    )
+                    self._role_action_btn.pack(side=tk.RIGHT, padx=(8, 0))
+                win_title = "任务与服务器监控 【服务器本机】[💻 本地单机模式]"
+        elif role == "client":
+            bg = "#1e3a8a"  # 科技深蓝
+            fg = "#ffffff"
+            desc_fg = "#bfdbfe"
+            btn_bg = "#2563eb"
+            btn_fg = "#ffffff"
+            title_text = "🌐【远程协作客户端模式】"
+            self._role_banner_var.set(
+                "  远程客户端 —— 任务将发送到服务器 {} 执行（本机 IP：{}）".format(host, primary_ip)
+            )
+            if hasattr(self, "_role_action_btn") and self._role_action_btn:
+                self._role_action_btn.config(
+                    text="🩺 网络诊断与排查",
+                    command=lambda: self.open_network_diag_dialog(host),
+                    bg=btn_bg,
+                    fg=btn_fg,
+                    activebackground="#3b82f6",
+                )
+                self._role_action_btn.pack(side=tk.RIGHT, padx=(8, 0))
+            win_title = "任务与服务器监控 【远程客户端】[🌐 远程协作 -> {}:8768]".format(host)
+        else:
+            bg = "#1e293b"
+            fg = "#94a3b8"
+            desc_fg = "#94a3b8"
+            title_text = "❓【未配置】"
+            self._role_banner_var.set("  未配置任务服务地址——请填写服务器地址后刷新")
+            if hasattr(self, "_role_action_btn") and self._role_action_btn:
+                self._role_action_btn.pack_forget()
+            win_title = "任务与服务器监控"
+
+        if hasattr(self, "_role_banner_frame") and self._role_banner_frame is not None:
+            self._role_banner_frame.config(bg=bg)
+            if hasattr(self, "_role_title_lbl") and self._role_title_lbl is not None:
+                self._role_title_lbl.config(text=title_text, bg=bg, fg=fg)
+            if hasattr(self, "_role_desc_lbl") and self._role_desc_lbl is not None:
+                self._role_desc_lbl.config(bg=bg, fg=desc_fg)
+        self.window.title(win_title)
 
     def _build_queue_tab(self, parent):
         pal = wt_theme.get_palette()
@@ -1532,11 +2084,22 @@ class TaskQueueWindow:
     def _apply_settings_and_refresh(self):
         url = self.url_var.get().strip().rstrip("/")
         if url:
+            if not url.startswith("http://") and not url.startswith("https://"):
+                url = "http://" + url
+                self.url_var.set(url)
             self.base_url = url
             self._http_conn = None
+            self._record_history_url(url)
         monitor_url = self.monitor_url_var.get().strip().rstrip("/")
+        if not monitor_url and url:
+            monitor_url = _derive_monitor_url(url)
+            self.monitor_url_var.set(monitor_url)
+        elif monitor_url and not monitor_url.startswith("http://") and not monitor_url.startswith("https://"):
+            monitor_url = "http://" + monitor_url
+            self.monitor_url_var.set(monitor_url)
         if monitor_url:
             self.monitor_base_url = monitor_url
+        self._sync_prefs_snapshot()
         self._save_settings()
         self._refresh_role_banner()
         self.refresh()
@@ -1630,6 +2193,7 @@ class TaskQueueWindow:
     def _apply_tasks(self, tasks, stats=None):
         self.conn_var.set("已连接")
         self._queue_fail_streak = 0
+        self._hide_diag_banner()
         self._apply_stats(stats)
         self._cached_tasks = list(tasks)
         self._render_task_list(
@@ -2338,7 +2902,9 @@ class TaskQueueWindow:
 
     def _mark_offline(self, message):
         self._queue_fail_streak += 1
-        self.conn_var.set("未连接：{}".format(self._friendly_error(message)))
+        friendly = self._friendly_error(message)
+        self.conn_var.set("未连接：{}".format(friendly))
+        self._show_diag_banner(message, is_queue=True)
 
     def _mark_monitor_offline(self, message):
         pal = wt_theme.get_palette()
@@ -2362,6 +2928,8 @@ class TaskQueueWindow:
         self.updated_var.set("-")
         if hasattr(self, "monitor_heartbeat_var"):
             self.monitor_heartbeat_var.set("等待服务启动")
+        if getattr(self, "_queue_fail_streak", 0) > 0 or self._monitor_fail_streak >= 2:
+            self._show_diag_banner(message, is_queue=False)
 
     def _post_ui(self, callback):
         try:
