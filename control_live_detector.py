@@ -1537,11 +1537,16 @@ class ControlLiveDetectorWindow:
             return
 
         best_match = self.current_matches[0] if self.current_matches else None
+        lib_match = (
+            best_match.get("library_definition", best_match)
+            if isinstance(best_match, dict) and "library_definition" in best_match
+            else best_match
+        )
 
         # 优先使用显式注册的 on_inject 回调
         if callable(getattr(self, "on_inject", None)):
             try:
-                self.on_inject(ctrl_info, best_match)
+                self.on_inject(ctrl_info, lib_match)
                 self._show_inject_toast("✓ 已将控件注入到流程编辑器！")
                 return
             except Exception as exc:
@@ -1551,7 +1556,7 @@ class ControlLiveDetectorWindow:
         flow_editor = getattr(self, "flow_editor", None)
         if flow_editor is not None and hasattr(flow_editor, "inject_control_as_step"):
             try:
-                flow_editor.inject_control_as_step(ctrl_info, best_match)
+                flow_editor.inject_control_as_step(ctrl_info, lib_match)
                 self._show_inject_toast("✓ 已将控件注入到流程编辑器！")
                 return
             except Exception as exc:
