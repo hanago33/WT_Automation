@@ -2305,6 +2305,7 @@ class LauncherApp:
         self.flow_steps = []
         self.flow_step_display_map = {}
         self.step_check_vars = {}
+        self.step_selection_count_var = tk.StringVar(value="已选 0/0 步")
         self.flow_packages = []
         self.selected_flow_package_var = tk.StringVar(value="")
         self.step_scroll_hint_var = tk.StringVar(value="步骤列表位置：顶部")
@@ -5802,6 +5803,259 @@ class LauncherApp:
                 btn.grid(row=r, column=c, sticky="ew", padx=2, pady=2)
         return frame
 
+    def _apply_lan_service_status_ui(self, q_open, m_open):
+        """更新内网服务状态徽标文本与样式。"""
+        if hasattr(self, "lan_status_badge_queue") and self.lan_status_badge_queue is not None:
+            try:
+                if q_open:
+                    self.lan_status_badge_queue.config(
+                        text="队列: ● 8768 运行中",
+                        bg=self.theme.get("success_soft", "#d1fae5"),
+                        fg=self.theme.get("success_text", "#065f46"),
+                    )
+                else:
+                    self.lan_status_badge_queue.config(
+                        text="队列: ○ 未启动",
+                        bg=self.theme.get("toolbar", "#f1f5f9"),
+                        fg=self.theme.get("muted", "#64748b"),
+                    )
+            except Exception:
+                pass
+        if hasattr(self, "lan_status_badge_monitor") and self.lan_status_badge_monitor is not None:
+            try:
+                if m_open:
+                    self.lan_status_badge_monitor.config(
+                        text="监控: ● 8767 运行中",
+                        bg=self.theme.get("success_soft", "#d1fae5"),
+                        fg=self.theme.get("success_text", "#065f46"),
+                    )
+                else:
+                    self.lan_status_badge_monitor.config(
+                        text="监控: ○ 未启动",
+                        bg=self.theme.get("toolbar", "#f1f5f9"),
+                        fg=self.theme.get("muted", "#64748b"),
+                    )
+            except Exception:
+                pass
+
+    def _refresh_lan_service_status(self, async_probe=True):
+        """探测本地内网队列 (8768) 与监控服务 (8767) 端口状态并更新指示徽标。"""
+        def _do_probe():
+            try:
+                import wt_queue_selfcheck
+                q_open = wt_queue_selfcheck.port_open("127.0.0.1", 8768, timeout=0.15)
+                m_open = wt_queue_selfcheck.port_open("127.0.0.1", 8767, timeout=0.15)
+            except Exception:
+                q_open, m_open = False, False
+            return q_open, m_open
+
+        if not async_probe:
+            q_open, m_open = _do_probe()
+            self._apply_lan_service_status_ui(q_open, m_open)
+            return None
+
+        def _worker():
+            q_open, m_open = _do_probe()
+            if hasattr(self, "output_queue") and self.output_queue is not None:
+                self.output_queue.put(("lan_status", (q_open, m_open)))
+            try:
+                self.root.after(0, lambda: self._apply_lan_service_status_ui(q_open, m_open))
+            except Exception:
+                try:
+                    self._apply_lan_service_status_ui(q_open, m_open)
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        return t
+
+    def _build_lan_service_control_card(self, parent):
+        """构建内网协同与运维服务控制卡片（状态实时透视 + 聚合启停 + 减法收纳）。"""
+        card = tk.LabelFrame(
+            parent,
+            text="  🌐 内网协同与服务运维  ",
+            padx=10,
+            pady=10,
+            bg=self.theme["card"],
+            fg=self.theme["primary"],
+            bd=1,
+            relief=tk.SOLID,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            highlightthickness=0,
+        )
+        card.pack(fill=tk.X, pady=(8, 0))
+
+        # ── 1. 顶部状态胶囊与刷新栏 ──
+        status_row = tk.Frame(card, bg=self.theme["card"])
+        status_row.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            status_row,
+            text="服务状态：",
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side=tk.LEFT)
+
+        self.lan_status_badge_queue = wt_theme.create_badge(
+            status_row, "队列: 检测中...", tone="muted"
+        )
+        self.lan_status_badge_queue.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.lan_status_badge_monitor = wt_theme.create_badge(
+            status_row, "监控: 检测中...", tone="muted"
+        )
+        self.lan_status_badge_monitor.pack(side=tk.LEFT, padx=(0, 8))
+
+        wt_theme.create_flat_button(
+            status_row,
+            "🔄 刷新",
+            self._refresh_lan_service_status,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=8,
+            pady=2,
+        ).pack(side=tk.RIGHT)
+
+        # ── 2. 主控按钮栏 ──
+        action_row = tk.Frame(card, bg=self.theme["card"])
+        action_row.pack(fill=tk.X, pady=(0, 6))
+
+        btn_start_all = wt_theme.create_flat_button(
+            action_row,
+            "🚀 一键启动内网服务",
+            self.start_all_lan_services,
+            tone="primary",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=10,
+            pady=5,
+        )
+        btn_start_all.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+
+        btn_stop_all = wt_theme.create_flat_button(
+            action_row,
+            "⏹️ 一键停止内网服务",
+            self.stop_all_lan_services,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=10,
+            pady=5,
+        )
+        btn_stop_all.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        # ── 3. 诊断与运维快捷动作胶囊 ──
+        diag_row = tk.Frame(card, bg=self.theme["card"])
+        diag_row.pack(fill=tk.X, pady=(0, 4))
+
+        wt_theme.create_flat_button(
+            diag_row,
+            "🩺 连通性自检",
+            self.open_lan_connection_diag,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=8,
+            pady=4,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
+
+        wt_theme.create_flat_button(
+            diag_row,
+            "📊 任务与监控看板",
+            self.open_task_queue,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=8,
+            pady=4,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 3))
+
+        wt_theme.create_flat_button(
+            diag_row,
+            "🛠️ 会话修复",
+            self.run_server_session_repair,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 9),
+            padx=8,
+            pady=4,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
+
+        # ── 4. 高级/独立服务控制（折叠区） ──
+        adv_header = tk.Frame(card, bg=self.theme["card"])
+        adv_header.pack(fill=tk.X, pady=(4, 0))
+
+        self._lan_adv_frame = tk.Frame(card, bg=self.theme["card"])
+
+        def _toggle_adv():
+            if self._lan_adv_frame.winfo_viewable():
+                self._lan_adv_frame.pack_forget()
+                self._lan_adv_btn.config(text="▼ 独立服务控制")
+            else:
+                self._lan_adv_frame.pack(fill=tk.X, pady=(6, 0))
+                self._lan_adv_btn.config(text="▲ 收起独立控制")
+
+        self._lan_adv_btn = wt_theme.create_flat_button(
+            adv_header,
+            "▼ 独立服务控制",
+            _toggle_adv,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=2,
+        )
+        self._lan_adv_btn.pack(side=tk.LEFT)
+
+        wt_theme.create_flat_button(
+            self._lan_adv_frame,
+            "启动监控(8767)",
+            self.start_server_monitor_service,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=3,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+
+        wt_theme.create_flat_button(
+            self._lan_adv_frame,
+            "启动队列(8768)",
+            self.start_task_queue_service,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=3,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 2))
+
+        wt_theme.create_flat_button(
+            self._lan_adv_frame,
+            "停止队列",
+            self.stop_task_queue_service,
+            tone="secondary",
+            font=("Microsoft YaHei UI", 8),
+            padx=6,
+            pady=3,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+
+        # 界面初始化后轻量延迟探查一次服务状态
+        self.root.after(400, self._refresh_lan_service_status)
+        return card
+
+    def open_text_data_tools(self):
+        """打开文本与数据处理工作台（TXT 合并 / CSV 转换 / 文本清洗）。"""
+        script_path = os.path.join(BASE_DIR, "text_tools.py")
+        if not os.path.exists(script_path):
+            messagebox.showerror("启动失败", f"未找到文本处理工具脚本：\n{script_path}", parent=self.root)
+            return
+        try:
+            subprocess.Popen(
+                [sys.executable, script_path],
+                cwd=BASE_DIR,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            self._append_log("已启动文本与数据处理工作台。", tag="system")
+            self.status_var.set("状态：文本与数据处理工作台已启动")
+            self.current_step_var.set("当前步骤：可进行 TXT 合并、CSV 转换及文本批量清洗")
+        except Exception as exc:
+            messagebox.showerror("启动失败", f"启动文本处理工具失败：\n{exc}", parent=self.root)
+            self._append_log(f"启动文本处理工具失败：{exc}", tag="error")
+
     def _build_left_panel(self, parent):
         outer = tk.Frame(parent, bg=self.theme["card"])
         outer.pack(fill=tk.BOTH, expand=True)
@@ -6008,7 +6262,7 @@ class LauncherApp:
             bd=0,
             cursor="hand2",
             font=("Microsoft YaHei UI", 9),
-            padx=10,
+            padx=8,
             pady=4,
         ).pack(side=tk.LEFT)
         tk.Button(
@@ -6021,12 +6275,38 @@ class LauncherApp:
             bd=0,
             cursor="hand2",
             font=("Microsoft YaHei UI", 9),
-            padx=10,
+            padx=8,
             pady=4,
-        ).pack(side=tk.LEFT, padx=(6, 0))
+        ).pack(side=tk.LEFT, padx=(4, 0))
         tk.Button(
             step_toolbar,
-            text="↑ 上移已选",
+            text="🔀 反选",
+            command=self._invert_step_checks,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=8,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(4, 0))
+        tk.Button(
+            step_toolbar,
+            text="❌ 仅选失败",
+            command=self._select_failed_step_checks,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=8,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(4, 0))
+        tk.Button(
+            step_toolbar,
+            text="↑ 上移",
             command=lambda: self._move_selected_steps(-1),
             bg=self.theme["secondary"],
             activebackground=self.theme["secondary_active"],
@@ -6034,12 +6314,12 @@ class LauncherApp:
             bd=0,
             cursor="hand2",
             font=("Microsoft YaHei UI", 9),
-            padx=10,
+            padx=8,
             pady=4,
-        ).pack(side=tk.LEFT, padx=(6, 0))
+        ).pack(side=tk.LEFT, padx=(4, 0))
         tk.Button(
             step_toolbar,
-            text="↓ 下移已选",
+            text="↓ 下移",
             command=lambda: self._move_selected_steps(1),
             bg=self.theme["secondary"],
             activebackground=self.theme["secondary_active"],
@@ -6047,9 +6327,17 @@ class LauncherApp:
             bd=0,
             cursor="hand2",
             font=("Microsoft YaHei UI", 9),
-            padx=10,
+            padx=8,
             pady=4,
-        ).pack(side=tk.LEFT, padx=(6, 0))
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+        tk.Label(
+            step_toolbar,
+            textvariable=self.step_selection_count_var,
+            bg=self.theme["card"],
+            fg=self.theme.get("primary_text", "#1e40af"),
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side=tk.RIGHT, padx=(4, 0))
 
         steps_box = tk.Frame(test_frame, bg=self.theme["card"])
         steps_box.pack(fill=tk.X, pady=(8, 0))
@@ -6284,12 +6572,13 @@ class LauncherApp:
 
         self._build_tool_section(
             tab2_content,
-            "流程设计与转换",
+            "流程编排与数据处理",
             [
                 ("启动 WT AI Agent（自然语言编排）", self.open_wt_agent, True),
                 ("启动 pywinauto recorder", self.open_pywinauto_recorder, True),
                 ("同步录制脚本(增量·最新)", self.sync_recorded_scripts),
                 ("打开流程链路编辑", self.open_flow_editor, True),
+                ("📑 文本与数据处理工作台", self.open_text_data_tools, True),
                 ("相对区域取点", self.open_relative_region_helper),
                 ("转换 Recorder 脚本", self.convert_recorder_script),
                 ("导出流程 Excel", self.export_flow_excel),
@@ -6309,19 +6598,15 @@ class LauncherApp:
                 ("刷新模板库概览", self.refresh_template_library_summary_action),
             ],
         )
+        # 内网协同与服务运维控制台（聚合卡片 + 状态实时透视 + 减法收纳）
+        self._build_lan_service_control_card(tab2_content)
+
+        # 系统诊断与日志分析（纯粹的分析诊断工具收纳）
         self._build_tool_section(
             tab2_content,
-            "检查与日志",
+            "系统诊断与日志分析",
             [
                 ("运行环境检测", self.run_environment_check, True),
-                ("🚀 一键启动内网服务(队列+监控)", self.start_all_lan_services, True),
-                ("⏹️ 一键停止内网服务", self.stop_all_lan_services),
-                ("🩺 内网服务与连通性自检", self.open_lan_connection_diag, True),
-                ("启动监控服务", self.start_server_monitor_service),
-                ("启动任务队列服务", self.start_task_queue_service),
-                ("停止任务队列服务", self.stop_task_queue_service),
-                ("任务与服务器监控", self.open_task_queue, True),
-                ("一键会话修复（服务器）", self.run_server_session_repair, True),
                 ("模型配置检查", self.run_model_check),
                 ("打开 UI-TARS 配置", self.open_ui_tars_config),
                 ("打开运行日志", self.open_log_file, True),
@@ -8301,6 +8586,9 @@ class LauncherApp:
                 status_text, step_text = payload
                 self.status_var.set(status_text)
                 self.current_step_var.set(step_text)
+            elif item_type == "lan_status":
+                q_open, m_open = payload
+                self._apply_lan_service_status_ui(q_open, m_open)
             elif item_type == "exit":
                 self._handle_process_exit(payload)
         self.root.after(120, self._poll_output_queue)
@@ -8547,6 +8835,10 @@ class LauncherApp:
                 display = f"{step_id} | {name}" if name else step_id
             self.flow_step_display_map[display] = step_id
             var = preserved.get(step_id) if isinstance(preserved.get(step_id), tk.BooleanVar) else tk.BooleanVar(value=False)
+            try:
+                var.trace_add("write", lambda *_args: self._update_step_selection_count())
+            except Exception:
+                pass
             self.step_check_vars[step_id] = var
             tk.Checkbutton(
                 self.steps_inner,
@@ -8559,6 +8851,7 @@ class LauncherApp:
                 activebackground="#fbfdff",
                 wraplength=340,
             ).pack(fill=tk.X, anchor="w")
+        self._update_step_selection_count()
 
     def _render_flow_package_list(self):
         if not hasattr(self, "flow_package_combo"):
@@ -9438,6 +9731,47 @@ class LauncherApp:
                 var.set(bool(value))
             except Exception:
                 pass
+        self._update_step_selection_count()
+
+    def _invert_step_checks(self):
+        """反选所有步骤的勾选状态。"""
+        for var in self.step_check_vars.values():
+            try:
+                var.set(not bool(var.get()))
+            except Exception:
+                pass
+        self._update_step_selection_count()
+
+    def _select_failed_step_checks(self):
+        """仅勾选上一次运行中失败、异常或跳过的步骤。"""
+        report, _ = self._load_last_run_report()
+        failed_step_ids = set()
+        if isinstance(report, dict):
+            results = report.get("stepResults", [])
+            for res in results:
+                if isinstance(res, dict) and str(res.get("status", "")).lower() in ("failed", "error", "skipped", "timeout"):
+                    sid = str(res.get("stepId") or res.get("id") or "")
+                    if sid:
+                        failed_step_ids.add(sid)
+        if not failed_step_ids:
+            self._append_log("最近一次运行报告中未检测到失败步骤，或尚未生成运行报告。", tag="info")
+            messagebox.showinfo("提示", "未检测到最近一次运行的失败步骤记录。", parent=self.root)
+            return
+        matched = 0
+        for step_id, var in self.step_check_vars.items():
+            is_failed = str(step_id) in failed_step_ids
+            var.set(is_failed)
+            if is_failed:
+                matched += 1
+        self._update_step_selection_count()
+        self._append_log(f"已根据最近一次运行报告自动勾选 {matched} 个失败步骤。", tag="system")
+
+    def _update_step_selection_count(self):
+        """动态更新步骤列表工具栏上的已选计数徽标。"""
+        total = len(self.step_check_vars)
+        selected = sum(1 for v in self.step_check_vars.values() if isinstance(v, tk.BooleanVar) and bool(v.get()))
+        if hasattr(self, "step_selection_count_var"):
+            self.step_selection_count_var.set(f"已选 {selected}/{total} 步")
 
     def _get_selected_step_ids(self):
         selected = []
@@ -10447,6 +10781,7 @@ class LauncherApp:
                     self.root.update()
                 except Exception:
                     pass
+                self.root.after(300, self._refresh_lan_service_status)
                 self.root.after(0, lambda: messagebox.showinfo(
                     "内网服务已启动",
                     "✅ 内网队列与监控服务已成功启动！\n\n"
@@ -10461,6 +10796,7 @@ class LauncherApp:
                 err = res.get("error") or "未知错误"
                 self.output_queue.put(("log", ("内网服务启动异常：" + err, "error")))
                 self.output_queue.put(("status", ("状态：内网服务启动失败", "当前步骤：请排查端口占用或日志")))
+                self.root.after(300, self._refresh_lan_service_status)
                 self.root.after(0, lambda: messagebox.showerror(
                     "启动失败",
                     "内网服务启动失败：\n{}\n\n可查看 logs/task_server.log 或使用「内网自检」排查。".format(err),
@@ -10481,6 +10817,7 @@ class LauncherApp:
         killed = wt_queue_selfcheck.stop_lan_services()
         setattr(self, "_task_server_process", None)
         setattr(self, "_monitor_server_process", None)
+        self.root.after(200, self._refresh_lan_service_status)
         if killed > 0:
             self._append_log("已停止全部内网服务（共清理 {} 个进程，端口 8768/8767 已释放）。".format(killed), tag="warning")
             self.status_var.set("状态：内网服务已停止")
