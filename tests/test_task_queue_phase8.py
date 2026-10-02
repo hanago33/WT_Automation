@@ -171,8 +171,8 @@ def test_batch_mast_queue_worker_submits_masts(tmp_path):
     dialog.status_lbl = _MockStatusLbl()
 
     selected_masts = [
-        {"mastName": "1831", "hubHeight": "80", "lon": "115.1", "lat": "41.2", "utmX": "500000", "utmY": "4500000"},
-        {"mastName": "1832", "hubHeight": "100", "lon": "115.2", "lat": "41.3", "utmX": "501000", "utmY": "4501000"},
+        {"mastName": "1831", "hubHeight": "80", "lon": "115.1", "lat": "41.2", "elev": "1200", "utmX": "500000", "utmY": "4500000"},
+        {"mastName": "1832", "hubHeight": "100", "longitude": "115.2", "latitude": "41.3", "elevation": "1250", "utmX": "501000", "utmY": "4501000"},
     ]
 
     completed = []
@@ -205,11 +205,19 @@ def test_batch_mast_queue_worker_submits_masts(tmp_path):
         assert payload["maxAttempts"] == 2
         assert payload["timeoutSeconds"] == 3600
         assert payload["runtimeConfig"]["projectWorkDir"] == str(tmp_path)
+        assert bool(payload.get("idempotencyKey"))
 
     assert posts[0][2]["runtimeConfig"]["mastId"] == "1831"
     assert posts[0][2]["runtimeConfig"]["hubHeight"] == "80"
+    assert posts[0][2]["runtimeConfig"]["longitude"] == "115.1"
+    assert posts[0][2]["runtimeConfig"]["latitude"] == "41.2"
+    assert posts[0][2]["runtimeConfig"]["elevation"] == "1200"
+
     assert posts[1][2]["runtimeConfig"]["mastId"] == "1832"
     assert posts[1][2]["runtimeConfig"]["hubHeight"] == "100"
+    assert posts[1][2]["runtimeConfig"]["longitude"] == "115.2"
+    assert posts[1][2]["runtimeConfig"]["latitude"] == "41.3"
+    assert posts[1][2]["runtimeConfig"]["elevation"] == "1250"
 
 
 def test_batch_mast_queue_worker_uploads_local_flow(tmp_path):
