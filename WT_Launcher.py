@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import urllib.request
+import re
 import tkinter as tk
 import zipfile
 import uuid
@@ -9228,26 +9229,28 @@ class LauncherApp:
         self.output_queue.put(("exit", return_code))
 
     def _poll_output_queue(self):
-        while True:
-            try:
-                item_type, payload = self.output_queue.get_nowait()
-            except queue.Empty:
-                break
-            if item_type == "line":
-                self._handle_output_line(payload)
-            elif item_type == "log":
-                message, tag = payload
-                self._append_log(message, tag=tag)
-            elif item_type == "status":
-                status_text, step_text = payload
-                self.status_var.set(status_text)
-                self.current_step_var.set(step_text)
-            elif item_type == "lan_status":
-                q_open, m_open = payload
-                self._apply_lan_service_status_ui(q_open, m_open)
-            elif item_type == "exit":
-                self._handle_process_exit(payload)
-        self.root.after(120, self._poll_output_queue)
+        try:
+            while True:
+                try:
+                    item_type, payload = self.output_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if item_type == "line":
+                    self._handle_output_line(payload)
+                elif item_type == "log":
+                    message, tag = payload
+                    self._append_log(message, tag=tag)
+                elif item_type == "status":
+                    status_text, step_text = payload
+                    self.status_var.set(status_text)
+                    self.current_step_var.set(step_text)
+                elif item_type == "lan_status":
+                    q_open, m_open = payload
+                    self._apply_lan_service_status_ui(q_open, m_open)
+                elif item_type == "exit":
+                    self._handle_process_exit(payload)
+        finally:
+            self.root.after(120, self._poll_output_queue)
 
     def _handle_output_line(self, line):
         line = line.strip()
@@ -9271,10 +9274,10 @@ class LauncherApp:
                 if m:
                     step_id = m.group(1)
             if step_id:
-                if any(k in line for k in ("完成", "success", "成功", "finished")):
-                    self.step_timeline.set_step_finished(step_id, status="success")
-                elif any(k in line for k in ("失败", "failed", "error", "异常")):
+                if any(k in line for k in ("失败", "failed", "error", "异常")):
                     self.step_timeline.set_step_finished(step_id, status="failed")
+                elif any(k in line for k in ("完成", "success", "成功", "finished")):
+                    self.step_timeline.set_step_finished(step_id, status="success")
                 else:
                     self.step_timeline.set_running(step_id)
 
@@ -9533,11 +9536,13 @@ class LauncherApp:
         for item in self.flow_steps:
             step_id = item["id"]
             name = item.get("name", "")
-            var = preserved.get(step_id) if isinstance(preserved.get(step_id), tk.BooleanVar) else tk.BooleanVar(value=False)
-            try:
-                var.trace_add("write", lambda *_args: self._update_step_selection_count())
-            except Exception:
-                pass
+            is_new = step_id not in preserved or not isinstance(preserved[step_id], tk.BooleanVar)
+            var = tk.BooleanVar(value=False) if is_new else preserved[step_id]
+            if is_new:
+                try:
+                    var.trace_add("write", lambda *_args: self._update_step_selection_count())
+                except Exception:
+                    pass
             self.step_check_vars[step_id] = var
 
             if item.get("source") == "package":
