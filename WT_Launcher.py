@@ -2990,6 +2990,14 @@ class LauncherApp:
         )
         self.btn_task_monitor.pack(side=tk.RIGHT, padx=(4, 0))
 
+        self.btn_batch_mast_queue = tk.Button(
+            toolbar_top, text="⚡ 测风塔批量排队", command=self.open_batch_mast_queue,
+            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
+            padx=10, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
+            activebackground=theme["secondary_active"],
+        )
+        self.btn_batch_mast_queue.pack(side=tk.RIGHT, padx=(4, 0))
+
         def _toggle_simple_remote_mode():
             new_val = not self.simple_remote_var.get()
             self.simple_remote_var.set(new_val)
@@ -11817,13 +11825,15 @@ class LauncherApp:
             on_apply=_on_apply,
         )
 
-    def open_task_queue(self):
+    def open_task_queue(self, open_batch_mast=False):
         existing = getattr(self, "_task_queue_window", None)
         if existing is not None:
             try:
                 if existing.window.winfo_exists():
                     existing.window.deiconify()
                     existing.window.lift()
+                    if open_batch_mast:
+                        existing.open_batch_mast_queue_dialog(getattr(self, "project_work_dir", ""))
                     return
             except Exception:
                 self._task_queue_window = None
@@ -11839,7 +11849,19 @@ class LauncherApp:
             on_stop_service=self.stop_task_monitor_service,
             history_urls=getattr(self, "history_server_urls", []),
             on_history_urls_change=self._save_history_server_urls,
+            initial_project_dir=getattr(self, "project_work_dir", ""),
         )
+        if open_batch_mast:
+            self.root.after(
+                100,
+                lambda: self._task_queue_window.open_batch_mast_queue_dialog(
+                    getattr(self, "project_work_dir", "")
+                ),
+            )
+
+    def open_batch_mast_queue(self):
+        """直接调出多测风塔批量排队向导"""
+        self.open_task_queue(open_batch_mast=True)
 
     def _schedule_launcher_state_save(self, delay_ms=400):
         """去抖保存统一入口：高频调用（设置逐键变化等）合并为一次写盘。

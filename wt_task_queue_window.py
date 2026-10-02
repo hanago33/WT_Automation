@@ -18,6 +18,10 @@ from tkinter import filedialog, messagebox, ttk
 import wt_theme
 import wt_logging
 import wt_queue_selfcheck
+try:
+    import wt_project_workdir_parser
+except ImportError:
+    wt_project_workdir_parser = None
 
 
 DEFAULT_URL = "http://127.0.0.1:8768"
@@ -305,12 +309,14 @@ class TaskQueueWindow:
         on_stop_service=None,
         history_urls=None,
         on_history_urls_change=None,
+        initial_project_dir="",
     ):
         self.on_settings_change = on_settings_change
         self.on_monitor_url_change = on_monitor_url_change
         self.on_start_service = on_start_service
         self.on_stop_service = on_stop_service
         self.on_history_urls_change = on_history_urls_change
+        self.project_dir = str(initial_project_dir or "").strip()
         self.primary_lan_ip = wt_queue_selfcheck.get_primary_lan_ip()
 
         # 初始化历史地址列表（支持记忆与快速切换）
@@ -997,6 +1003,71 @@ class TaskQueueWindow:
             selectcolor=pal["surface"],
             font=("Microsoft YaHei UI", 9),
         ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        # ── 全局队列统计与快捷操作看板 (Epic 3: Global Queue Dashboard) ──
+        summary_frame = tk.Frame(
+            parent,
+            bg=pal["surface"],
+            highlightthickness=1,
+            highlightbackground=pal["border"],
+            padx=10,
+            pady=6,
+        )
+        summary_frame.pack(fill=tk.X, padx=8, pady=(0, 4))
+
+        tk.Label(
+            summary_frame,
+            text="队列看板:",
+            bg=pal["surface"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        self.stat_badge_total = wt_theme.create_badge(summary_frame, "总计 0", "muted")
+        self.stat_badge_total.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.stat_badge_pending = wt_theme.create_badge(summary_frame, "排队中 0", "info")
+        self.stat_badge_pending.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.stat_badge_running = wt_theme.create_badge(summary_frame, "运行中 0", "primary")
+        self.stat_badge_running.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.stat_badge_success = wt_theme.create_badge(summary_frame, "成功 0", "success")
+        self.stat_badge_success.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.stat_badge_failed = wt_theme.create_badge(summary_frame, "失败 0", "danger")
+        self.stat_badge_failed.pack(side=tk.LEFT, padx=(0, 8))
+
+        # 快捷批处理操作按钮（右侧）
+        wt_theme.create_flat_button(
+            summary_frame,
+            text="🧹 清理已结束",
+            command=self.clear_finished_tasks_action,
+            tone="subtle",
+            padx=8,
+            pady=2,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        wt_theme.create_flat_button(
+            summary_frame,
+            text="🔄 重试全部失败",
+            command=self.retry_all_failed_tasks_action,
+            tone="warning",
+            padx=8,
+            pady=2,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        wt_theme.create_flat_button(
+            summary_frame,
+            text="⚡ 批量排队测风塔",
+            command=self.open_batch_mast_queue_dialog,
+            tone="primary",
+            padx=10,
+            pady=2,
+            font=("Microsoft YaHei UI", 8, "bold"),
+        ).pack(side=tk.RIGHT, padx=(0, 4))
 
         # ── 核心工作区：Master-Detail 左右分栏 ──
         main_paned = tk.PanedWindow(parent, orient=tk.HORIZONTAL, bg=pal["bg"], sashwidth=4, bd=0)
@@ -2194,8 +2265,9 @@ class TaskQueueWindow:
         self.conn_var.set("已连接")
         self._queue_fail_streak = 0
         self._hide_diag_banner()
-        self._apply_stats(stats)
         self._cached_tasks = list(tasks)
+        self._apply_stats(stats)
+        self._update_queue_dashboard(self._cached_tasks, stats)
         self._render_task_list(
             filter_tasks(
                 self._cached_tasks,
@@ -2357,6 +2429,7 @@ class TaskQueueWindow:
         self._render_monitor_logs(lines)
 
     def _apply_stats(self, stats):
+        self._update_queue_dashboard(getattr(self, "_cached_tasks", []), stats)
         if not stats:
             self.stats_var.set("统计不可用")
             return
@@ -2387,6 +2460,35 @@ class TaskQueueWindow:
                 run=run_text,
             )
         )
+
+    def _update_queue_dashboard(self, tasks=None, stats=None):
+        """更新全局队列看板的实时指标徽章"""
+        tasks = tasks if tasks is not None else getattr(self, "_cached_tasks", [])
+        if not hasattr(self, "stat_badge_total") or self.stat_badge_total is None:
+            return
+
+        if stats and isinstance(stats, dict) and stats.get("byStatus"):
+            by_status = stats["byStatus"]
+            total = sum(by_status.values())
+            pending = by_status.get("pending", 0)
+            running = by_status.get("running", 0)
+            success = by_status.get("success", 0)
+            failed = by_status.get("failed", 0) + by_status.get("terminated", 0)
+        else:
+            total = len(tasks)
+            pending = sum(1 for t in tasks if str(t.get("status", "")).lower() in ("pending", "queued", "waiting"))
+            running = sum(1 for t in tasks if str(t.get("status", "")).lower() == "running")
+            success = sum(1 for t in tasks if str(t.get("status", "")).lower() == "success")
+            failed = sum(1 for t in tasks if str(t.get("status", "")).lower() in ("failed", "terminated", "error"))
+
+        try:
+            self.stat_badge_total.set_badge("总计 {}".format(total), "muted")
+            self.stat_badge_pending.set_badge("排队中 {}".format(pending), "info" if pending > 0 else "muted")
+            self.stat_badge_running.set_badge("运行中 {}".format(running), "primary" if running > 0 else "muted")
+            self.stat_badge_success.set_badge("成功 {}".format(success), "success" if success > 0 else "muted")
+            self.stat_badge_failed.set_badge("失败 {}".format(failed), "danger" if failed > 0 else "muted")
+        except Exception:
+            pass
 
     def _selected_task_id(self):
         # 窗口构建早期（task_tree 尚未创建）或已销毁时返回空串，
@@ -3734,6 +3836,101 @@ class TaskQueueWindow:
             return
         self._post_ui(self.refresh)
 
+    def retry_all_failed_tasks_action(self):
+        """批量重试所有失败/异常终止的任务"""
+        tasks = getattr(self, "_cached_tasks", [])
+        failed_tasks = [
+            t for t in tasks
+            if str(t.get("status", "")).lower() in ("failed", "terminated")
+        ]
+        if not failed_tasks:
+            messagebox.showinfo("批量重试", "当前列表中没有处于失败或终止状态的任务。", parent=self.window)
+            return
+
+        if not messagebox.askyesno(
+            "批量重试任务",
+            "检测到 {} 个失败/终止的任务，确定要将它们全部重新加入排队吗？".format(len(failed_tasks)),
+            parent=self.window,
+        ):
+            return
+
+        threading.Thread(
+            target=self._retry_all_failed_worker,
+            args=(failed_tasks,),
+            daemon=True,
+        ).start()
+
+    def _retry_all_failed_worker(self, failed_tasks):
+        success_count = 0
+        err_count = 0
+        for t in failed_tasks:
+            tid = t.get("taskId")
+            if not tid:
+                continue
+            try:
+                self._post_json("/api/tasks/{}/resume".format(urllib.parse.quote(str(tid))), {})
+                success_count += 1
+            except Exception:
+                err_count += 1
+        msg = "批量重试完成：成功恢复 {} 个任务{}".format(
+            success_count,
+            "，{} 个失败".format(err_count) if err_count else ""
+        )
+        self._post_ui(lambda: [
+            self.refresh(),
+            messagebox.showinfo("批量重试完成", msg, parent=self.window)
+        ])
+
+    def clear_finished_tasks_action(self):
+        """批量清理删除所有已结束的任务记录（成功/失败/终止/已取消）"""
+        tasks = getattr(self, "_cached_tasks", [])
+        finished_tasks = [
+            t for t in tasks
+            if str(t.get("status", "")).lower() in ("success", "failed", "terminated", "canceled", "cancelled")
+        ]
+        if not finished_tasks:
+            messagebox.showinfo("清理已结束任务", "当前列表中没有已结束的任务记录。", parent=self.window)
+            return
+
+        if not messagebox.askyesno(
+            "清理已结束任务",
+            "确定要删除 {} 个已结束（成功/失败/取消）的任务记录吗？\n此操作不可恢复，请确认。".format(len(finished_tasks)),
+            parent=self.window,
+        ):
+            return
+
+        threading.Thread(
+            target=self._clear_finished_worker,
+            args=(finished_tasks,),
+            daemon=True,
+        ).start()
+
+    def _clear_finished_worker(self, finished_tasks):
+        del_count = 0
+        err_count = 0
+        for t in finished_tasks:
+            tid = t.get("taskId")
+            if not tid:
+                continue
+            try:
+                self._post_json("/api/tasks/{}/delete".format(urllib.parse.quote(str(tid))), {})
+                del_count += 1
+            except Exception:
+                err_count += 1
+        msg = "已从队列中清理删除 {} 条记录{}".format(
+            del_count,
+            "，{} 条删除失败".format(err_count) if err_count else ""
+        )
+        self._post_ui(lambda: [
+            self.refresh(),
+            messagebox.showinfo("清理完成", msg, parent=self.window)
+        ])
+
+    def open_batch_mast_queue_dialog(self, initial_work_dir=""):
+        """打开多测风塔批量排队向导对话框"""
+        work_dir = initial_work_dir or getattr(self, "project_dir", "")
+        return BatchMastQueueDialog(self.window, queue_window=self, initial_work_dir=work_dir)
+
     def control_action(self, action):
         task_id = self._selected_task_id()
         if not task_id:
@@ -3937,3 +4134,719 @@ class TaskQueueWindow:
             self.window.destroy()
         except Exception:
             pass
+
+
+class BatchMastQueueDialog:
+    """多测风塔批量排队向导对话框。
+
+    支持选择项目工作文件夹，自动解析 CFT信息.txt 提取所有测风塔，
+    提供复选表格供勾选目标测风塔，并配置执行流程与参数，批量排队提交任务。
+    """
+
+    def __init__(self, parent, queue_window, initial_work_dir=""):
+        self.parent = parent
+        self.queue_window = queue_window
+        self.pal = wt_theme.get_palette()
+        self.masts = []  # list of mast dicts
+        self.selected_masts = set()  # set of mast indices (0, 1, ...)
+        self.server_flows = []
+        self.local_flow_path = ""
+        self.local_flow_content = None
+        self._is_submitting = False
+
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("多测风塔批量排队向导")
+        self.dialog.geometry("820x680")
+        self.dialog.minsize(720, 520)
+        self.dialog.configure(bg=self.pal["bg"])
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+
+        self._build_ui(initial_work_dir)
+        self._fetch_flows()
+        if initial_work_dir:
+            self._scan_masts(initial_work_dir)
+
+    def _build_ui(self, initial_work_dir):
+        # 1. 顶部 Header
+        header = tk.Frame(
+            self.dialog,
+            bg=self.pal["surface"],
+            padx=16,
+            pady=10,
+            highlightthickness=1,
+            highlightbackground=self.pal["border"],
+        )
+        header.pack(fill=tk.X, padx=12, pady=(10, 6))
+
+        tk.Label(
+            header,
+            text="⚡ 多测风塔批量排队向导",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            bg=self.pal["surface"],
+            fg=self.pal["primary_text"],
+        ).pack(anchor="w")
+
+        tk.Label(
+            header,
+            text="基于项目工作文件夹中的测风塔数据，批量配置并分派自动化计算任务到远程调度队列。",
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["surface"],
+            fg=self.pal["muted"],
+        ).pack(anchor="w", pady=(2, 0))
+
+        # 2. 项目工作文件夹选择区
+        proj_frame = tk.Frame(
+            self.dialog,
+            bg=self.pal["surface"],
+            padx=14,
+            pady=8,
+            highlightthickness=1,
+            highlightbackground=self.pal["border"],
+        )
+        proj_frame.pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        tk.Label(
+            proj_frame,
+            text="项目工作目录:",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=self.pal["surface"],
+            fg=self.pal["text"],
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        self.work_dir_var = tk.StringVar(value=initial_work_dir or "")
+        dir_entry = tk.Entry(
+            proj_frame,
+            textvariable=self.work_dir_var,
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["card_hover"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self.pal["border"],
+        )
+        dir_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        dir_entry.bind("<Return>", lambda _e: self._scan_masts(self.work_dir_var.get()))
+
+        wt_theme.create_flat_button(
+            proj_frame,
+            text="📂 浏览...",
+            command=self._browse_dir,
+            tone="secondary",
+            padx=10,
+            pady=2,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        wt_theme.create_flat_button(
+            proj_frame,
+            text="🔍 扫描测风塔",
+            command=lambda: self._scan_masts(self.work_dir_var.get()),
+            tone="primary",
+            padx=10,
+            pady=2,
+        ).pack(side=tk.LEFT)
+
+        # 3. 测风塔清单表格区
+        tree_card = tk.Frame(
+            self.dialog,
+            bg=self.pal["surface"],
+            padx=14,
+            pady=8,
+            highlightthickness=1,
+            highlightbackground=self.pal["border"],
+        )
+        tree_card.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6))
+
+        tree_top = tk.Frame(tree_card, bg=self.pal["surface"])
+        tree_top.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            tree_top,
+            text="测风塔清单 (勾选参与排队的测风塔):",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=self.pal["surface"],
+            fg=self.pal["text"],
+        ).pack(side=tk.LEFT)
+
+        wt_theme.create_flat_button(
+            tree_top,
+            text="✔ 全选",
+            command=self._select_all,
+            tone="subtle",
+            padx=6,
+            pady=1,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT, padx=(10, 4))
+
+        wt_theme.create_flat_button(
+            tree_top,
+            text="✖ 全不选",
+            command=self._select_none,
+            tone="subtle",
+            padx=6,
+            pady=1,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        wt_theme.create_flat_button(
+            tree_top,
+            text="🔄 反选",
+            command=self._select_invert,
+            tone="subtle",
+            padx=6,
+            pady=1,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        self.mast_count_badge = wt_theme.create_badge(
+            tree_top, "已选 0 / 0 座塔", "info"
+        )
+        self.mast_count_badge.pack(side=tk.RIGHT)
+
+        # 表格容器
+        table_container = tk.Frame(tree_card, bg=self.pal["surface"])
+        table_container.pack(fill=tk.BOTH, expand=True)
+
+        cols = ("sel", "mast_name", "height", "lon", "lat", "utm")
+        self.tree = ttk.Treeview(
+            table_container,
+            columns=cols,
+            show="headings",
+            selectmode="browse",
+            height=8,
+        )
+        self.tree.heading("sel", text="选择")
+        self.tree.heading("mast_name", text="测风塔编号")
+        self.tree.heading("height", text="测风高度/轮毂 (m)")
+        self.tree.heading("lon", text="经度")
+        self.tree.heading("lat", text="纬度")
+        self.tree.heading("utm", text="UTM 坐标")
+
+        self.tree.column("sel", width=55, anchor="center")
+        self.tree.column("mast_name", width=120, anchor="w")
+        self.tree.column("height", width=130, anchor="center")
+        self.tree.column("lon", width=100, anchor="center")
+        self.tree.column("lat", width=100, anchor="center")
+        self.tree.column("utm", width=160, anchor="center")
+
+        tree_sb = wt_theme.create_modern_scrollbar(table_container, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_sb.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<Double-1>", self._on_tree_click)
+        self.tree.bind("<space>", self._on_tree_space)
+
+        # 4. 流程与执行选项配置卡片
+        options_card = tk.Frame(
+            self.dialog,
+            bg=self.pal["surface"],
+            padx=14,
+            pady=8,
+            highlightthickness=1,
+            highlightbackground=self.pal["border"],
+        )
+        options_card.pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        # 第一行：流程选择
+        flow_row = tk.Frame(options_card, bg=self.pal["surface"])
+        flow_row.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            flow_row,
+            text="计算流程:",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=self.pal["surface"],
+            fg=self.pal["text"],
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        self.flow_var = tk.StringVar()
+        self.flow_combo = ttk.Combobox(
+            flow_row,
+            textvariable=self.flow_var,
+            width=36,
+            font=("Microsoft YaHei UI", 9),
+            state="readonly",
+        )
+        self.flow_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+
+        wt_theme.create_flat_button(
+            flow_row,
+            text="📂 本地流程 JSON...",
+            command=self._pick_local_flow,
+            tone="secondary",
+            padx=8,
+            pady=2,
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT)
+
+        # 第二行：执行参数
+        params_row = tk.Frame(options_card, bg=self.pal["surface"])
+        params_row.pack(fill=tk.X)
+
+        tk.Label(
+            params_row,
+            text="用户名:",
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["surface"],
+            fg=self.pal["muted"],
+        ).pack(side=tk.LEFT, padx=(0, 4))
+        user_init = getattr(self.queue_window, "user_var", None)
+        user_val = user_init.get() if user_init else ""
+        self.user_var = tk.StringVar(value=user_val or "operator")
+        tk.Entry(
+            params_row,
+            textvariable=self.user_var,
+            width=10,
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["card_hover"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self.pal["border"],
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(
+            params_row,
+            text="优先级:",
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["surface"],
+            fg=self.pal["muted"],
+        ).pack(side=tk.LEFT, padx=(0, 4))
+        self.priority_var = tk.StringVar(value="0")
+        tk.Entry(
+            params_row,
+            textvariable=self.priority_var,
+            width=6,
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["card_hover"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self.pal["border"],
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(
+            params_row,
+            text="最大重试:",
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["surface"],
+            fg=self.pal["muted"],
+        ).pack(side=tk.LEFT, padx=(0, 4))
+        self.max_attempts_var = tk.StringVar(value="1")
+        tk.Entry(
+            params_row,
+            textvariable=self.max_attempts_var,
+            width=5,
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["card_hover"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self.pal["border"],
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(
+            params_row,
+            text="超时 (秒):",
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["surface"],
+            fg=self.pal["muted"],
+        ).pack(side=tk.LEFT, padx=(0, 4))
+        self.timeout_var = tk.StringVar(value="0")
+        tk.Entry(
+            params_row,
+            textvariable=self.timeout_var,
+            width=6,
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["card_hover"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self.pal["border"],
+        ).pack(side=tk.LEFT)
+
+        # 5. 底部状态与操作栏
+        footer = tk.Frame(self.dialog, bg=self.pal["bg"])
+        footer.pack(fill=tk.X, padx=12, pady=(4, 10))
+
+        self.status_lbl = tk.Label(
+            footer,
+            text="准备就绪。请选择工作目录并勾选测风塔。",
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["bg"],
+            fg=self.pal["muted"],
+            anchor="w",
+        )
+        self.status_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.submit_btn = wt_theme.create_flat_button(
+            footer,
+            text="🚀 批量提交排队 (已选 0 座塔)",
+            command=self._start_batch_submit,
+            tone="primary",
+            padx=16,
+            pady=4,
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        self.submit_btn.pack(side=tk.RIGHT, padx=(8, 0))
+
+        wt_theme.create_flat_button(
+            footer,
+            text="关闭",
+            command=self.dialog.destroy,
+            tone="subtle",
+            padx=12,
+            pady=4,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.RIGHT)
+
+    def _browse_dir(self):
+        chosen = filedialog.askdirectory(
+            parent=self.dialog,
+            title="选择包含测风塔数据的项目工作文件夹",
+            initialdir=self.work_dir_var.get().strip() or None,
+        )
+        if chosen:
+            self.work_dir_var.set(chosen)
+            self._scan_masts(chosen)
+
+    def _scan_masts(self, work_dir):
+        work_dir = (work_dir or "").strip()
+        if not work_dir or not os.path.isdir(work_dir):
+            self.status_lbl.config(text="⚠️ 项目工作文件夹不存在，请重新选择。")
+            return
+
+        entries = []
+        if wt_project_workdir_parser is not None:
+            try:
+                entries = wt_project_workdir_parser.list_mast_entries(work_dir)
+            except Exception as exc:
+                wt_logging.get_logger("wt_queue").warning("list_mast_entries failed: %s", exc)
+
+        # 兜底：如果直接调用 parser 为空，尝试找常见路径的 CFT信息.txt
+        if not entries and wt_project_workdir_parser is not None:
+            candidates = [
+                os.path.join(work_dir, "03-WT输入", "01-测风塔及机位点坐标", "CFT信息.txt"),
+                os.path.join(work_dir, "03-WT输入", "CFT信息.txt"),
+                os.path.join(work_dir, "CFT信息.txt"),
+            ]
+            for c in candidates:
+                if os.path.isfile(c):
+                    entries = wt_project_workdir_parser._parse_cft_info_file(c)
+                    if entries:
+                        break
+
+        # 备选回退：扫描 03-WT输入/03-测风塔数据 下的子目录名称
+        if not entries:
+            mast_dir = os.path.join(work_dir, "03-WT输入", "03-测风塔数据")
+            if os.path.isdir(mast_dir):
+                for sub in sorted(os.listdir(mast_dir)):
+                    sub_path = os.path.join(mast_dir, sub)
+                    if os.path.isdir(sub_path):
+                        entries.append({"mastName": sub, "hubHeight": "", "lon": "", "lat": "", "utmX": "", "utmY": ""})
+
+        self.masts = entries
+        self.tree.delete(*self.tree.get_children())
+        self.selected_masts = set(range(len(entries)))
+
+        for idx, entry in enumerate(entries):
+            name = entry.get("mastName") or entry.get("mastId") or "未知塔"
+            height = str(entry.get("hubHeight") or "-")
+            lon = str(entry.get("lon") or "-")
+            lat = str(entry.get("lat") or "-")
+            utm_x = entry.get("utmX")
+            utm_y = entry.get("utmY")
+            utm = "{}, {}".format(utm_x, utm_y) if utm_x and utm_y else "-"
+            self.tree.insert("", tk.END, iid=str(idx), values=("✔", name, height, lon, lat, utm))
+
+        self._update_selection_stats()
+        if entries:
+            self.status_lbl.config(text="✅ 成功解析到 {} 座测风塔，已默认全选。".format(len(entries)))
+        else:
+            self.status_lbl.config(text="ℹ️ 在所选目录未解析到测风塔，请确认是否存在 CFT信息.txt 或 03-测风塔数据。")
+
+    def _update_selection_stats(self):
+        sel_count = len(self.selected_masts)
+        total_count = len(self.masts)
+        badge_tone = "primary" if sel_count > 0 else "muted"
+        self.mast_count_badge.set_badge("已选 {} / {} 座塔".format(sel_count, total_count), badge_tone)
+        self.submit_btn.config(text="🚀 批量提交排队 (已选 {} 座塔)".format(sel_count))
+
+    def _select_all(self):
+        self.selected_masts = set(range(len(self.masts)))
+        for idx in range(len(self.masts)):
+            row_id = str(idx)
+            if self.tree.exists(row_id):
+                vals = list(self.tree.item(row_id, "values"))
+                vals[0] = "✔"
+                self.tree.item(row_id, values=vals)
+        self._update_selection_stats()
+
+    def _select_none(self):
+        self.selected_masts.clear()
+        for idx in range(len(self.masts)):
+            row_id = str(idx)
+            if self.tree.exists(row_id):
+                vals = list(self.tree.item(row_id, "values"))
+                vals[0] = ""
+                self.tree.item(row_id, values=vals)
+        self._update_selection_stats()
+
+    def _select_invert(self):
+        all_set = set(range(len(self.masts)))
+        self.selected_masts = all_set - self.selected_masts
+        for idx in range(len(self.masts)):
+            row_id = str(idx)
+            if self.tree.exists(row_id):
+                vals = list(self.tree.item(row_id, "values"))
+                vals[0] = "✔" if idx in self.selected_masts else ""
+                self.tree.item(row_id, values=vals)
+        self._update_selection_stats()
+
+    def _on_tree_click(self, event):
+        region = self.tree.identify("region", event.x, event.y)
+        if region in ("tree", "cell"):
+            item_id = self.tree.identify_row(event.y)
+            if item_id:
+                self._toggle_item(item_id)
+
+    def _on_tree_space(self, _event):
+        focus_id = self.tree.focus()
+        if focus_id:
+            self._toggle_item(focus_id)
+
+    def _toggle_item(self, item_id):
+        try:
+            idx = int(item_id)
+        except ValueError:
+            return
+        if idx in self.selected_masts:
+            self.selected_masts.remove(idx)
+            new_sym = ""
+        else:
+            self.selected_masts.add(idx)
+            new_sym = "✔"
+        vals = list(self.tree.item(item_id, "values"))
+        vals[0] = new_sym
+        self.tree.item(item_id, values=vals)
+        self._update_selection_stats()
+
+    def _fetch_flows(self):
+        def _worker():
+            flows = []
+            try:
+                payload = self.queue_window._get_json("/api/flows")
+                flows = payload.get("flows", [])
+            except Exception:
+                pass
+
+            def _apply():
+                self.server_flows = flows
+                combo_values = [f.get("name", "") for f in flows if f.get("name")]
+                if combo_values:
+                    self.flow_combo["values"] = combo_values
+                    self.flow_combo.current(0)
+                else:
+                    self.flow_combo["values"] = ["(请选择本地流程文件)"]
+                    self.flow_combo.current(0)
+
+            self.queue_window._post_ui(_apply)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _pick_local_flow(self):
+        chosen = filedialog.askopenfilename(
+            parent=self.dialog,
+            title="选择自动化链路流程文件",
+            filetypes=[("JSON 流程文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not chosen:
+            return
+        try:
+            with open(chosen, "r", encoding="utf-8") as f:
+                content = json.load(f)
+            if not isinstance(content, dict):
+                messagebox.showerror("选择流程失败", "所选文件不是有效的 JSON 对象。", parent=self.dialog)
+                return
+            self.local_flow_path = chosen
+            self.local_flow_content = content
+            flow_name = os.path.basename(chosen)
+            combo_vals = list(self.flow_combo["values"])
+            display_label = "[本地] {}".format(flow_name)
+            if display_label not in combo_vals:
+                combo_vals.insert(0, display_label)
+                self.flow_combo["values"] = combo_vals
+            self.flow_combo.set(display_label)
+            self.status_lbl.config(text="已加载本地流程：{}".format(flow_name))
+        except Exception as exc:
+            messagebox.showerror("加载流程失败", str(exc), parent=self.dialog)
+
+    def _start_batch_submit(self):
+        if self._is_submitting:
+            return
+        user = self.user_var.get().strip()
+        if not user:
+            messagebox.showwarning("缺少参数", "请填写用户名。", parent=self.dialog)
+            return
+
+        if not self.selected_masts:
+            messagebox.showwarning("缺少参数", "请至少勾选一座测风塔！", parent=self.dialog)
+            return
+
+        chosen_flow_text = self.flow_var.get().strip()
+        if not chosen_flow_text or chosen_flow_text == "(请选择本地流程文件)":
+            messagebox.showwarning("缺少参数", "请选择要执行的计算流程或指定本地流程文件。", parent=self.dialog)
+            return
+
+        work_dir = self.work_dir_var.get().strip()
+        if not work_dir:
+            messagebox.showwarning("缺少参数", "请指定项目工作文件夹。", parent=self.dialog)
+            return
+
+        try:
+            priority = int(self.priority_var.get().strip() or 0)
+        except ValueError:
+            priority = 0
+
+        try:
+            max_attempts = max(1, int(self.max_attempts_var.get().strip() or 1))
+        except ValueError:
+            max_attempts = 1
+
+        try:
+            timeout_seconds = max(0, int(self.timeout_var.get().strip() or 0))
+        except ValueError:
+            timeout_seconds = 0
+
+        self._is_submitting = True
+        self.submit_btn.config(state=tk.DISABLED, text="⏳ 正在批量提交中...")
+        self.status_lbl.config(text="正在准备批量提交...")
+
+        selected_items = [self.masts[i] for i in sorted(self.selected_masts)]
+
+        threading.Thread(
+            target=self._submit_batch_masts_worker,
+            args=(selected_items, chosen_flow_text, work_dir, user, priority, max_attempts, timeout_seconds),
+            daemon=True,
+        ).start()
+
+    def _submit_batch_masts_worker(
+        self,
+        selected_masts,
+        chosen_flow_text,
+        work_dir,
+        user,
+        priority=0,
+        max_attempts=1,
+        timeout_seconds=0,
+        completed_callback=None,
+    ):
+        """后台线程提交批量任务（纯逻辑，解耦 GUI）"""
+        flow_path = ""
+        # 1. 确定 flowPath（若是本地流程则先上传）
+        if self.local_flow_content is not None and chosen_flow_text.startswith("[本地]"):
+            try:
+                self.queue_window._post_ui(
+                    lambda: self.status_lbl.config(text="正在上传本地流程文件到服务器...")
+                )
+                upload_resp = self.queue_window._post_json(
+                    "/api/flows/upload",
+                    {
+                        "name": os.path.basename(self.local_flow_path),
+                        "content": self.local_flow_content,
+                        "user": user,
+                    },
+                )
+                flow_path = upload_resp.get("flowPath", "")
+            except Exception as exc:
+                self.queue_window._post_ui(
+                    lambda: [
+                        messagebox.showerror("上传流程失败", "上传流程失败：\n{}".format(exc), parent=self.dialog),
+                        self.submit_btn.config(state=tk.NORMAL, text="🚀 批量提交排队"),
+                        self.status_lbl.config(text="⚠️ 上传流程失败。"),
+                    ]
+                )
+                self._is_submitting = False
+                return
+        else:
+            # 服务端流程
+            for f in self.server_flows:
+                if f.get("name") == chosen_flow_text:
+                    flow_path = f.get("path", "")
+                    break
+
+        if not flow_path:
+            self.queue_window._post_ui(
+                lambda: [
+                    messagebox.showerror("提交失败", "未找到对应的流程文件路径。", parent=self.dialog),
+                    self.submit_btn.config(state=tk.NORMAL, text="🚀 批量提交排队"),
+                ]
+            )
+            self._is_submitting = False
+            return
+
+        success_count = 0
+        fail_count = 0
+        submitted_task_ids = []
+
+        total = len(selected_masts)
+        for idx, mast in enumerate(selected_masts, start=1):
+            mast_name = mast.get("mastName") or mast.get("mastId") or "mast_{}".format(idx)
+            self.queue_window._post_ui(
+                lambda i=idx, n=mast_name: self.status_lbl.config(
+                    text="正在提交 ({}/{}): 测风塔 {}...".format(i, total, n)
+                )
+            )
+            runtime_cfg = {
+                "projectWorkDir": work_dir,
+                "mastId": mast_name,
+                "mastName": mast_name,
+            }
+            if mast.get("hubHeight"):
+                runtime_cfg["hubHeight"] = str(mast.get("hubHeight"))
+            if mast.get("elev"):
+                runtime_cfg["elevation"] = str(mast.get("elev"))
+            if mast.get("utmX"):
+                runtime_cfg["utmX"] = str(mast.get("utmX"))
+            if mast.get("utmY"):
+                runtime_cfg["utmY"] = str(mast.get("utmY"))
+            if mast.get("lon"):
+                runtime_cfg["longitude"] = str(mast.get("lon"))
+            if mast.get("lat"):
+                runtime_cfg["latitude"] = str(mast.get("lat"))
+
+            payload = {
+                "user": user,
+                "flowPath": flow_path,
+                "steps": "",
+                "fromStep": "",
+                "toStep": "",
+                "priority": priority,
+                "maxAttempts": max_attempts,
+                "timeoutSeconds": timeout_seconds,
+                "runtimeConfig": runtime_cfg,
+            }
+            try:
+                res = self.queue_window._post_json("/api/tasks/submit", payload)
+                tid = (res.get("task") or {}).get("taskId") or ""
+                if tid:
+                    submitted_task_ids.append(tid)
+                success_count += 1
+            except Exception as exc:
+                wt_logging.get_logger("wt_queue").warning("submit mast task %s failed: %s", mast_name, exc)
+                fail_count += 1
+
+        if completed_callback:
+            completed_callback(submitted_task_ids, success_count, fail_count)
+
+        def _finish_ui():
+            self._is_submitting = False
+            self.queue_window.refresh()
+            msg = "批量提交完成：成功提交 {} 座测风塔计算任务{}".format(
+                success_count,
+                "，{} 座提交失败".format(fail_count) if fail_count else "",
+            )
+            messagebox.showinfo("批量排队完成", msg, parent=self.dialog)
+            try:
+                self.dialog.destroy()
+            except Exception:
+                pass
+
+        self.queue_window._post_ui(_finish_ui)
