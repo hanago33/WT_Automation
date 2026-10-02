@@ -13,6 +13,7 @@ import tkinter as tk
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from tkinter import filedialog, messagebox, ttk
 
 import wt_theme
@@ -4540,7 +4541,18 @@ class BatchMastQueueDialog:
                 for sub in sorted(os.listdir(mast_dir)):
                     sub_path = os.path.join(mast_dir, sub)
                     if os.path.isdir(sub_path):
-                        entries.append({"mastName": sub, "hubHeight": "", "lon": "", "lat": "", "utmX": "", "utmY": ""})
+                        entries.append({
+                            "mastName": sub,
+                            "hubHeight": "",
+                            "longitude": "",
+                            "latitude": "",
+                            "elevation": "",
+                            "lon": "",
+                            "lat": "",
+                            "elev": "",
+                            "utmX": "",
+                            "utmY": "",
+                        })
 
         self.masts = entries
         self.tree.delete(*self.tree.get_children())
@@ -4549,8 +4561,8 @@ class BatchMastQueueDialog:
         for idx, entry in enumerate(entries):
             name = entry.get("mastName") or entry.get("mastId") or "未知塔"
             height = str(entry.get("hubHeight") or "-")
-            lon = str(entry.get("lon") or "-")
-            lat = str(entry.get("lat") or "-")
+            lon = str(entry.get("longitude") or entry.get("lon") or "-")
+            lat = str(entry.get("latitude") or entry.get("lat") or "-")
             utm_x = entry.get("utmX")
             utm_y = entry.get("utmY")
             utm = "{}, {}".format(utm_x, utm_y) if utm_x and utm_y else "-"
@@ -4715,11 +4727,24 @@ class BatchMastQueueDialog:
         except ValueError:
             timeout_seconds = 0
 
+        selected_items = [self.masts[i] for i in sorted(self.selected_masts)]
+        if not selected_items:
+            messagebox.showinfo("提示", "未选中任何测风塔。", parent=self.dialog)
+            return
+
+        should_submit = messagebox.askyesno(
+            "确认批量排队",
+            f"确定要为选中的 {len(selected_items)} 座测风塔批量生成排队任务吗？\n\n"
+            f"目标流程：{chosen_flow_text}\n"
+            f"项目目录：{work_dir}",
+            parent=self.dialog,
+        )
+        if not should_submit:
+            return
+
         self._is_submitting = True
         self.submit_btn.config(state=tk.DISABLED, text="⏳ 正在批量提交中...")
         self.status_lbl.config(text="正在准备批量提交...")
-
-        selected_items = [self.masts[i] for i in sorted(self.selected_masts)]
 
         threading.Thread(
             target=self._submit_batch_masts_worker,
@@ -4787,6 +4812,7 @@ class BatchMastQueueDialog:
         submitted_task_ids = []
 
         total = len(selected_masts)
+        batch_prefix = "bat_{}".format(uuid.uuid4().hex[:8])
         for idx, mast in enumerate(selected_masts, start=1):
             mast_name = mast.get("mastName") or mast.get("mastId") or "mast_{}".format(idx)
             self.queue_window._post_ui(
@@ -4794,24 +4820,41 @@ class BatchMastQueueDialog:
                     text="正在提交 ({}/{}): 测风塔 {}...".format(i, total, n)
                 )
             )
-            runtime_cfg = {
-                "projectWorkDir": work_dir,
-                "mastId": mast_name,
-                "mastName": mast_name,
-            }
-            if mast.get("hubHeight"):
-                runtime_cfg["hubHeight"] = str(mast.get("hubHeight"))
-            if mast.get("elev"):
-                runtime_cfg["elevation"] = str(mast.get("elev"))
-            if mast.get("utmX"):
-                runtime_cfg["utmX"] = str(mast.get("utmX"))
-            if mast.get("utmY"):
-                runtime_cfg["utmY"] = str(mast.get("utmY"))
-            if mast.get("lon"):
-                runtime_cfg["longitude"] = str(mast.get("lon"))
-            if mast.get("lat"):
-                runtime_cfg["latitude"] = str(mast.get("lat"))
 
+            # 聚合单塔信息与工程目录全量运行时参数
+            proj_params = {"mastId": mast_name, "mastName": mast_name}
+            for k in ("latitude", "longitude", "elevation", "hubHeight", "utmX", "utmY"):
+                v = mast.get(k)
+                if not v:
+                    abbrev_map = {"latitude": "lat", "longitude": "lon", "elevation": "elev"}
+                    if k in abbrev_map:
+                        v = mast.get(abbrev_map[k])
+                if v:
+                    proj_params[k] = str(v)
+
+            runtime_cfg = {}
+            if work_dir and os.path.isdir(work_dir) and wt_project_workdir_parser is not None:
+                try:
+                    parsed = wt_project_workdir_parser.parse_project_work_dir(
+                        work_dir,
+                        project_params=proj_params,
+                        flow_path=flow_path if (flow_path and os.path.isfile(flow_path)) else None,
+                    )
+                    if parsed and isinstance(parsed.get("runtime_config"), dict):
+                        runtime_cfg.update(parsed["runtime_config"])
+                except Exception as parse_err:
+                    wt_logging.get_logger("wt_queue").warning(
+                        "parse project workdir for mast %s failed: %s", mast_name, parse_err
+                    )
+
+            runtime_cfg.setdefault("projectWorkDir", work_dir)
+            runtime_cfg["mastId"] = mast_name
+            runtime_cfg["mastName"] = mast_name
+            for k in ("hubHeight", "elevation", "longitude", "latitude", "utmX", "utmY"):
+                if proj_params.get(k):
+                    runtime_cfg[k] = str(proj_params[k])
+
+            idempotency_token = "{}_{}_{}".format(batch_prefix, mast_name, idx)
             payload = {
                 "user": user,
                 "flowPath": flow_path,
@@ -4822,6 +4865,8 @@ class BatchMastQueueDialog:
                 "maxAttempts": max_attempts,
                 "timeoutSeconds": timeout_seconds,
                 "runtimeConfig": runtime_cfg,
+                "idempotencyKey": idempotency_token,
+                "clientToken": idempotency_token,
             }
             try:
                 res = self.queue_window._post_json("/api/tasks/submit", payload)
