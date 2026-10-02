@@ -7,6 +7,7 @@ import queue
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -57,6 +58,8 @@ MASTER_CONTROL_FILE = os.path.join(CONTROL_MAP_DIR, "standard", "总控件信息
 CATALOG_FILE = os.path.join(CONTROL_MAP_DIR, "standard", "standard_control_catalog.json")
 RECORDER_CONVERTED_DIR = os.path.join(FLOW_PACKAGE_STORE_DIR, "converted_recorder_flows")
 REFERENCE_PROJECT_DIR = r"D:\My_RF_Project\2026-06-25-风资源软件流程自动化\风资源软件流程自动化"
+FLOW_DEFINITION_ENV_KEY = "WT_FLOW_DEFINITION_FILE"
+AUTOMATION_SCRIPT = os.path.join(BASE_DIR, "WT_AUT_recorded.py")
 
 
 def _safe_destroy(window):
@@ -8350,6 +8353,263 @@ class FlowPackageDialog:
         self.window.destroy()
 
 
+class StepTestRunDialog:
+    """就地单步试跑窗口：实时显示执行日志、执行状态及耗时。"""
+
+    def __init__(self, parent, step_id, step_name, flow_file, script_path, theme=None):
+        self.parent = parent
+        self.step_id = step_id
+        self.step_name = step_name
+        self.flow_file = flow_file
+        self.script_path = script_path
+        self.theme = theme or EDITOR_THEME
+        self.process = None
+        self.start_time = None
+        self._poll_id = None
+        self._output_queue = queue.Queue()
+
+        self.window = tk.Toplevel(parent)
+        self.window.title(f"单步试跑 - {step_name or step_id}")
+        self.window.geometry("720x520")
+        self.window.minsize(560, 380)
+        self.window.configure(bg=self.theme["bg"])
+        self.window.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # 头部
+        header = tk.Frame(self.window, bg=self.theme["card"], padx=16, pady=12, bd=1, relief=tk.SOLID)
+        header.pack(fill=tk.X)
+
+        title_frame = tk.Frame(header, bg=self.theme["card"])
+        title_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        tk.Label(
+            title_frame,
+            text=f"⚡ 试跑步骤：{step_name or step_id}",
+            font=("Microsoft YaHei UI", 11, "bold"),
+            bg=self.theme["card"],
+            fg=self.theme["text"],
+            anchor="w",
+        ).pack(fill=tk.X)
+
+        tk.Label(
+            title_frame,
+            text=f"步骤 ID: {step_id} · 单步隔离试跑 (自动跳过环境前置)",
+            font=("Microsoft YaHei UI", 8),
+            bg=self.theme["card"],
+            fg=self.theme["muted"],
+            anchor="w",
+        ).pack(fill=tk.X, pady=(2, 0))
+
+        self.status_pill = tk.Label(
+            header,
+            text="⏳ 启动中...",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg="#dbeafe",
+            fg="#1e40af",
+            padx=10,
+            pady=4,
+            relief=tk.FLAT,
+        )
+        self.status_pill.pack(side=tk.RIGHT)
+
+        # 日志区
+        log_frame = tk.Frame(self.window, bg=self.theme["bg"], padx=16, pady=10)
+        log_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.log_text = tk.Text(
+            log_frame,
+            wrap=tk.WORD,
+            font=("Consolas", 9),
+            bg="#1e293b",
+            fg="#f8fafc",
+            relief=tk.FLAT,
+            padx=10,
+            pady=10,
+        )
+        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        sb = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_text.configure(yscrollcommand=sb.set)
+
+        self.log_text.tag_configure("info", foreground="#93c5fd")
+        self.log_text.tag_configure("success", foreground="#86efac")
+        self.log_text.tag_configure("error", foreground="#fca5a5")
+        self.log_text.tag_configure("warning", foreground="#fde047")
+        self.log_text.tag_configure("system", foreground="#94a3b8")
+
+        # 底部操作栏
+        bottom_bar = tk.Frame(self.window, bg=self.theme["card"], padx=16, pady=10, bd=1, relief=tk.SOLID)
+        bottom_bar.pack(fill=tk.X)
+
+        self.timer_label = tk.Label(
+            bottom_bar,
+            text="耗时: 0.0s",
+            font=("Microsoft YaHei UI", 9),
+            bg=self.theme["card"],
+            fg=self.theme["muted"],
+        )
+        self.timer_label.pack(side=tk.LEFT)
+
+        self.close_button = tk.Button(
+            bottom_bar,
+            text="关闭",
+            font=("Microsoft YaHei UI", 9),
+            relief=tk.FLAT,
+            bd=0,
+            padx=12,
+            pady=4,
+            bg=self.theme.get("panel_soft", "#f1f5f9"),
+            fg=self.theme["text"],
+            cursor="hand2",
+            command=self._on_close,
+        )
+        self.close_button.pack(side=tk.RIGHT)
+
+        self.stop_button = tk.Button(
+            bottom_bar,
+            text="⏹ 终止运行",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief=tk.FLAT,
+            bd=0,
+            padx=12,
+            pady=4,
+            bg="#fee2e2",
+            fg="#b91c1c",
+            cursor="hand2",
+            command=self._stop_process,
+        )
+        self.stop_button.pack(side=tk.RIGHT, padx=(0, 8))
+
+        self._start_execution()
+
+    def _start_execution(self):
+        self.start_time = time.time()
+        self._append_log(f"开始就地单步试跑: {self.step_name} (ID={self.step_id})\n", "system")
+
+        env = os.environ.copy()
+        env[FLOW_DEFINITION_ENV_KEY] = self.flow_file
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        cmd = [
+            sys.executable,
+            "-u",
+            self.script_path,
+            "--steps",
+            self.step_id,
+            "--skip-setup",
+            "--no-pre-raise",
+        ]
+
+        try:
+            self.process = subprocess.Popen(
+                cmd,
+                cwd=BASE_DIR,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                bufsize=1,
+                creationflags=creationflags,
+                env=env,
+            )
+        except Exception as exc:
+            self._append_log(f"启动子进程失败：{exc}\n", "error")
+            self.status_pill.configure(text="❌ 启动失败", bg="#fee2e2", fg="#b91c1c")
+            self.stop_button.configure(state=tk.DISABLED)
+            return
+
+        self.status_pill.configure(text="🔵 执行中...", bg="#dbeafe", fg="#1e40af")
+        threading.Thread(target=self._reader_thread, daemon=True).start()
+        threading.Thread(target=self._wait_thread, daemon=True).start()
+        self._poll_queue()
+
+    def _reader_thread(self):
+        if not self.process or not self.process.stdout:
+            return
+        for line in self.process.stdout:
+            self._output_queue.put(("line", line.rstrip()))
+
+    def _wait_thread(self):
+        if not self.process:
+            return
+        rc = self.process.wait()
+        self._output_queue.put(("exit", rc))
+
+    def _poll_queue(self):
+        while True:
+            try:
+                kind, payload = self._output_queue.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "line":
+                tag = "info"
+                if any(w in payload for w in ("错误", "ERROR", "失败", "Exception", "Fail")):
+                    tag = "error"
+                elif any(w in payload for w in ("成功", "success", "完成")):
+                    tag = "success"
+                elif any(w in payload for w in ("警告", "WARN")):
+                    tag = "warning"
+                self._append_log(payload + "\n", tag)
+            elif kind == "exit":
+                self._on_process_exit(payload)
+
+        if self.process and self.process.poll() is None and self.start_time:
+            elapsed = time.time() - self.start_time
+            self.timer_label.configure(text=f"耗时: {elapsed:.1f}s")
+        if self.window.winfo_exists():
+            self._poll_id = self.window.after(100, self._poll_queue)
+
+    def _on_process_exit(self, return_code):
+        elapsed = time.time() - self.start_time if self.start_time else 0.0
+        self.timer_label.configure(text=f"耗时: {elapsed:.1f}s")
+        self.stop_button.configure(state=tk.DISABLED)
+        if return_code == 0:
+            self.status_pill.configure(text=f"🟢 成功 ({elapsed:.1f}s)", bg="#dcfce7", fg="#15803d")
+            self._append_log(f"\n[试跑完成] 步骤执行成功 (0)\n", "success")
+        else:
+            self.status_pill.configure(text=f"🔴 失败 (退出码 {return_code})", bg="#fee2e2", fg="#b91c1c")
+            self._append_log(f"\n[试跑中断] 步骤执行失败 (退出码 {return_code})\n", "error")
+
+    def _append_log(self, text, tag="info"):
+        if not self.window.winfo_exists():
+            return
+        self.log_text.insert(tk.END, text, tag)
+        self.log_text.see(tk.END)
+
+    def _stop_process(self):
+        if self.process and self.process.poll() is None:
+            self.stop_button.configure(text="⏳ 正在终止...", state=tk.DISABLED)
+            self._append_log("[终止] 正在终止进程...\n", "warning")
+            try:
+                self.process.terminate()
+            except Exception:
+                pass
+            self.window.after(1500, self._force_kill_if_needed)
+
+    def _force_kill_if_needed(self):
+        if self.process and self.process.poll() is None:
+            try:
+                self.process.kill()
+            except Exception:
+                pass
+
+    def _on_close(self):
+        if self._poll_id:
+            try:
+                self.window.after_cancel(self._poll_id)
+            except Exception:
+                pass
+        self._stop_process()
+        if self.flow_file and os.path.exists(self.flow_file) and "wt_step_test_" in self.flow_file:
+            try:
+                os.remove(self.flow_file)
+            except Exception:
+                pass
+        self.window.destroy()
+
+
 class FlowEditorApp:
     # 表单「未应用改动」检测的字段清单：新增表单字段时须同步补充，
     # 否则该字段的未应用改动不会被切步骤/关窗提示捕获（详见 _form_snapshot）。
@@ -8991,6 +9251,7 @@ class FlowEditorApp:
         self.step_tree.column("action", width=180, minwidth=120, stretch=False, anchor="w")
         self.step_tree.column("target", width=320, minwidth=160, stretch=True, anchor="w")
         self.step_tree.tag_configure("disabled", foreground=EDITOR_THEME["muted"])
+        self.step_tree.tag_configure("warning_step", foreground="#b45309", background="#fffbeb")
         self.step_tree.tag_configure("action_step", background="#f8fbff")
         self.step_tree.tag_configure("flow_ref_step", background="#f8fafc")
         self.step_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -9055,6 +9316,21 @@ class FlowEditorApp:
 
         right_side = tk.Frame(bar, bg=EDITOR_THEME["card"])
         right_side.pack(side=tk.RIGHT)
+
+        self.test_run_button = self._create_action_button(
+            right_side,
+            "⚡ 试跑此步",
+            self.cmd_test_run_current_step,
+            tone="primary",
+        )
+        self.test_run_button.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.graph_button = self._create_action_button(
+            right_side,
+            "📊 拓扑图",
+            self.cmd_open_flow_graph,
+        )
+        self.graph_button.pack(side=tk.LEFT, padx=(0, 6))
 
         self.apply_button = self._create_action_button(
             right_side,
@@ -11553,6 +11829,50 @@ class FlowEditorApp:
             or "-"
         )
 
+    def _validate_step_inline(self, step):
+        """轻量级行内静态校验，返回警告简述（无警告返回空字符串）。"""
+        if not isinstance(step, dict):
+            return "数据异常"
+        sid = str(step.get("id", "")).strip()
+        if not sid:
+            return "缺少ID"
+        action_type = str(step.get("actionType", "script")).strip()
+        if action_type == "action":
+            ac = step.get("actionConfig", {}) if isinstance(step.get("actionConfig"), dict) else {}
+            action = str(ac.get("action", "")).strip()
+            if not action:
+                return "未设动作"
+            # 常用需目标控件的动作
+            if action in ("click", "click_control", "set_text", "get_text", "select_item"):
+                cid = str(ac.get("controlId", "")).strip()
+                hints = step.get("inspectHints", {}) if isinstance(step.get("inspectHints"), dict) else {}
+                has_hints = bool(hints.get("controlName") or hints.get("automationId") or hints.get("className"))
+                has_controls = bool(step.get("controls"))
+                if not cid and not has_hints and not has_controls:
+                    return "缺目标控件"
+            elif action == "click_relative_anchor":
+                cid = str(ac.get("controlId", "")).strip()
+                if not cid:
+                    return "缺锚点控件"
+            elif action in ("click_relative_region", "type_text_relative"):
+                parent_win = ac.get("parentWindow", {}) if isinstance(ac.get("parentWindow"), dict) else {}
+                if not parent_win.get("title") and not step.get("windowTitle"):
+                    return "缺父窗口"
+        elif action_type == "flow_ref":
+            ref = str(step.get("packageRef", "") or step.get("flowRef", "") or "").strip()
+            if not ref:
+                return "缺引用包"
+        # 延时与超时参数合法性
+        timeout = step.get("timeout")
+        if timeout is not None and str(timeout).strip():
+            try:
+                t_val = float(timeout)
+                if t_val < 0 or t_val > 600:
+                    return "超时值异常"
+            except Exception:
+                return "超时非数值"
+        return ""
+
     def _refresh_steps_tree(self):
         self.step_tree.delete(*self.step_tree.get_children())
         package_names_map = self._build_step_package_names_map()
@@ -11563,12 +11883,16 @@ class FlowEditorApp:
             package_names = package_names_map.get(str(step.get("id", "")).strip(), [])
             if package_names:
                 name = f"{name} [{', '.join(package_names)}]" if name else f"[{', '.join(package_names)}]"
-            prefix = "" if step.get("enabled", True) else "[停用] "
+            warn_text = self._validate_step_inline(step)
+            warn_prefix = f"⚠️ [{warn_text}] " if warn_text else ""
+            prefix = ("" if step.get("enabled", True) else "[停用] ") + warn_prefix
             action_summary = self._build_step_tree_action_summary(step)
             target_summary = self._build_step_tree_target_summary(step)
             tags = []
             if not step.get("enabled", True):
                 tags.append("disabled")
+            if warn_text:
+                tags.append("warning_step")
             action_type = str(step.get("actionType", "script")).strip()
             if action_type == "action":
                 tags.append("action_step")
@@ -12014,6 +12338,63 @@ class FlowEditorApp:
             return
         self._load_step_into_form(self.steps[self.selected_index])
         self.status_var.set("已重置当前步骤表单")
+
+    def cmd_open_flow_graph(self):
+        """打开当前流程的可视化拓扑图，支持点击节点双向定位。"""
+        try:
+            import wt_flow_graph
+            win = wt_flow_graph.FlowGraphWindow(
+                self.root,
+                base_dir=BASE_DIR,
+                flow_data=self.flow_definition,
+                on_node_click=self._focus_step_by_id,
+            )
+            win.lift()
+            win.focus_force()
+        except Exception as exc:
+            messagebox.showerror("打开拓扑图失败", f"无法打开流程拓扑图：\n{exc}", parent=self.root)
+
+    def cmd_test_run_current_step(self):
+        """在现场就地单步隔离试跑当前步骤。"""
+        if self.selected_index is None or self.selected_index < 0 or self.selected_index >= len(self.steps):
+            messagebox.showinfo("提示", "请先在步骤列表中选择要试跑的步骤。", parent=self.root)
+            return
+
+        # 尝试应用当前表单改动，确保试跑的是最新编辑状态
+        try:
+            self.cmd_apply_step()
+        except Exception:
+            pass
+
+        step = self.steps[self.selected_index]
+        step_id = str(step.get("id", "")).strip()
+        step_name = str(step.get("name", step_id)).strip()
+        if not step_id:
+            messagebox.showwarning("警告", "当前步骤缺少有效的步骤ID，无法试跑。", parent=self.root)
+            return
+
+        if not os.path.exists(AUTOMATION_SCRIPT):
+            messagebox.showerror("启动失败", f"未找到执行脚本：\n{AUTOMATION_SCRIPT}", parent=self.root)
+            return
+
+        # 写入包含当前最新内存链路的临时测试文件
+        try:
+            fd, tmp_flow_path = tempfile.mkstemp(prefix="wt_step_test_", suffix=".json")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.flow_definition, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            messagebox.showerror("错误", f"创建临时链路文件失败：{exc}", parent=self.root)
+            return
+
+        # 弹出就地试跑控制台
+        dialog = StepTestRunDialog(
+            self.root,
+            step_id=step_id,
+            step_name=step_name,
+            flow_file=tmp_flow_path,
+            script_path=AUTOMATION_SCRIPT,
+            theme=EDITOR_THEME,
+        )
 
     def _refresh_controls_tree(self, step=None):
         if not hasattr(self, "control_tree"):

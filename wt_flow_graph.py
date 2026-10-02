@@ -75,31 +75,17 @@ def round_rectangle(c, x1, y1, x2, y2, r=12, **kw):
     return c.create_polygon(pts, smooth=True, **kw)
 
 
-def load_flow_definition(base_dir, section_key):
-    """解析流程文件，返回 {'title':..., 'nodes':[...]} 或 None。"""
-    name = SECTION_FLOW_MAP.get(section_key)
-    if not name:
-        return None
-    path = os.path.join(base_dir, "flow_packages", "flow_definition_%s.json" % name)
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        # 文件损坏/半写时返回 None，由调用方走已有的「无法加载板块流程」分支；
-        # 原先 json.load 无保护，异常会直冒到 <<ComboboxSelected>> 回调被 Tk 吞掉，
-        # 表现为「切换下拉框没反应、标题和步数还停在旧值」。
-        return None
+def parse_flow_data_to_nodes(data, default_title="当前流程"):
+    """把流程定义 dict 转换为节点列表。"""
     if not isinstance(data, dict):
         return None
     packages = data.get("flowPackages") or []
-    if not packages:
-        return None
-    pkg = packages[0]
-    steps_by_id = {s["id"]: s for s in data.get("steps", []) if "id" in s}
+    pkg = packages[0] if (packages and isinstance(packages[0], dict)) else {}
+    steps_by_id = {s["id"]: s for s in data.get("steps", []) if isinstance(s, dict) and "id" in s}
     # 主流程 stepIds 为空（未编排草稿）时，回退到 steps 数组自身顺序
-    step_ids = pkg.get("stepIds") or [s["id"] for s in data.get("steps", []) if "id" in s]
+    step_ids = pkg.get("stepIds") if isinstance(pkg, dict) else []
+    if not step_ids:
+        step_ids = [s["id"] for s in data.get("steps", []) if isinstance(s, dict) and "id" in s]
     nodes = []
     for idx, sid in enumerate(step_ids, 1):
         s = steps_by_id.get(sid)
@@ -129,13 +115,35 @@ def load_flow_definition(base_dir, section_key):
             "controls": controls,
             "actionConfig": ac,
         })
-    return {"title": pkg.get("name", name), "nodes": nodes}
+    title = (pkg.get("name") if isinstance(pkg, dict) else "") or default_title
+    return {"title": title, "nodes": nodes}
+
+
+def load_flow_definition(base_dir, section_key):
+    """解析流程文件，返回 {'title':..., 'nodes':[...]} 或 None。"""
+    name = SECTION_FLOW_MAP.get(section_key)
+    if not name:
+        return None
+    path = os.path.join(base_dir, "flow_packages", "flow_definition_%s.json" % name)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        # 文件损坏/半写时返回 None，由调用方走已有的「无法加载板块流程」分支；
+        # 原先 json.load 无保护，异常会直冒到 <<ComboboxSelected>> 回调被 Tk 吞掉，
+        # 表现为「切换下拉框没反应、标题和步数还停在旧值」。
+        return None
+    return parse_flow_data_to_nodes(data, default_title=name)
 
 
 class FlowGraphWindow(tk.Toplevel):
-    def __init__(self, parent, base_dir, default_section="comprehensive", theme=None):
+    def __init__(self, parent, base_dir, default_section="comprehensive", theme=None, flow_data=None, on_node_click=None):
         super().__init__(parent)
         self.base_dir = base_dir
+        self.flow_data = flow_data
+        self.on_node_click = on_node_click
         # 合并默认主题，保证 shadow 等键始终存在（调用方 theme 可能不含）
         self.theme = dict(_DEFAULT_THEME)
         self.theme.update(theme or {})
@@ -151,17 +159,30 @@ class FlowGraphWindow(tk.Toplevel):
         top.pack(fill=tk.X)
         tk.Label(top, text="板块链路：", bg=self.theme["toolbar"], fg=self.theme["text"],
                  font=("Microsoft YaHei UI", 9, "bold")).pack(side=tk.LEFT, padx=(4, 6))
-        self.section_var = tk.StringVar(value=SECTION_FLOW_MAP.get(default_section, ""))
-        self.opt = ttk.Combobox(
-            top,
-            textvariable=self.section_var,
-            values=[v for _, v in SECTION_FLOW_MAP.items()],
-            state="readonly",
-            width=18,
-            font=("Microsoft YaHei UI", 9),
-        )
-        self.opt.pack(side=tk.LEFT)
-        self.opt.bind("<<ComboboxSelected>>", lambda e: self.reload())
+        if self.flow_data:
+            self.section_var = tk.StringVar(value="当前编辑链路")
+            self.opt = tk.Label(
+                top,
+                text="当前编辑链路 (实时联动)",
+                bg=self.theme.get("primary_soft", "#dbeafe"),
+                fg=self.theme.get("primary_text", "#1e40af"),
+                font=("Microsoft YaHei UI", 9, "bold"),
+                padx=8,
+                pady=2,
+            )
+            self.opt.pack(side=tk.LEFT)
+        else:
+            self.section_var = tk.StringVar(value=SECTION_FLOW_MAP.get(default_section, ""))
+            self.opt = ttk.Combobox(
+                top,
+                textvariable=self.section_var,
+                values=[v for _, v in SECTION_FLOW_MAP.items()],
+                state="readonly",
+                width=18,
+                font=("Microsoft YaHei UI", 9),
+            )
+            self.opt.pack(side=tk.LEFT)
+            self.opt.bind("<<ComboboxSelected>>", lambda e: self.reload())
         self.title_label = tk.Label(top, text="", bg=self.theme["toolbar"],
                                     fg=self.theme.get("primary", "#2563eb"),
                                     font=("Microsoft YaHei UI", 10, "bold"))
@@ -220,9 +241,16 @@ class FlowGraphWindow(tk.Toplevel):
 
     # ---------- 数据 ----------
     def reload(self):
-        cn_name = self.section_var.get()
-        section_key = self.reverse_map.get(cn_name, "")
-        info = load_flow_definition(self.base_dir, section_key) if section_key else None
+        if self.flow_data:
+            info = parse_flow_data_to_nodes(
+                self.flow_data,
+                default_title=self.flow_data.get("description") or "当前编辑流程"
+            )
+            cn_name = "当前编辑流程"
+        else:
+            cn_name = self.section_var.get()
+            section_key = self.reverse_map.get(cn_name, "")
+            info = load_flow_definition(self.base_dir, section_key) if section_key else None
         if not info:
             messagebox.showerror("错误", "无法加载板块流程：%s" % cn_name)
             self.nodes = []
@@ -360,13 +388,21 @@ class FlowGraphWindow(tk.Toplevel):
             tag = "node_%d" % n["index"]
             self.canvas.addtag_withtag(tag, box)
             self.canvas.tag_bind(tag, "<Button-1>",
-                                 lambda e, nn=n: self._open_detail(nn))
+                                 lambda e, nn=n: self._handle_node_click(nn))
             enter, leave = self._make_hover(box, color)
             self.canvas.tag_bind(tag, "<Enter>", enter)
             self.canvas.tag_bind(tag, "<Leave>", leave)
             prev_bottom = y + node_h
             y += node_h + gap
         self.canvas.configure(scrollregion=(0, 0, width, max(y + 20, 1)))
+
+    def _handle_node_click(self, node):
+        if callable(self.on_node_click):
+            try:
+                self.on_node_click(node["id"])
+            except Exception:
+                pass
+        self._open_detail(node)
 
     # ---------- 详情 ----------
     def _open_detail(self, node):
@@ -381,7 +417,22 @@ class FlowGraphWindow(tk.Toplevel):
         header.pack(fill=tk.X)
         tk.Label(header, text="%d. %s" % (node["index"], node["name"]),
                  bg=color, fg="white", font=("Microsoft YaHei UI", 12, "bold"),
-                 padx=16, pady=12, anchor="w", wraplength=540, justify="left").pack(side=tk.LEFT)
+                 padx=16, pady=12, anchor="w", wraplength=420, justify="left").pack(side=tk.LEFT)
+
+        if callable(self.on_node_click):
+            tk.Button(
+                header,
+                text="🎯 在编辑器中定位此步",
+                bg="#ffffff",
+                fg=color,
+                font=("Microsoft YaHei UI", 9, "bold"),
+                relief=tk.FLAT,
+                bd=0,
+                padx=10,
+                pady=4,
+                cursor="hand2",
+                command=lambda: self.on_node_click(node["id"]),
+            ).pack(side=tk.RIGHT, padx=12)
 
         # 主体（可滚动）
         body = tk.Frame(win, bg=self.theme["bg"])
