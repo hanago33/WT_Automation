@@ -8374,14 +8374,15 @@ class FlowEditorApp:
         "step_params_text", "action_config_text",
     )
 
-    def __init__(self, root):
+    def __init__(self, root, definition_path=None, focus_step_id=None):
         self.root = root
+        self.focus_step_id = str(focus_step_id or "").strip()
         wt_theme.get_theme_manager().init_theme(self.root, "flatly")
         self.root.title("WT 自动化流程链路编辑器")
         wt_dpi.geometry(self.root, 1500, 900)
         self.root.minsize(wt_dpi.scale(1260), wt_dpi.scale(760))
 
-        self.definition_path = resolve_initial_definition_path()
+        self.definition_path = str(definition_path or "").strip() or resolve_initial_definition_path()
         self.flow_definition = self._load_or_default_definition(self.definition_path)
         self.steps = self.flow_definition["steps"]
         self.flow_packages = normalize_flow_packages(self.flow_definition.get("flowPackages", []))
@@ -8391,6 +8392,7 @@ class FlowEditorApp:
         self._suppress_tree_select_event = False
         # 表单「未应用改动」基线：加载/应用步骤时刷新（见 _form_snapshot）
         self._form_baseline = None
+        self._step_clipboard = None
         self._dragging_step_iid = ""
         self._drag_hover_iid = ""
         self._drag_hover_after = False
@@ -8402,6 +8404,11 @@ class FlowEditorApp:
         self.ui_scale_var = tk.StringVar(value=wt_dpi.scale_to_label(wt_dpi.load_scale_config()))
         self.path_var = tk.StringVar(value=self.definition_path)
         self.step_scope_var = tk.StringVar(value="当前显示：全部步骤")
+        self.step_search_query = tk.StringVar()
+        self.step_filter_category = tk.StringVar(value="全部")
+        self.step_count_badge_var = tk.StringVar(value="0 / 0 步")
+        self.step_title_display_var = tk.StringVar(value="未选择步骤")
+        self.step_dirty_badge_var = tk.StringVar(value="✓ 已同步")
 
         self.runtime_gm_exe_var = tk.StringVar()
         self.runtime_source_file_var = tk.StringVar()
@@ -8502,6 +8509,8 @@ class FlowEditorApp:
             self.var_anchor_offset_y,
         ):
             trace_var.trace_add("write", lambda *_args: self._refresh_relative_region_preview())
+        for v in (self.var_name, self.var_action, self.var_target_control_id, self.var_action_type):
+            v.trace_add("write", lambda *_args: self._update_step_header_display())
         self._load_runtime_config_into_form(self.flow_definition.get("runtimeConfig", {}))
         self._load_flow_packages_into_form(self.flow_definition.get("flowPackages", []))
         self._refresh_template_library()
@@ -8509,7 +8518,10 @@ class FlowEditorApp:
         self._refresh_overview()
         self._set_title()
         if self.steps:
-            self._select_step(0)
+            if self.focus_step_id:
+                self.root.after_idle(lambda: self._focus_step_by_id(self.focus_step_id))
+            else:
+                self._select_step(0)
 
     def _load_or_default_definition(self, file_path):
         payload = load_json_file(file_path)
@@ -8915,7 +8927,52 @@ class FlowEditorApp:
             bg=EDITOR_THEME["panel"],
             anchor="w",
             justify=tk.LEFT,
-        ).pack(fill=tk.X, pady=(0, 8))
+        ).pack(fill=tk.X, pady=(0, 6))
+
+        # 步骤搜索与分类筛选条
+        search_filter_bar = tk.Frame(parent, bg=EDITOR_THEME["panel"])
+        search_filter_bar.pack(fill=tk.X, pady=(0, 6))
+
+        search_box = tk.Frame(search_filter_bar, bg="#ffffff", bd=1, relief=tk.SOLID)
+        search_box.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        tk.Label(search_box, text="🔍", bg="#ffffff", fg="#64748b", font=("Segoe UI Emoji", 9)).pack(side=tk.LEFT, padx=(5, 2))
+        self.step_search_entry = tk.Entry(
+            search_box,
+            textvariable=self.step_search_query,
+            bd=0,
+            highlightthickness=0,
+            bg="#ffffff",
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.step_search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        self.step_search_query.trace_add("write", lambda *args: self._on_step_filter_changed())
+
+        clear_btn = tk.Label(search_box, text="✕", bg="#ffffff", fg="#94a3b8", cursor="hand2", font=("Segoe UI", 9))
+        clear_btn.pack(side=tk.RIGHT, padx=4)
+        clear_btn.bind("<Button-1>", lambda _e: (self.step_search_query.set(""), self._on_step_filter_changed()))
+
+        self.step_filter_combo = ttk.Combobox(
+            search_filter_bar,
+            textvariable=self.step_filter_category,
+            values=("全部", "仅启用", "仅停用", "仅动作步", "仅子链路", "带模板"),
+            state="readonly",
+            width=8,
+        )
+        self.step_filter_combo.pack(side=tk.LEFT, padx=(6, 4))
+        self.step_filter_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_step_filter_changed())
+
+        self.step_count_badge_label = tk.Label(
+            search_filter_bar,
+            textvariable=self.step_count_badge_var,
+            bg=EDITOR_THEME.get("primary_soft", "#eff6ff"),
+            fg=EDITOR_THEME.get("primary", "#1d4ed8"),
+            font=("Microsoft YaHei UI", 8, "bold"),
+            padx=6,
+            pady=2,
+            relief=tk.FLAT,
+        )
+        self.step_count_badge_label.pack(side=tk.LEFT)
 
         tree_frame = tk.Frame(parent)
         tree_frame.pack(fill=tk.BOTH, expand=True)
@@ -8941,6 +8998,18 @@ class FlowEditorApp:
         self.step_tree.bind("<ButtonPress-1>", self._start_step_drag, add="+")
         self.step_tree.bind("<B1-Motion>", self._track_step_drag, add="+")
         self.step_tree.bind("<ButtonRelease-1>", self._finish_step_drag, add="+")
+        self.step_tree.bind("<Button-3>", self._show_step_context_menu)
+        self.step_tree.bind("<Button-2>", self._show_step_context_menu)
+        self.step_tree.bind("<Control-c>", lambda _e: (self.cmd_copy_selected_step(), "break")[1])
+        self.step_tree.bind("<Control-C>", lambda _e: (self.cmd_copy_selected_step(), "break")[1])
+        self.step_tree.bind("<Control-v>", lambda _e: (self.cmd_paste_step_below(), "break")[1])
+        self.step_tree.bind("<Control-V>", lambda _e: (self.cmd_paste_step_below(), "break")[1])
+        self.step_tree.bind("<Control-d>", lambda _e: (self.cmd_duplicate_step(), "break")[1])
+        self.step_tree.bind("<Control-D>", lambda _e: (self.cmd_duplicate_step(), "break")[1])
+        self.step_tree.bind("<space>", lambda _e: (self.cmd_toggle_selected_step_enabled(), "break")[1])
+        self.step_tree.bind("<Delete>", lambda _e: (self.cmd_delete_step(), "break")[1])
+        self.step_tree.bind("<Alt-Up>", lambda _e: (self.cmd_move_up(), "break")[1])
+        self.step_tree.bind("<Alt-Down>", lambda _e: (self.cmd_move_down(), "break")[1])
 
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=self.step_tree.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -8955,6 +9024,53 @@ class FlowEditorApp:
         self._style_text_surface(self.package_quick_text)
         self.package_quick_text.pack(fill=tk.X)
 
+    def _build_editor_sticky_top_bar(self, parent):
+        bar = tk.Frame(parent, bg=EDITOR_THEME["card"], bd=1, relief=tk.SOLID, padx=14, pady=8)
+        bar.pack(fill=tk.X, padx=0, pady=(0, 4))
+
+        left_side = tk.Frame(bar, bg=EDITOR_THEME["card"])
+        left_side.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.step_title_display_label = tk.Label(
+            left_side,
+            textvariable=self.step_title_display_var,
+            font=("Microsoft YaHei UI", 11, "bold"),
+            fg=EDITOR_THEME["text"],
+            bg=EDITOR_THEME["card"],
+            anchor="w",
+        )
+        self.step_title_display_label.pack(side=tk.LEFT)
+
+        self.step_form_dirty_badge = tk.Label(
+            left_side,
+            textvariable=self.step_dirty_badge_var,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg="#f0fdf4",
+            fg="#16a34a",
+            padx=8,
+            pady=2,
+            relief=tk.FLAT,
+        )
+        self.step_form_dirty_badge.pack(side=tk.LEFT, padx=(12, 0))
+
+        right_side = tk.Frame(bar, bg=EDITOR_THEME["card"])
+        right_side.pack(side=tk.RIGHT)
+
+        self.apply_button = self._create_action_button(
+            right_side,
+            "💾 应用到当前步骤",
+            self.cmd_apply_step,
+            tone="success",
+        )
+        self.apply_button.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.reload_button = self._create_action_button(
+            right_side,
+            "↺ 重置当前表单",
+            self.cmd_reload_step,
+        )
+        self.reload_button.pack(side=tk.LEFT)
+
     def _build_right_main(self, parent):
         notebook = ttk.Notebook(parent)
         notebook.pack(fill=tk.BOTH, expand=True)
@@ -8962,6 +9078,7 @@ class FlowEditorApp:
         # 标签1：步骤编辑（核心）
         tab_edit = tk.Frame(notebook)
         notebook.add(tab_edit, text="步骤编辑")
+        self._build_editor_sticky_top_bar(tab_edit)
         center_scroll = self._build_scrollable_panel(tab_edit)
         self._build_center_panel(center_scroll)
 
@@ -8993,55 +9110,12 @@ class FlowEditorApp:
         self._tab_ai_index = 4
 
     def _build_center_panel(self, parent):
-        quick_card, quick_guide = self._create_form_card(
-            parent,
-            "步骤编辑",
-            "像人在配 RPA 一样先回答 5 个问题：这一步叫什么、要做什么、对哪个控件做、等多久、失败后怎么办。",
-            tone="primary",
-        )
-        quick_card.pack(fill=tk.X)
-        tk.Label(
-            quick_guide,
-            text="可视化字段优先用于日常编辑，高级 JSON 保留给少量特殊场景，既能保证效率，也能保留灵活度。",
-            fg="#374151",
-            justify=tk.LEFT,
-            anchor="w",
-            bg=EDITOR_THEME["panel"],
-        ).pack(fill=tk.X)
-        tk.Label(
-            quick_guide,
-            text="推荐顺序：先选动作和目标控件，再补等待/重试/兜底，最后在下方检查高级参数。",
-            fg="#6b7280",
-            justify=tk.LEFT,
-            anchor="w",
-            bg=EDITOR_THEME["panel"],
-        ).pack(fill=tk.X, pady=(4, 0))
-        quick_action_row = tk.Frame(quick_guide, bg=EDITOR_THEME["panel"])
-        quick_action_row.pack(fill=tk.X, pady=(10, 0))
-        self._create_action_button(
-            quick_action_row,
-            "快捷应用到当前步骤",
-            self.cmd_apply_step,
-            tone="success",
-        ).pack(side=tk.LEFT, padx=(0, 6))
-        self._create_action_button(
-            quick_action_row,
-            "快捷重置当前表单",
-            self.cmd_reload_step,
-        ).pack(side=tk.LEFT)
-        tk.Label(
-            quick_action_row,
-            text="常用配置改完后可直接在这里确认，无需继续下滑。",
-            fg=EDITOR_THEME["muted"],
-            bg=EDITOR_THEME["panel"],
-        ).pack(side=tk.LEFT, padx=(10, 0))
-
         basic_card, basic = self._create_form_card(
             parent,
             "1. 这一步是什么",
             "先确定步骤名称、动作类型、策略和流程包引用，方便后续维护与复用。",
         )
-        basic_card.pack(fill=tk.X, pady=(10, 0))
+        basic_card.pack(fill=tk.X, pady=(2, 0))
         basic.columnconfigure(1, weight=1)
         basic.columnconfigure(3, weight=1)
 
@@ -9077,21 +9151,6 @@ class FlowEditorApp:
         self._grid_label_entry(basic, "代码文件", self.var_code_reference, row, 2)
         row += 1
         tk.Checkbutton(basic, text="启用该步骤", variable=self.var_enabled).grid(row=row, column=0, sticky="w", pady=4)
-
-        save_card, save_row = self._create_form_card(
-            parent,
-            "应用与确认",
-            "常用字段配完后就可以直接应用到当前步骤，不必再滚到最下方确认。",
-        )
-        save_card.pack(fill=tk.X, pady=(10, 0))
-        self._create_action_button(save_row, "应用到当前步骤", self.cmd_apply_step, tone="success").pack(side=tk.LEFT, padx=3)
-        self._create_action_button(save_row, "重置当前表单", self.cmd_reload_step).pack(side=tk.LEFT, padx=3)
-        tk.Label(
-            save_row,
-            text="提示：先点【应用到当前步骤】，确认无误后再保存链路文件。",
-            fg="#666",
-            bg=EDITOR_THEME["panel"],
-        ).pack(side=tk.LEFT, padx=(10, 0))
 
         action_card, action_frame = self._create_form_card(
             parent,
@@ -9129,13 +9188,49 @@ class FlowEditorApp:
 
         self.target_control_label = tk.Label(action_frame, text="目标控件 *")
         self.target_control_label.grid(row=1, column=2, sticky="w", pady=4)
+        self.target_control_container = tk.Frame(action_frame, bg=EDITOR_THEME["panel"])
+        self.target_control_container.grid(row=1, column=3, sticky="ew", padx=(8, 12), pady=4)
+        self.target_control_container.columnconfigure(0, weight=1)
+
         self.target_control_combo = ttk.Combobox(
-            action_frame,
+            self.target_control_container,
             textvariable=self.var_target_control_id,
             state="readonly",
             postcommand=self._refresh_action_control_choices,
         )
-        self.target_control_combo.grid(row=1, column=3, sticky="ew", padx=(8, 12), pady=4)
+        self.target_control_combo.grid(row=0, column=0, sticky="ew")
+
+        self.target_control_picker_btn = tk.Button(
+            self.target_control_container,
+            text="🔍选控件",
+            command=self._open_target_control_picker,
+            bg=EDITOR_THEME.get("primary_soft", "#eff6ff"),
+            fg=EDITOR_THEME.get("primary", "#1d4ed8"),
+            activebackground="#bfdbfe",
+            relief=tk.FLAT,
+            bd=1,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 8),
+            padx=4,
+            pady=0,
+        )
+        self.target_control_picker_btn.grid(row=0, column=1, padx=(3, 1))
+
+        self.target_control_view_btn = tk.Button(
+            self.target_control_container,
+            text="👁️",
+            command=self._show_target_control_info,
+            bg="#f1f5f9",
+            fg=EDITOR_THEME["text"],
+            activebackground="#e2e8f0",
+            relief=tk.FLAT,
+            bd=1,
+            cursor="hand2",
+            font=("Segoe UI Emoji", 8),
+            padx=4,
+            pady=0,
+        )
+        self.target_control_view_btn.grid(row=0, column=2, padx=(1, 0))
 
         self.input_param_label = tk.Label(action_frame, text="输入/参数")
         self.input_param_label.grid(row=1, column=4, sticky="w", pady=4)
@@ -9341,7 +9436,7 @@ class FlowEditorApp:
             padx=10,
             pady=10,
         )
-        self.relative_region_frame.grid(row=8, column=0, columnspan=6, sticky="ew", pady=(8, 0))
+        self.relative_region_frame.grid(row=10, column=0, columnspan=6, sticky="ew", pady=(8, 0))
         self.relative_region_frame.columnconfigure(1, weight=1)
         self.relative_region_frame.columnconfigure(3, weight=1)
         tk.Label(
@@ -9459,7 +9554,7 @@ class FlowEditorApp:
             padx=10,
             pady=10,
         )
-        self.anchor_offset_frame.grid(row=8, column=0, columnspan=6, sticky="ew", pady=(8, 0))
+        self.anchor_offset_frame.grid(row=10, column=0, columnspan=6, sticky="ew", pady=(8, 0))
         self.anchor_offset_frame.columnconfigure(1, weight=1)
         self.anchor_offset_frame.columnconfigure(3, weight=1)
         tk.Label(
@@ -10275,22 +10370,83 @@ class FlowEditorApp:
     def _get_visible_step_indexes(self):
         package = self._get_package_by_id(self.current_package_step_filter_id)
         if not package:
-            return list(range(len(self.steps)))
-        step_index_map = {
-            str(step.get("id", "")).strip(): index
-            for index, step in enumerate(self.steps)
-            if str(step.get("id", "")).strip()
-        }
-        visible_indexes = []
-        seen_indexes = set()
-        for step_id in package.get("stepIds", []):
-            normalized_step_id = str(step_id).strip()
-            if normalized_step_id in step_index_map:
-                idx = step_index_map[normalized_step_id]
-                if idx not in seen_indexes:  # 去重，避免同一步骤被重复插入导致 iid 冲突
-                    visible_indexes.append(idx)
-                    seen_indexes.add(idx)
-        return visible_indexes
+            candidate_indexes = list(range(len(self.steps)))
+        else:
+            step_index_map = {
+                str(step.get("id", "")).strip(): index
+                for index, step in enumerate(self.steps)
+                if str(step.get("id", "")).strip()
+            }
+            candidate_indexes = []
+            seen_indexes = set()
+            for step_id in package.get("stepIds", []):
+                normalized_step_id = str(step_id).strip()
+                if normalized_step_id in step_index_map:
+                    idx = step_index_map[normalized_step_id]
+                    if idx not in seen_indexes:  # 去重，避免同一步骤被重复插入导致 iid 冲突
+                        candidate_indexes.append(idx)
+                        seen_indexes.add(idx)
+
+        # 步骤搜索与分类筛选过滤
+        search_query = self.step_search_query.get().strip().lower() if hasattr(self, "step_search_query") else ""
+        category = self.step_filter_category.get().strip() if hasattr(self, "step_filter_category") else "全部"
+
+        if not search_query and category in ("", "全部"):
+            return candidate_indexes
+
+        filtered = []
+        for idx in candidate_indexes:
+            if idx >= len(self.steps):
+                continue
+            step = self.steps[idx]
+            # 类别过滤
+            if category == "仅启用" and not step.get("enabled", True):
+                continue
+            elif category == "仅停用" and step.get("enabled", True):
+                continue
+            elif category == "仅动作步" and str(step.get("actionType", "")).strip().lower() not in ("action", "click", "input", "launch"):
+                continue
+            elif category == "仅子链路":
+                act_type = str(step.get("actionType", "")).strip().lower()
+                has_subflow = bool(step.get("subflow") or (isinstance(step.get("actionConfig"), dict) and step["actionConfig"].get("subflow")))
+                if act_type not in ("flow_ref", "subflow") and not has_subflow:
+                    continue
+            elif category == "带模板":
+                act_cfg = step.get("actionConfig", {}) if isinstance(step.get("actionConfig"), dict) else {}
+                raw_act = step.get("action", {}) if isinstance(step.get("action"), dict) else {}
+                has_tpl = bool(
+                    act_cfg.get("fallbackTemplate")
+                    or act_cfg.get("preferTemplate")
+                    or act_cfg.get("image_template")
+                    or raw_act.get("image_template")
+                    or step.get("template")
+                    or step.get("template_path")
+                )
+                if not has_tpl:
+                    continue
+
+            # 搜索词过滤
+            if search_query:
+                s_id = str(step.get("id", "")).lower()
+                s_name = str(step.get("name", "")).lower()
+                s_window = str(step.get("windowTitle", "")).lower()
+                act_cfg = step.get("actionConfig", {}) if isinstance(step.get("actionConfig"), dict) else {}
+                s_action = str(act_cfg.get("action", "")).lower()
+                s_ctrl = str(act_cfg.get("controlId", "")).lower()
+                s_stage = str(step.get("stage", "")).lower()
+                matched = (
+                    search_query in s_id
+                    or search_query in s_name
+                    or search_query in s_window
+                    or search_query in s_action
+                    or search_query in s_ctrl
+                    or search_query in s_stage
+                )
+                if not matched:
+                    continue
+
+            filtered.append(idx)
+        return filtered
 
     def _apply_package_step_filter(self, package_id, focus_first=True):
         self.current_package_step_filter_id = str(package_id or "").strip()
@@ -10326,16 +10482,24 @@ class FlowEditorApp:
         normalized_step_id = str(step_id).strip()
         if not normalized_step_id:
             return
+        if hasattr(self, "step_search_query") and self.step_search_query.get().strip():
+            self.step_search_query.set("")
+        if hasattr(self, "step_filter_category") and self.step_filter_category.get() not in ("", "全部"):
+            self.step_filter_category.set("全部")
+        self._refresh_steps_tree()
         for index, step in enumerate(self.steps):
             if str(step.get("id", "")).strip() != normalized_step_id:
                 continue
             self._select_step(index)
-            self.step_tree.see(str(index))
+            if hasattr(self, "step_tree") and str(index) in self.step_tree.get_children():
+                self.step_tree.selection_set(str(index))
+                self.step_tree.see(str(index))
             self.root.lift()
             self.root.focus_force()
-            self.status_var.set(f"已定位到流程包步骤：{normalized_step_id}")
-            return
+            self.status_var.set(f"已定位到步骤：{normalized_step_id}")
+            return True
         messagebox.showinfo("提示", f"当前链路里未找到步骤：{normalized_step_id}")
+        return False
 
     def cmd_focus_flow_package_steps(self):
         package_index = self._get_selected_package_index()
@@ -10885,6 +11049,8 @@ class FlowEditorApp:
         self._refresh_action_schema_hint()
 
         self._show_widget(self.target_control_label, show_target)
+        if hasattr(self, "target_control_container"):
+            self._show_widget(self.target_control_container, show_target)
         self._show_widget(self.target_control_combo, show_target)
         self._show_widget(self.input_param_label, show_input)
         self._show_widget(self.input_param_entry, show_input)
@@ -10932,6 +11098,10 @@ class FlowEditorApp:
             self._sync_post_input_controls("")
         if hasattr(self, "target_control_combo"):
             self.target_control_combo.configure(state="readonly" if is_action and show_target else "disabled")
+        if hasattr(self, "target_control_picker_btn"):
+            self.target_control_picker_btn.configure(state="normal" if is_action and show_target else "disabled")
+        if hasattr(self, "target_control_view_btn"):
+            self.target_control_view_btn.configure(state="normal" if is_action and show_target else "disabled")
         if hasattr(self, "continue_when_control_combo"):
             self.continue_when_control_combo.configure(state="readonly" if show_continue_when else "disabled")
         if hasattr(self, "continue_when_condition_combo"):
@@ -11411,6 +11581,11 @@ class FlowEditorApp:
                 values=(order, prefix + name, action_summary, target_summary),
                 tags=tuple(tags),
             )
+        if hasattr(self, "step_count_badge_var"):
+            self.step_count_badge_var.set(f"{len(visible_indexes)} / {len(self.steps)} 步")
+        if self.selected_index is not None and str(self.selected_index) in self.step_tree.get_children():
+            self.step_tree.selection_set(str(self.selected_index))
+            self.step_tree.see(str(self.selected_index))
         self._set_title()
 
     def _refresh_overview(self):
@@ -11741,6 +11916,7 @@ class FlowEditorApp:
         self.status_var.set(f"已加载步骤 #{index_to_seq(current_index)}：{step.get('name', '')}")
         # 重新记录表单基线：此刻表单与步骤一致，之后任何未应用的改动都会被检测到
         self._form_baseline = self._form_snapshot()
+        self._update_step_header_display()
 
     def _build_step_from_form(self):
         step_params = self._parse_json_dict_text(self._get_text(self.step_params_text), "步骤参数")
@@ -12528,6 +12704,236 @@ class FlowEditorApp:
         self._refresh_steps_tree()
         self._select_step(index + 1)
         self._refresh_overview()
+
+    def _on_step_filter_changed(self):
+        self._refresh_steps_tree()
+        visible = self._get_visible_step_indexes()
+        if visible and (self.selected_index is None or self.selected_index not in visible):
+            self._select_step(visible[0])
+
+    def _show_step_context_menu(self, event):
+        row_id = self.step_tree.identify_row(event.y)
+        if row_id:
+            sel = self.step_tree.selection()
+            if row_id not in sel:
+                self.step_tree.selection_set(row_id)
+                try:
+                    self._select_step(int(row_id))
+                except Exception:
+                    pass
+        elif self.selected_index is None:
+            return
+
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="📋 复制步骤 (Ctrl+C)", command=self.cmd_copy_selected_step)
+        menu.add_command(label="📥 粘贴到下方 (Ctrl+V)", command=self.cmd_paste_step_below)
+        menu.add_command(label="📑 快速克隆 (Ctrl+D)", command=self.cmd_duplicate_step)
+        menu.add_separator()
+        menu.add_command(label="🔘 切换启用/停用 (Space)", command=self.cmd_toggle_selected_step_enabled)
+        menu.add_command(label="➕ 在下方插入新步骤", command=self.cmd_insert_new_step_below)
+        menu.add_separator()
+        menu.add_command(label="⬆ 上移步骤 (Alt+Up)", command=self.cmd_move_up)
+        menu.add_command(label="⬇ 下移步骤 (Alt+Down)", command=self.cmd_move_down)
+        menu.add_separator()
+        menu.add_command(label="🆔 复制步骤ID", command=self.cmd_copy_step_id)
+        menu.add_command(label="{ } 复制步骤完整JSON", command=self.cmd_copy_step_json)
+        menu.add_separator()
+        menu.add_command(label="🗑️ 删除所选步骤 (Del)", command=self.cmd_delete_step)
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def cmd_copy_selected_step(self):
+        if self.selected_index is None or not (0 <= self.selected_index < len(self.steps)):
+            messagebox.showinfo("提示", "请先选择一个步骤。")
+            return
+        step = self.steps[self.selected_index]
+        self._step_clipboard = json.loads(json.dumps(step, ensure_ascii=False))
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(json.dumps(self._step_clipboard, ensure_ascii=False, indent=2))
+        except Exception:
+            pass
+        self.status_var.set(f"已复制步骤：{step.get('name', '')} 到剪贴板")
+
+    def cmd_paste_step_below(self):
+        source = getattr(self, "_step_clipboard", None)
+        if not source:
+            try:
+                clip_text = self.root.clipboard_get()
+                parsed = json.loads(clip_text)
+                if isinstance(parsed, dict) and "name" in parsed:
+                    source = parsed
+            except Exception:
+                pass
+        if not source:
+            messagebox.showinfo("提示", "剪贴板中没有可粘贴的步骤数据。")
+            return
+        clone = json.loads(json.dumps(source, ensure_ascii=False))
+        clone["id"] = self._generate_unique_step_id(clone.get("id", "step") + "_copy")
+        clone["name"] = clone.get("name", "") + " (粘贴)"
+        insert_at = (self.selected_index + 1) if (self.selected_index is not None and 0 <= self.selected_index < len(self.steps)) else len(self.steps)
+        self.steps.insert(insert_at, normalize_step(clone, insert_at))
+        self._mark_dirty(f"已粘贴步骤：{clone.get('name', '')}")
+        self._refresh_steps_tree()
+        self._select_step(insert_at)
+        self._refresh_overview()
+
+    def cmd_toggle_selected_step_enabled(self):
+        selected_indexes = self._get_selected_step_indexes()
+        if not selected_indexes and self.selected_index is not None:
+            selected_indexes = [self.selected_index]
+        if not selected_indexes:
+            return
+        for idx in selected_indexes:
+            cur = self.steps[idx].get("enabled", True)
+            self.steps[idx]["enabled"] = not cur
+            if idx == self.selected_index:
+                self.var_enabled.set(self.steps[idx]["enabled"])
+        self._mark_dirty(f"已切换 {len(selected_indexes)} 个步骤的启用状态")
+        self._refresh_steps_tree()
+        if self.selected_index is not None and str(self.selected_index) in self.step_tree.get_children():
+            self.step_tree.selection_set(str(self.selected_index))
+            self.step_tree.see(str(self.selected_index))
+
+    def cmd_copy_step_id(self):
+        if self.selected_index is None or not (0 <= self.selected_index < len(self.steps)):
+            return
+        step_id = str(self.steps[self.selected_index].get("id", "")).strip()
+        if step_id:
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(step_id)
+                self.status_var.set(f"已复制步骤ID：{step_id}")
+            except Exception:
+                pass
+
+    def cmd_copy_step_json(self):
+        if self.selected_index is None or not (0 <= self.selected_index < len(self.steps)):
+            return
+        step = self.steps[self.selected_index]
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(json.dumps(step, ensure_ascii=False, indent=2))
+            self.status_var.set(f"已复制步骤 [{step.get('name', '')}] 的完整 JSON")
+        except Exception:
+            pass
+
+    def cmd_insert_new_step_below(self):
+        insert_at = (self.selected_index + 1) if (self.selected_index is not None and 0 <= self.selected_index < len(self.steps)) else len(self.steps)
+        new_step = normalize_step(
+            {"id": self._generate_unique_step_id("step"), "name": "新步骤", "strategy": "script", "actionType": "action"},
+            insert_at,
+        )
+        self.steps.insert(insert_at, new_step)
+        self._mark_dirty("已在下方插入新步骤")
+        self._refresh_steps_tree()
+        self._select_step(insert_at)
+        self._refresh_overview()
+
+    def _open_target_control_picker(self):
+        if self.selected_index is None or not (0 <= self.selected_index < len(self.steps)):
+            messagebox.showinfo("提示", "请先选择一个步骤。")
+            return
+        step = self.steps[self.selected_index]
+        all_flow_controls = []
+        for s in self.steps:
+            all_flow_controls.extend(s.get("controls", []))
+        picker = ControlPickerDialog(
+            self.root,
+            controls=all_flow_controls,
+            library_controls=_load_control_library_controls(),
+        )
+        self.root.wait_window(picker.window)
+        if picker.selected_control is None:
+            return
+        picked_ctrl = picker.selected_control
+        picked_id = str(picked_ctrl.get("id", "")).strip()
+        if not picked_id:
+            return
+
+        # 确保当前步骤包含该控件
+        step_ctrl_ids = {str(c.get("id", "")).strip() for c in step.get("controls", [])}
+        if picked_id not in step_ctrl_ids:
+            self._append_controls_to_selected_step([picked_ctrl], "控件选择器")
+
+        self.var_target_control_id.set(picked_id)
+        self._sync_control_to_step_hints_by_control(picked_ctrl)
+        self.status_var.set(f"已选择目标控件：{picked_ctrl.get('name', '') or picked_id}")
+        self._update_step_header_display()
+
+    def _show_target_control_info(self):
+        ctrl_id = self.var_target_control_id.get().strip()
+        if not ctrl_id:
+            messagebox.showinfo("提示", "当前步骤尚未指定目标控件。")
+            return
+        found_ctrl = None
+        if self.selected_index is not None and 0 <= self.selected_index < len(self.steps):
+            for c in self.steps[self.selected_index].get("controls", []):
+                if str(c.get("id", "")).strip() == ctrl_id:
+                    found_ctrl = c
+                    break
+        if not found_ctrl:
+            for s in self.steps:
+                for c in s.get("controls", []):
+                    if str(c.get("id", "")).strip() == ctrl_id:
+                        found_ctrl = c
+                        break
+                if found_ctrl:
+                    break
+        if not found_ctrl:
+            lib = _load_control_library_controls()
+            for c in lib:
+                if str(c.get("id", "")).strip() == ctrl_id:
+                    found_ctrl = c
+                    break
+        if not found_ctrl:
+            messagebox.showinfo("控件信息", f"未找到控件 [{ctrl_id}] 的详细信息。")
+            return
+
+        inspect = found_ctrl.get("inspectData", {}) if isinstance(found_ctrl.get("inspectData"), dict) else {}
+        info_lines = [
+            f"控件 ID: {found_ctrl.get('id', '')}",
+            f"控件名称: {found_ctrl.get('name', '')}",
+            f"所属窗口: {found_ctrl.get('windowTitle', '') or inspect.get('windowTitle', '')}",
+            f"automationId: {inspect.get('automationId', '') or found_ctrl.get('automationId', '')}",
+            f"className: {inspect.get('className', '') or found_ctrl.get('className', '')}",
+            f"controlType: {inspect.get('controlType', '') or found_ctrl.get('controlType', '')}",
+            f"uiPath: {found_ctrl.get('uiPath', '') or inspect.get('uiPath', '')}",
+            f"boundingRect: {inspect.get('boundingRect', '')}",
+        ]
+        messagebox.showinfo("目标控件详情", "\n".join(info_lines))
+
+    def _update_step_header_display(self):
+        if self.selected_index is not None and 0 <= self.selected_index < len(self.steps):
+            step = self.steps[self.selected_index]
+            seq = self.selected_index + 1
+            name = self.var_name.get().strip() or step.get("name", "")
+            action = self.var_action.get().strip() if self.var_action_type.get() == "action" else self.var_action_type.get()
+            self.step_title_display_var.set(f"步骤 #{seq:02d}: {name} [{action}]")
+        else:
+            self.step_title_display_var.set("未选择步骤")
+
+        is_dirty = self._is_form_dirty()
+        if is_dirty:
+            self.step_dirty_badge_var.set("● 表单已修改 (未保存)")
+            if hasattr(self, "step_form_dirty_badge"):
+                self.step_form_dirty_badge.configure(bg="#fef3c7", fg="#b45309")
+        else:
+            self.step_dirty_badge_var.set("✓ 已同步")
+            if hasattr(self, "step_form_dirty_badge"):
+                self.step_form_dirty_badge.configure(bg="#f0fdf4", fg="#16a34a")
+
+    def _is_form_dirty(self):
+        if self.selected_index is None:
+            return False
+        baseline = getattr(self, "_form_baseline", None)
+        if baseline is None:
+            return False
+        return self._form_snapshot() != baseline
+
 
     def cmd_renumber_step_ids(self):
         """一键按当前步骤顺序重新编号所有步骤ID，并同步更新流程包引用。"""
@@ -13559,14 +13965,21 @@ def index_to_seq(index):
     return index + 1
 
 
-def main():
+def build_cli_parser():
     parser = argparse.ArgumentParser(description="WT 自动化流程链路编辑器")
+    parser.add_argument("flow_file", nargs="?", default="", help="流程定义 JSON 文件路径")
+    parser.add_argument("--step-id", default="", help="启动后自动定位并聚焦指定的步骤 ID")
     parser.add_argument("--startup-ping", default="", help="窗口初始化完成后写入该文件，供启动方确认 GUI 已真正创建")
     parser.add_argument("--open-control-library", action="store_true", help="启动后自动打开从控件库导入对话框")
     parser.add_argument("--open-control-import", action="store_true", help="启动后自动打开从控件库导入对话框")
     parser.add_argument("--open-locator-tester", action="store_true", help="启动后自动打开控件定位检验器")
     parser.add_argument("--control-library-standalone", action="store_true", help="独立启动控件库维护窗口（不加载流程编辑器主界面）")
     parser.add_argument("--ui-scale", type=float, default=None, help="界面缩放系数（如 1.0/1.25/1.5），覆盖共享配置文件 ui_scale.json")
+    return parser
+
+
+def main():
+    parser = build_cli_parser()
     args = parser.parse_args()
 
     if args.ui_scale is not None:
@@ -13625,7 +14038,7 @@ def main():
             messagebox.showerror("打开失败", f"启动控件库维护失败：\n{exc}")
         return
 
-    app = FlowEditorApp(root)
+    app = FlowEditorApp(root, definition_path=args.flow_file, focus_step_id=args.step_id)
     try:
         root.update_idletasks()
         root.deiconify()
