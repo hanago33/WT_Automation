@@ -2273,6 +2273,292 @@ class ServerMonitorWindow:
 _WHEEL_ROUTER = wt_wheel_router.ROUTER
 
 
+class StepTimelineBar(tk.Frame):
+    """可视化步骤水平进度时间线组件。
+    
+    展示自动化流程当前勾选执行的步骤链，实时反映当前进行中步骤、耗时与通过状态。
+    """
+    def __init__(self, parent, theme=None, **kwargs):
+        bg_col = theme.get("card", "#ffffff") if theme else "#ffffff"
+        super().__init__(parent, bg=bg_col, **kwargs)
+        self.theme = theme or {}
+        self.steps = []  # list of {"id": sid, "name": sname, "status": "pending"|"running"|"success"|"failed"|"skipped", "elapsed": 0.0}
+        self.active_step_id = None
+        self.step_start_time = None
+        self._timer_id = None
+
+        # 顶部微型摘要行
+        summary_row = tk.Frame(self, bg=bg_col)
+        summary_row.pack(fill=tk.X, padx=4, pady=(2, 4))
+
+        self.summary_var = tk.StringVar(value="流程待启动")
+        tk.Label(
+            summary_row,
+            textvariable=self.summary_var,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=bg_col,
+            fg=self.theme.get("primary", "#1e40af"),
+        ).pack(side=tk.LEFT)
+
+        self.timer_var = tk.StringVar(value="")
+        tk.Label(
+            summary_row,
+            textvariable=self.timer_var,
+            font=("Consolas", 9),
+            bg=bg_col,
+            fg=self.theme.get("muted", "#64748b"),
+        ).pack(side=tk.RIGHT)
+
+        # 进度胶囊画布 (支持水平滚动)
+        self.canvas = tk.Canvas(
+            self,
+            height=46,
+            bg=self.theme.get("panel_soft", "#f8fafc"),
+            highlightthickness=1,
+            highlightbackground=self.theme.get("border", "#e2e8f0"),
+            bd=0,
+        )
+        self.canvas.pack(fill=tk.X, expand=True, padx=4, pady=(0, 4))
+        self.canvas.bind("<Configure>", lambda _e: self._render())
+
+    def set_steps(self, step_list):
+        """初始化要执行的步骤列表。"""
+        self.steps = []
+        for s in step_list:
+            sid = str(s.get("id", "")).strip() if isinstance(s, dict) else str(s).strip()
+            sname = str(s.get("name", "")).strip() if isinstance(s, dict) else ""
+            if sid:
+                self.steps.append({
+                    "id": sid,
+                    "name": sname,
+                    "status": "pending",
+                    "elapsed": 0.0,
+                })
+        self.active_step_id = None
+        self.step_start_time = None
+        self._update_summary()
+        self._render()
+
+    def set_running(self, step_id):
+        """将某一步置为正在执行态。"""
+        step_id = str(step_id).strip()
+        matched = False
+        for s in self.steps:
+            if s["id"] == step_id:
+                s["status"] = "running"
+                matched = True
+                self.active_step_id = step_id
+                self.step_start_time = time.time()
+            elif s["status"] == "running":
+                s["status"] = "success"
+        if not matched and step_id:
+            self.steps.append({
+                "id": step_id,
+                "name": "",
+                "status": "running",
+                "elapsed": 0.0,
+            })
+            self.active_step_id = step_id
+            self.step_start_time = time.time()
+
+        self._start_tick()
+        self._update_summary()
+        self._render()
+
+    def set_step_finished(self, step_id, status="success", elapsed=0.0):
+        """将某一步标记为完成态。"""
+        step_id = str(step_id).strip()
+        for s in self.steps:
+            if s["id"] == step_id:
+                s["status"] = status
+                s["elapsed"] = elapsed or (time.time() - self.step_start_time if self.step_start_time else 0.0)
+                break
+        if self.active_step_id == step_id:
+            self.active_step_id = None
+            self.step_start_time = None
+        self._update_summary()
+        self._render()
+
+    def finish_all(self, return_code=0):
+        """流程结束，收尾所有步骤。"""
+        self._stop_tick()
+        for s in self.steps:
+            if s["status"] == "running":
+                s["status"] = "success" if return_code == 0 else "failed"
+        self.active_step_id = None
+        self.step_start_time = None
+        self._update_summary()
+        self._render()
+
+    def sync_with_report(self, report):
+        """根据最新运行报告校准所有步骤状态与耗时。"""
+        if not isinstance(report, dict):
+            return
+        results = report.get("stepResults", [])
+        if not results:
+            return
+        res_map = {}
+        for r in results:
+            if isinstance(r, dict):
+                sid = str(r.get("stepId") or r.get("id") or "").strip()
+                if sid:
+                    res_map[sid] = r
+
+        for s in self.steps:
+            sid = s["id"]
+            if sid in res_map:
+                r = res_map[sid]
+                st = str(r.get("status", "")).strip().lower()
+                s["status"] = "success" if st in ("success", "passed") else ("failed" if st in ("failed", "error") else ("skipped" if st in ("skipped", "timeout") else st))
+                s["elapsed"] = float(r.get("elapsedSeconds", 0.0) or 0.0)
+                if not s["name"] and r.get("stepName"):
+                    s["name"] = str(r["stepName"])
+        self._update_summary()
+        self._render()
+
+    def _start_tick(self):
+        self._stop_tick()
+        self._tick()
+
+    def _stop_tick(self):
+        if self._timer_id:
+            try:
+                self.after_cancel(self._timer_id)
+            except Exception:
+                pass
+            self._timer_id = None
+
+    def _tick(self):
+        if self.active_step_id and self.step_start_time:
+            elapsed = time.time() - self.step_start_time
+            self.timer_var.set(f"当前步耗时: {elapsed:.1f}s")
+            self._timer_id = self.after(500, self._tick)
+        else:
+            self.timer_var.set("")
+
+    def _update_summary(self):
+        if not self.steps:
+            self.summary_var.set("暂无执行流程步骤")
+            return
+        total = len(self.steps)
+        done = sum(1 for s in self.steps if s["status"] in ("success", "failed", "skipped"))
+        running = sum(1 for s in self.steps if s["status"] == "running")
+        pct = int((done / total) * 100) if total > 0 else 0
+        if running:
+            self.summary_var.set(f"执行中: {done}/{total} 步 ({pct}%) · 正在执行第 {done + 1} 步")
+        elif done > 0 and total > 0:
+            failed = sum(1 for s in self.steps if s["status"] == "failed")
+            if done == total:
+                if failed:
+                    self.summary_var.set(f"流程执行完成: {total} 步中 {failed} 步失败")
+                else:
+                    self.summary_var.set(f"流程执行完成: 全部 {total} 步成功 (100%)")
+            else:
+                if failed:
+                    self.summary_var.set(f"流程中断: 已执行 {done}/{total} 步，其中 {failed} 步失败")
+                else:
+                    self.summary_var.set(f"流程提前结束: 已完成 {done}/{total} 步")
+        else:
+            self.summary_var.set(f"就绪待执行: 共 {total} 步")
+
+    def _render(self):
+        self.canvas.delete("all")
+        if not self.steps:
+            self.canvas.create_text(
+                12, 23,
+                anchor="w",
+                text="点击 [启动自动化] 或 [仅执行所选步骤] 开始监控执行流水线",
+                fill=self.theme.get("muted", "#94a3b8"),
+                font=("Microsoft YaHei UI", 9),
+            )
+            return
+
+        x = 10
+        y = 8
+        h = 30
+        active_x = 0
+
+        for idx, s in enumerate(self.steps):
+            status = s["status"]
+            sid = s["id"]
+            name = s.get("name", "")
+            elapsed = s.get("elapsed", 0.0)
+
+            if status == "running":
+                bg = "#dbeafe"
+                fg = "#1e40af"
+                border = "#3b82f6"
+                dot = "🔵 "
+                time_str = f" ({time.time() - self.step_start_time:.0f}s)" if self.step_start_time else ""
+            elif status == "success":
+                bg = "#dcfce7"
+                fg = "#15803d"
+                border = "#86efac"
+                dot = "🟢 "
+                time_str = f" ({elapsed:.1f}s)" if elapsed else ""
+            elif status == "failed":
+                bg = "#fee2e2"
+                fg = "#b91c1c"
+                border = "#fca5a5"
+                dot = "🔴 "
+                time_str = " (失败)"
+            elif status == "skipped":
+                bg = "#fef3c7"
+                fg = "#b45309"
+                border = "#fde68a"
+                dot = "🟡 "
+                time_str = " (跳过)"
+            else:
+                bg = "#ffffff"
+                fg = "#64748b"
+                border = "#cbd5e1"
+                dot = "⚪ "
+                time_str = ""
+
+            label_text = f"{dot}{idx + 1}. {name or sid}{time_str}"
+            text_width = len(label_text) * 7 + 20
+            w = max(70, min(240, text_width))
+
+            r = 6
+            x1, y1, x2, y2 = x, y, x + w, y + h
+            pts = [
+                x1 + r, y1, x2 - r, y1, x2, y1,
+                x2, y1 + r, x2, y2 - r, x2, y2,
+                x2 - r, y2, x1 + r, y2, x1, y2,
+                x1, y2 - r, x1, y1 + r, x1, y1,
+            ]
+            self.canvas.create_polygon(pts, smooth=True, fill=bg, outline=border, width=1.2)
+            self.canvas.create_text(
+                x + w / 2, y + h / 2,
+                text=label_text,
+                fill=fg,
+                font=("Microsoft YaHei UI", 8, "bold" if status == "running" else "normal"),
+            )
+
+            if status == "running":
+                active_x = x
+
+            if idx < len(self.steps) - 1:
+                arrow_x = x + w + 4
+                self.canvas.create_line(
+                    arrow_x, y + h / 2,
+                    arrow_x + 12, y + h / 2,
+                    fill="#cbd5e1",
+                    arrow=tk.LAST,
+                    arrowshape=(6, 8, 4),
+                    width=1.5,
+                )
+                x = arrow_x + 18
+            else:
+                x = x + w + 10
+
+        self.canvas.configure(scrollregion=(0, 0, max(x, self.canvas.winfo_width()), h + 16))
+        if active_x > 0 and self.canvas.winfo_width() > 0:
+            total_w = max(x, self.canvas.winfo_width())
+            fraction = max(0.0, min(1.0, (active_x - self.canvas.winfo_width() / 3) / total_w))
+            self.canvas.xview_moveto(fraction)
+
+
 class LauncherApp:
     def __init__(self, root):
         self.root = root
@@ -2300,6 +2586,8 @@ class LauncherApp:
         # 切换过滤条件时要能重新筛选全量行，而不只是当前可见的那部分。
         self._log_all_lines = []
         self._log_filter = wt_log_query.LogFilter()
+        self.log_quick_mode_var = tk.StringVar(value="all")
+        self.step_timeline = None
         self.skip_setup_var = tk.BooleanVar(value=False)
         self.pre_raise_var = tk.BooleanVar(value=True)
         self.show_monitor_var = tk.BooleanVar(value=True)
@@ -7010,6 +7298,10 @@ class LauncherApp:
             bg=self.theme["card"],
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+        # 步骤时间线看板
+        self.step_timeline = StepTimelineBar(parent, theme=self.theme)
+        self.step_timeline.pack(fill=tk.X, pady=(6, 0))
+
         action_row = tk.Frame(parent, bg=self.theme["card"])
         action_row.pack(fill=tk.X, pady=(10, 0))
         self._create_secondary_button(action_row, "刷新运行报告", self._refresh_run_report_view).pack(side=tk.LEFT)
@@ -7223,17 +7515,50 @@ class LauncherApp:
 
     # ── 运行日志页：过滤条与渲染 ─────────────────────────────────────────────
     def _build_log_filter_bar(self, parent):
-        """构建日志过滤条（级别 / 关键字 / 步骤）。
+        """构建日志过滤条（快捷视图 / 级别 / 关键字 / 步骤）。
 
         动机：一次运行上百步、近百行日志，若只能看尾部且无法按级别或步骤筛选，
         定位「第一个出问题的步骤」就只能靠肉眼滚屏；而「运行报告」页虽然列出每步
         结果，却与日志视图互不相通。过滤条把两者接上。
         """
-        row = tk.Frame(parent, bg=self.theme["card"])
-        row.pack(fill=tk.X, pady=(0, 8))
-
         label_font = ("Microsoft YaHei UI", 9)
         entry_font = ("Consolas", 10)
+
+        # 顶层快捷降噪模式栏
+        if not hasattr(self, "log_quick_mode_var"):
+            self.log_quick_mode_var = tk.StringVar(value="all")
+
+        quick_row = tk.Frame(parent, bg=self.theme["card"])
+        quick_row.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            quick_row, text="降噪视图：", bg=self.theme["card"], fg=self.theme["muted"], font=label_font
+        ).pack(side=tk.LEFT)
+
+        self._quick_mode_buttons = {}
+        quick_modes = [
+            ("all", "全部日志 (All)"),
+            ("milestones", "⭐ 关键里程碑 (Milestones)"),
+            ("errors", "❌ 仅看异常与报错 (Errors)"),
+        ]
+
+        for m_key, m_label in quick_modes:
+            btn = tk.Button(
+                quick_row,
+                text=m_label,
+                font=("Microsoft YaHei UI", 8),
+                relief=tk.FLAT,
+                bd=0,
+                padx=9,
+                pady=2,
+                cursor="hand2",
+                command=lambda k=m_key: self._set_log_quick_mode(k),
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            self._quick_mode_buttons[m_key] = btn
+
+        row = tk.Frame(parent, bg=self.theme["card"])
+        row.pack(fill=tk.X, pady=(0, 8))
 
         def _label(text):
             tk.Label(
@@ -7291,6 +7616,48 @@ class LauncherApp:
             fg=self.theme["muted"],
             font=label_font,
         ).pack(side=tk.RIGHT)
+        self._update_quick_mode_ui()
+
+    def _set_log_quick_mode(self, mode):
+        if hasattr(self, "log_quick_mode_var"):
+            self.log_quick_mode_var.set(mode)
+        if mode == "all":
+            self.log_level_var.set(wt_log_query.LEVEL_CHOICES[0][0])
+            self.log_keyword_var.set("")
+            self.log_step_var.set("")
+        elif mode == "milestones":
+            self.log_level_var.set(wt_log_query.LEVEL_CHOICES[0][0])
+            self.log_keyword_var.set("里程碑|步骤|落盘|完成|失败|成功|start|finish")
+            self.log_step_var.set("")
+        elif mode == "errors":
+            self.log_level_var.set("ERROR 及以上")
+            self.log_keyword_var.set("")
+            self.log_step_var.set("")
+        self._update_quick_mode_ui()
+        self._apply_log_filter()
+
+    def _update_quick_mode_ui(self):
+        buttons = getattr(self, "_quick_mode_buttons", None)
+        if not buttons:
+            return
+        curr = self.log_quick_mode_var.get() if hasattr(self, "log_quick_mode_var") else "all"
+        active_colors = {
+            "all": ("#2563eb", "#ffffff"),
+            "milestones": ("#0284c7", "#ffffff"),
+            "errors": ("#dc2626", "#ffffff"),
+        }
+        theme = getattr(self, "theme", {}) or {}
+        inactive_bg = theme.get("panel_soft", "#f1f5f9")
+        inactive_fg = theme.get("text", "#334155")
+        for k, btn in buttons.items():
+            if k == curr:
+                bg, fg = active_colors.get(k, ("#2563eb", "#ffffff"))
+            else:
+                bg, fg = inactive_bg, inactive_fg
+            try:
+                btn.configure(bg=bg, fg=fg, activebackground=bg, activeforeground=fg)
+            except Exception:
+                pass
 
     def _build_log_filter(self):
         """从界面控件读出当前过滤条件。"""
@@ -7311,9 +7678,12 @@ class LauncherApp:
         self._render_log_view()
 
     def _clear_log_filter(self):
+        if hasattr(self, "log_quick_mode_var"):
+            self.log_quick_mode_var.set("all")
         self.log_level_var.set(wt_log_query.LEVEL_CHOICES[0][0])
         self.log_keyword_var.set("")
         self.log_step_var.set("")
+        self._update_quick_mode_ui()
         self._log_filter = wt_log_query.LogFilter()
         self._render_log_view()
 
@@ -8003,7 +8373,11 @@ class LauncherApp:
 
     def _set_running_state(self, running):
         self.start_button.config(state=tk.DISABLED if running else tk.NORMAL)
-        self.stop_button.config(state=tk.NORMAL if running else tk.DISABLED)
+        if hasattr(self, "stop_button"):
+            self.stop_button.config(
+                text="⏹ 停止当前",
+                state=tk.NORMAL if running else tk.DISABLED,
+            )
 
     def _mask_secret(self, value):
         if not value:
@@ -8648,6 +9022,41 @@ class LauncherApp:
         self._set_running_state(True)
         self._refresh_config_summary()
 
+        # 解析本次执行将要涉及的步骤，初始化时间线进度看板
+        steps_for_timeline = []
+        target_step_ids = None
+        if extra_args and "--steps" in extra_args:
+            try:
+                idx = extra_args.index("--steps")
+                if idx + 1 < len(extra_args):
+                    target_step_ids = [s.strip() for s in extra_args[idx + 1].split(",") if s.strip()]
+            except Exception:
+                target_step_ids = None
+
+        step_name_map = {}
+        for s in (getattr(self, "flow_steps", []) or []):
+            if isinstance(s, dict) and "id" in s:
+                step_name_map[str(s["id"]).strip()] = str(s.get("name", s["id"])).strip()
+
+        if target_step_ids:
+            for sid in target_step_ids:
+                steps_for_timeline.append({
+                    "id": sid,
+                    "name": step_name_map.get(sid, sid),
+                    "status": "pending",
+                })
+        elif getattr(self, "flow_steps", []):
+            for s in self.flow_steps:
+                sid = str(s["id"]).strip()
+                steps_for_timeline.append({
+                    "id": sid,
+                    "name": step_name_map.get(sid, sid),
+                    "status": "pending",
+                })
+
+        if getattr(self, "step_timeline", None):
+            self.step_timeline.set_steps(steps_for_timeline)
+
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         process_env = self._apply_model_env(os.environ.copy())
         runtime_config = load_flow_runtime_config(flow_definition_path)
@@ -8847,6 +9256,20 @@ class LauncherApp:
         else:
             self.status_var.set("状态：流程运行中")
 
+        if getattr(self, "step_timeline", None):
+            step_id, _ = wt_logging.extract_step_fields(line)
+            if not step_id:
+                m = re.search(r"\[(step[_\-][a-zA-Z0-9_\-]+)\]", line, re.I)
+                if m:
+                    step_id = m.group(1)
+            if step_id:
+                if any(k in line for k in ("完成", "success", "成功", "finished")):
+                    self.step_timeline.set_step_finished(step_id, status="success")
+                elif any(k in line for k in ("失败", "failed", "error", "异常")):
+                    self.step_timeline.set_step_finished(step_id, status="failed")
+                else:
+                    self.step_timeline.set_running(step_id)
+
     def _handle_process_exit(self, return_code):
         self._set_running_state(False)
         self.process_var.set(f"流程进程：已结束（退出码 {return_code}）")
@@ -8859,7 +9282,11 @@ class LauncherApp:
             self.status_var.set("状态：流程失败")
             self._append_log("========== 自动化流程执行失败 ==========", tag="error")
             self.root.bell()
+        if getattr(self, "step_timeline", None):
+            self.step_timeline.finish_all(return_code=return_code)
         self._refresh_run_report_view()
+        if getattr(self, "step_timeline", None) and getattr(self, "current_run_report", None):
+            self.step_timeline.sync_with_report(self.current_run_report)
         self.process = None
 
     def stop_automation(self):
@@ -8881,6 +9308,8 @@ class LauncherApp:
         )
         if not should_stop:
             return
+        if hasattr(self, "stop_button"):
+            self.stop_button.config(text="⏳ 正在停止...", state=tk.DISABLED)
         self._append_log("正在停止自动化流程...", tag="warning")
         self.status_var.set("状态：正在停止流程")
         self.current_step_var.set("当前步骤：等待进程退出")
