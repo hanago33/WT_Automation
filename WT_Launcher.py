@@ -1,6 +1,7 @@
 # encoding: utf-8
 
 import json
+import glob
 import importlib.util
 import os
 import queue
@@ -2306,6 +2307,8 @@ class LauncherApp:
         self.flow_step_display_map = {}
         self.step_check_vars = {}
         self.step_selection_count_var = tk.StringVar(value="已选 0/0 步")
+        self.step_filter_var = tk.StringVar(value="")
+        self.step_only_selected_var = tk.BooleanVar(value=False)
         self.flow_packages = []
         self.selected_flow_package_var = tk.StringVar(value="")
         self.step_scroll_hint_var = tk.StringVar(value="步骤列表位置：顶部")
@@ -2897,6 +2900,15 @@ class LauncherApp:
             )
             badge_label.pack(side=tk.RIGHT)
 
+            data_badge_label = tk.Label(
+                title_row,
+                text="",
+                font=("Microsoft YaHei UI", 8, "bold"),
+                bg=theme["card"],
+                fg="#059669",
+            )
+            data_badge_label.pack(side=tk.RIGHT, padx=(0, 6))
+
             # 标题与内容区之间的细微分割线
             title_sep = tk.Frame(card, height=1, bg=theme["border"])
             title_sep.pack(fill=tk.X, pady=(8, 0))
@@ -3004,6 +3016,7 @@ class LauncherApp:
                 "path_label": path_label,
                 "dir_label": dir_label,
                 "badge_label": badge_label,
+                "data_badge_label": data_badge_label,
             }
             self._simple_cards.append((sec, card))
 
@@ -3052,12 +3065,28 @@ class LauncherApp:
             base = base[:39] + "..."
         return base, os.path.dirname(path)
 
+    def _check_flow_data_readiness(self, path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            rt = data.get("runtimeConfig", {}) if isinstance(data, dict) else {}
+            src = str(rt.get("sourceFilePath", "")).strip()
+            if src:
+                if os.path.exists(src) or any(glob.glob(src)):
+                    return True, "数据源就绪"
+                else:
+                    return False, "数据源待配置"
+            return True, "流程就绪"
+        except Exception:
+            return True, "就绪"
+
     def _simple_update_badge(self, section_key):
         w = self._simple_section_widgets.get(section_key)
         if not w:
             return
         path = self.simple_section_vars.get(section_key, {}).get("path", "")
         badge = w.get("badge_label")
+        data_badge = w.get("data_badge_label")
         if not badge:
             return
         if path and os.path.isfile(path):
@@ -3065,16 +3094,26 @@ class LauncherApp:
                 badge.set_badge("已配置", "success")
             else:
                 badge.config(text="已配置", fg="#059669")
+            if data_badge:
+                data_ready, data_msg = self._check_flow_data_readiness(path)
+                data_badge.config(
+                    text=f"● {data_msg}",
+                    fg="#059669" if data_ready else "#d97706",
+                )
         elif path:
             if hasattr(badge, "set_badge"):
                 badge.set_badge("文件缺失", "danger")
             else:
                 badge.config(text="文件缺失", fg=self.theme["danger"])
+            if data_badge:
+                data_badge.config(text="", fg="#9ca3af")
         else:
             if hasattr(badge, "set_badge"):
                 badge.set_badge("未配置", "muted")
             else:
                 badge.config(text="未配置", fg="#9ca3af")
+            if data_badge:
+                data_badge.config(text="", fg="#9ca3af")
 
     def _simple_refresh_summary(self):
         if not hasattr(self, "simple_summary_var"):
@@ -6330,6 +6369,19 @@ class LauncherApp:
             padx=8,
             pady=4,
         ).pack(side=tk.LEFT, padx=(4, 0))
+        tk.Button(
+            step_toolbar,
+            text="📐 范围选择",
+            command=self.open_step_range_selector_dialog,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=8,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(4, 0))
 
         tk.Label(
             step_toolbar,
@@ -6338,6 +6390,50 @@ class LauncherApp:
             fg=self.theme.get("primary_text", "#1e40af"),
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        # 步骤过滤与仅看已选工具条
+        step_filter_bar = tk.Frame(test_frame, bg=self.theme["card"])
+        step_filter_bar.pack(fill=tk.X, pady=(6, 0))
+        tk.Label(
+            step_filter_bar,
+            text="🔍 查找:",
+            bg=self.theme["card"],
+            fg=self.theme.get("muted", "#6b7280"),
+            font=("Microsoft YaHei UI", 8),
+        ).pack(side=tk.LEFT)
+        step_filter_entry = tk.Entry(
+            step_filter_bar,
+            textvariable=self.step_filter_var,
+            font=("Microsoft YaHei UI", 8),
+            bg="#ffffff",
+            relief=tk.SOLID,
+            bd=1,
+            width=16,
+        )
+        step_filter_entry.pack(side=tk.LEFT, padx=(4, 4))
+        self.step_filter_var.trace_add("write", lambda *_: self._render_flow_step_list())
+        tk.Button(
+            step_filter_bar,
+            text="✕",
+            command=lambda: self.step_filter_var.set(""),
+            bg=self.theme["secondary"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 8),
+            padx=4,
+            pady=1,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Checkbutton(
+            step_filter_bar,
+            text="仅看已选",
+            variable=self.step_only_selected_var,
+            command=self._render_flow_step_list,
+            bg=self.theme["card"],
+            activebackground=self.theme["card"],
+            font=("Microsoft YaHei UI", 8),
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
 
         steps_box = tk.Frame(test_frame, bg=self.theme["card"])
         steps_box.pack(fill=tk.X, pady=(8, 0))
@@ -7060,6 +7156,54 @@ class LauncherApp:
         report_tree_h_scrollbar.pack(fill=tk.X, pady=(6, 0))
         self.run_report_tree.config(yscrollcommand=report_tree_scrollbar.set, xscrollcommand=report_tree_h_scrollbar.set)
 
+        # 步骤详情快捷操作工具条
+        report_action_bar = tk.Frame(report_detail_frame, bg=self.theme["card"])
+        report_action_bar.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Button(
+            report_action_bar,
+            text="▶ 仅重跑此步",
+            command=self._on_click_rerun_report_step,
+            bg=self.theme["primary"],
+            fg="#ffffff",
+            activebackground=self.theme.get("primary_active", "#1d4ed8"),
+            activeforeground="#ffffff",
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        tk.Button(
+            report_action_bar,
+            text="✏️ 在编辑器中打开",
+            command=self._on_click_open_report_step_in_editor,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        tk.Button(
+            report_action_bar,
+            text="📂 现场截图/目录",
+            command=self._on_click_open_report_step_screenshot,
+            bg=self.theme["secondary"],
+            activebackground=self.theme["secondary_active"],
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9),
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT)
+
         self.run_report_detail_text = tk.Text(
             report_detail_frame,
             wrap=tk.WORD,
@@ -7376,6 +7520,111 @@ class LauncherApp:
             self._on_run_report_step_select()
         else:
             self._set_run_report_detail_text("当前报告没有记录任何步骤结果。")
+        if hasattr(self, "_render_flow_step_list"):
+            try:
+                self._render_flow_step_list()
+            except Exception:
+                pass
+
+    def _format_report_step_diagnostic(self, item):
+        """生成易读的结构化诊断报告与启发式排查建议。"""
+        if not isinstance(item, dict):
+            return "当前步骤详情读取失败或格式不正确。"
+
+        step_id = item.get("stepId", "") or "-"
+        step_name = item.get("stepName", "") or "-"
+        status = str(item.get("status", "")).strip().lower()
+        elapsed = item.get("elapsedSeconds", 0.0)
+        action_type = item.get("actionType", "") or "-"
+        strategy = item.get("strategy", "") or "-"
+        error = str(item.get("error", "") or "").strip()
+        extra = item.get("extra", {})
+
+        status_text_map = {
+            "success": "🟢 执行成功 (SUCCESS)",
+            "passed": "🟢 执行成功 (PASSED)",
+            "failed": "🔴 执行失败 (FAILED)",
+            "error": "🔴 发生异常 (ERROR)",
+            "skipped": "🟡 已跳过 (SKIPPED)",
+            "timeout": "🟡 执行超时 (TIMEOUT)",
+        }
+        status_disp = status_text_map.get(status, f"⚪ {status.upper() if status else '未知'}")
+
+        lines = [
+            "━" * 58,
+            f"【步骤详情诊断报告】 {step_id} - {step_name}",
+            "━" * 58,
+            f"● 执行结果: {status_disp}",
+            f"● 执行耗时: {float(elapsed or 0.0):.3f} 秒",
+            f"● 动作类型: {action_type}",
+            f"● 调度策略: {strategy}",
+        ]
+
+        if error:
+            lines.append("\n" + "─" * 20 + " ❌ 错误分析 " + "─" * 20)
+            lines.append(f"错误信息: {error}")
+            advice = []
+            err_lower = error.lower()
+            if "timeout" in err_lower or "超时" in error:
+                advice.append("界面响应较慢或等待目标元素出现超时，可尝试增加超时时间或前置等待延迟。")
+            if "not found" in err_lower or "找不到" in error or "未找到" in error or "none" in err_lower:
+                advice.append("未能检测到目标窗口或控件，请检查控件特征名称、图像模板相似度或窗口标题是否匹配。")
+            if "file" in err_lower or "path" in err_lower or "文件" in error or "路径" in error:
+                advice.append("可能涉及数据文件或脚本路径不存在，请检查数据配置与输入文件路径。")
+            if "permission" in err_lower or "拒绝" in error:
+                advice.append("文件或进程访问受限，请确认是否有文件被占用或需要管理员权限。")
+            if not advice:
+                advice.append("建议检查此步骤的控件定位配置或在流程编辑器中单独重放调试。")
+
+            lines.append("\n💡 启发式排查建议:")
+            for adv in advice:
+                lines.append(f"  • {adv}")
+
+        lines.append("\n" + "─" * 20 + " 📦 完整执行数据 " + "─" * 20)
+        full_payload = {
+            "stepId": step_id,
+            "stepName": step_name,
+            "status": status,
+            "actionType": action_type,
+            "strategy": strategy,
+            "elapsedSeconds": elapsed,
+            "error": error,
+            "extra": extra,
+        }
+        lines.append(json.dumps(full_payload, ensure_ascii=False, indent=2))
+        return "\n".join(lines)
+
+    def _get_current_selected_report_step_item(self):
+        """获取运行报告表格中当前选中的步骤数据字典。"""
+        if not hasattr(self, "run_report_tree"):
+            return None
+        selected = self.run_report_tree.selection()
+        if not selected:
+            return None
+        return self._run_report_item_by_iid(selected[-1])
+
+    def _on_click_rerun_report_step(self):
+        """点击快捷条：仅重跑当前选中的步骤。"""
+        item = self._get_current_selected_report_step_item()
+        if not item:
+            messagebox.showinfo("提示", "请先在上方表格中选中要重跑的步骤。", parent=self.root)
+            return
+        step_id = str(item.get("stepId", "")).strip()
+        if not step_id:
+            messagebox.showwarning("警告", "所选步骤未包含有效 stepId，无法执行重跑。", parent=self.root)
+            return
+        self.start_single_step(step_id)
+
+    def _on_click_open_report_step_in_editor(self):
+        """点击快捷条：在流程编辑器中定位并打开当前步骤。"""
+        item = self._get_current_selected_report_step_item()
+        step_id = str(item.get("stepId", "")).strip() if item else ""
+        self.open_step_in_flow_editor(step_id=step_id)
+
+    def _on_click_open_report_step_screenshot(self):
+        """点击快捷条：打开当前步骤的现场截图或相关目录。"""
+        item = self._get_current_selected_report_step_item()
+        self.open_step_screenshot(step_item=item)
 
     def _on_run_report_step_select(self, _event=None):
         if not hasattr(self, "run_report_tree"):
@@ -7389,17 +7638,7 @@ class LauncherApp:
         except Exception:
             self._set_run_report_detail_text("当前步骤详情读取失败。")
             return
-        detail_payload = {
-            "stepId": item.get("stepId", ""),
-            "stepName": item.get("stepName", ""),
-            "status": item.get("status", ""),
-            "actionType": item.get("actionType", ""),
-            "strategy": item.get("strategy", ""),
-            "elapsedSeconds": item.get("elapsedSeconds", 0.0),
-            "error": item.get("error", ""),
-            "extra": item.get("extra", {}),
-        }
-        self._set_run_report_detail_text(json.dumps(detail_payload, ensure_ascii=False, indent=2))
+        self._set_run_report_detail_text(self._format_report_step_diagnostic(item))
 
     def _run_report_item_by_iid(self, iid):
         """按 Treeview iid 取回步骤结果条目（插入时 iid = 列表下标）。"""
@@ -8825,21 +9064,65 @@ class LauncherApp:
         self.step_check_vars = {}
         self.flow_step_display_map = {}
 
+        # 尝试从最新运行报告中读取步骤执行状态（成功/失败/跳过）
+        step_status_map = {}
+        try:
+            report = getattr(self, "current_run_report", None)
+            if not isinstance(report, dict):
+                report, _ = self._load_last_run_report()
+            if isinstance(report, dict):
+                for res in report.get("stepResults", []):
+                    if isinstance(res, dict):
+                        sid = str(res.get("stepId") or res.get("id") or "").strip()
+                        st = str(res.get("status", "")).strip().lower()
+                        if sid:
+                            step_status_map[sid] = st
+        except Exception:
+            step_status_map = {}
+
+        status_symbols = {
+            "success": "🟢 ",
+            "passed": "🟢 ",
+            "failed": "🔴 ",
+            "error": "🔴 ",
+            "skipped": "🟡 ",
+            "timeout": "🟡 ",
+        }
+
+        query = self.step_filter_var.get().strip().lower() if hasattr(self, "step_filter_var") else ""
+        only_selected = bool(self.step_only_selected_var.get()) if hasattr(self, "step_only_selected_var") else False
+
+        rendered_count = 0
         for item in self.flow_steps:
             step_id = item["id"]
             name = item.get("name", "")
-            if item.get("source") == "package":
-                package_name = item.get("packageName") or item.get("packageId") or "未命名流程包"
-                display = f"[流程包] {package_name} / {step_id}" + (f" | {name}" if name else "")
-            else:
-                display = f"{step_id} | {name}" if name else step_id
-            self.flow_step_display_map[display] = step_id
             var = preserved.get(step_id) if isinstance(preserved.get(step_id), tk.BooleanVar) else tk.BooleanVar(value=False)
             try:
                 var.trace_add("write", lambda *_args: self._update_step_selection_count())
             except Exception:
                 pass
             self.step_check_vars[step_id] = var
+
+            if item.get("source") == "package":
+                package_name = item.get("packageName") or item.get("packageId") or "未命名流程包"
+                base_display = f"[流程包] {package_name} / {step_id}" + (f" | {name}" if name else "")
+            else:
+                package_name = ""
+                base_display = f"{step_id} | {name}" if name else step_id
+
+            # 筛选过滤判断
+            if query and (query not in step_id.lower() and query not in name.lower() and query not in package_name.lower()):
+                continue
+            if only_selected and not var.get():
+                continue
+
+            status_key = step_status_map.get(step_id, "")
+            dot = status_symbols.get(status_key, "")
+            display = f"{dot}{base_display}"
+
+            self.flow_step_display_map[display] = step_id
+            self.flow_step_display_map[base_display] = step_id
+
             tk.Checkbutton(
                 self.steps_inner,
                 text=display,
@@ -8851,6 +9134,17 @@ class LauncherApp:
                 activebackground="#fbfdff",
                 wraplength=340,
             ).pack(fill=tk.X, anchor="w")
+            rendered_count += 1
+
+        if rendered_count == 0 and len(self.flow_steps) > 0:
+            tk.Label(
+                self.steps_inner,
+                text="无匹配步骤（请检查搜索或仅看已选）",
+                bg="#fbfdff",
+                fg="#9ca3af",
+                font=("Microsoft YaHei UI", 9),
+            ).pack(pady=16)
+
         self._update_step_selection_count()
 
     def _render_flow_package_list(self):
@@ -9769,9 +10063,149 @@ class LauncherApp:
     def _update_step_selection_count(self):
         """动态更新步骤列表工具栏上的已选计数徽标。"""
         total = len(self.step_check_vars)
-        selected = sum(1 for v in self.step_check_vars.values() if isinstance(v, tk.BooleanVar) and bool(v.get()))
+        selected = sum(1 for v in self.step_check_vars.values() if hasattr(v, "get") and bool(v.get()))
+        query = (self.step_filter_var.get().strip() if hasattr(self, "step_filter_var") else "")
+        only_selected = (bool(self.step_only_selected_var.get()) if hasattr(self, "step_only_selected_var") else False)
         if hasattr(self, "step_selection_count_var"):
-            self.step_selection_count_var.set(f"已选 {selected}/{total} 步")
+            if query or only_selected:
+                self.step_selection_count_var.set(f"已选 {selected}/{total} 步 (过滤中)")
+            else:
+                self.step_selection_count_var.set(f"已选 {selected}/{total} 步")
+
+    def select_step_range(self, start_index, end_index, mode="replace"):
+        """按步骤序号闭区间进行批量范围选择。"""
+        if not self.flow_steps:
+            return 0
+        total = len(self.flow_steps)
+        start_index = max(0, min(total - 1, int(start_index)))
+        end_index = max(0, min(total - 1, int(end_index)))
+        low = min(start_index, end_index)
+        high = max(start_index, end_index)
+        target_ids = {str(self.flow_steps[i].get("id", "")).strip() for i in range(low, high + 1)}
+        if mode == "replace":
+            for sid, var in self.step_check_vars.items():
+                var.set(sid in target_ids)
+        else:
+            for sid in target_ids:
+                if sid in self.step_check_vars:
+                    self.step_check_vars[sid].set(True)
+        self._update_step_selection_count()
+        return len(target_ids)
+
+    def open_step_range_selector_dialog(self):
+        """弹出范围选择器对话框，支持闭区间起止选择与模式切换。"""
+        if not self.flow_steps:
+            messagebox.showinfo("提示", "当前链路暂无可用步骤。", parent=self.root)
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("步骤范围选择器")
+        dialog.geometry("480x280")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        try:
+            dialog.update_idletasks()
+            w = dialog.winfo_width()
+            h = dialog.winfo_height()
+            x = self.root.winfo_x() + max(0, (self.root.winfo_width() - w) // 2)
+            y = self.root.winfo_y() + max(0, (self.root.winfo_height() - h) // 2)
+            dialog.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+        content = tk.Frame(dialog, padx=16, pady=16)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            content,
+            text="选择起始与结束步骤（闭区间），将批量设置勾选状态：",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            fg=self.theme.get("primary", "#1e40af"),
+        ).pack(anchor="w", pady=(0, 12))
+
+        step_options = []
+        for idx, s in enumerate(self.flow_steps):
+            sid = s.get("id", "")
+            sname = s.get("name", "")
+            step_options.append(f"{idx + 1}. {sid}" + (f" | {sname}" if sname else ""))
+
+        # 起始步骤
+        row_start = tk.Frame(content)
+        row_start.pack(fill=tk.X, pady=4)
+        tk.Label(row_start, text="起始步骤:", width=10, anchor="w", font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
+        start_combo = ttk.Combobox(row_start, values=step_options, state="readonly", width=38)
+        start_combo.current(0)
+        start_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 结束步骤
+        row_end = tk.Frame(content)
+        row_end.pack(fill=tk.X, pady=4)
+        tk.Label(row_end, text="结束步骤:", width=10, anchor="w", font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
+        end_combo = ttk.Combobox(row_end, values=step_options, state="readonly", width=38)
+        end_combo.current(len(step_options) - 1)
+        end_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 模式选择
+        row_mode = tk.Frame(content)
+        row_mode.pack(fill=tk.X, pady=8)
+        tk.Label(row_mode, text="勾选模式:", width=10, anchor="w", font=("Microsoft YaHei UI", 9)).pack(side=tk.LEFT)
+        mode_var = tk.StringVar(value="replace")
+        tk.Radiobutton(
+            row_mode,
+            text="替换当前勾选",
+            variable=mode_var,
+            value="replace",
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Radiobutton(
+            row_mode,
+            text="追加到当前勾选",
+            variable=mode_var,
+            value="append",
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side=tk.LEFT)
+
+        # 底部按钮
+        btn_box = tk.Frame(content)
+        btn_box.pack(fill=tk.X, pady=(16, 0))
+
+        def _on_confirm():
+            s_idx = start_combo.current()
+            e_idx = end_combo.current()
+            if s_idx < 0 or e_idx < 0:
+                messagebox.showwarning("提示", "请选择有效的起始与结束步骤。", parent=dialog)
+                return
+            count = self.select_step_range(s_idx, e_idx, mode=mode_var.get())
+            low = min(s_idx, e_idx) + 1
+            high = max(s_idx, e_idx) + 1
+            self._append_log(f"已按范围勾选第 {low} 至 {high} 步（共 {count} 步）。", tag="system")
+            dialog.destroy()
+
+        tk.Button(
+            btn_box,
+            text="取消",
+            command=dialog.destroy,
+            font=("Microsoft YaHei UI", 9),
+            padx=12,
+            pady=4,
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+
+        tk.Button(
+            btn_box,
+            text="✔ 确定勾选",
+            command=_on_confirm,
+            bg=self.theme["primary"],
+            fg="#ffffff",
+            activebackground=self.theme.get("primary_active", "#1d4ed8"),
+            activeforeground="#ffffff",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief=tk.FLAT,
+            padx=14,
+            pady=4,
+            cursor="hand2",
+        ).pack(side=tk.RIGHT)
 
     def _get_selected_step_ids(self):
         selected = []
@@ -10076,8 +10510,96 @@ class LauncherApp:
             messagebox.showerror("打开失败", f"实时检测器初始化失败：\n{exc}", parent=self.root)
             self._append_log(f"实时控件检测器初始化失败：{exc}", tag="error")
 
-    def open_flow_editor(self):
+    def open_step_in_flow_editor(self, step_id=None):
+        """在流程链路编辑器中打开并聚焦特定步骤。"""
+        if not step_id:
+            item = self._get_current_selected_report_step_item()
+            if item:
+                step_id = item.get("stepId", "")
+        self.open_flow_editor(step_id=step_id)
+
+    def start_single_step(self, step_id):
+        """单独重新执行某个步骤。"""
+        step_id = str(step_id or "").strip()
+        if not step_id:
+            messagebox.showinfo("提示", "未指定要执行的步骤ID。", parent=self.root)
+            return
+        extra_args = ["--steps", step_id]
+        if hasattr(self, "skip_setup_var") and self.skip_setup_var.get():
+            extra_args.append("--skip-setup")
+        self._launch_automation(extra_args, banner=f"========== 重新执行单个步骤：{step_id} ==========")
+
+    def open_step_screenshot(self, step_item=None):
+        """打开步骤现场截图或相关截图目录。"""
+        if step_item is None:
+            step_item = self._get_current_selected_report_step_item()
+        if not step_item:
+            messagebox.showinfo("提示", "请先在列表中选中一个步骤结果。", parent=self.root)
+            return
+
+        candidates = []
+        if isinstance(step_item, dict):
+            for key in ("screenshotPath", "screenshot", "errorScreenshot", "image_path"):
+                p = step_item.get(key)
+                if p and isinstance(p, str):
+                    candidates.append(p)
+            extra = step_item.get("extra", {})
+            if isinstance(extra, dict):
+                for key in ("screenshotPath", "screenshot", "errorScreenshot"):
+                    p = extra.get(key)
+                    if p and isinstance(p, str):
+                        candidates.append(p)
+            step_id = str(step_item.get("stepId", "")).strip()
+            if step_id:
+                for s_dir in [
+                    os.path.join(BASE_DIR, "debug_screenshots"),
+                    os.path.join(BASE_DIR, "tools", "generic_flow", "debug_screenshots"),
+                    RUN_REPORT_DIR,
+                ]:
+                    if os.path.isdir(s_dir):
+                        matched = [
+                            os.path.join(s_dir, fn)
+                            for fn in os.listdir(s_dir)
+                            if step_id in fn and fn.lower().endswith((".png", ".jpg", ".jpeg"))
+                        ]
+                        if matched:
+                            matched.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                            candidates.extend(matched)
+
+        found_file = None
+        for c in candidates:
+            abs_c = os.path.join(BASE_DIR, c) if not os.path.isabs(c) else c
+            if os.path.isfile(abs_c):
+                found_file = abs_c
+                break
+
+        if found_file:
+            try:
+                os.startfile(found_file)
+                self._append_log(f"已打开现场截图：{os.path.basename(found_file)}", tag="system")
+            except Exception as exc:
+                messagebox.showerror("打开失败", f"无法打开截图文件：{found_file}\n{exc}", parent=self.root)
+        else:
+            for d in [
+                os.path.join(BASE_DIR, "debug_screenshots"),
+                os.path.join(BASE_DIR, "tools", "generic_flow", "debug_screenshots"),
+                RUN_REPORT_DIR,
+            ]:
+                if os.path.isdir(d):
+                    try:
+                        os.startfile(d)
+                        self._append_log(f"未找到该步骤单独截图文件，已打开截图/日志目录：{d}", tag="info")
+                        return
+                    except Exception:
+                        pass
+            messagebox.showinfo("提示", "未找到该步骤的现场截图记录。", parent=self.root)
+
+    def open_flow_editor(self, flow_file=None, step_id=None):
         if getattr(self, "_editor_process", None) is not None and self._editor_process.poll() is None:
+            if step_id:
+                self._append_log(f"流程链路编辑器已经在运行中。若需定位步骤 {step_id}，请先切换到编辑器或关闭后重试。", tag="warning")
+                messagebox.showinfo("提示", f"流程链路编辑器已经在运行中。\n若需重新定位步骤，请先关闭已打开的编辑器窗口。", parent=self.root)
+                return
             self._append_log("流程链路编辑器已经在运行中，请勿重复打开。", tag="warning")
             return
 
@@ -10099,8 +10621,15 @@ class LauncherApp:
         log_handle = None
         try:
             log_path, log_handle = self._open_launcher_subprocess_log("flow_editor")
+            cmd = [sys.executable, FLOW_EDITOR_SCRIPT, "--startup-ping", FLOW_EDITOR_STARTUP_SIGNAL]
+            target_flow = flow_file or self._get_flow_definition_path()
+            if target_flow and os.path.exists(target_flow):
+                cmd.append(target_flow)
+            if step_id:
+                cmd.extend(["--step-id", str(step_id).strip()])
+
             self._editor_process = subprocess.Popen(
-                [sys.executable, FLOW_EDITOR_SCRIPT, "--startup-ping", FLOW_EDITOR_STARTUP_SIGNAL],
+                cmd,
                 cwd=BASE_DIR,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
