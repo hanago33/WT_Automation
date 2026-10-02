@@ -12367,9 +12367,11 @@ class FlowEditorApp:
         try:
             if hasattr(self, "_live_detector_win") and self._live_detector_win:
                 try:
-                    if self._live_detector_win.winfo_exists():
-                        self._live_detector_win.lift()
-                        self._live_detector_win.focus_force()
+                    target_w = getattr(self._live_detector_win, "window", self._live_detector_win)
+                    if target_w and target_w.winfo_exists():
+                        target_w.deiconify()
+                        target_w.lift()
+                        target_w.focus_force()
                         return
                 except Exception:
                     self._live_detector_win = None
@@ -12381,8 +12383,10 @@ class FlowEditorApp:
                 start_in_hud=True,
             )
             try:
-                self._live_detector_win.lift()
-                self._live_detector_win.focus_force()
+                target_w = getattr(self._live_detector_win, "window", self._live_detector_win)
+                if target_w and target_w.winfo_exists():
+                    target_w.lift()
+                    target_w.focus_force()
             except Exception:
                 pass
             self.status_var.set("已打开实时控件探测器 (HUD 模式)")
