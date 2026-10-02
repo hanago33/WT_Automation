@@ -198,6 +198,42 @@ class TestLauncherPhase7UX(unittest.TestCase):
         app.open_step_in_flow_editor("step_09")
         app.open_flow_editor.assert_called_once_with(step_id="step_09")
 
+    def test_timeline_output_line_handling_precedence_and_regex(self):
+        """测试时间线在输出行中优先匹配失败，以及使用 regex 提取 step-id（验证 re 模块已正确导入）。"""
+        app = make_launcher_harness()
+        app.process_var = FakeVar("")
+        app.current_step_var = FakeVar("")
+        app.status_var = FakeVar("")
+        app._tag_for_line = MagicMock(return_value="info")
+        app.step_timeline = MagicMock()
+
+        # 行中同时包含成功和失败字眼（例如 "完成前检测到失败"），失败必须优先判定
+        app._handle_output_line("[step-calc] 步骤在完成前发生异常失败")
+        app.step_timeline.set_step_finished.assert_called_with("step-calc", status="failed")
+
+        # 正常成功行
+        app.step_timeline.reset_mock()
+        app._handle_output_line("[step_upload] 流程步骤执行完成")
+        app.step_timeline.set_step_finished.assert_called_with("step_upload", status="success")
+
+    def test_poll_output_queue_resilience_to_exceptions(self):
+        """测试即使某行日志处理抛出异常，输出队列轮询的 root.after 也必定被重新调度。"""
+        import queue
+        app = make_launcher_harness()
+        app.output_queue = queue.Queue()
+        app.output_queue.put(("line", "crash_line"))
+
+        # 模拟 _handle_output_line 抛异常
+        app._handle_output_line = MagicMock(side_effect=RuntimeError("unexpected log error"))
+
+        try:
+            app._poll_output_queue()
+        except RuntimeError:
+            pass
+
+        # 验证 root.after(120, ...) 依然被调用
+        app.root.after.assert_called_with(120, app._poll_output_queue)
+
 
 if __name__ == "__main__":
     unittest.main()
