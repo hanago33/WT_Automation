@@ -102,6 +102,21 @@ class TestLiveDetectorHUDAndPayload:
         finally:
             getattr(detector.window, "destroy")()
 
+    def test_window_helpers_and_on_close(self):
+        """测试探测器窗口生命周期代理方法 (winfo_exists/lift/focus_force/deiconify) 与关闭保护。"""
+        detector = cld.ControlLiveDetectorWindow(self.root, start_in_hud=False)
+        assert detector.winfo_exists() is True
+        detector.deiconify()
+        detector.lift()
+        detector.focus_force()
+
+        # 测试关闭保护执行
+        detector.monitoring = True
+        with patch.object(detector, "stop_monitoring") as mock_stop:
+            detector._on_window_close()
+            mock_stop.assert_called_once()
+        assert detector.winfo_exists() is False
+
     def test_inject_to_flow_action_with_callback(self):
         """测试当配置了 on_inject 回调时，直接回调注入。"""
         callback_mock = MagicMock()

@@ -1022,12 +1022,51 @@ class ControlLiveDetectorWindow:
         self.window.title("实时控件检测器")
         self.window.geometry("1100x780")
         self.window.minsize(1000, 700)
+        self.window.protocol("WM_DELETE_WINDOW", self._on_window_close)
         
         self._apply_theme()
         self._build_ui()
         self._load_library()
         if start_in_hud:
             self.window.after(50, self.toggle_hud_mode)
+
+    def _on_window_close(self):
+        """窗口关闭时安全终止后台监控线程并销毁。"""
+        try:
+            self.stop_monitoring()
+        except Exception:
+            pass
+        try:
+            getattr(self.window, "destroy")()
+        except Exception:
+            pass
+
+    def winfo_exists(self):
+        try:
+            return bool(self.window and self.window.winfo_exists())
+        except Exception:
+            return False
+
+    def lift(self):
+        try:
+            if self.window and self.window.winfo_exists():
+                self.window.lift()
+        except Exception:
+            pass
+
+    def focus_force(self):
+        try:
+            if self.window and self.window.winfo_exists():
+                self.window.focus_force()
+        except Exception:
+            pass
+
+    def deiconify(self):
+        try:
+            if self.window and self.window.winfo_exists():
+                self.window.deiconify()
+        except Exception:
+            pass
     
     def _apply_theme(self):
         """应用统一浅色蓝灰主题。"""
