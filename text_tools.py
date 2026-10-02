@@ -1,20 +1,26 @@
 # encoding: utf-8
 """
-text_tools.py —— 文本处理工具（双卡片切换）
+text_tools.py —— 文本与数据处理工作台（现代化 UI 版本）
 
 卡片一：TXT 合并
   - 选择多个 txt 文件 / 文件夹，按列表顺序合并成一个 txt 文档
   - 合并方式：直接接在末尾 / 新起一行再接
   - 可选：文件名作为章节标题、自定义分隔符、去重空行、按文件名排序
   - 输出编码可选：UTF-8 / GBK
-  - 支持拖拽添加文件（需 tkinterdnd2，未安装时自动降级）
+  - 支持拖拽添加文件（优先 TkinterDnD，备用 pywin32 OLE 拖拽，均不可用时优雅降级）
+  - 现代化视觉：高 DPI 自动感知、Slate 调色板、圆角卡片、平滑 Hover 动效、空态占位引导
 
 卡片二：CSV 转换
   - 选择多个 CSV 文件 / 文件夹
   - 自动识别编码（UTF-16/UTF-8/GBK 等）与分隔符（逗号/分号/制表符）
   - 转换类型：转 XLSX / 转 TXT
-  - 转 XLSX 可选合并为单个工作簿（多工作表）
-  - 进度条 + 日志
+  - 转 XLSX 可选合并为单个工作簿（多工作表）或单工作表纵向追加
+  - 参数联动与批量覆盖冲突预扫描策略
+  - 进度条 + 线程安全日志
+
+卡片三：文本工具
+  - 批量文本行去重、按行拆分、关键词保留/删除过滤、查找替换、加前后缀、大小写转换、编码批量转换
+  - 参数区按操作类型动态联动呈现
 
 用法：
   1. 双击运行，或命令行执行：python text_tools.py
@@ -33,6 +39,25 @@ from tkinter import filedialog, messagebox, ttk
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
+# 尝试引入工程基础设施模块（高 DPI 与统一设计系统）
+try:
+    import wt_dpi
+    _HAS_WT_DPI = True
+except Exception:
+    wt_dpi = None
+    _HAS_WT_DPI = False
+
+try:
+    import wt_theme
+    _HAS_WT_THEME = True
+except Exception:
+    wt_theme = None
+    _HAS_WT_THEME = False
+
+# TXT 合并/读取核心统一到 wt_txt_merge_core
+import wt_txt_merge_core
+import wt_ui_state
+
 
 class BatchCancelled(Exception):
     """批量处理被取消（逐文件边界抛出，done=已完成文件数）（待修改清单 #1）。"""
@@ -41,16 +66,11 @@ class BatchCancelled(Exception):
         super().__init__("cancelled after {} file(s)".format(done))
         self.done = done
 
-# TXT 合并/读取核心统一到 wt_txt_merge_core（待修改清单 #5）：本模块与 txt_merge_tool
-# 共用唯一实现，下方仅保留 text_tools 历史默认值（newline_between=False）的差异适配。
-# 注意经由模块属性调用（而非 from-import 按值绑定），保证测试可以 patch 核心。
-import wt_txt_merge_core
-import wt_ui_state
-
 
 def read_text_file(path):
     """读取文本文件内容，自动探测编码，返回 (内容, 编码)。实现统一委托核心。"""
     return wt_txt_merge_core.read_text_file(path)
+
 
 # 拖拽支持：优先用 tkinterdnd2，否则用 pywin32 的 OLE 拖拽
 _HAS_DND = False
@@ -67,6 +87,100 @@ try:
     _HAS_OLE_DND = True
 except Exception:  # noqa: BLE001
     pass
+
+
+# ── 本地降级调色板与设计令牌（确保脱离主工程时独立可用） ─────────────────────────
+DEFAULT_PALETTE = {
+    "bg": "#f8fafc",            # 窗口底色 Slate-50
+    "surface": "#ffffff",       # 卡片底色
+    "card": "#ffffff",
+    "toolbar": "#f1f5f9",       # 浅灰条 Slate-100
+    "border": "#e2e8f0",        # 分割线 Slate-200
+    "border_dark": "#cbd5e1",   # 边框深色 Slate-300
+    "primary": "#2563eb",       # 科技蓝 Blue-600
+    "primary_hover": "#1d4ed8",
+    "primary_active": "#1e40af",
+    "primary_soft": "#dbeafe",  # Blue-100
+    "primary_text": "#1e40af",
+    "success": "#059669",       # 翡翠绿 Emerald-600
+    "success_hover": "#047857",
+    "success_active": "#065f46",
+    "success_soft": "#d1fae5",
+    "success_text": "#065f46",
+    "danger": "#dc2626",        # 赤红 Red-600
+    "danger_hover": "#b91c1c",
+    "warning": "#d97706",       # 琥珀黄
+    "warning_soft": "#fef3c7",
+    "warning_text": "#92400e",
+    "secondary": "#ffffff",
+    "secondary_hover": "#f1f5f9",
+    "secondary_active": "#e2e8f0",
+    "text": "#0f172a",          # 正文 Slate-900
+    "muted": "#64748b",         # 次要文字 Slate-500
+}
+
+
+def _get_palette():
+    if _HAS_WT_THEME and hasattr(wt_theme, "get_palette"):
+        try:
+            return wt_theme.get_palette()
+        except Exception:
+            pass
+    return DEFAULT_PALETTE
+
+
+def _scale_val(n):
+    if _HAS_WT_DPI and hasattr(wt_dpi, "scale"):
+        try:
+            return wt_dpi.scale(n)
+        except Exception:
+            pass
+    return n
+
+
+def _create_badge(parent, text, tone="info", font=None):
+    if _HAS_WT_THEME and hasattr(wt_theme, "create_badge"):
+        try:
+            return wt_theme.create_badge(parent, text=text, tone=tone, font=font)
+        except Exception:
+            pass
+
+    pal = _get_palette()
+    fnt = font or ("Microsoft YaHei UI", 8, "bold")
+    tones = {
+        "primary": {"bg": pal["primary_soft"], "fg": pal["primary_text"]},
+        "success": {"bg": pal["success_soft"], "fg": pal["success_text"]},
+        "warning": {"bg": pal["warning_soft"], "fg": pal["warning_text"]},
+        "info": {"bg": pal["primary_soft"], "fg": pal["primary_text"]},
+        "muted": {"bg": pal["toolbar"], "fg": pal["muted"]},
+    }
+    t = tones.get(tone, tones["muted"])
+    badge = tk.Label(parent, text=text, bg=t["bg"], fg=t["fg"], font=fnt, padx=8, pady=2)
+
+    def set_badge(new_text, new_tone="muted"):
+        badge.configure(text=new_text)
+        nt = tones.get(new_tone, tones["muted"])
+        badge.configure(bg=nt["bg"], fg=nt["fg"])
+
+    badge.set_badge = set_badge
+    return badge
+
+
+def _create_card_frame(parent, padx=12, pady=12, border=True, **kwargs):
+    if _HAS_WT_THEME and hasattr(wt_theme, "create_card_frame"):
+        try:
+            return wt_theme.create_card_frame(parent, padx=padx, pady=pady, border=border, **kwargs)
+        except Exception:
+            pass
+
+    pal = _get_palette()
+    frame = tk.Frame(
+        parent, bg=pal["card"], padx=padx, pady=pady,
+        highlightthickness=1 if border else 0,
+        highlightbackground=pal["border"] if border else pal["card"],
+        **kwargs
+    )
+    return frame
 
 
 # =====================================================================
@@ -159,31 +273,94 @@ def merge_txt_files(
 
 
 class TxtMergeCard(ttk.Frame):
-    """TXT 合并卡片。"""
+    """TXT 合并卡片（现代化 Slate 风格）。"""
 
     def __init__(self, master):
-        super().__init__(master, padding=10)
+        super().__init__(master, padding=_scale_val(8))
+        self.pal = _get_palette()
         self.files = []
 
-        tip = ttk.Label(
-            self,
-            text="按列表顺序合并多个文本文件，内容格式不变。可拖拽文件到下方列表。",
-            foreground="#555555",
+        # ── 1. 顶部 Header 提示与状态徽标 ──
+        top_box = tk.Frame(self, bg=self.pal["bg"])
+        top_box.pack(fill="x", pady=(0, _scale_val(6)))
+
+        tip_col = tk.Frame(top_box, bg=self.pal["bg"])
+        tip_col.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            tip_col,
+            text="按列表顺序合并多个文本文件，保留编码与排版。支持拖拽文件/文件夹。",
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["bg"],
+            fg=self.pal["muted"],
+            anchor="w",
+        ).pack(anchor="w")
+
+        self.badge_status = _create_badge(top_box, "就绪 · 0 个文件", tone="muted")
+        self.badge_status.pack(side="right", anchor="center")
+
+        # ── 2. 文件列表卡片 ──
+        list_card = _create_card_frame(self, padx=_scale_val(10), pady=_scale_val(8))
+        list_card.pack(fill="both", expand=True, pady=(0, _scale_val(6)))
+
+        list_header = tk.Frame(list_card, bg=self.pal["card"])
+        list_header.pack(fill="x", pady=(0, _scale_val(4)))
+        tk.Label(
+            list_header,
+            text="待合并文件列表",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            bg=self.pal["card"],
+            fg=self.pal["text"],
+        ).pack(side="left")
+
+        self.list_tip_var = tk.StringVar(value="提示：可上下拖动或排序微调合并先后")
+        tk.Label(
+            list_header,
+            textvariable=self.list_tip_var,
+            font=("Microsoft YaHei UI", 8),
+            bg=self.pal["card"],
+            fg=self.pal["muted"],
+        ).pack(side="right")
+
+        box_wrap = tk.Frame(list_card, bg=self.pal["card"])
+        box_wrap.pack(fill="both", expand=True)
+
+        self.scrollbar = ttk.Scrollbar(box_wrap, orient="vertical")
+        self.scrollbar.pack(side="right", fill="y")
+
+        self.listbox = tk.Listbox(
+            box_wrap,
+            selectmode="extended",
+            activestyle="none",
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self.pal["border"],
+            highlightcolor=self.pal["primary"],
+            bg="#ffffff",
+            fg=self.pal["text"],
+            selectbackground=self.pal["primary_soft"],
+            selectforeground=self.pal["primary_text"],
+            font=("Microsoft YaHei UI", 9),
+            yscrollcommand=self.scrollbar.set,
         )
-        tip.pack(fill="x", pady=(0, 4))
-
-        # 文件列表
-        frame = ttk.Frame(self)
-        frame.pack(fill="both", expand=True, pady=4)
-        self.listbox = tk.Listbox(frame, selectmode="extended")
         self.listbox.pack(side="left", fill="both", expand=True)
-        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.listbox.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.listbox.config(yscrollcommand=scrollbar.set)
+        self.scrollbar.config(command=self.listbox.yview)
 
-        # 操作按钮
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill="x", pady=4)
+        # 空状态占位提示
+        self.empty_label = tk.Label(
+            self.listbox,
+            text="📄 拖拽 TXT 文件/文件夹到此处\n或点击下方「添加文件」按钮",
+            bg="#ffffff",
+            fg=self.pal["muted"],
+            font=("Microsoft YaHei UI", 9),
+            justify="center",
+        )
+        self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
+
+        # ── 3. 操作按钮条 ──
+        btn_frame = tk.Frame(list_card, bg=self.pal["card"])
+        btn_frame.pack(fill="x", pady=(6, 0))
         ttk.Button(btn_frame, text="添加文件", command=self.add_files).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="添加文件夹", command=self.add_folder).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="移除选中", command=self.remove_selected).pack(side="left", padx=2)
@@ -192,16 +369,26 @@ class TxtMergeCard(ttk.Frame):
         ttk.Button(btn_frame, text="下移", command=lambda: self.move(1)).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="按文件名排序", command=self.sort_by_name).pack(side="left", padx=2)
 
+        # ── 4. 选项与参数卡片 ──
+        opt_card = _create_card_frame(self, padx=_scale_val(10), pady=_scale_val(8))
+        opt_card.pack(fill="x", pady=(0, _scale_val(6)))
+
         # 衔接方式
-        opt_frame = ttk.Frame(self)
+        opt_frame = tk.Frame(opt_card, bg=self.pal["card"])
         opt_frame.pack(fill="x", pady=2)
-        ttk.Label(opt_frame, text="文件之间衔接方式：").pack(side="left")
+        tk.Label(
+            opt_frame,
+            text="文件之间衔接方式：",
+            bg=self.pal["card"],
+            fg=self.pal["text"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side="left")
         self.join_var = tk.StringVar(value="direct")
         ttk.Radiobutton(opt_frame, text="直接接在末尾", variable=self.join_var, value="direct").pack(side="left", padx=4)
         ttk.Radiobutton(opt_frame, text="新起一行再接", variable=self.join_var, value="newline").pack(side="left", padx=4)
 
         # 高级选项
-        adv_frame = ttk.Frame(self)
+        adv_frame = tk.Frame(opt_card, bg=self.pal["card"])
         adv_frame.pack(fill="x", pady=2)
         self.header_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(adv_frame, text="文件名作为章节标题", variable=self.header_var).pack(side="left", padx=4)
@@ -209,87 +396,134 @@ class TxtMergeCard(ttk.Frame):
         ttk.Checkbutton(adv_frame, text="去重空行", variable=self.empty_var).pack(side="left", padx=4)
 
         # 分隔符
-        sep_frame = ttk.Frame(self)
+        sep_frame = tk.Frame(opt_card, bg=self.pal["card"])
         sep_frame.pack(fill="x", pady=2)
-        ttk.Label(sep_frame, text="自定义分隔符（留空则不插入）：").pack(side="left")
+        tk.Label(
+            sep_frame,
+            text="自定义分隔符（留空则不插入）：",
+            bg=self.pal["card"],
+            fg=self.pal["text"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side="left")
         self.sep_var = tk.StringVar(value="")
         ttk.Entry(sep_frame, textvariable=self.sep_var, width=24).pack(side="left", padx=4)
 
         # 输出编码
-        enc_frame = ttk.Frame(self)
+        enc_frame = tk.Frame(opt_card, bg=self.pal["card"])
         enc_frame.pack(fill="x", pady=2)
-        ttk.Label(enc_frame, text="输出编码：").pack(side="left")
+        tk.Label(
+            enc_frame,
+            text="输出编码：",
+            bg=self.pal["card"],
+            fg=self.pal["text"],
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side="left")
         self.enc_var = tk.StringVar(value="utf-8-sig")
         for enc, label in [("utf-8-sig", "UTF-8(带BOM)"), ("utf-8", "UTF-8"), ("gbk", "GBK")]:
             ttk.Radiobutton(enc_frame, text=label, variable=self.enc_var, value=enc).pack(side="left", padx=4)
 
-        # 合并按钮
-        merge_frame = ttk.Frame(self)
-        merge_frame.pack(fill="x", pady=(6, 4))
+        # ── 5. 合并操作与状态栏 ──
+        merge_frame = tk.Frame(self, bg=self.pal["bg"])
+        merge_frame.pack(fill="x", pady=(4, 0))
         self.btn_merge = ttk.Button(merge_frame, text="合并为单个 txt", command=self.merge)
         self.btn_merge.pack(side="left", padx=2)
 
         self.status = ttk.Label(self, text="", foreground="#333333")
-        self.status.pack(fill="x", pady=(0, 4))
+        self.status.pack(fill="x", pady=(2, 0))
 
-        # 拖拽
+        # 拖拽支持初始化
         self._ole_drop = None
         if _HAS_DND:
-            self.listbox.drop_target_register(DND_FILES)
-            self.listbox.dnd_bind("<<Drop>>", self.on_drop)
+            try:
+                self.listbox.drop_target_register(DND_FILES)
+                self.listbox.dnd_bind("<<Drop>>", self.on_drop)
+            except Exception:
+                pass
         elif _HAS_OLE_DND:
-            self._ole_drop = OleDropTarget(self.winfo_toplevel().winfo_id(), self._append_paths)
-            if not self._ole_drop.register():
+            try:
+                top_id = self.winfo_toplevel().winfo_id()
+                self._ole_drop = OleDropTarget(top_id, self._append_paths)
+                if not self._ole_drop.register():
+                    self._ole_drop = None
+            except Exception:
                 self._ole_drop = None
-                self.status.config(text="提示：拖拽功能初始化失败，可用按钮添加文件")
-        else:
-            self.status.config(text="提示：拖拽功能不可用，可用按钮添加文件")
 
     # ---- 文件操作 ----
     def add_files(self):
         paths = filedialog.askopenfilenames(
-            title="选择要合并的文本文件（支持 txt / wnd 等任意文本格式）",
-            filetypes=[("所有文件", "*.*"), ("文本文件", "*.txt")],
+            title="选择文本文件",
+            filetypes=[("文本文件", "*.txt *.wnd *.log"), ("全部", "*.*")],
         )
-        self._append_paths(paths)
+        if paths:
+            self._append_paths(paths)
 
     def add_folder(self):
-        folder = filedialog.askdirectory(title="选择包含文本文件的文件夹")
+        folder = filedialog.askdirectory(title="选择包含 txt 的文件夹")
         if not folder:
             return
+        paths = []
         try:
-            paths = [
-                os.path.join(folder, name)
-                for name in sorted(os.listdir(folder))
-                if name.lower().endswith(".txt")
-            ]
+            for name in sorted(os.listdir(folder)):
+                p = os.path.join(folder, name)
+                if os.path.isfile(p) and p.lower().endswith((".txt", ".wnd", ".log")):
+                    paths.append(p)
         except OSError as exc:
-            # 目录不可读/已删除时此前异常被 Tk 吞掉（"点了没反应"，审计 P2）
             messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
             return
         if not paths:
-            messagebox.showinfo("提示", "该文件夹内没有找到 .txt 文件。")
+            messagebox.showinfo("提示", "该文件夹内没有找到文本文件。")
             return
         self._append_paths(paths)
 
     def on_drop(self, event):
-        paths = self.winfo_toplevel().tk.splitlist(event.data)
+        raw = event.data
+        try:
+            paths = self.winfo_toplevel().tk.splitlist(raw)
+        except Exception:
+            paths = [raw]
         self._append_paths(paths)
 
     def _append_paths(self, paths):
+        added = 0
+
+        def _clean(p):
+            text = str(p or "").strip()
+            if len(text) >= 2 and text.startswith("{") and text.endswith("}"):
+                text = text[1:-1].strip()
+            return text
+
         for p in paths:
-            if os.path.isfile(p) and p not in self.files:
-                self.files.append(p)
+            clean_p = _clean(p)
+            if os.path.isfile(clean_p) and clean_p not in self.files:
+                self.files.append(clean_p)
+                added += 1
+            elif os.path.isdir(clean_p):
+                try:
+                    for name in sorted(os.listdir(clean_p)):
+                        sub = os.path.join(clean_p, name)
+                        if os.path.isfile(sub) and sub.lower().endswith((".txt", ".wnd", ".log")) and sub not in self.files:
+                            self.files.append(sub)
+                            added += 1
+                except Exception:
+                    pass
         self.refresh_list()
+        if added > 0:
+            self.status.config(text=f"已成功追加 {added} 个文本文件")
 
     def remove_selected(self):
         sel = list(self.listbox.curselection())
+        if not sel:
+            return
         for idx in reversed(sel):
             del self.files[idx]
         self.refresh_list()
+        if hasattr(self, "status") and hasattr(self.status, "config"):
+            self.status.config(text=f"已移除所选文件，剩余 {len(self.files)} 个")
 
     def clear_list(self):
-        if self.files and not messagebox.askyesno(
+        if not self.files:
+            return
+        if not messagebox.askyesno(
             "确认清空", "确定清空列表中的 {} 个文件吗？".format(len(self.files))
         ):
             return
@@ -307,19 +541,43 @@ class TxtMergeCard(ttk.Frame):
         self.files[idx], self.files[new_idx] = self.files[new_idx], self.files[idx]
         self.refresh_list()
         self.listbox.selection_set(new_idx)
+        self.listbox.see(new_idx)
 
     def sort_by_name(self):
+        if not self.files:
+            return
         self.files.sort(key=lambda p: os.path.basename(p).lower())
         self.refresh_list()
+        self.status.config(text="已按文件名 A-Z 重新排序")
 
     def refresh_list(self):
         self.listbox.delete(0, tk.END)
+        total_size = 0
         for p in self.files:
-            self.listbox.insert(tk.END, os.path.basename(p))
-        self.status.config(text=f"共 {len(self.files)} 个文件")
+            try:
+                sz = os.path.getsize(p)
+                total_size += sz
+                sz_str = f"{sz / 1024:.1f} KB" if sz < 1024 * 1024 else f"{sz / (1024 * 1024):.2f} MB"
+            except Exception:
+                sz_str = ""
+            name = os.path.basename(p)
+            self.listbox.insert(tk.END, f"{name}    ({sz_str})" if sz_str else name)
 
+        count = len(self.files)
+        if count == 0:
+            self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
+            if hasattr(self, "badge_status") and hasattr(self.badge_status, "set_badge"):
+                self.badge_status.set_badge("就绪 · 0 个文件", "muted")
+        else:
+            self.empty_label.place_forget()
+            size_mb = total_size / (1024 * 1024)
+            size_summary = f"{size_mb:.2f} MB" if size_mb >= 0.1 else f"{total_size / 1024:.1f} KB"
+            if hasattr(self, "badge_status") and hasattr(self.badge_status, "set_badge"):
+                self.badge_status.set_badge(f"已就绪 · {count} 个文件 ({size_summary})", "success")
+
+    # ---------- 合并 ----------
     def merge(self):
-        # 运行中再次点击 = 请求取消（逐文件边界生效，见 wt_txt_merge_core）
+        # 运行中再次点击 = 请求取消
         thread = getattr(self, "_merge_thread", None)
         if thread is not None and thread.is_alive():
             self._merge_cancel.set()
@@ -327,7 +585,7 @@ class TxtMergeCard(ttk.Frame):
             return
 
         if not self.files:
-            messagebox.showwarning("提示", "请先添加要合并的 txt 文件。")
+            messagebox.showwarning("提示", "请先添加要合并的文本文件。")
             return
         output = filedialog.asksaveasfilename(
             title="保存合并后的文件",
@@ -338,7 +596,6 @@ class TxtMergeCard(ttk.Frame):
         if not output:
             return
 
-        # 选项主线程快照，worker 只用局部数据（待修改清单 #1 同款纪律）
         options = dict(
             newline_between=self.join_var.get() == "newline",
             add_headers=self.header_var.get(),
@@ -355,7 +612,6 @@ class TxtMergeCard(ttk.Frame):
         self.status.config(text="正在合并...")
 
         def _progress(done, total_count):
-            # worker 只投递文本，由主线程更新（与 txt_merge_tool 同款纪律）
             self._merge_events.put(
                 lambda d=done, t=total_count: self.status.config(
                     text=f"正在合并... {d}/{t}"))
@@ -379,7 +635,6 @@ class TxtMergeCard(ttk.Frame):
 
         self._merge_thread = threading.Thread(target=_worker, daemon=True)
         self._merge_thread.start()
-        # 轮询链从主线程启动（worker 不跨线程调 after）
         self.after(80, self._drain_merge_events)
 
     def _drain_merge_events(self):
@@ -395,7 +650,6 @@ class TxtMergeCard(ttk.Frame):
 
     def _merge_finish(self, output, count=0, total_chars=0, cancelled=False,
                       done=0, total=None, error=None):
-        """收尾（仅主线程执行）：恢复按钮 + 三态反馈。"""
         self.btn_merge.configure(text=self._merge_btn_text_backup)
         if error is not None:
             messagebox.showerror("合并失败", f"发生错误：\n{error}")
@@ -499,42 +753,70 @@ def csv_to_txt(path, out_path, output_encoding="utf-8-sig"):
 
 
 class CsvConvertCard(ttk.Frame):
-    """CSV 转换卡片（转 XLSX / 转 TXT）。"""
+    """CSV 转换卡片（转 XLSX / 转 TXT，现代化 Slate 风格）。"""
 
     def __init__(self, master):
-        super().__init__(master, padding=10)
+        super().__init__(master, padding=_scale_val(8))
+        self.pal = _get_palette()
         self.csv_files = []
         self.out_dir = ""
 
+        # ── 1. 顶部 Header 提示与状态徽标 ──
+        top_box = tk.Frame(self, bg=self.pal["bg"])
+        top_box.pack(fill="x", pady=(0, _scale_val(6)))
+
+        tip_col = tk.Frame(top_box, bg=self.pal["bg"])
+        tip_col.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            tip_col,
+            text="批量将 CSV 文件转换为 Excel(XLSX) 或 TXT 文本，支持单/多工作表合并与自动编码识别。",
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["bg"],
+            fg=self.pal["muted"],
+            anchor="w",
+        ).pack(anchor="w")
+
+        self.badge_csv_count = _create_badge(top_box, "未选择文件", tone="muted")
+        self.badge_csv_count.pack(side="right", anchor="center")
+
+        # ── 2. 文件与输出目录卡片 ──
+        io_card = _create_card_frame(self, padx=_scale_val(10), pady=_scale_val(8))
+        io_card.pack(fill="x", pady=(0, _scale_val(6)))
+
         # 文件选择
-        frm = ttk.Frame(self)
+        frm = tk.Frame(io_card, bg=self.pal["card"])
         frm.pack(fill="x", pady=2)
-        ttk.Label(frm, text="CSV 文件 / 文件夹：").pack(side="left")
+        tk.Label(frm, text="CSV 文件 / 文件夹：", bg=self.pal["card"], fg=self.pal["text"], font=("Microsoft YaHei UI", 9)).pack(side="left")
         self.var_files = tk.StringVar(value="未选择")
         ttk.Label(frm, textvariable=self.var_files, foreground="blue").pack(side="left", padx=6)
         ttk.Button(frm, text="选择文件", command=self.pick_files).pack(side="left", padx=2)
         ttk.Button(frm, text="选择文件夹", command=self.pick_folder).pack(side="left", padx=2)
 
         # 输出目录
-        frm2 = ttk.Frame(self)
-        frm2.pack(fill="x", pady=2)
-        ttk.Label(frm2, text="输出目录：").pack(side="left")
+        frm2 = tk.Frame(io_card, bg=self.pal["card"])
+        frm2.pack(fill="x", pady=(4, 2))
+        tk.Label(frm2, text="输出目录：", bg=self.pal["card"], fg=self.pal["text"], font=("Microsoft YaHei UI", 9)).pack(side="left")
         self.var_out = tk.StringVar(value="与源文件同目录")
         ttk.Label(frm2, textvariable=self.var_out, foreground="blue").pack(side="left", padx=6)
         ttk.Button(frm2, text="选择输出目录", command=self.pick_out).pack(side="left", padx=2)
 
+        # ── 3. 转换选项卡片 ──
+        opt_card = _create_card_frame(self, padx=_scale_val(10), pady=_scale_val(8))
+        opt_card.pack(fill="x", pady=(0, _scale_val(6)))
+
         # 转换类型
-        frm3 = ttk.Frame(self)
+        frm3 = tk.Frame(opt_card, bg=self.pal["card"])
         frm3.pack(fill="x", pady=2)
-        ttk.Label(frm3, text="转换类型：").pack(side="left")
+        tk.Label(frm3, text="转换类型：", bg=self.pal["card"], fg=self.pal["text"], font=("Microsoft YaHei UI", 9)).pack(side="left")
         self.conv_var = tk.StringVar(value="xlsx")
         ttk.Radiobutton(frm3, text="转 XLSX", variable=self.conv_var, value="xlsx").pack(side="left", padx=4)
         ttk.Radiobutton(frm3, text="转 TXT", variable=self.conv_var, value="txt").pack(side="left", padx=4)
 
         # 合并选项（仅 XLSX 有效）
-        frm_merge = ttk.Frame(self)
+        frm_merge = tk.Frame(opt_card, bg=self.pal["card"])
         frm_merge.pack(fill="x", pady=2)
-        ttk.Label(frm_merge, text="XLSX 输出方式：").pack(side="left")
+        tk.Label(frm_merge, text="XLSX 输出方式：", bg=self.pal["card"], fg=self.pal["text"], font=("Microsoft YaHei UI", 9)).pack(side="left")
         self.merge_var = tk.StringVar(value="single")
         self._merge_rb_list = []
         for value, label in (("single", "每个文件单独一个工作簿"), ("multi", "合并为多工作表"), ("one", "合并为单工作表")):
@@ -542,17 +824,17 @@ class CsvConvertCard(ttk.Frame):
             rb.pack(side="left", padx=4)
             self._merge_rb_list.append(rb)
 
-        # 单工作表合并选项（仅合并为单工作表时有效）
+        # 单工作表合并选项
         self.merge_single_header = tk.BooleanVar(value=True)
         self.merge_header_chk = ttk.Checkbutton(
-            self, text="合并为单工作表时仅保留第一个文件的表头", variable=self.merge_single_header
+            opt_card, text="合并为单工作表时仅保留第一个文件的表头", variable=self.merge_single_header
         )
         self.merge_header_chk.pack(fill="x", pady=2)
 
         # 输出编码（仅 TXT 有效）
-        frm4 = ttk.Frame(self)
+        frm4 = tk.Frame(opt_card, bg=self.pal["card"])
         frm4.pack(fill="x", pady=2)
-        ttk.Label(frm4, text="TXT 输出编码：").pack(side="left")
+        tk.Label(frm4, text="TXT 输出编码：", bg=self.pal["card"], fg=self.pal["text"], font=("Microsoft YaHei UI", 9)).pack(side="left")
         self.txt_enc_var = tk.StringVar(value="utf-8-sig")
         self._txt_enc_rb_list = []
         for enc, label in [("utf-8-sig", "UTF-8(带BOM)"), ("utf-8", "UTF-8"), ("gbk", "GBK")]:
@@ -560,31 +842,29 @@ class CsvConvertCard(ttk.Frame):
             rb.pack(side="left", padx=4)
             self._txt_enc_rb_list.append(rb)
 
-        # 开始按钮
-        frm5 = ttk.Frame(self)
-        frm5.pack(fill="x", pady=4)
+        # ── 4. 执行控制与日志卡片 ──
+        log_card = _create_card_frame(self, padx=_scale_val(10), pady=_scale_val(8))
+        log_card.pack(fill="both", expand=True)
+
+        frm5 = tk.Frame(log_card, bg=self.pal["card"])
+        frm5.pack(fill="x", pady=(0, 4))
         self.btn_run = ttk.Button(frm5, text="开始转换", command=self.run)
         self.btn_run.pack(side="left", padx=2)
 
         # 进度条
-        self.progress = ttk.Progressbar(self, mode="determinate")
+        self.progress = ttk.Progressbar(log_card, mode="determinate")
         self.progress.pack(fill="x", pady=4)
 
-        # 日志
-        self.log_text = tk.Text(self, height=12, state="disabled")
+        # 日志区
+        self.log_text = tk.Text(log_card, height=10, state="disabled", font=("Consolas", 9), relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.pal["border"])
         self.log_text.pack(fill="both", expand=True, pady=4)
 
-        # 参数联动：转换类型/合并方式变化时自动禁用无关参数（审计 P2）
+        # 参数联动：转换类型/合并方式变化时自动禁用无关参数
         self.conv_var.trace_add("write", lambda *a: self._sync_option_states())
         self.merge_var.trace_add("write", lambda *a: self._sync_option_states())
         self._sync_option_states()
 
     def _sync_option_states(self):
-        """按当前转换类型/合并方式联动启用/禁用参数控件（审计 P2）。
-
-        - 转 TXT：XLSX 输出方式与"仅保留第一个文件表头"禁用，TXT 编码启用；
-        - 转 XLSX：TXT 编码禁用；"仅保留表头"仅"合并为单工作表"时可用。
-        """
         is_xlsx = self.conv_var.get() == "xlsx"
         for rb in getattr(self, "_merge_rb_list", []):
             rb.config(state="normal" if is_xlsx else "disabled")
@@ -597,7 +877,6 @@ class CsvConvertCard(ttk.Frame):
             rb.config(state="disabled" if is_xlsx else "normal")
 
     def log(self, msg):
-        """日志入口：worker 线程调用时投递事件队列，主线程直接写（待修改清单 #1）。"""
         if threading.current_thread() is threading.main_thread():
             self._log_direct(msg)
         else:
@@ -606,7 +885,6 @@ class CsvConvertCard(ttk.Frame):
     def _log_direct(self, msg):
         self.log_text.configure(state="normal")
         self.log_text.insert("end", msg + "\n")
-        # 行数上限：批量转换的长日志持续膨胀会拖慢滚动与重绘（审计 P2）
         try:
             total_lines = int(self.log_text.index("end-1c").split(".")[0])
             if total_lines > 500:
@@ -623,7 +901,10 @@ class CsvConvertCard(ttk.Frame):
         )
         if files:
             self.csv_files = list(files)
-            self.var_files.set(f"已选 {len(self.csv_files)} 个文件")
+            count = len(self.csv_files)
+            self.var_files.set(f"已选 {count} 个文件")
+            if hasattr(self, "badge_csv_count") and hasattr(self.badge_csv_count, "set_badge"):
+                self.badge_csv_count.set_badge(f"已选 {count} 个 CSV", "success")
 
     def pick_folder(self):
         folder = filedialog.askdirectory(title="选择包含 CSV 的文件夹")
@@ -638,7 +919,10 @@ class CsvConvertCard(ttk.Frame):
         except OSError as exc:
             messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
             return
-        self.var_files.set(f"文件夹: {folder} ({len(self.csv_files)} 个 CSV)")
+        count = len(self.csv_files)
+        self.var_files.set(f"文件夹: {folder} ({count} 个 CSV)")
+        if hasattr(self, "badge_csv_count") and hasattr(self.badge_csv_count, "set_badge"):
+            self.badge_csv_count.set_badge(f"已选 {count} 个 CSV", "success")
 
     def pick_out(self):
         d = filedialog.askdirectory(title="选择输出目录")
@@ -647,15 +931,8 @@ class CsvConvertCard(ttk.Frame):
             self.var_out.set(d)
 
     def _confirm_overwrite(self, dst):
-        """循环内的覆盖判定：运行前预扫描已确定策略，此处只做纯查询、零交互。
-
-        策略语义（见 _resolve_overwrite_policy）：
-          "overwrite" → 全部覆盖；"skip" → 冲突文件全部跳过；
-          "ask" → 仅覆盖预扫描时逐个确认允许的文件（_overwrite_allow 集合）。
-        """
         if not os.path.exists(dst):
             return True
-        # 缺省 "skip"：绕过预扫描的异常路径宁可少写盘，也不能静默覆盖旧文件
         policy = getattr(self, "_overwrite_policy", "skip")
         if policy == "skip":
             return False
@@ -664,7 +941,6 @@ class CsvConvertCard(ttk.Frame):
         return True
 
     def _collect_output_targets(self, out_dir):
-        """按当前转换模式枚举全部输出目标路径（运行前预扫描用，待修改清单 #1）。"""
         conv = self.conv_var.get()
         targets = []
         if conv == "xlsx":
@@ -684,7 +960,6 @@ class CsvConvertCard(ttk.Frame):
         return targets
 
     def _ask_overwrite_policy_dialog(self, conflicts):
-        """模态四选一：全部覆盖 / 全部跳过 / 逐个确认 / 取消。返回策略或 None。"""
         choice = {"value": None}
         dialog = tk.Toplevel(self)
         dialog.title("同名输出文件")
@@ -713,13 +988,6 @@ class CsvConvertCard(ttk.Frame):
         return choice["value"]
 
     def _resolve_overwrite_policy(self, conflicts):
-        """预扫描冲突清单 → 一次性确定覆盖策略（主线程，待修改清单 #1）。
-
-        交互全部留在启动前：之后 worker 循环内零对话框。
-        返回 (policy, allow_set)：policy ∈ {"overwrite", "skip", "ask"}，
-        "ask" 时 allow_set 为逐个确认允许覆盖的路径集合；用户取消返回 (None, set())。
-        无冲突时直接 ("overwrite", set())，不弹对话框。
-        """
         if not conflicts:
             return "overwrite", set()
         choice = self._ask_overwrite_policy_dialog(conflicts)
@@ -734,7 +1002,6 @@ class CsvConvertCard(ttk.Frame):
         return choice, set()
 
     def run(self):
-        # 运行中再次点击 = 请求取消（逐文件边界生效）
         thread = getattr(self, "_run_thread", None)
         if thread is not None and thread.is_alive():
             self._cancel_event.set()
@@ -747,8 +1014,8 @@ class CsvConvertCard(ttk.Frame):
         out_dir = self.out_dir or os.path.dirname(self.csv_files[0]) or "."
         os.makedirs(out_dir, exist_ok=True)
 
-        # ── 运行前预扫描覆盖冲突，交互全部在主线程完成（待修改清单 #1） ──
-        conflicts = [p for p in self._collect_output_targets(out_dir) if os.path.exists(p)]
+        expected = self._collect_output_targets(out_dir)
+        conflicts = [dst for dst in expected if os.path.exists(dst)]
         policy, allow_set = self._resolve_overwrite_policy(conflicts)
         if policy is None:
             self.log("已取消：未开始转换。")
@@ -756,44 +1023,39 @@ class CsvConvertCard(ttk.Frame):
         self._overwrite_policy = policy
         self._overwrite_allow = allow_set
 
-        # 选项在主线程一次性快照，worker 不读 Tk 变量
-        options = dict(
-            conv=self.conv_var.get(),
-            merge_mode=self.merge_var.get(),
-            merge_single_header=self.merge_single_header.get(),
-            txt_enc=self.txt_enc_var.get(),
-        )
-        files = list(self.csv_files)  # 快照：运行期增删列表不影响迭代与 total
+        self.btn_run.configure(text="⨂ 取消转换")
+        self.progress["value"] = 0
+        self.log("开始处理...")
+
+        conv = self.conv_var.get()
+        merge_mode = self.merge_var.get()
+        txt_enc = self.txt_enc_var.get()
+        files = list(self.csv_files)
         total = len(files)
 
         self._cancel_event = threading.Event()
         self._events = queue.Queue()
         self._batch_failed = 0
-        self.btn_run.configure(text="⨂ 取消转换")
-        self.progress["value"] = 0
-        self.log("开始转换...")
 
         def progress(cur, total_count):
-            # worker 只投递，进度条由主线程更新
             self._events.put(lambda c=cur, t=total_count: self._update_progress(c, t))
 
         def _worker():
             try:
-                if options["conv"] == "xlsx":
-                    if options["merge_mode"] == "single":
+                if conv == "xlsx":
+                    if merge_mode == "single":
                         self._build_single_xlsx(out_dir, progress, files)
-                    elif options["merge_mode"] == "multi":
+                    elif merge_mode == "multi":
                         self._build_merged_multi_sheet(out_dir, progress, files)
                     else:
                         self._build_merged_single_sheet(
                             out_dir, progress, files,
-                            only_first_header=options["merge_single_header"])
+                            only_first_header=self.merge_single_header.get())
                 else:
-                    self._build_txt(out_dir, progress, files, enc=options["txt_enc"])
+                    self._build_txt(out_dir, progress, files, enc=txt_enc)
             except BatchCancelled as exc:
                 done = exc.done
-                self._events.put(
-                    lambda d=done, t=total: self._finish(cancelled=True, done=d, total=t))
+                self._events.put(lambda d=done, t=total: self._finish(cancelled=True, done=d, total=t))
             except Exception as e:  # noqa: BLE001
                 msg = str(e)
                 self._events.put(lambda m=msg: self._finish(error=m))
@@ -802,11 +1064,9 @@ class CsvConvertCard(ttk.Frame):
 
         self._run_thread = threading.Thread(target=_worker, daemon=True)
         self._run_thread.start()
-        # 轮询链从主线程启动（worker 不跨线程调 after）
         self.after(80, self._drain_events)
 
     def _drain_events(self):
-        """主线程排空 worker 事件队列；线程存活或队列非空则续订下一轮。"""
         while True:
             try:
                 fn = self._events.get_nowait()
@@ -822,7 +1082,6 @@ class CsvConvertCard(ttk.Frame):
         self.progress["value"] = cur
 
     def _finish(self, cancelled=False, done=0, total=0, error=None):
-        """收尾（仅主线程执行）：恢复按钮；三档结果反馈逻辑与原同步版一致。"""
         self.btn_run.configure(text="开始转换", state="normal")
         if error is not None:
             self.log(f"发生错误: {error}")
@@ -834,7 +1093,6 @@ class CsvConvertCard(ttk.Frame):
             messagebox.showwarning(
                 "已取消", f"已取消转换：完成 {done}/{total}，失败 {failed}。")
             return
-        # 按实际结果反馈：此前无论失败多少都弹"转换完成！"，与日志矛盾（审计 P1◐）
         if failed == 0:
             self.log("全部处理完成。")
             messagebox.showinfo("完成", "转换完成！")
@@ -851,7 +1109,7 @@ class CsvConvertCard(ttk.Frame):
         total = len(files)
         for idx, src in enumerate(files, start=1):
             if self._cancel_event.is_set():
-                raise BatchCancelled(done=idx - 1)  # 取消在逐文件边界（待修改清单 #1）
+                raise BatchCancelled(done=idx - 1)
             try:
                 name = os.path.splitext(os.path.basename(src))[0]
                 dst = os.path.join(out_dir, name + ".xlsx")
@@ -870,14 +1128,13 @@ class CsvConvertCard(ttk.Frame):
             progress(idx, total)
 
     def _build_merged_multi_sheet(self, out_dir, progress, files):
-        """合并为单个工作簿，每个 CSV 一个工作表。"""
         wb = Workbook()
         wb.remove(wb.active)
         used = set()
         total = len(files)
         for idx, src in enumerate(files, start=1):
             if self._cancel_event.is_set():
-                raise BatchCancelled(done=idx - 1)  # 取消在逐文件边界（待修改清单 #1）
+                raise BatchCancelled(done=idx - 1)
             try:
                 name = safe_sheet_name(os.path.splitext(os.path.basename(src))[0], used)
                 ws = wb.create_sheet(title=name)
@@ -898,15 +1155,14 @@ class CsvConvertCard(ttk.Frame):
             self.log("没有可转换的文件。")
 
     def _build_merged_single_sheet(self, out_dir, progress, files, only_first_header=False):
-        """合并为单个工作簿，所有 CSV 纵向堆叠到同一个工作表。"""
         wb = Workbook()
         ws = wb.active
         ws.title = "合并数据"
-        total = len(files)  # 与迭代同一份快照（审计复审核对：此前漏改，进度上限仍取实时列表）
+        total = len(files)
         current_row = 1
         for idx, src in enumerate(files, start=1):
             if self._cancel_event.is_set():
-                raise BatchCancelled(done=idx - 1)  # 取消在逐文件边界（待修改清单 #1）
+                raise BatchCancelled(done=idx - 1)
             try:
                 skip = only_first_header and idx > 1
                 rows = read_csv_rows(src, skip_header=skip)
@@ -919,7 +1175,6 @@ class CsvConvertCard(ttk.Frame):
                 self._batch_failed = getattr(self, "_batch_failed", 0) + 1
                 self.log(f"[失败] {os.path.basename(src)} 错误: {e}")
             progress(idx, total)
-        # 自动列宽
         for c in range(1, ws.max_column + 1):
             letter = get_column_letter(c)
             width = 10
@@ -941,7 +1196,7 @@ class CsvConvertCard(ttk.Frame):
         total = len(files)
         for idx, src in enumerate(files, start=1):
             if self._cancel_event.is_set():
-                raise BatchCancelled(done=idx - 1)  # 取消在逐文件边界（待修改清单 #1）
+                raise BatchCancelled(done=idx - 1)
             try:
                 name = os.path.splitext(os.path.basename(src))[0]
                 dst = os.path.join(out_dir, name + ".txt")
@@ -1047,8 +1302,6 @@ def convert_encoding_file(path, out_path, target_encoding="utf-8-sig"):
     return len(content.splitlines())
 
 
-# _process_one 需要的选项键：主线程快照必须全量给出；worker 内只按固定键读
-# params，缺失键以空串兜底（不回读 Tk，见 _process_one 注释）
 _PROCESS_PARAM_KEYS = (
     "split_lines",
     "filter_kw",
@@ -1064,34 +1317,59 @@ _PROCESS_PARAM_DEFAULTS = {key: "" for key in _PROCESS_PARAM_KEYS}
 
 
 class TextToolsCard(ttk.Frame):
-    """文本工具卡片：拆分/去重/过滤/替换/前后缀/大小写/编码转换。"""
+    """文本工具卡片：拆分/去重/过滤/替换/前后缀/大小写/编码转换（现代化 Slate 风格）。"""
 
     def __init__(self, master):
-        super().__init__(master, padding=10)
+        super().__init__(master, padding=_scale_val(8))
+        self.pal = _get_palette()
         self.files = []
         self.out_dir = ""
 
-        # 文件选择
-        frm = ttk.Frame(self)
+        # ── 1. 顶部 Header 提示与状态徽标 ──
+        top_box = tk.Frame(self, bg=self.pal["bg"])
+        top_box.pack(fill="x", pady=(0, _scale_val(6)))
+
+        tip_col = tk.Frame(top_box, bg=self.pal["bg"])
+        tip_col.pack(side="left", fill="x", expand=True)
+
+        tk.Label(
+            tip_col,
+            text="批量文本行级处理：去重、拆分、关键词过滤、查找替换、加前后缀、大小写与编码批量转换。",
+            font=("Microsoft YaHei UI", 9),
+            bg=self.pal["bg"],
+            fg=self.pal["muted"],
+            anchor="w",
+        ).pack(anchor="w")
+
+        self.badge_tools_count = _create_badge(top_box, "未选择文件", tone="muted")
+        self.badge_tools_count.pack(side="right", anchor="center")
+
+        # ── 2. 文件与输出目录卡片 ──
+        io_card = _create_card_frame(self, padx=_scale_val(10), pady=_scale_val(8))
+        io_card.pack(fill="x", pady=(0, _scale_val(6)))
+
+        frm = tk.Frame(io_card, bg=self.pal["card"])
         frm.pack(fill="x", pady=2)
-        ttk.Label(frm, text="文本文件：").pack(side="left")
+        tk.Label(frm, text="文本文件：", bg=self.pal["card"], fg=self.pal["text"], font=("Microsoft YaHei UI", 9)).pack(side="left")
         self.var_files = tk.StringVar(value="未选择")
         ttk.Label(frm, textvariable=self.var_files, foreground="blue").pack(side="left", padx=6)
         ttk.Button(frm, text="选择文件", command=self.pick_files).pack(side="left", padx=2)
         ttk.Button(frm, text="选择文件夹", command=self.pick_folder).pack(side="left", padx=2)
 
-        # 输出目录
-        frm2 = ttk.Frame(self)
-        frm2.pack(fill="x", pady=2)
-        ttk.Label(frm2, text="输出目录：").pack(side="left")
+        frm2 = tk.Frame(io_card, bg=self.pal["card"])
+        frm2.pack(fill="x", pady=(4, 2))
+        tk.Label(frm2, text="输出目录：", bg=self.pal["card"], fg=self.pal["text"], font=("Microsoft YaHei UI", 9)).pack(side="left")
         self.var_out = tk.StringVar(value="与源文件同目录")
         ttk.Label(frm2, textvariable=self.var_out, foreground="blue").pack(side="left", padx=6)
         ttk.Button(frm2, text="选择输出目录", command=self.pick_out).pack(side="left", padx=2)
 
-        # 操作类型
-        frm3 = ttk.Frame(self)
+        # ── 3. 操作类型卡片 ──
+        op_card = _create_card_frame(self, padx=_scale_val(10), pady=_scale_val(8))
+        op_card.pack(fill="x", pady=(0, _scale_val(6)))
+
+        frm3 = tk.Frame(op_card, bg=self.pal["card"])
         frm3.pack(fill="x", pady=2)
-        ttk.Label(frm3, text="操作类型：").pack(side="left")
+        tk.Label(frm3, text="操作类型：", bg=self.pal["card"], fg=self.pal["text"], font=("Microsoft YaHei UI", 9)).pack(side="left")
         self.op_var = tk.StringVar(value="dedupe")
         ops = [
             ("dedupe", "按行去重"),
@@ -1166,25 +1444,25 @@ class TextToolsCard(ttk.Frame):
         # 默认显示去重参数
         self._show_params("dedupe")
 
-        # 开始按钮
-        frm5 = ttk.Frame(self)
-        frm5.pack(fill="x", pady=4)
+        # ── 4. 执行控制与日志卡片 ──
+        log_card = _create_card_frame(self, padx=_scale_val(10), pady=_scale_val(8))
+        log_card.pack(fill="both", expand=True)
+
+        frm5 = tk.Frame(log_card, bg=self.pal["card"])
+        frm5.pack(fill="x", pady=(0, 4))
         self.btn_run = ttk.Button(frm5, text="开始处理", command=self.run)
         self.btn_run.pack(side="left", padx=2)
 
-        # 进度条
-        self.progress = ttk.Progressbar(self, mode="determinate")
+        self.progress = ttk.Progressbar(log_card, mode="determinate")
         self.progress.pack(fill="x", pady=4)
 
-        # 日志
-        self.log_text = tk.Text(self, height=10, state="disabled")
+        self.log_text = tk.Text(log_card, height=10, state="disabled", font=("Consolas", 9), relief=tk.FLAT, bd=0, highlightthickness=1, highlightbackground=self.pal["border"])
         self.log_text.pack(fill="both", expand=True, pady=4)
 
         # 操作类型切换时更新参数区
         self.op_var.trace_add("write", lambda *a: self._show_params(self.op_var.get()))
 
     def _show_params(self, op):
-        """根据操作类型显示对应参数区。"""
         for frame in [self.split_frame, self.filter_frame, self.replace_frame,
                       self.affix_frame, self.case_frame, self.encoding_frame, self.out_enc_frame]:
             frame.pack_forget()
@@ -1205,11 +1483,10 @@ class TextToolsCard(ttk.Frame):
             self.out_enc_frame.pack(fill="x", pady=2)
         elif op == "encoding":
             self.encoding_frame.pack(fill="x", pady=2)
-        else:  # dedupe
+        elif op == "dedupe":
             self.out_enc_frame.pack(fill="x", pady=2)
 
     def log(self, msg):
-        """日志入口：worker 线程调用时投递事件队列，主线程直接写（待修改清单 #1）。"""
         if threading.current_thread() is threading.main_thread():
             self._log_direct(msg)
         else:
@@ -1218,7 +1495,6 @@ class TextToolsCard(ttk.Frame):
     def _log_direct(self, msg):
         self.log_text.configure(state="normal")
         self.log_text.insert("end", msg + "\n")
-        # 行数上限：批量处理的长日志持续膨胀会拖慢滚动与重绘（审计 P2）
         try:
             total_lines = int(self.log_text.index("end-1c").split(".")[0])
             if total_lines > 500:
@@ -1231,11 +1507,15 @@ class TextToolsCard(ttk.Frame):
 
     def pick_files(self):
         files = filedialog.askopenfilenames(
-            title="选择文本文件", filetypes=[("所有文件", "*.*"), ("文本文件", "*.txt")]
+            title="选择文本文件",
+            filetypes=[("文本文件", "*.txt *.csv *.log *.wnd"), ("全部", "*.*")],
         )
         if files:
             self.files = list(files)
-            self.var_files.set(f"已选 {len(self.files)} 个文件")
+            count = len(self.files)
+            self.var_files.set(f"已选 {count} 个文件")
+            if hasattr(self, "badge_tools_count") and hasattr(self.badge_tools_count, "set_badge"):
+                self.badge_tools_count.set_badge(f"已选 {count} 个文件", "success")
 
     def pick_folder(self):
         folder = filedialog.askdirectory(title="选择包含文本文件的文件夹")
@@ -1245,12 +1525,15 @@ class TextToolsCard(ttk.Frame):
             self.files = [
                 os.path.join(folder, f)
                 for f in os.listdir(folder)
-                if f.lower().endswith((".txt", ".csv", ".log"))
+                if f.lower().endswith((".txt", ".csv", ".log", ".wnd"))
             ]
         except OSError as exc:
             messagebox.showerror("读取文件夹失败", "{}\n\n{}".format(folder, exc))
             return
-        self.var_files.set(f"文件夹: {folder} ({len(self.files)} 个文件)")
+        count = len(self.files)
+        self.var_files.set(f"文件夹: {folder} ({count} 个文件)")
+        if hasattr(self, "badge_tools_count") and hasattr(self.badge_tools_count, "set_badge"):
+            self.badge_tools_count.set_badge(f"已选 {count} 个文件", "success")
 
     def pick_out(self):
         d = filedialog.askdirectory(title="选择输出目录")
@@ -1259,7 +1542,6 @@ class TextToolsCard(ttk.Frame):
             self.var_out.set(d)
 
     def run(self):
-        # 运行中再次点击 = 请求取消（逐文件边界生效）
         thread = getattr(self, "_run_thread", None)
         if thread is not None and thread.is_alive():
             self._cancel_event.set()
@@ -1272,8 +1554,6 @@ class TextToolsCard(ttk.Frame):
         out_dir = self.out_dir or os.path.dirname(self.files[0]) or "."
         os.makedirs(out_dir, exist_ok=True)
 
-        # 选项在主线程一次性快照（与 _process_one 的补齐路径共用同一份定义），
-        # worker 中禁止触碰 Tk（待修改清单 #1）
         params = self._snapshot_process_params()
         op = self.op_var.get()
         enc = self.out_enc.get()
@@ -1287,7 +1567,6 @@ class TextToolsCard(ttk.Frame):
         self.log("开始处理...")
 
         def progress(cur, total_count):
-            # worker 只投递，进度条由主线程更新
             self._events.put(lambda c=cur, t=total_count: self._update_progress(c, t))
 
         def _worker():
@@ -1295,7 +1574,7 @@ class TextToolsCard(ttk.Frame):
             try:
                 for idx, src in enumerate(files, start=1):
                     if self._cancel_event.is_set():
-                        raise BatchCancelled(done=idx - 1)  # 取消在逐文件边界
+                        raise BatchCancelled(done=idx - 1)
                     try:
                         self._process_one(src, out_dir, op, enc, params)
                     except Exception as e:  # noqa: BLE001
@@ -1316,11 +1595,9 @@ class TextToolsCard(ttk.Frame):
 
         self._run_thread = threading.Thread(target=_worker, daemon=True)
         self._run_thread.start()
-        # 轮询链从主线程启动（worker 不跨线程调 after）
         self.after(80, self._drain_events)
 
     def _drain_events(self):
-        """主线程排空 worker 事件队列；线程存活或队列非空则续订下一轮。"""
         while True:
             try:
                 fn = self._events.get_nowait()
@@ -1336,7 +1613,6 @@ class TextToolsCard(ttk.Frame):
         self.progress["value"] = cur
 
     def _finish(self, cancelled=False, done=0, failed=0, total=0, error=None):
-        """收尾（仅主线程执行）：恢复按钮；三档结果反馈逻辑与原同步版一致。"""
         self.btn_run.configure(text="开始处理", state="normal")
         if error is not None:
             self.log(f"发生错误: {error}")
@@ -1347,7 +1623,6 @@ class TextToolsCard(ttk.Frame):
             messagebox.showwarning(
                 "已取消", f"已取消处理：完成 {done}/{total}，失败 {failed}。")
             return
-        # 按实际结果反馈：此前全部失败也弹"处理完成！"，与日志矛盾（审计 P1◐）
         if failed == 0:
             self.log("全部处理完成。")
             messagebox.showinfo("完成", "处理完成！")
@@ -1361,7 +1636,6 @@ class TextToolsCard(ttk.Frame):
             messagebox.showerror("处理失败", f"全部 {total} 个文件均处理失败，详见日志。")
 
     def _snapshot_process_params(self):
-        """主线程快照 _process_one 需要的全部选项（worker 内禁止调用：会读 Tk）。"""
         return dict(
             split_lines=self.split_var.get(),
             filter_kw=self.filter_kw.get(),
@@ -1375,13 +1649,6 @@ class TextToolsCard(ttk.Frame):
         )
 
     def _process_one(self, src, out_dir, op, enc, params=None):
-        """处理单个文件。params 为 run() 在主线程快照的选项字典。
-
-        worker 内禁止触碰 Tk 变量：params 为 None 且当前在主线程（旧式直接调用）
-        时在此补齐整份快照；只给了一部分时，缺失键以空串兜底、**不回头读 Tk**
-        （此前用 params.get(key) or self.xxx.get()，字段留空时会静默落回 Tk）。
-        因此函数体只按固定键读 params。
-        """
         if params is None and threading.current_thread() is threading.main_thread():
             params = self._snapshot_process_params()
         params = dict(_PROCESS_PARAM_DEFAULTS, **(params or {}))
@@ -1434,17 +1701,31 @@ class TextToolsCard(ttk.Frame):
 # =====================================================================
 
 class App:
+    """文本与数据处理工作台主应用。"""
     UI_STATE_KEY = "text_tools"
 
     def __init__(self, root):
         self.root = root
-        root.title("文本处理工具")
-        root.geometry("680x620")
-        root.minsize(560, 480)
+        pal = _get_palette()
+        self.root.title("文本与数据处理工作台（TXT 合并 / CSV 转换 / 文本清洗）")
+        self.root.configure(bg=pal["bg"])
 
-        # 三卡片切换
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True, padx=8, pady=8)
+        if _HAS_WT_DPI and hasattr(wt_dpi, "geometry"):
+            wt_dpi.geometry(self.root, 840, 720)
+            self.root.minsize(_scale_val(700), _scale_val(580))
+        else:
+            self.root.geometry("840x720")
+            self.root.minsize(700, 580)
+
+        # 样式定义
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=_scale_val(8), pady=_scale_val(8))
 
         self.txt_card = TxtMergeCard(self.notebook)
         self.csv_card = CsvConvertCard(self.notebook)
@@ -1527,6 +1808,11 @@ class App:
             wt_ui_state.save(self.UI_STATE_KEY, self._collect_ui_state())
         finally:
             self.root.destroy()
+
+
+# 向后兼容别名与现代命名
+TextToolsApp = App
+TextDataStudioApp = App
 
 
 def main():
