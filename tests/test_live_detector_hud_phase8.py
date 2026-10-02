@@ -161,6 +161,34 @@ class TestLiveDetectorHUDAndPayload:
         finally:
             getattr(detector.window, "destroy")()
 
+    def test_inject_to_flow_action_unwraps_library_definition(self):
+        """测试存在 library_definition 时自动解包并传递权威定义对象。"""
+        mock_editor = MagicMock()
+        detector = cld.ControlLiveDetectorWindow(self.root, flow_editor=mock_editor)
+        try:
+            detector.current_ctrl_info = {
+                "name": "测风塔计算按钮",
+                "automationId": "btn_calc",
+                "controlType": "Button",
+            }
+            lib_def = {
+                "id": "mast_calc_001",
+                "name": "测风塔权威计算按钮",
+                "targetMethod": "automation_id",
+                "targetValue": "btn_calc",
+            }
+            detector.current_matches = [{"score": 100, "library_definition": lib_def}]
+
+            with patch.object(detector, "_show_inject_toast"):
+                detector.inject_to_flow_action()
+
+            mock_editor.inject_control_as_step.assert_called_once_with(
+                detector.current_ctrl_info,
+                lib_def
+            )
+        finally:
+            getattr(detector.window, "destroy")()
+
 
 class TestFlowEditorStepInjection:
     """测试流程编辑器 inject_control_as_step 功能及类型动作推断。"""
@@ -263,3 +291,50 @@ class TestFlowEditorStepInjection:
         step = inject_fn(ctrl_data)
         assert step is not None
         assert step["actionConfig"]["action"] == "select_dropdown_item_runtime"
+
+    def test_flow_editor_inject_control_with_library_definition_wrapper(self):
+        """测试使用带 library_definition 包装的匹配字典直注时正确解包并在步骤中使用权威字段。"""
+        editor = MagicMock()
+        editor.root = self.root
+        editor.steps = []
+        editor.dirty = False
+        editor.status_var = tk.StringVar(self.root)
+        editor._confirm_discard_form_changes = MagicMock(return_value=True)
+        editor._match_control_in_master_library = MagicMock(return_value=None)
+        editor._infer_action_type = fe.FlowEditorApp._infer_action_type.__get__(editor, fe.FlowEditorApp)
+        editor._build_step_from_control = fe.FlowEditorApp._build_step_from_control.__get__(editor, fe.FlowEditorApp)
+        editor._append_step_to_flow = fe.FlowEditorApp._append_step_to_flow.__get__(editor, fe.FlowEditorApp)
+        editor._refresh_steps_tree = MagicMock()
+        editor._select_step = MagicMock()
+        editor._set_title = MagicMock()
+
+        inject_fn = fe.FlowEditorApp.inject_control_as_step.__get__(editor, fe.FlowEditorApp)
+
+        ctrl_data = {
+            "name": "临时原生捕获名",
+            "automationId": "raw_aid_xyz",
+            "controlType": "Button",
+            "className": "Button",
+        }
+        match_wrapper = {
+            "score": 100,
+            "reasons": ["exact_aid_match"],
+            "library_definition": {
+                "id": "btn_standard_calc",
+                "name": "测风塔标准计算按钮",
+                "targetMethod": "automation_id",
+                "targetValue": "Btn_StandardCalc",
+                "templateKey": "tpl_btn_calc",
+                "windowTitle": "WT标准计算窗",
+            }
+        }
+
+        step = inject_fn(ctrl_data, match_item=match_wrapper)
+        assert step is not None
+        assert step["actionConfig"]["action"] == "click"
+        assert "测风塔标准计算按钮" in step["name"]
+        assert step["windowTitle"] == "WT标准计算窗"
+        assert step["controls"][0]["id"] == "btn_standard_calc"
+        assert step["controls"][0]["targetMethod"] == "automation_id"
+        assert step["controls"][0]["targetValue"] == "Btn_StandardCalc"
+        assert step["controls"][0]["templateKey"] == "tpl_btn_calc"

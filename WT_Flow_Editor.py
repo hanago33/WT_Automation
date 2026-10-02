@@ -8356,8 +8356,9 @@ class FlowPackageDialog:
 class StepTestRunDialog:
     """就地单步试跑窗口：实时显示执行日志、执行状态及耗时。"""
 
-    def __init__(self, parent, step_id, step_name, flow_file, script_path, theme=None):
+    def __init__(self, parent, step_id, step_name, flow_file, script_path, theme=None, app=None):
         self.parent = parent
+        self.app = app
         self.step_id = step_id
         self.step_name = step_name
         self.flow_file = flow_file
@@ -8367,6 +8368,9 @@ class StepTestRunDialog:
         self.start_time = None
         self._poll_id = None
         self._output_queue = queue.Queue()
+
+        if self.app is not None and hasattr(self.app, "_active_test_dialogs") and isinstance(self.app._active_test_dialogs, list):
+            self.app._active_test_dialogs.append(self)
 
         self.window = tk.Toplevel(parent)
         self.window.title(f"单步试跑 - {step_name or step_id}")
@@ -8596,18 +8600,30 @@ class StepTestRunDialog:
                 pass
 
     def _on_close(self):
-        if self._poll_id:
+        if self._poll_id and hasattr(self, "window") and self.window.winfo_exists():
             try:
                 self.window.after_cancel(self._poll_id)
             except Exception:
                 pass
+        if getattr(self, "app", None) and hasattr(self.app, "_active_test_dialogs"):
+            try:
+                if self in self.app._active_test_dialogs:
+                    self.app._active_test_dialogs.remove(self)
+            except Exception:
+                pass
         self._stop_process()
+        if self.process and self.process.poll() is None:
+            self._force_kill_if_needed()
         if self.flow_file and os.path.exists(self.flow_file) and "wt_step_test_" in self.flow_file:
             try:
                 os.remove(self.flow_file)
             except Exception:
                 pass
-        self.window.destroy()
+        if hasattr(self, "window") and self.window.winfo_exists():
+            try:
+                self.window.destroy()
+            except Exception:
+                pass
 
 
 class FlowEditorApp:
@@ -8747,6 +8763,7 @@ class FlowEditorApp:
         self._concurrent_enabled = False  # 是否真正开启
         self._concurrent_event_queue = None  # 线程安全事件队列
         self._concurrent_polling_job = None  # 主线程轮询任务 ID
+        self._active_test_dialogs = []  # 活跃的单步试跑窗口实例
         self.font_section_title = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=12, weight="bold")
         self.font_help_text = tkfont.Font(root=self.root, family="Microsoft YaHei UI", size=10)
 
@@ -10765,7 +10782,9 @@ class FlowEditorApp:
     def _focus_step_by_id(self, step_id):
         normalized_step_id = str(step_id).strip()
         if not normalized_step_id:
-            return
+            return False
+        if not self._confirm_discard_form_changes():
+            return False
         if hasattr(self, "step_search_query") and self.step_search_query.get().strip():
             self.step_search_query.set("")
         if hasattr(self, "step_filter_category") and self.step_filter_category.get() not in ("", "全部"):
@@ -10776,8 +10795,12 @@ class FlowEditorApp:
                 continue
             self._select_step(index)
             if hasattr(self, "step_tree") and str(index) in self.step_tree.get_children():
-                self.step_tree.selection_set(str(index))
-                self.step_tree.see(str(index))
+                self._suppress_tree_select_event = True
+                try:
+                    self.step_tree.selection_set(str(index))
+                    self.step_tree.see(str(index))
+                finally:
+                    self._suppress_tree_select_event = False
             self.root.lift()
             self.root.focus_force()
             self.status_var.set(f"已定位到步骤：{normalized_step_id}")
@@ -11916,8 +11939,12 @@ class FlowEditorApp:
         if hasattr(self, "step_count_badge_var"):
             self.step_count_badge_var.set(f"{len(visible_indexes)} / {len(self.steps)} 步")
         if self.selected_index is not None and str(self.selected_index) in self.step_tree.get_children():
-            self.step_tree.selection_set(str(self.selected_index))
-            self.step_tree.see(str(self.selected_index))
+            self._suppress_tree_select_event = True
+            try:
+                self.step_tree.selection_set(str(self.selected_index))
+                self.step_tree.see(str(self.selected_index))
+            finally:
+                self._suppress_tree_select_event = False
         self._set_title()
 
     def _refresh_overview(self):
@@ -12433,6 +12460,7 @@ class FlowEditorApp:
             flow_file=tmp_flow_path,
             script_path=AUTOMATION_SCRIPT,
             theme=EDITOR_THEME,
+            app=self,
         )
 
     def _refresh_controls_tree(self, step=None):
@@ -13126,21 +13154,32 @@ class FlowEditorApp:
         self._refresh_overview()
 
     def _on_step_filter_changed(self):
-        self._refresh_steps_tree()
         visible = self._get_visible_step_indexes()
         if visible and (self.selected_index is None or self.selected_index not in visible):
+            if not self._confirm_discard_form_changes():
+                self._refresh_steps_tree()
+                return
             self._select_step(visible[0])
+        self._refresh_steps_tree()
 
     def _show_step_context_menu(self, event):
         row_id = self.step_tree.identify_row(event.y)
         if row_id:
             sel = self.step_tree.selection()
             if row_id not in sel:
-                self.step_tree.selection_set(row_id)
                 try:
-                    self._select_step(int(row_id))
+                    target_idx = int(row_id)
                 except Exception:
-                    pass
+                    target_idx = None
+                if target_idx is not None and target_idx != self.selected_index:
+                    if not self._confirm_discard_form_changes():
+                        return
+                    self._suppress_tree_select_event = True
+                    try:
+                        self.step_tree.selection_set(row_id)
+                    finally:
+                        self._suppress_tree_select_event = False
+                    self._select_step(target_idx)
         elif self.selected_index is None:
             return
 
@@ -14205,6 +14244,8 @@ class FlowEditorApp:
     def _build_step_from_control(self, control, matched, action_type):
         """根据控件信息构建步骤"""
         inspect_data = control.get("inspectData", {}) if isinstance(control.get("inspectData"), dict) else {}
+        if matched and isinstance(matched, dict) and "library_definition" in matched:
+            matched = matched["library_definition"]
         
         # 优先使用匹配到的控件信息
         if matched:
@@ -14220,6 +14261,8 @@ class FlowEditorApp:
             control["targetValue"] = target_value
             control["id"] = ctrl_id
             control["name"] = ctrl_name
+            if window_title:
+                control["windowTitle"] = window_title
             if matched.get("uiPath"):
                 control["uiPath"] = matched["uiPath"]
             if matched.get("auxChecks"):
@@ -14325,6 +14368,8 @@ class FlowEditorApp:
         """从外部（如实时控件探测器）直接将探测到的控件封装为新步骤并注入流程末尾。"""
         if not isinstance(ctrl_info, dict):
             return None
+        if not self._confirm_discard_form_changes():
+            return None
 
         control = dict(ctrl_info)
         if "inspectData" not in control or not isinstance(control["inspectData"], dict):
@@ -14337,8 +14382,12 @@ class FlowEditorApp:
                 "recommendedTargetValue": str(control.get("targetValue", "")).strip(),
             }
         matched = match_item or control.get("bestMatch")
+        if matched and isinstance(matched, dict) and "library_definition" in matched:
+            matched = matched["library_definition"]
         if not matched:
             matched = self._match_control_in_master_library(control)
+        if matched and isinstance(matched, dict) and "library_definition" in matched:
+            matched = matched["library_definition"]
 
         action_type = self._infer_action_type(control)
         new_step = self._build_step_from_control(control, matched, action_type)
@@ -14399,6 +14448,14 @@ class FlowEditorApp:
                 self._stop_probe()
             except Exception:
                 pass
+        # 关窗前关闭所有活跃的单步试跑窗口，终止试跑子进程并清理临时流程文件
+        for dlg in list(getattr(self, "_active_test_dialogs", [])):
+            try:
+                if hasattr(dlg, "_on_close"):
+                    dlg._on_close()
+            except Exception:
+                pass
+        self._active_test_dialogs = []
         self.root.destroy()
 
     @staticmethod
