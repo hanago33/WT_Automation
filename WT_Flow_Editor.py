@@ -8754,6 +8754,7 @@ class FlowEditorApp:
         self._build_ui()
         if not self.root.bind("<Control-s>"):
             self.root.bind("<Control-s>", lambda _event: self.cmd_save())
+        self.root.bind("<F12>", lambda _event: self.cmd_open_live_detector())
         for trace_var in (
             self.var_window_title,
             self.var_action,
@@ -9331,6 +9332,13 @@ class FlowEditorApp:
             self.cmd_open_flow_graph,
         )
         self.graph_button.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.live_detector_button = self._create_action_button(
+            right_side,
+            "🎯 实时探测 HUD",
+            self.cmd_open_live_detector,
+        )
+        self.live_detector_button.pack(side=tk.LEFT, padx=(0, 6))
 
         self.apply_button = self._create_action_button(
             right_side,
@@ -12354,6 +12362,33 @@ class FlowEditorApp:
         except Exception as exc:
             messagebox.showerror("打开拓扑图失败", f"无法打开流程拓扑图：\n{exc}", parent=self.root)
 
+    def cmd_open_live_detector(self):
+        """打开实时控件探测器（默认启动迷你 HUD 悬浮模式），支持一键直注流程。"""
+        try:
+            if hasattr(self, "_live_detector_win") and self._live_detector_win:
+                try:
+                    if self._live_detector_win.winfo_exists():
+                        self._live_detector_win.lift()
+                        self._live_detector_win.focus_force()
+                        return
+                except Exception:
+                    self._live_detector_win = None
+
+            import control_live_detector
+            self._live_detector_win = control_live_detector.ControlLiveDetectorWindow(
+                self.root,
+                flow_editor=self,
+                start_in_hud=True,
+            )
+            try:
+                self._live_detector_win.lift()
+                self._live_detector_win.focus_force()
+            except Exception:
+                pass
+            self.status_var.set("已打开实时控件探测器 (HUD 模式)")
+        except Exception as exc:
+            messagebox.showerror("打开实时探测器失败", f"无法打开实时控件探测器：\n{exc}", parent=self.root)
+
     def cmd_test_run_current_step(self):
         """在现场就地单步隔离试跑当前步骤。"""
         if self.selected_index is None or self.selected_index < 0 or self.selected_index >= len(self.steps):
@@ -13120,6 +13155,8 @@ class FlowEditorApp:
         menu.add_command(label="{ } 复制步骤完整JSON", command=self.cmd_copy_step_json)
         menu.add_separator()
         menu.add_command(label="🗑️ 删除所选步骤 (Del)", command=self.cmd_delete_step)
+        menu.add_separator()
+        menu.add_command(label="🎯 实时探测 HUD (F12)", command=self.cmd_open_live_detector)
 
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -14145,8 +14182,8 @@ class FlowEditorApp:
 
     def _infer_action_type(self, control):
         """根据控件类型智能推断动作类型，与 wt_action_schema.py 中定义的合法动作保持一致"""
-        inspect_data = control.get("inspectData", {})
-        ctrl_type = str(inspect_data.get("controlType", "")).strip().lower()
+        inspect_data = control.get("inspectData", {}) if isinstance(control.get("inspectData"), dict) else {}
+        ctrl_type = str(inspect_data.get("controlType", "") or control.get("controlType", "")).strip().lower()
 
         if ctrl_type in {"button", "hyperlink", "link", "text", "menuitem"}:
             return "click"
@@ -14279,6 +14316,38 @@ class FlowEditorApp:
         self._select_step(new_index)
         
         self._set_title()
+
+    def inject_control_as_step(self, ctrl_info, match_item=None):
+        """从外部（如实时控件探测器）直接将探测到的控件封装为新步骤并注入流程末尾。"""
+        if not isinstance(ctrl_info, dict):
+            return None
+
+        control = dict(ctrl_info)
+        if "inspectData" not in control or not isinstance(control["inspectData"], dict):
+            control["inspectData"] = {
+                "name": str(control.get("name", "")).strip(),
+                "controlType": str(control.get("controlType", "")).strip(),
+                "className": str(control.get("className", "")).strip(),
+                "automationId": str(control.get("automationId", "")).strip(),
+                "recommendedTargetMethod": str(control.get("targetMethod", "")).strip(),
+                "recommendedTargetValue": str(control.get("targetValue", "")).strip(),
+            }
+        matched = match_item or control.get("bestMatch")
+        if not matched:
+            matched = self._match_control_in_master_library(control)
+
+        action_type = self._infer_action_type(control)
+        new_step = self._build_step_from_control(control, matched, action_type)
+
+        ctrl_name = control.get("name") or "新控件"
+        new_step["description"] = f"实时探测直注：{ctrl_name}"
+        if new_step.get("controls") and len(new_step["controls"]) > 0:
+            new_step["controls"][0]["role"] = "实时探测直注"
+            new_step["controls"][0]["notes"] = "由实时控件探测器一键直注生成" + ("（已匹配总库）" if matched else "")
+
+        self._append_step_to_flow(new_step)
+        self.status_var.set(f"已直注步骤：{new_step.get('name', ctrl_name)}")
+        return new_step
 
     def cmd_open_json_file(self):
         target = self.definition_path or FLOW_DEFINITION_FILE

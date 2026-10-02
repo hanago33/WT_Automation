@@ -1001,8 +1001,12 @@ def _match_lib_locator(ctrl_info, lib_ctrl):
 class ControlLiveDetectorWindow:
     """实时控件检测器窗口"""
     
-    def __init__(self, parent):
+    def __init__(self, parent, flow_editor=None, on_inject=None, start_in_hud=False):
         self.parent = parent
+        self.flow_editor = flow_editor
+        self.on_inject = on_inject
+        self.hud_mode = False
+        self.saved_geometry = "1100x780"
         self.monitoring = False
         self.paused = False
         self.monitor_thread = None
@@ -1022,6 +1026,8 @@ class ControlLiveDetectorWindow:
         self._apply_theme()
         self._build_ui()
         self._load_library()
+        if start_in_hud:
+            self.window.after(50, self.toggle_hud_mode)
     
     def _apply_theme(self):
         """应用统一浅色蓝灰主题。"""
@@ -1069,7 +1075,10 @@ class ControlLiveDetectorWindow:
         )
     
     def _build_ui(self):
-        toolbar = tk.Frame(self.window, bg=DETECTOR_THEME["toolbar"], padx=10, pady=6)
+        self.standard_container = tk.Frame(self.window, bg=DETECTOR_THEME["bg"])
+        self.standard_container.pack(fill=tk.BOTH, expand=True)
+
+        toolbar = tk.Frame(self.standard_container, bg=DETECTOR_THEME["toolbar"], padx=10, pady=6)
         toolbar.pack(fill=tk.X)
         
         self.smart_var = tk.BooleanVar(value=True)
@@ -1133,12 +1142,22 @@ class ControlLiveDetectorWindow:
         _paint_button(self.merge_btn, DETECTOR_THEME["primary_soft"], DETECTOR_THEME["primary"], DETECTOR_THEME["primary"])
         self.merge_btn.pack(side=tk.LEFT, padx=(6, 0))
 
+        # ── 迷你 HUD 模式切换按钮 ──
+        self.hud_btn = tk.Button(toolbar, text="📌 迷你 HUD", command=self.toggle_hud_mode, width=10)
+        _paint_button(self.hud_btn, DETECTOR_THEME["primary_soft"], DETECTOR_THEME["primary"], DETECTOR_THEME["primary"])
+        self.hud_btn.pack(side=tk.LEFT, padx=(6, 0))
+
+        # ── 一键注入流程按钮 ──
+        self.inject_btn = tk.Button(toolbar, text="💉 直注流程", command=self.inject_to_flow_action, width=10)
+        _paint_button(self.inject_btn, DETECTOR_THEME["success_soft"], DETECTOR_THEME["success"], DETECTOR_THEME["success"])
+        self.inject_btn.pack(side=tk.LEFT, padx=(6, 0))
+
         self.lib_count_label = tk.Label(toolbar, text="总库:0 其他:0", fg=DETECTOR_THEME["muted"], bg=DETECTOR_THEME["toolbar"])
         self.lib_count_label.pack(side=tk.RIGHT)
         
         tips = tk.Label(
-            self.window,
-            text="提示: 移动鼠标查看控件 | Space暂停/继续 | Enter保存最佳匹配 | Esc停止 | Raw View=遍历原始视图，可见 Inspect 能看到的更多控件",
+            self.standard_container,
+            text="提示: 移动鼠标查看控件 | Space暂停/继续 | Enter保存最佳匹配 | Esc停止 | F12切迷你HUD | Raw View=遍历原始视图",
             bg=DETECTOR_THEME["panel_soft"],
             fg=DETECTOR_THEME["muted"],
             anchor="w",
@@ -1148,7 +1167,7 @@ class ControlLiveDetectorWindow:
         )
         tips.pack(fill=tk.X)
         
-        content = tk.PanedWindow(self.window, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, bg=DETECTOR_THEME["panel"])
+        content = tk.PanedWindow(self.standard_container, orient=tk.HORIZONTAL, sashrelief=tk.RAISED, bg=DETECTOR_THEME["panel"])
         content.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         
         left_frame = tk.LabelFrame(content, text="捕获的控件信息", padx=8, pady=5, bg=DETECTOR_THEME["panel"], fg=DETECTOR_THEME["text"], font=(DETECTOR_THEME["font"], 10, "bold"))
@@ -1212,7 +1231,7 @@ class ControlLiveDetectorWindow:
         )
         self.match_detail.pack(fill=tk.X, pady=(5, 0))
         
-        bottom_bar = tk.Frame(self.window, bg=DETECTOR_THEME["toolbar"], relief=tk.SUNKEN, bd=1)
+        bottom_bar = tk.Frame(self.standard_container, bg=DETECTOR_THEME["toolbar"], relief=tk.SUNKEN, bd=1)
         bottom_bar.pack(fill=tk.X)
         
         self.coord_label = tk.Label(bottom_bar, text="位置: (-, -)", bg=DETECTOR_THEME["toolbar"], fg=DETECTOR_THEME["muted"], anchor="w", padx=10, font=(DETECTOR_THEME["font"], 10))
@@ -1220,10 +1239,324 @@ class ControlLiveDetectorWindow:
         
         self.saved_count_label = tk.Label(bottom_bar, text="已保存: 0", bg=DETECTOR_THEME["toolbar"], fg=DETECTOR_THEME["text"], anchor="e", padx=10, font=(DETECTOR_THEME["font"], 10))
         self.saved_count_label.pack(side=tk.RIGHT)
+
+        self._build_hud_ui()
         
         self.window.bind("<space>", lambda e: self.toggle_pause())
         self.window.bind("<Return>", lambda e: self.save_current_match())
         self.window.bind("<Escape>", lambda e: self.stop_monitoring())
+        self.window.bind("<F12>", lambda e: self.toggle_hud_mode())
+        self.window.bind("<Control-h>", lambda e: self.toggle_hud_mode())
+        self.window.bind("<Control-H>", lambda e: self.toggle_hud_mode())
+        self.window.bind("<Control-i>", lambda e: self.inject_to_flow_action())
+        self.window.bind("<Control-I>", lambda e: self.inject_to_flow_action())
+
+    def _build_hud_ui(self):
+        """构建迷你 HUD 悬浮模式的界面（初态不 pack）。"""
+        self.hud_container = tk.Frame(
+            self.window,
+            bg=DETECTOR_THEME["panel"],
+            padx=8,
+            pady=6,
+            highlightthickness=1,
+            highlightbackground=DETECTOR_THEME["border"],
+        )
+
+        # 1. 拖拽顶栏
+        hud_bar = tk.Frame(self.hud_container, bg=DETECTOR_THEME["toolbar"], padx=6, pady=3)
+        hud_bar.pack(fill=tk.X, pady=(0, 4))
+
+        hud_title = tk.Label(
+            hud_bar,
+            text="🎯 控件探测 HUD",
+            font=(DETECTOR_THEME["font"], 9, "bold"),
+            bg=DETECTOR_THEME["toolbar"],
+            fg=DETECTOR_THEME["text"],
+            cursor="fleur",
+        )
+        hud_title.pack(side=tk.LEFT)
+
+        self.hud_status_badge = tk.Label(
+            hud_bar,
+            text="🟢 探测中",
+            font=(DETECTOR_THEME["font"], 8, "bold"),
+            bg=DETECTOR_THEME["success_soft"],
+            fg=DETECTOR_THEME["success"],
+            padx=5,
+            pady=1,
+        )
+        self.hud_status_badge.pack(side=tk.LEFT, padx=(6, 0))
+
+        hud_title.bind("<Button-1>", self._start_hud_drag)
+        hud_title.bind("<B1-Motion>", self._on_hud_drag)
+        hud_bar.bind("<Button-1>", self._start_hud_drag)
+        hud_bar.bind("<B1-Motion>", self._on_hud_drag)
+
+        btn_hud_restore = tk.Button(
+            hud_bar,
+            text="🖥️ 还原大窗",
+            command=self.toggle_hud_mode,
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            padx=6,
+            pady=1,
+            font=(DETECTOR_THEME["font"], 8),
+            bg=DETECTOR_THEME["panel_soft"],
+            fg=DETECTOR_THEME["text"],
+        )
+        btn_hud_restore.pack(side=tk.RIGHT, padx=(4, 0))
+
+        btn_hud_inject = tk.Button(
+            hud_bar,
+            text="💉 直注流程",
+            command=self.inject_to_flow_action,
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            padx=6,
+            pady=1,
+            font=(DETECTOR_THEME["font"], 8, "bold"),
+            bg=DETECTOR_THEME["success_soft"],
+            fg=DETECTOR_THEME["success"],
+        )
+        btn_hud_inject.pack(side=tk.RIGHT, padx=(4, 0))
+
+        btn_hud_copy = tk.Button(
+            hud_bar,
+            text="📋 复制",
+            command=self.copy_current_locator,
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            padx=6,
+            pady=1,
+            font=(DETECTOR_THEME["font"], 8),
+            bg=DETECTOR_THEME["primary_soft"],
+            fg=DETECTOR_THEME["primary"],
+        )
+        btn_hud_copy.pack(side=tk.RIGHT)
+
+        # 2. 紧凑内容卡片
+        hud_body = tk.Frame(self.hud_container, bg=DETECTOR_THEME["panel"], padx=2)
+        hud_body.pack(fill=tk.BOTH, expand=True)
+
+        self.hud_name_lbl = tk.Label(
+            hud_body,
+            text="等待捕获控件... (移动鼠标至目标软件)",
+            font=(DETECTOR_THEME["font"], 10, "bold"),
+            bg=DETECTOR_THEME["panel"],
+            fg=DETECTOR_THEME["primary"],
+            anchor="w",
+        )
+        self.hud_name_lbl.pack(fill=tk.X, pady=(2, 1))
+
+        self.hud_aid_lbl = tk.Label(
+            hud_body,
+            text="AID: - | Class: -",
+            font=("Consolas", 8),
+            bg=DETECTOR_THEME["panel"],
+            fg=DETECTOR_THEME["muted"],
+            anchor="w",
+        )
+        self.hud_aid_lbl.pack(fill=tk.X, pady=(0, 1))
+
+        self.hud_win_lbl = tk.Label(
+            hud_body,
+            text="🪟 窗口: - (x=-, y=-)",
+            font=(DETECTOR_THEME["font"], 8),
+            bg=DETECTOR_THEME["panel"],
+            fg=DETECTOR_THEME["text"],
+            anchor="w",
+        )
+        self.hud_win_lbl.pack(fill=tk.X, pady=(0, 1))
+
+        self.hud_match_lbl = tk.Label(
+            hud_body,
+            text="⭐ 匹配: - | [Space]暂停 [F12]切大窗",
+            font=(DETECTOR_THEME["font"], 8),
+            bg=DETECTOR_THEME["panel"],
+            fg=DETECTOR_THEME["muted"],
+            anchor="w",
+        )
+        self.hud_match_lbl.pack(fill=tk.X)
+
+    def _start_hud_drag(self, event):
+        self._drag_start_x = event.x
+        self._drag_start_y = event.y
+
+    def _on_hud_drag(self, event):
+        deltax = event.x - getattr(self, "_drag_start_x", 0)
+        deltay = event.y - getattr(self, "_drag_start_y", 0)
+        x = self.window.winfo_x() + deltax
+        y = self.window.winfo_y() + deltay
+        self.window.geometry(f"+{x}+{y}")
+
+    def toggle_hud_mode(self):
+        """在标准全景窗口与迷你 HUD 悬浮模式之间切换。"""
+        if not self.hud_mode:
+            try:
+                self.saved_geometry = self.window.geometry()
+            except Exception:
+                self.saved_geometry = "1100x780"
+            self.hud_mode = True
+            self.standard_container.pack_forget()
+            self.hud_container.pack(fill=tk.BOTH, expand=True)
+            self.window.minsize(380, 150)
+            self.window.geometry("450x170")
+            try:
+                self.window.attributes("-topmost", True)
+                self.window.attributes("-alpha", 0.94)
+            except Exception:
+                pass
+            self.window.title("⚡ 控件探测 HUD [F12还原]")
+        else:
+            self.hud_mode = False
+            self.hud_container.pack_forget()
+            self.standard_container.pack(fill=tk.BOTH, expand=True)
+            self.window.minsize(1000, 700)
+            self.window.geometry(self.saved_geometry or "1100x780")
+            try:
+                self.window.attributes("-alpha", 1.0)
+                self.window.attributes("-topmost", bool(self.topmost_var.get()))
+            except Exception:
+                pass
+            self.window.title("实时控件检测器")
+
+    @staticmethod
+    def _build_locator_payload(ctrl_info, best_match=None):
+        """构造供流程编辑器直接消费的统一定位信息字典"""
+        ctrl_info = ctrl_info or {}
+        if best_match and best_match.get("library_definition"):
+            lib_def = best_match["library_definition"]
+            return {
+                "id": lib_def.get("id", ""),
+                "name": lib_def.get("name") or ctrl_info.get("name", ""),
+                "targetMethod": lib_def.get("targetMethod") or lib_def.get("recommendedTargetMethod", "automation_id"),
+                "targetValue": lib_def.get("targetValue") or lib_def.get("recommendedTargetValue") or ctrl_info.get("automationId", ""),
+                "windowTitle": lib_def.get("windowTitle") or ctrl_info.get("windowTitle", ""),
+                "controlType": lib_def.get("controlType") or ctrl_info.get("controlType", ""),
+                "className": lib_def.get("className") or ctrl_info.get("className", ""),
+                "automationId": lib_def.get("automationId") or ctrl_info.get("automationId", ""),
+                "source": "library_match",
+                "score": best_match.get("score", 0),
+            }
+
+        aid = str(ctrl_info.get("automationId") or "").strip()
+        name = str(ctrl_info.get("name") or "").strip()
+        cls = str(ctrl_info.get("className") or "").strip()
+        ctrl_type = str(ctrl_info.get("controlType") or "").strip()
+        win_title = str(ctrl_info.get("windowTitle") or "").strip()
+
+        if aid:
+            method = "automation_id"
+            val = aid
+        elif name:
+            method = "name"
+            val = name
+        elif cls:
+            method = "class_name"
+            val = cls
+        else:
+            method = "control_type"
+            val = ctrl_type
+
+        return {
+            "name": name or ctrl_type or "未命名控件",
+            "targetMethod": method,
+            "targetValue": val,
+            "windowTitle": win_title,
+            "controlType": ctrl_type,
+            "className": cls,
+            "automationId": aid,
+            "source": "live_detector",
+        }
+
+    def copy_current_locator(self):
+        """复制当前控件定位表达式或结构化字典到剪贴板。"""
+        ctrl_info = self.current_ctrl_info
+        if not ctrl_info:
+            messagebox.showinfo("提示", "当前尚未捕获到控件。", parent=self.window)
+            return
+        best_match = self.current_matches[0] if self.current_matches else None
+        payload = self._build_locator_payload(ctrl_info, best_match)
+        method = payload.get("targetMethod", "")
+        val = payload.get("targetValue", "")
+        expr = f"{method}:{val}" if method else val
+        try:
+            self.window.clipboard_clear()
+            self.window.clipboard_append(expr)
+            self._show_inject_toast(f"已复制定位表达式：{expr}")
+        except Exception as exc:
+            messagebox.showerror("复制失败", str(exc), parent=self.window)
+
+    def inject_to_flow_action(self):
+        """将当前捕获或匹配的控件一键注入到流程编辑器。"""
+        ctrl_info = self.current_ctrl_info
+        if not ctrl_info:
+            messagebox.showinfo("无法注入", "当前尚未捕获到有效控件，请移动鼠标到目标控件上。", parent=self.window)
+            return
+
+        best_match = self.current_matches[0] if self.current_matches else None
+
+        # 优先使用显式注册的 on_inject 回调
+        if callable(getattr(self, "on_inject", None)):
+            try:
+                self.on_inject(ctrl_info, best_match)
+                self._show_inject_toast("✓ 已将控件注入到流程编辑器！")
+                return
+            except Exception as exc:
+                print(f"[实时检测器] on_inject 回调失败: {exc}")
+
+        # 次优：直接通知关联的 flow_editor 实例
+        flow_editor = getattr(self, "flow_editor", None)
+        if flow_editor is not None and hasattr(flow_editor, "inject_control_as_step"):
+            try:
+                flow_editor.inject_control_as_step(ctrl_info, best_match)
+                self._show_inject_toast("✓ 已将控件注入到流程编辑器！")
+                return
+            except Exception as exc:
+                print(f"[实时检测器] flow_editor 注入失败: {exc}")
+
+        # 兜底：复制标准定位定义到剪贴板并提示
+        payload = self._build_locator_payload(ctrl_info, best_match)
+        payload_str = json.dumps(payload, ensure_ascii=False, indent=2)
+        try:
+            self.window.clipboard_clear()
+            self.window.clipboard_append(payload_str)
+            messagebox.showinfo(
+                "已复制控件定位",
+                "未检测到直接关联的流程编辑器，已将标准控件定位定义复制到剪贴板：\n\n"
+                f"{payload_str}\n\n"
+                "可在流程编辑器中直接粘贴应用。",
+                parent=self.window,
+            )
+        except Exception as exc:
+            messagebox.showerror("写入剪贴板失败", str(exc), parent=self.window)
+
+    def _show_inject_toast(self, message):
+        """轻量悬浮气泡反馈"""
+        try:
+            toast = tk.Toplevel(self.window)
+            toast.overrideredirect(True)
+            toast.attributes("-topmost", True)
+            toast.configure(bg="#0f172a")
+            x = self.window.winfo_x() + 30
+            y = self.window.winfo_y() + self.window.winfo_height() + 5
+            toast.geometry(f"+{x}+{y}")
+            lbl = tk.Label(
+                toast,
+                text=message,
+                bg="#0f172a",
+                fg="#38bdf8",
+                padx=12,
+                pady=6,
+                font=(DETECTOR_THEME["font"], 9, "bold"),
+            )
+            lbl.pack()
+            toast.after(1600, lambda: toast.destroy())
+        except Exception:
+            pass
     
     def _load_library(self):
         """加载控件库（后台线程）：避免 UI 线程同步解析大目录 JSON 导致窗口假死。
@@ -1516,6 +1849,34 @@ class ControlLiveDetectorWindow:
                 self.match_listbox.itemconfig(pin_idx, bg=DETECTOR_THEME["primary_soft"])
         
         self.match_detail.delete("1.0", tk.END)
+
+        # 同步更新 HUD 悬浮模式内容
+        if hasattr(self, "hud_name_lbl"):
+            ctrl_name = first.get("name") or "(无名称)"
+            ctrl_type = first.get("controlType") or "未知类型"
+            self.hud_name_lbl.config(text=f"🔲 [{ctrl_type}] {ctrl_name}")
+
+            aid = first.get("automationId") or "(无AID)"
+            cls = first.get("className") or "(无Class)"
+            self.hud_aid_lbl.config(text=f"AID: {aid} | Class: {cls}")
+
+            win = first.get("windowTitle") or "(无顶层窗口)"
+            self.hud_win_lbl.config(text=f"🪟 {win}  ({first.get('x')}, {first.get('y')})")
+
+            if matches:
+                top_m = matches[0]
+                lib_name = top_m.get("name") or top_m.get("library_definition", {}).get("name", "")
+                score = top_m.get("score", 0)
+                src = top_m.get("source", "")
+                self.hud_match_lbl.config(
+                    text=f"⭐ 最佳匹配: {score}分 [{src}] {lib_name} | [Space]暂停",
+                    fg=DETECTOR_THEME["success"] if score >= 80 else DETECTOR_THEME["warning"],
+                )
+            else:
+                self.hud_match_lbl.config(
+                    text="ℹ️ 库内无匹配项（可一键直注为新步骤）| [Space]暂停",
+                    fg=DETECTOR_THEME["muted"],
+                )
     
     def _on_match_select(self, event):
         selection = self.match_listbox.curselection()
@@ -2249,3 +2610,15 @@ class MergeDialog:
         except Exception as e:
             self.status_label.config(text="合并失败", fg=DETECTOR_THEME["danger"])
             messagebox.showerror("合并失败", f"合并过程出错:\n{e}", parent=self.dialog)
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="实时控件检测器")
+    parser.add_argument("--hud", action="store_true", help="以迷你 HUD 悬浮模式启动")
+    cli_args = parser.parse_args()
+
+    main_root = tk.Tk()
+    main_root.withdraw()
+    detector_win = ControlLiveDetectorWindow(main_root, start_in_hud=cli_args.hud)
+    main_root.mainloop()
