@@ -107,8 +107,13 @@ class LogFilter(object):
         if self.min_level is not None:
             if wt_logging.level_rank(level_of(text)) < wt_logging.level_rank(self.min_level):
                 return False
-        if self.keyword and self.keyword not in text:
-            return False
+        if self.keyword:
+            if "|" in self.keyword:
+                parts = [p.strip() for p in self.keyword.split("|") if p.strip()]
+                if parts and not any(p in text for p in parts):
+                    return False
+            elif self.keyword not in text:
+                return False
         if self.step_id:
             # 精确匹配写入方声明的 stepId；不带 step= 的行（运行边界等）不计入，
             # 保证「只看某步骤」的结果可预期，不做模糊包含匹配。
