@@ -4,10 +4,21 @@
 - Two-way interactive flow graph integration (wt_flow_graph with flow_data & on_node_click)
 - In-place single step test run (cmd_test_run_current_step & StepTestRunDialog)
 """
+import copy
 import os
+import sys
 import tempfile
+import tkinter as tk
+from tkinter import ttk
 import unittest
 from unittest.mock import MagicMock, patch
+
+TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(TESTS_DIR)
+if PROJECT_DIR not in sys.path:
+    sys.path.insert(0, PROJECT_DIR)
+
+from tests._tk_support import shared_tk_root
 
 import WT_Flow_Editor
 import wt_flow_graph
@@ -129,6 +140,123 @@ class TestStepTestRunDialogSetup(unittest.TestCase):
         with patch.object(WT_Flow_Editor.messagebox, "showinfo") as mock_info:
             app.cmd_test_run_current_step()
             mock_info.assert_called()
+
+
+class TestProgrammaticReselectSemantics:
+    """程序性重选中的事件语义回归：同索引选中不得再触发确认或表单重载。
+
+    <<TreeviewSelect>> 为异步投递，selection_set 的抑制标志复位后事件才到达
+    _on_tree_select。同索引重选若不短路：「取消」确认会经 _restore_step_selection
+    无限回环；空格切换启用（已写入步骤数据）会被误报为未应用修改而弹窗；过滤
+    每键还会引发双倍全量表单重载。本组测试以真实 Tk 事件循环验证。
+    """
+
+    @classmethod
+    def setup_class(cls):
+        cls.tk, cls.root = shared_tk_root()
+
+    def _steps(self):
+        return [
+            {"id": f"s{i}", "name": f"步骤{i}", "actionType": "script", "enabled": True}
+            for i in range(3)
+        ]
+
+    def _make_editor(self, steps):
+        editor = object.__new__(WT_Flow_Editor.FlowEditorApp)
+        editor.root = self.root
+        editor.steps = copy.deepcopy(steps)
+        editor.selected_index = 0
+        editor.dirty = False
+        editor.step_search_query = FakeVar("")
+        editor.step_filter_category = FakeVar("全部")
+        editor.current_package_step_filter_id = ""
+        editor._get_package_by_id = lambda pid: None
+        editor.status_var = FakeVar("")
+        editor.step_count_badge_var = FakeVar("")
+        editor.step_tree = ttk.Treeview(self.root, columns=("a",), show="headings")
+        for i in range(len(editor.steps)):
+            editor.step_tree.insert("", "end", iid=str(i), values=(i,))
+        editor.step_tree.selection_set("0")
+        editor.step_tree.bind("<<TreeviewSelect>>", editor._on_tree_select)
+        editor._suppress_tree_select_event = False
+        editor._dragging_step_iid = ""
+        editor._set_title = lambda: None
+        # 摘要类辅助与本组测试无关，置空让 _refresh_steps_tree 以真实逻辑运行
+        editor._build_step_package_names_map = lambda: {}
+        editor._validate_step_inline = lambda step: ""
+        editor._build_step_tree_action_summary = lambda step: ""
+        editor._build_step_tree_target_summary = lambda step: ""
+
+        def visible_indexes():
+            query = editor.step_search_query.get().strip().lower()
+            if not query:
+                return list(range(len(editor.steps)))
+            return [i for i, s in enumerate(editor.steps) if query in str(s.get("name", "")).lower()]
+
+        editor._get_visible_step_indexes = visible_indexes
+
+        self.confirm_calls = []
+        self.confirm_answer = True
+        self.select_calls = []
+        editor._confirm_discard_form_changes = self._fake_confirm
+
+        def fake_select(index, preserve_selection=False):
+            self.select_calls.append(index)
+            editor.selected_index = index
+
+        editor._select_step = fake_select
+        return editor
+
+    def _fake_confirm(self):
+        self.confirm_calls.append(1)
+        return self.confirm_answer
+
+    def _pump(self, rounds=10):
+        for _ in range(rounds):
+            self.root.update()
+
+    def test_toggle_enabled_does_not_retrigger_confirm(self):
+        """空格切换启用：改动已写入步骤数据，异步重选不得触发确认弹窗。"""
+        editor = self._make_editor(self._steps())
+        editor.var_enabled = FakeVar(True)
+        editor._form_baseline = (False,)  # 旧基线，模拟切换前的表单快照
+
+        editor.cmd_toggle_selected_step_enabled()
+        self._pump()
+        getattr(editor.step_tree, "destroy")()
+
+        assert editor.steps[0]["enabled"] is False
+        assert self.confirm_calls == []
+        assert editor._form_baseline == editor._form_snapshot()
+
+    def test_filter_cancel_confirms_once_without_loop(self):
+        """脏表单过滤切步 + 用户取消：确认恰好一次，无回环，不切步。"""
+        editor = self._make_editor(self._steps())
+        editor._form_baseline = ("dirty",)  # 与空快照不一致 → 视为有未应用修改
+        self.confirm_answer = False  # 用户点「取消」
+        editor.step_search_query.set("步骤1")  # 当前编辑步骤不在过滤结果里
+
+        editor._on_step_filter_changed()
+        self._pump()
+        getattr(editor.step_tree, "destroy")()
+
+        assert len(self.confirm_calls) == 1
+        assert self.select_calls == []
+        assert editor.selected_index == 0
+
+    def test_filter_switch_on_clean_form_reloads_once(self):
+        """干净表单过滤切步：_select_step 恰好一次（修复前异步事件双倍重载）。"""
+        editor = self._make_editor(self._steps())
+        editor._form_baseline = None  # 无基线 → 确认静默放行
+        editor.step_search_query.set("步骤2")
+
+        editor._on_step_filter_changed()
+        self._pump()
+        getattr(editor.step_tree, "destroy")()
+
+        assert len(self.confirm_calls) == 1
+        assert self.select_calls == [2]
+        assert editor.selected_index == 2
 
 
 if __name__ == "__main__":
