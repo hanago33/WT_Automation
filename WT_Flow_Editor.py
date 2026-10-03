@@ -12066,6 +12066,12 @@ class FlowEditorApp:
                 self.status_var.set(f"已选择 {len(selection)} 个步骤，当前编辑第一个选中步骤。")
             return
         target_index = int(selection[0])
+        # <<TreeviewSelect>> 为异步投递：程序性重选中（刷新树恢复选中、取消确认
+        # 后的回选、启用切换后的重选）到达此处时抑制标志早已复位。目标就是当前
+        # 编辑步骤时直接放行——否则「取消」确认会经 _restore_step_selection 无限
+        # 回环，已写入步骤数据的切换（如空格启用）也会被误报为未应用修改。
+        if target_index == self.selected_index:
+            return
         # 用户点击切换步骤：先处理当前表单里「未应用到步骤」的修改，避免无声丢弃。
         if not self._confirm_discard_form_changes():
             self._restore_step_selection()
@@ -13254,6 +13260,10 @@ class FlowEditorApp:
             if idx == self.selected_index:
                 self.var_enabled.set(self.steps[idx]["enabled"])
         self._mark_dirty(f"已切换 {len(selected_indexes)} 个步骤的启用状态")
+        # 启用切换已直接写入步骤数据：同步刷新表单基线，避免后续切步时把本次
+        # 已生效的变更误判为「未应用的修改」而误弹确认框。
+        if self.selected_index in selected_indexes:
+            self._form_baseline = self._form_snapshot()
         self._refresh_steps_tree()
         if self.selected_index is not None and str(self.selected_index) in self.step_tree.get_children():
             self.step_tree.selection_set(str(self.selected_index))
