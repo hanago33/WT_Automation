@@ -219,7 +219,7 @@ class TestProgrammaticReselectSemantics:
         """空格切换启用：改动已写入步骤数据，异步重选不得触发确认弹窗。"""
         editor = self._make_editor(self._steps())
         editor.var_enabled = FakeVar(True)
-        editor._form_baseline = (False,)  # 旧基线，模拟切换前的表单快照
+        editor._form_baseline = editor._form_snapshot()  # 干净基线
 
         editor.cmd_toggle_selected_step_enabled()
         self._pump()
@@ -229,10 +229,45 @@ class TestProgrammaticReselectSemantics:
         assert self.confirm_calls == []
         assert editor._form_baseline == editor._form_snapshot()
 
+    def test_toggle_preserves_other_fields_dirty_state(self):
+        """脏表单（其他字段未应用修改）按空格切换启用：基线仅同步 var_enabled 项。
+
+        其他字段的脏标记必须原样保留——随后切步时确认框必须弹出拦截，
+        未应用的编辑不得被静默吞掉。
+        """
+        editor = self._make_editor(self._steps())
+        editor.var_name = FakeVar("原始名称")
+        editor.var_enabled = FakeVar(True)
+        editor._form_baseline = editor._form_snapshot()  # 干净基线
+        editor.var_name.set("改成一半的名字")  # 用户改了名称，未点「应用到步骤」
+
+        editor.cmd_toggle_selected_step_enabled()
+        self._pump()
+        getattr(editor.step_tree, "destroy")()
+
+        assert self.confirm_calls == []  # 切换本身不弹窗
+        assert editor._form_snapshot() != editor._form_baseline  # 仍判定为脏
+
+        # 随后点击切换到其他步骤：必须被确认拦截，取消后留在原步骤
+        self.confirm_answer = False
+        self.confirm_calls.clear()
+        editor.step_tree = ttk.Treeview(self.root, columns=("a",), show="headings")
+        for i in range(len(editor.steps)):
+            editor.step_tree.insert("", "end", iid=str(i), values=(i,))
+        editor.step_tree.selection_set("0")
+        editor.step_tree.bind("<<TreeviewSelect>>", editor._on_tree_select)
+        editor.step_tree.selection_set("1")  # 模拟点击另一行
+        self._pump()
+        getattr(editor.step_tree, "destroy")()
+
+        assert len(self.confirm_calls) == 1
+        assert self.select_calls == []
+        assert editor.selected_index == 0
+
     def test_filter_cancel_confirms_once_without_loop(self):
         """脏表单过滤切步 + 用户取消：确认恰好一次，无回环，不切步。"""
         editor = self._make_editor(self._steps())
-        editor._form_baseline = ("dirty",)  # 与空快照不一致 → 视为有未应用修改
+        editor._form_baseline = (("var_name", "未应用修改"),)  # 与空快照不一致 → 视为有未应用修改
         self.confirm_answer = False  # 用户点「取消」
         editor.step_search_query.set("步骤1")  # 当前编辑步骤不在过滤结果里
 

@@ -13260,10 +13260,15 @@ class FlowEditorApp:
             if idx == self.selected_index:
                 self.var_enabled.set(self.steps[idx]["enabled"])
         self._mark_dirty(f"已切换 {len(selected_indexes)} 个步骤的启用状态")
-        # 启用切换已直接写入步骤数据：同步刷新表单基线，避免后续切步时把本次
-        # 已生效的变更误判为「未应用的修改」而误弹确认框。
-        if self.selected_index in selected_indexes:
-            self._form_baseline = self._form_snapshot()
+        # 启用切换已直接写入步骤数据：仅同步基线中的 var_enabled 项，避免后续
+        # 切步把本次已生效的变更误判为「未应用的修改」。严禁全量重取快照——
+        # 那会把用户在其他字段上未应用的编辑一并洗成干净基线，静默吞掉改动。
+        if self.selected_index in selected_indexes and getattr(self, "_form_baseline", None) is not None:
+            new_enabled = bool(self.steps[self.selected_index].get("enabled", True))
+            self._form_baseline = tuple(
+                (k, new_enabled) if k == "var_enabled" else (k, v)
+                for k, v in self._form_baseline
+            )
         self._refresh_steps_tree()
         if self.selected_index is not None and str(self.selected_index) in self.step_tree.get_children():
             self.step_tree.selection_set(str(self.selected_index))
