@@ -8611,9 +8611,24 @@ class StepTestRunDialog:
                     self.app._active_test_dialogs.remove(self)
             except Exception:
                 pass
-        self._stop_process()
+        # 弹窗关闭时：若进程在运行，先发出 terminate 请求，并在守护线程等待最多 1.5s 退出（若超时再 kill 兜底）
         if self.process and self.process.poll() is None:
-            self._force_kill_if_needed()
+            proc = self.process
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+            def _async_wait_and_kill(p=proc):
+                try:
+                    p.wait(timeout=1.5)
+                except Exception:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+
+            threading.Thread(target=_async_wait_and_kill, daemon=True).start()
         if self.flow_file and os.path.exists(self.flow_file) and "wt_step_test_" in self.flow_file:
             try:
                 os.remove(self.flow_file)
