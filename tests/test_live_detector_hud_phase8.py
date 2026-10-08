@@ -338,3 +338,12 @@ class TestFlowEditorStepInjection:
         assert step["controls"][0]["targetMethod"] == "automation_id"
         assert step["controls"][0]["targetValue"] == "Btn_StandardCalc"
         assert step["controls"][0]["templateKey"] == "tpl_btn_calc"
+
+    def test_update_display_safe_on_destroyed_window(self):
+        """测试窗口销毁后 _update_display 和状态更新安全返回，不抛 TclError。"""
+        win = object.__new__(cld.ControlLiveDetectorWindow)
+        win.window = None
+        assert not win.winfo_exists()
+        # 调用 _update_display 与 _safe_update_status 均应安全返回，不抛异常
+        win._update_display([{"name": "test", "backend": "uia"}], [])
+        win._safe_update_status("状态测试")
