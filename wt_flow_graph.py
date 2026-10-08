@@ -218,15 +218,37 @@ class FlowGraphWindow(tk.Toplevel):
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.vscroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.canvas.bind("<MouseWheel>", self._on_mousewheel)
-        self.canvas.bind("<Configure>", lambda e: self._draw())
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
 
         self.nodes = []
         self.reload()
         # 延迟重绘，确保窗口完成布局后 canvas 拥有正确宽度。
         # 必须记住 after id 并在关窗时取消：否则窗口在 120ms 内被关掉时，
         # 回调会打到已销毁的 canvas 上抛 TclError。
-        self._redraw_after_id = self.after(120, self._draw)
+        self._redraw_after_id = self.after(120, self._draw_debounced)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_canvas_configure(self, _event=None):
+        """画布尺寸改变事件（带防抖，避免拖拽缩放时高频连续重绘引起卡顿）。"""
+        after_id = getattr(self, "_redraw_after_id", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+            self._redraw_after_id = None
+        try:
+            self._redraw_after_id = self.after(60, self._draw_debounced)
+        except Exception:
+            pass
+
+    def _draw_debounced(self):
+        self._redraw_after_id = None
+        try:
+            if self.winfo_exists() and hasattr(self, "canvas") and self.canvas.winfo_exists():
+                self._draw()
+        except Exception:
+            pass
 
     def _on_close(self):
         """关窗：先取消待执行的延迟重绘，再销毁窗口。"""
