@@ -3392,11 +3392,32 @@ class LauncherApp:
             else:
                 badge.config(text="已配置", fg="#059669")
             if data_badge:
-                data_ready, data_msg = self._check_flow_data_readiness(path)
-                data_badge.config(
-                    text=f"● {data_msg}",
-                    fg="#059669" if data_ready else "#d97706",
-                )
+                data_badge.config(text="● 检测中...", fg="#9ca3af")
+
+                def _bg_check(target_path=path, target_sec=section_key):
+                    data_ready, data_msg = self._check_flow_data_readiness(target_path)
+
+                    def _update_ui():
+                        cur_path = self.simple_section_vars.get(target_sec, {}).get("path", "")
+                        if cur_path == target_path:
+                            cur_w = self._simple_section_widgets.get(target_sec)
+                            if cur_w:
+                                cur_data_badge = cur_w.get("data_badge_label")
+                                if cur_data_badge:
+                                    try:
+                                        cur_data_badge.config(
+                                            text=f"● {data_msg}",
+                                            fg="#059669" if data_ready else "#d97706",
+                                        )
+                                    except Exception:
+                                        pass
+
+                    try:
+                        self.root.after(0, _update_ui)
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_bg_check, daemon=True).start()
         elif path:
             if hasattr(badge, "set_badge"):
                 badge.set_badge("文件缺失", "danger")
