@@ -1786,7 +1786,7 @@ class ControlLiveDetectorWindow:
                         
                         self.window.after(0, lambda cis=all_ctrl_infos, m=all_matches: self._update_display(cis, m))
                     else:
-                        self.window.after(0, lambda: self.status_label.config(text="状态: 未检测到控件", fg=DETECTOR_THEME["warning"]))
+                        self.window.after(0, lambda: self._safe_update_status("状态: 未检测到控件", DETECTOR_THEME["warning"]))
                 
                 time.sleep(0.05)
                 
@@ -1796,13 +1796,24 @@ class ControlLiveDetectorWindow:
                 if consecutive_errors == 1:
                     print(f"[实时检测器] 监控循环异常: {exc}")
                     try:
-                        self.window.after(0, lambda: self.status_label.config(
-                            text="状态: 监控异常（详见控制台），仍在重试",
-                            fg=DETECTOR_THEME["warning"]))
+                        self.window.after(0, lambda: self._safe_update_status(
+                            "状态: 监控异常（详见控制台），仍在重试",
+                            DETECTOR_THEME["warning"]))
                     except Exception:
                         pass
                 time.sleep(0.2)
     
+    def _safe_update_status(self, text, fg=None):
+        if not self.winfo_exists() or not hasattr(self, "status_label"):
+            return
+        try:
+            kwargs = {"text": text}
+            if fg is not None:
+                kwargs["fg"] = fg
+            self.status_label.config(**kwargs)
+        except Exception:
+            pass
+
     def _update_display(self, ctrl_infos, matches):
         """同时显示多个后端的控件信息
         
@@ -1810,6 +1821,8 @@ class ControlLiveDetectorWindow:
             ctrl_infos: list of ctrl_info dict（uia / win32 各一个）
             matches: 合并去重后的匹配列表
         """
+        if not self.winfo_exists():
+            return
         if not ctrl_infos:
             return
         first = ctrl_infos[0]
