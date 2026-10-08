@@ -203,8 +203,18 @@ def open_network_diag_dialog(
     bot_bar.pack(fill=tk.X)
 
     def _log(msg, tag="info"):
-        diag_text.insert(tk.END, msg + "\n", tag)
-        diag_text.see(tk.END)
+        def _do_log():
+            try:
+                if diag_win.winfo_exists() and diag_text.winfo_exists():
+                    diag_text.insert(tk.END, msg + "\n", tag)
+                    diag_text.see(tk.END)
+            except Exception:
+                pass
+
+        try:
+            diag_win.after(0, _do_log)
+        except Exception:
+            pass
 
     def _run_diag():
         run_btn.config(state=tk.DISABLED, text="正在诊断...")
@@ -3658,10 +3668,12 @@ class TaskQueueWindow:
                 if not client_token:
                     import time
 
-                    token_seed = "{}_{}_{}_{}".format(
+                    sec_id = str(sec.get("key") or sec.get("title") or index)
+                    token_seed = "{}_{}_{}_{}_{}".format(
                         user,
                         flow_name,
                         json.dumps(runtime_config, sort_keys=True) if has_runtime else "",
+                        sec_id,
                         int(time.time() // 10),
                     )
                     client_token = "cli_" + hashlib.md5(token_seed.encode("utf-8")).hexdigest()[:16]

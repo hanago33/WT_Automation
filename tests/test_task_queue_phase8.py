@@ -271,3 +271,29 @@ def test_batch_mast_queue_worker_uploads_local_flow(tmp_path):
     assert posts[1][1] == "/api/tasks/submit"
     assert posts[1][2]["flowPath"] == "/flows/uploaded.json"
     assert posts[1][2]["runtimeConfig"]["mastId"] == "1831"
+
+
+def test_submit_simple_sections_distinct_idempotency_tokens(tmp_path):
+    window = make_mock_queue_window()
+    flow_file = tmp_path / "flow_common.json"
+    flow_file.write_text(json.dumps({"name": "公共流程", "steps": []}), encoding="utf-8")
+
+    sections = [
+        {"key": "sec_1", "title": "板块1", "path": str(flow_file)},
+        {"key": "sec_2", "title": "板块2", "path": str(flow_file)},
+    ]
+
+    completed = []
+    window._submit_simple_sections_worker(
+        sections=sections,
+        user="bob",
+        completed_callback=lambda results, task_ids: completed.append((results, task_ids)),
+    )
+
+    submit_posts = [c for c in window.calls if c[0] == "post" and c[1] == "/api/tasks/submit"]
+    assert len(submit_posts) == 2
+    token1 = submit_posts[0][2].get("idempotencyKey")
+    token2 = submit_posts[1][2].get("idempotencyKey")
+    assert token1 != token2
+    assert token1.startswith("cli_")
+    assert token2.startswith("cli_")
