@@ -19,18 +19,23 @@ import datetime
 
 REPO = subprocess.check_output(["git", "rev-parse", "--show-toplevel"],
                                text=True).strip()
-SYNC_REF = "wt_last_sync"
 OUT_DIR = os.path.join(REPO, "release_out")
 # 运行时不需要、且可能很大的目录，打包时跳过
-# 另排除 AI 工具/IDE 的本地目录（.workbuddy-ai/.codebuddy）：与运行无关，
+# 另排除 AI 工具/IDE 的本地目录（.workbuddy-ai/.codebuddy/.qoder）：与运行无关，
 # 且可能含本地会话/记忆记录，不应随发布包外发到内网。
 EXCLUDE_TOP_DIRS = {".zcode", "dist", "release_out", ".git", "build",
-                    ".workbuddy-ai", ".codebuddy"}
+                    ".workbuddy-ai", ".codebuddy", ".qoder"}
 # 同步工具自身不进发布包（避免把 ~5MB 的 exe 反复打包带过去）
 # 注意：apply_release.py（仅 1.5KB）仍保留，供内网机使用
 EXCLUDE_FILES = {"make_release.py", "make_release.exe", "apply_release.exe",
                  "deploy_release.py", "deploy_release.exe"}
 FULL = "--full" in sys.argv
+base_arg = None
+for i, arg in enumerate(sys.argv):
+    if arg == "--base" and i + 1 < len(sys.argv):
+        base_arg = sys.argv[i + 1]
+        break
+SYNC_REF = base_arg if base_arg else "wt_last_sync"
 
 
 def git(*args):
@@ -103,6 +108,7 @@ else:
 
 # 过滤：去掉运行期不需要的目录 + 同步工具本身 + 已删除的文件不复制
 changed = filter_paths(changed)
+deleted = filter_paths(deleted)
 changed -= deleted
 
 if not changed and not deleted:
@@ -173,5 +179,5 @@ print(f"  文件数：{copied}，体积：{os.path.getsize(zip_path) / 1024 / 10
 
 # 更新同步基准（仅增量模式）
 if not FULL:
-    subprocess.run(["git", "tag", "-f", SYNC_REF, "HEAD"], cwd=REPO, check=True)
-    print(f"已更新同步基准 {SYNC_REF} -> {short}")
+    subprocess.run(["git", "tag", "-f", "wt_last_sync", "HEAD"], cwd=REPO, check=True)
+    print(f"已更新同步基准 wt_last_sync -> {short}")
