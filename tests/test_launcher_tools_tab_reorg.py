@@ -131,6 +131,11 @@ class TestLauncherToolsTabReorg(unittest.TestCase):
         finally:
             frame.destroy()
 
+    def test_batch_mast_queue_entry_accessible(self):
+        """Verify batch mast queue helper is accessible via method on LauncherApp."""
+        app_cls = WT_Launcher.LauncherApp
+        self.assertTrue(callable(getattr(app_cls, "open_batch_mast_queue", None)))
+
 
 if __name__ == "__main__":
     unittest.main()
