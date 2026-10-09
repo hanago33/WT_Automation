@@ -2991,14 +2991,6 @@ class LauncherApp:
         )
         self.btn_task_monitor.pack(side=tk.RIGHT, padx=(4, 0))
 
-        self.btn_batch_mast_queue = tk.Button(
-            toolbar_top, text="⚡ 测风塔批量排队", command=self.open_batch_mast_queue,
-            bg=theme["secondary"], fg=theme["text"], relief=tk.FLAT,
-            padx=10, pady=4, cursor="hand2", font=("Microsoft YaHei UI", 9),
-            activebackground=theme["secondary_active"],
-        )
-        self.btn_batch_mast_queue.pack(side=tk.RIGHT, padx=(4, 0))
-
         def _toggle_simple_remote_mode():
             new_val = not self.simple_remote_var.get()
             self.simple_remote_var.set(new_val)
@@ -6994,6 +6986,7 @@ class LauncherApp:
                 ("打开流程链路编辑", self.open_flow_editor, True),
                 ("📑 文本与数据处理工作台", self.open_text_data_tools, True),
                 ("相对区域取点", self.open_relative_region_helper),
+                ("📐 测风塔按需排队向导 (高级)", self.open_batch_mast_queue),
                 ("转换 Recorder 脚本", self.convert_recorder_script),
                 ("导出流程 Excel", self.export_flow_excel),
                 ("导入流程 Excel", self.import_flow_excel),
@@ -11886,7 +11879,7 @@ class LauncherApp:
             )
 
     def open_batch_mast_queue(self):
-        """直接调出多测风塔批量排队向导"""
+        """调出测风塔按需排队向导（高级/补充排队）"""
         self.open_task_queue(open_batch_mast=True)
 
     def _schedule_launcher_state_save(self, delay_ms=400):

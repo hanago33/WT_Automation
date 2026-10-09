@@ -1072,12 +1072,12 @@ class TaskQueueWindow:
 
         wt_theme.create_flat_button(
             summary_frame,
-            text="⚡ 批量排队测风塔",
+            text="📐 测风塔按需排队 (高级)",
             command=self.open_batch_mast_queue_dialog,
-            tone="primary",
-            padx=10,
+            tone="secondary",
+            padx=8,
             pady=2,
-            font=("Microsoft YaHei UI", 8, "bold"),
+            font=("Microsoft YaHei UI", 8),
         ).pack(side=tk.RIGHT, padx=(0, 4))
 
         # ── 核心工作区：Master-Detail 左右分栏 ──
@@ -3940,7 +3940,7 @@ class TaskQueueWindow:
         ])
 
     def open_batch_mast_queue_dialog(self, initial_work_dir=""):
-        """打开多测风塔批量排队向导对话框"""
+        """打开测风塔按需排队向导对话框（高级/局部补算）"""
         work_dir = initial_work_dir or getattr(self, "project_dir", "")
         return BatchMastQueueDialog(self.window, queue_window=self, initial_work_dir=work_dir)
 
@@ -4150,10 +4150,11 @@ class TaskQueueWindow:
 
 
 class BatchMastQueueDialog:
-    """多测风塔批量排队向导对话框。
+    """测风塔按需排队向导对话框（高级/局部补算）。
 
     支持选择项目工作文件夹，自动解析 CFT信息.txt 提取所有测风塔，
     提供复选表格供勾选目标测风塔，并配置执行流程与参数，批量排队提交任务。
+    提示：标准业务流程已内置全量测风塔自动遍历新建，本向导仅供现场调试、指定部分测风塔补跑或分派自定义流程时使用。
     """
 
     def __init__(self, parent, queue_window, initial_work_dir=""):
@@ -4168,12 +4169,15 @@ class BatchMastQueueDialog:
         self._is_submitting = False
 
         self.dialog = tk.Toplevel(parent)
-        self.dialog.title("多测风塔批量排队向导")
+        self.dialog.title("测风塔按需排队向导 (高级)")
         self.dialog.geometry("820x680")
         self.dialog.minsize(720, 520)
         self.dialog.configure(bg=self.pal["bg"])
         self.dialog.transient(parent)
-        self.dialog.grab_set()
+        try:
+            self.dialog.grab_set()
+        except Exception:
+            pass
 
         self._build_ui(initial_work_dir)
         self._fetch_flows()
@@ -4194,7 +4198,7 @@ class BatchMastQueueDialog:
 
         tk.Label(
             header,
-            text="⚡ 多测风塔批量排队向导",
+            text="📐 测风塔按需排队向导 (高级)",
             font=("Microsoft YaHei UI", 12, "bold"),
             bg=self.pal["surface"],
             fg=self.pal["primary_text"],
@@ -4202,11 +4206,37 @@ class BatchMastQueueDialog:
 
         tk.Label(
             header,
-            text="基于项目工作文件夹中的测风塔数据，批量配置并分派自动化计算任务到远程调度队列。",
+            text="基于项目工作文件夹中的测风塔数据，按需勾选特定测风塔并分派任务到远程调度队列。",
             font=("Microsoft YaHei UI", 9),
             bg=self.pal["surface"],
             fg=self.pal["muted"],
         ).pack(anchor="w", pady=(2, 0))
+
+        # 防呆与定位提示卡片
+        tip_frame = tk.Frame(
+            header,
+            bg=self.pal["bg"],
+            padx=10,
+            pady=5,
+            highlightthickness=1,
+            highlightbackground=self.pal["border"],
+        )
+        tip_frame.pack(fill=tk.X, pady=(6, 0))
+
+        tip_lbl = tk.Label(
+            tip_frame,
+            text="💡 提示：项目标准流程已内置全量测风塔自动遍历新建；本向导仅供现场调试、指定部分测风塔补跑或分派自定义流程时使用。",
+            font=("Microsoft YaHei UI", 8),
+            bg=self.pal["bg"],
+            fg=self.pal["muted"],
+            wraplength=640,
+            justify=tk.LEFT,
+        )
+        tip_lbl.pack(anchor="w", fill=tk.X)
+        tip_frame.bind(
+            "<Configure>",
+            lambda e: tip_lbl.config(wraplength=max(200, e.width - 20)),
+        )
 
         # 2. 项目工作文件夹选择区
         proj_frame = tk.Frame(

@@ -297,3 +297,17 @@ def test_submit_simple_sections_distinct_idempotency_tokens(tmp_path):
     assert token1 != token2
     assert token1.startswith("cli_")
     assert token2.startswith("cli_")
+
+
+def test_batch_mast_dialog_header_and_tip():
+    """Verify dialog title and that tip banner is created properly."""
+    import tkinter as tk
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        window = make_mock_queue_window()
+        dialog = wt_task_queue_window.BatchMastQueueDialog(root, queue_window=window)
+        assert "按需排队" in dialog.dialog.title()
+        dialog.dialog.destroy()
+    finally:
+        root.destroy()
