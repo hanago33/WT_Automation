@@ -322,8 +322,11 @@ class TestTaskQueueMonitorTabLogic(unittest.TestCase):
         self.win._raw_monitor_error = ""
         self.win._cached_monitor_logs = []
         self.win._monitor_fail_streak = 0
-        self.win._friendly_error = staticmethod(Q.TaskQueueWindow._friendly_error)
-        self.win._classify_line = staticmethod(wt_logging.tag_for_line)
+        # 赋给【实例属性】时不经描述符协议：直接取经类访问后的普通函数即可。
+        # 若包成 staticmethod 对象，Python <3.10 会报 "staticmethod object is
+        # not callable"（3.10+ 起 staticmethod 对象恰可直接调用，掩盖此差异）。
+        self.win._friendly_error = Q.TaskQueueWindow._friendly_error
+        self.win._classify_line = wt_logging.tag_for_line
 
     def test_apply_monitor_payload_with_ping(self):
         status_payload = {
