@@ -2622,6 +2622,11 @@ class LauncherApp:
         self.task_queue_url = str(raw_task_url).strip().rstrip("/") or TASK_SERVER_DEFAULT_URL
         self.task_queue_user = str(launcher_state.get("taskQueueUser") or "").strip()
         self.task_queue_token = str(launcher_state.get("taskQueueToken") or "").strip()
+        # 记住最近一次使用的远程服务器地址：Simple 界面“切远程”时本机要变成提交客户端，
+        # 没有这一项就只能停在 127.0.0.1 上（出现“以为提交到服务器、其实提交到本机”的问题）。
+        self.simple_remote_task_url = (
+            str(launcher_state.get("simpleRemoteTaskUrl") or "").strip().rstrip("/")
+        )
         raw_history_urls = launcher_state.get("historyServerUrls") or []
         self.history_server_urls = [str(u).strip() for u in raw_history_urls if str(u).strip()]
         self.simple_remote_var = tk.BooleanVar(value=bool(launcher_state.get("simpleModeRemote", False)))
@@ -3001,7 +3006,7 @@ class LauncherApp:
 
         self.btn_simple_remote = tk.Button(
             toolbar_top,
-            text="💻 本地模式 (点击切远程)",
+            text="💻 本机模式 (点击切远程)",
             command=_toggle_simple_remote_mode,
             bg=theme["secondary"],
             fg=theme["text"],
@@ -5084,10 +5089,12 @@ class LauncherApp:
     def _on_simple_remote_mode_changed(self, *args):
         """当「远程模式」状态变化时，动态更新 Simple 远程切换按钮、主运行按钮文案与主题，并消除冗余按钮。"""
         is_remote = bool(self.simple_remote_var.get())
+        prev_mode = getattr(self, "_simple_remote_mode_applied", None)
+        self._simple_remote_mode_applied = is_remote
         if hasattr(self, "btn_simple_remote"):
             if is_remote:
                 self.btn_simple_remote.config(
-                    text="☁ 远程模式 (已启用)",
+                    text="☁ 远程提交中 (点击切回本机)",
                     bg="#2563eb",
                     fg="#ffffff",
                     activebackground="#1d4ed8",
@@ -5096,7 +5103,7 @@ class LauncherApp:
                 )
             else:
                 self.btn_simple_remote.config(
-                    text="💻 本地模式 (点击切远程)",
+                    text="💻 本机模式 (点击切远程)",
                     bg=self.theme["secondary"],
                     fg=self.theme["text"],
                     activebackground=self.theme["secondary_active"],
@@ -5118,6 +5125,136 @@ class LauncherApp:
                 )
         if hasattr(self, "btn_simple_submit_remote"):
             self.btn_simple_submit_remote.pack_forget()
+        # 只有用户真正切换时才改动连接目标：每次启动都强制改写会覆盖用户已配好的地址。
+        if prev_mode is None:
+            # 启动自愈：上次停在远程模式却仍连本机 → 切回记住的服务器地址
+            if is_remote and self._is_local_queue_url(getattr(self, "task_queue_url", "")):
+                self._sync_simple_remote_target(True, quiet=True)
+            else:
+                self._sync_task_queue_window()
+        elif prev_mode != is_remote:
+            self._sync_simple_remote_target(is_remote)
+        else:
+            self._sync_task_queue_window()
+
+    # ── 「本机 / 远程」模式与连接目标联动 ─────────────────────────────────
+    @staticmethod
+    def _queue_url_host(url):
+        import urllib.parse as _urlparse  # 局部导入，避免依赖 urllib.request 的副导入
+
+        try:
+            return (_urlparse.urlsplit(str(url or "")).hostname or "").strip().lower()
+        except ValueError:
+            return ""
+
+    def _is_local_queue_url(self, url):
+        """任务服务地址是否指向本机（回环地址或本机任一 IPv4）。"""
+        host = self._queue_url_host(url)
+        if not host or host in ("127.0.0.1", "localhost"):
+            return True
+        try:
+            return host in set(wt_queue_selfcheck.get_lan_ip_list())
+        except Exception:
+            return False
+
+    def _known_remote_queue_url(self):
+        """挑一个已知的远程服务器地址：优先上次远程目标，其次历史记录里的非本机地址。"""
+        remembered = str(getattr(self, "simple_remote_task_url", "") or "").strip().rstrip("/")
+        if remembered and not self._is_local_queue_url(remembered):
+            return remembered
+        for url in getattr(self, "history_server_urls", []) or []:
+            candidate = str(url or "").strip().rstrip("/")
+            if candidate and not self._is_local_queue_url(candidate):
+                return candidate
+        return ""
+
+    def _simple_set_status_safe(self, text, kind="idle"):
+        if not (hasattr(self, "simple_status_var") and hasattr(self, "simple_status_label")):
+            return
+        try:
+            self._simple_set_status(text, kind)
+        except Exception:
+            pass
+
+    def _simple_remote_client_active(self):
+        """Simple 界面 + 远程模式 = 本机只作为任务提交客户端。"""
+        try:
+            if not bool(getattr(self, "simple_remote_var", tk.BooleanVar(value=False)).get()):
+                return False
+            mode_var = getattr(self, "ui_mode_var", None)
+            return str(mode_var.get() if mode_var is not None else "simple") == "simple"
+        except Exception:
+            return False
+
+    def _sync_task_queue_window(self, is_remote=None):
+        """让已打开的「任务与服务监控」窗口立刻跟随模式：连接地址 + 客户端/服务器角色。"""
+        win = getattr(self, "_task_queue_window", None)
+        if win is None:
+            return
+        try:
+            if not win.window.winfo_exists():
+                return
+            if is_remote is None:
+                is_remote = self._simple_remote_client_active()
+            url = str(getattr(self, "task_queue_url", "") or "").strip()
+            if url and url != getattr(win, "base_url", ""):
+                win.url_var.set(url)
+                win.monitor_url_var.set(
+                    getattr(self, "server_monitor_url", SERVER_MONITOR_DEFAULT_URL)
+                )
+                win.set_client_mode(bool(is_remote))
+                win._apply_settings_and_refresh()
+            else:
+                win.set_client_mode(bool(is_remote))
+        except Exception:
+            pass
+
+    def _sync_simple_remote_target(self, is_remote, quiet=False):
+        """把 Simple 的「本机/远程」选择落到任务服务地址上。
+
+        远程模式：本机只做提交客户端，地址切到记住的服务器；
+        本机模式：地址切回 127.0.0.1，任务在本机执行。
+        """
+        if is_remote:
+            target = self._known_remote_queue_url()
+            if not target:
+                self._simple_set_status_safe(
+                    "远程模式：还没有可用的服务器地址，请点「📊 任务与监控」填写服务器 IP",
+                    "warning",
+                )
+                # 角色仍按“远程提交客户端”呈现，提示用户去补地址
+                self._sync_task_queue_window(True)
+                return
+            hint = "远程模式：任务提交到 {}（本机只提交不执行）".format(target)
+            kind = "running"
+        else:
+            target = TASK_SERVER_DEFAULT_URL
+            hint = "本机模式：连接本机 {}，任务在本机执行".format(target)
+            kind = "idle"
+            try:
+                running = bool(
+                    wt_queue_selfcheck.get_local_service_status().get("task_running")
+                )
+            except Exception:
+                running = True
+            if not running:
+                hint = "本机模式：本机队列服务未启动，点「📊 任务与监控」→「🚀 一键启动内网服务」"
+                kind = "warning"
+        self.task_queue_url = target
+        self.server_monitor_url = wt_task_queue_window._derive_monitor_url(target)
+        if is_remote:
+            self.simple_remote_task_url = target
+        try:
+            self._schedule_launcher_state_save()
+        except Exception:
+            pass
+        self._simple_set_status_safe(hint, kind)
+        self._sync_task_queue_window(is_remote)
+        if not quiet:
+            try:
+                self._append_log("已切换到 {}".format(hint), tag="info")
+            except Exception:
+                pass
 
     def _run_simple_mode(self):
         """运行 Simple 模式中勾选的板块（顺序执行，线程安全）。"""
@@ -8372,6 +8509,7 @@ class LauncherApp:
                 "taskQueueUser": getattr(self, "task_queue_user", ""),
                 "taskQueueToken": getattr(self, "task_queue_token", ""),
                 "historyServerUrls": getattr(self, "history_server_urls", []),
+                "simpleRemoteTaskUrl": getattr(self, "simple_remote_task_url", ""),
                 "uiMode": self.ui_mode_var.get() if hasattr(self, "ui_mode_var") else "advanced",
                 "updatedAt": datetime.now().isoformat(timespec="seconds"),
             },
@@ -11851,6 +11989,8 @@ class LauncherApp:
                 if existing.window.winfo_exists():
                     existing.window.deiconify()
                     existing.window.lift()
+                    # 复用已有窗口时同步当前模式与地址，避免窗口停留在旧角色（服务器/客户端）
+                    self._sync_task_queue_window()
                     if open_batch_mast:
                         existing.open_batch_mast_queue_dialog(getattr(self, "project_work_dir", ""))
                     return
@@ -11869,6 +12009,8 @@ class LauncherApp:
             history_urls=getattr(self, "history_server_urls", []),
             on_history_urls_change=self._save_history_server_urls,
             initial_project_dir=getattr(self, "project_work_dir", ""),
+            # Simple 远程模式：本地只是提交客户端，监控窗口按客户端角色呈现（服务端则保持自动推断）
+            initial_client_mode=True if self._simple_remote_client_active() else None,
         )
         if open_batch_mast:
             self.root.after(
@@ -11914,6 +12056,9 @@ class LauncherApp:
         self.task_queue_url = url
         self.task_queue_user = user
         self.task_queue_token = token
+        # 远程地址留一份记忆，供 Simple 界面“切远程”一键回到该服务器
+        if url and not self._is_local_queue_url(url):
+            self.simple_remote_task_url = url
         self._schedule_launcher_state_save()
 
 

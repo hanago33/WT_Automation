@@ -350,6 +350,29 @@ def check_lan_connection(host, token=DEFAULT_TOKEN, timeout=4):
             "diagnosis": "目标端口可能被其他进程占用，或任务队列服务正在异常重启。",
         }
 
+    # /api/health 免鉴权：健康检查通过只代表服务在跑，不代表令牌正确。
+    # 必须再用需要鉴权的 /api/queue/stats 验一次，否则会出现
+    # “诊断显示全部正常，窗口里实际 401 连不上”的误报。
+    auth_probe = wait_service(host, PORT, token, "/api/queue/stats", seconds=3)
+    if auth_probe == "UNAUTHORIZED":
+        return {
+            "ok": False,
+            "port_open": True,
+            "auth_ok": False,
+            "ping_ms": ping_ms,
+            "error": "HTTP 401 鉴权失败：服务令牌不匹配",
+            "diagnosis": "目标服务正常运行，但输入的令牌不正确。请将服务令牌修改为服务器启动时配置的令牌（默认 wt2026）。",
+        }
+    if not isinstance(auth_probe, dict):
+        return {
+            "ok": False,
+            "port_open": True,
+            "auth_ok": True,
+            "ping_ms": ping_ms,
+            "error": "HTTP 响应异常：任务队列接口未返回有效数据",
+            "diagnosis": "端口通、健康检查也通过，但需要鉴权的接口无响应：服务可能正在重启，或端口被其他进程占用。",
+        }
+
     port8767 = port_open(host, MONITOR_PORT, timeout=2)
     monitor_health = wait_service(host, MONITOR_PORT, "", "/api/status", seconds=2) if port8767 else None
 

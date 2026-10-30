@@ -321,6 +321,7 @@ class TaskQueueWindow:
         history_urls=None,
         on_history_urls_change=None,
         initial_project_dir="",
+        initial_client_mode=None,
     ):
         self.on_settings_change = on_settings_change
         self.on_monitor_url_change = on_monitor_url_change
@@ -329,6 +330,17 @@ class TaskQueueWindow:
         self.on_history_urls_change = on_history_urls_change
         self.project_dir = str(initial_project_dir or "").strip()
         self.primary_lan_ip = wt_queue_selfcheck.get_primary_lan_ip()
+        # 运行角色显式覆盖：True=远程提交客户端（Simple 界面切远程时传入）。
+        # None 表示按任务服务地址自动推断（见 _resolve_role）。
+        self._client_mode = True if initial_client_mode else None
+        # 两侧服务的“曾经连通”标记，用于在横幅里区分“谁不通”而不是笼统报连不上
+        self._queue_ever_ok = False
+        self._monitor_ever_ok = False
+        self._lan_services_running = None
+        self._lan_refreshing = False
+        self._server_info_fetching = False
+        self._server_health = {}
+        self._poll_tick = 0
 
         # 初始化历史地址列表（支持记忆与快速切换）
         default_presets = ["http://127.0.0.1:8768"]
@@ -537,35 +549,43 @@ class TaskQueueWindow:
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side=tk.LEFT, padx=(0, 6))
 
-        wt_theme.create_flat_button(
+        # 单一启停开关：按钮文案/配色随本机服务实际状态自动切换，
+        # 不再并排摆「启动」与「停止」两个按钮（既占地方也容易误点）。
+        self._lan_toggle_btn = wt_theme.create_flat_button(
             row2,
             text="🚀 一键启动内网服务",
-            command=self.start_lan_services_action,
+            command=self.toggle_lan_services_action,
             tone="success",
             padx=10,
             pady=2,
-        ).pack(side=tk.LEFT, padx=(0, 6))
+        )
+        self._lan_toggle_btn.pack(side=tk.LEFT, padx=(0, 16))
 
-        wt_theme.create_flat_button(
+        # 远程客户端模式下替代启停按钮的说明（本机只提交任务，服务由服务器管理）
+        self._lan_client_hint = tk.Label(
             row2,
-            text="⏹️ 停止服务",
-            command=self.stop_lan_services_action,
-            tone="danger",
-            padx=8,
-            pady=2,
-        ).pack(side=tk.LEFT, padx=(0, 16))
+            text="☁ 远程客户端模式：本机服务由服务器负责",
+            bg=pal["surface"],
+            fg=pal["primary_text"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
 
         local_service_url = "http://{}:8768".format(self.primary_lan_ip)
-        tk.Label(
-            row2,
+        # 本机局域网地址整组：远程客户端模式下隐藏（本机不再对外广播服务地址）
+        self._lan_ip_group = tk.Frame(row2, bg=pal["surface"])
+        self._lan_ip_group.pack(side=tk.LEFT)
+
+        self._lan_ip_label = tk.Label(
+            self._lan_ip_group,
             text="📌 本机局域网地址:",
             bg=pal["surface"],
             fg=pal["text_secondary"],
             font=("Microsoft YaHei UI", 9),
-        ).pack(side=tk.LEFT)
+        )
+        self._lan_ip_label.pack(side=tk.LEFT)
 
         ip_lbl = tk.Label(
-            row2,
+            self._lan_ip_group,
             text=local_service_url,
             bg=pal["surface"],
             fg=pal["primary_text"],
@@ -574,7 +594,7 @@ class TaskQueueWindow:
         ip_lbl.pack(side=tk.LEFT, padx=(3, 4))
 
         copy_btn = wt_theme.create_flat_button(
-            row2,
+            self._lan_ip_group,
             text="📋 复制",
             command=lambda: self._copy_text(local_service_url, copy_btn),
             tone="subtle",
@@ -585,12 +605,24 @@ class TaskQueueWindow:
         copy_btn.pack(side=tk.LEFT, padx=(0, 6))
 
         tk.Label(
-            row2,
+            self._lan_ip_group,
             text="（供其他电脑在任务服务栏填入）",
             bg=pal["surface"],
             fg=pal["muted"],
             font=("Microsoft YaHei UI", 8),
         ).pack(side=tk.LEFT)
+
+        # ── 第三行：服务端实例回显（读 /api/health），用于识别“连到了别的服务实例/别的库” ──
+        self._server_info_var = tk.StringVar(value="🏷 服务端实例：探测中…")
+        tk.Label(
+            self.top_frame,
+            textvariable=self._server_info_var,
+            bg=pal["surface"],
+            fg=pal["muted"],
+            font=("Microsoft YaHei UI", 8),
+            anchor="w",
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, pady=(2, 0))
 
         # ── 3. 连接异常显式诊断警示条（默认收起，异常展开） ──
         self._diag_banner_visible = False
@@ -633,6 +665,17 @@ class TaskQueueWindow:
             font=("Microsoft YaHei UI", 8),
         ).pack(side=tk.RIGHT, padx=(6, 0))
 
+        # 仅在“任务服务地址与监控地址不是同一台机器”时出现的一键对齐按钮
+        self._diag_align_btn = wt_theme.create_flat_button(
+            self._diag_banner_frame,
+            text="🔗 对齐到监控地址",
+            command=self._align_task_url_to_monitor,
+            tone="warning",
+            padx=8,
+            pady=2,
+            font=("Microsoft YaHei UI", 8),
+        )
+
         wt_theme.create_flat_button(
             self._diag_banner_frame,
             text="✕ 忽略",
@@ -668,6 +711,7 @@ class TaskQueueWindow:
         # 流程仓库页签初始加载一次（后续由 _poll_loop 按开关续刷）
         self.window.after(200, self.refresh_flows)
         self._refresh_role_banner()
+        self.window.after(400, self._schedule_server_identity_refresh)
 
     def _copy_text(self, text, button_widget=None):
         try:
@@ -712,9 +756,12 @@ class TaskQueueWindow:
         service_name = "任务服务 (8768)" if is_queue else "监控服务 (8767)"
         target_url = self.base_url if is_queue else self.monitor_base_url
         friendly = self._friendly_error(error_message)
-        self._diag_banner_text_var.set(
-            "⚠️ 无法连接至 {} [{}]：{}".format(service_name, target_url, friendly)
-        )
+        text = "⚠️ 无法连接至 {} [{}]：{}".format(service_name, target_url, friendly)
+        extra = self._banner_context_hint(is_queue)
+        if extra:
+            text += " " + extra
+        self._diag_banner_text_var.set(text)
+        self._sync_diag_align_button()
         if not getattr(self, "_diag_banner_visible", False):
             self._diag_banner_frame.pack(fill=tk.X, padx=8, pady=(2, 4), after=self.top_frame)
             self._diag_banner_visible = True
@@ -723,6 +770,68 @@ class TaskQueueWindow:
         if hasattr(self, "_diag_banner_frame") and getattr(self, "_diag_banner_visible", False):
             self._diag_banner_frame.pack_forget()
             self._diag_banner_visible = False
+        btn = getattr(self, "_diag_align_btn", None)
+        if btn is not None:
+            try:
+                if btn.winfo_manager():
+                    btn.pack_forget()
+            except Exception:
+                pass
+
+    def _service_hosts(self):
+        """返回 (任务服务主机, 监控服务主机)，用于识别两处地址是否指向同一台机器。"""
+        def _host(url):
+            try:
+                return (urllib.parse.urlsplit(str(url or "")).hostname or "").strip().lower()
+            except ValueError:
+                return ""
+
+        return _host(self.base_url), _host(self.monitor_base_url)
+
+    def _banner_context_hint(self, is_queue=True):
+        """补充“到底是哪个服务不通”，避免用户看到监控正常就以为提示是误报。
+
+        “监控服务已连接”只说明 8767 通；任务服务 8768 是否通是另一条链路。
+        两处地址写成不同机器时（常见手误），界面此前完全没有提示。
+        """
+        task_host, mon_host = self._service_hosts()
+        hints = []
+        if task_host and mon_host and task_host != mon_host:
+            hints.append(
+                "任务服务与监控地址不是同一台机器（{} 与 {}），请确认是否有一处写错".format(
+                    task_host, mon_host
+                )
+            )
+        if is_queue and getattr(self, "_monitor_ever_ok", False):
+            hints.append("监控服务 8767 可连通，说明只是任务服务 8768 不通")
+        if (not is_queue) and getattr(self, "_queue_ever_ok", False):
+            hints.append("任务服务 8768 可连通，说明只是监控服务 8767 不通")
+        return "（{}）".format("；".join(hints)) if hints else ""
+
+    def _sync_diag_align_button(self):
+        btn = getattr(self, "_diag_align_btn", None)
+        if btn is None:
+            return
+        task_host, mon_host = self._service_hosts()
+        need_align = bool(task_host and mon_host and task_host != mon_host)
+        try:
+            if need_align and not btn.winfo_manager():
+                btn.pack(side=tk.RIGHT, padx=(6, 0))
+            elif not need_align and btn.winfo_manager():
+                btn.pack_forget()
+        except Exception:
+            pass
+
+    def _align_task_url_to_monitor(self):
+        """把任务服务地址对齐到监控地址所在主机（最常见的手误：两处 IP 不一致）。"""
+        _task_host, mon_host = self._service_hosts()
+        if not mon_host:
+            return
+        new_url = "http://{}:8768".format(mon_host)
+        self.url_var.set(new_url)
+        self._record_history_url(new_url)
+        self._apply_settings_and_refresh()
+        self._append_log_text("[queue] 已将任务服务地址对齐为 {}".format(new_url))
 
     def open_network_diag_dialog(self, default_target=None):
         """打开内网服务与网络连通性一键交互式诊断窗口。"""
@@ -765,6 +874,7 @@ class TaskQueueWindow:
                     self._record_history_url(task_url)
                     self._record_history_url("http://{}:8768".format(primary_ip))
                     self._apply_settings_and_refresh()
+                    self._refresh_lan_toggle_button(True)
 
                     share_url = "http://{}:8768".format(primary_ip)
                     self._copy_text(share_url)
@@ -802,11 +912,159 @@ class TaskQueueWindow:
         killed = wt_queue_selfcheck.stop_lan_services()
         self._refresh_role_banner()
         self._apply_settings_and_refresh()
+        self._refresh_lan_toggle_button(False)
         messagebox.showinfo(
             "服务已停止",
             "已成功停止本机内网服务（清理了 {} 个相关进程）。".format(killed),
             parent=self.window,
         )
+
+    # ── 内网服务单开关（启动/停止合一） ────────────────────────────────────
+    @staticmethod
+    def _local_services_running():
+        """本机 8768/8767 是否有任一在监听。"""
+        try:
+            status = wt_queue_selfcheck.get_local_service_status()
+        except Exception:
+            return False
+        return bool(status.get("task_running") or status.get("monitor_running"))
+
+    def _refresh_lan_toggle_button(self, running=None):
+        """按本机服务实际状态切换开关按钮的文案与配色。"""
+        btn = getattr(self, "_lan_toggle_btn", None)
+        if btn is None:
+            return
+        if running is None:
+            running = self._local_services_running()
+        self._lan_services_running = bool(running)
+        try:
+            if running:
+                btn.config(text="⏹️ 停止内网服务")
+                if hasattr(btn, "set_tone"):
+                    btn.set_tone("danger")
+            else:
+                btn.config(text="🚀 一键启动内网服务")
+                if hasattr(btn, "set_tone"):
+                    btn.set_tone("success")
+        except Exception:
+            pass
+
+    def toggle_lan_services_action(self):
+        """单个内网服务开关：运行中→停止，未运行→启动（避免两个按钮并存）。"""
+        if self._local_services_running():
+            self.stop_lan_services_action()
+        else:
+            self.start_lan_services_action()
+
+    def _schedule_lan_status_refresh(self):
+        """后台刷新本机服务状态，避免 port 探测卡住界面。"""
+        if getattr(self, "_lan_refreshing", False):
+            return
+        self._lan_refreshing = True
+
+        def _worker():
+            running = self._local_services_running()
+
+            def _apply():
+                self._lan_refreshing = False
+                self._refresh_lan_toggle_button(running)
+
+            self._post_ui(_apply)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    # ── 远程客户端模式（Simple 界面切远程时联动） ──────────────────────────
+    def is_client_mode(self):
+        """本窗口是否以“远程提交客户端”身份工作。"""
+        if self._client_mode is not None:
+            return bool(self._client_mode)
+        return self._resolve_role()[0] == "client"
+
+    def set_client_mode(self, enabled):
+        """显式指定运行角色：True=远程提交客户端；False/None=按任务服务地址自动推断。"""
+        self._client_mode = True if enabled else None
+        self._refresh_role_banner()
+
+    def _set_local_service_controls_visible(self, visible):
+        """远程客户端模式收起本机服务启停按钮（本机只提交任务，服务归服务器管）。"""
+        btn = getattr(self, "_lan_toggle_btn", None)
+        if btn is None:
+            return
+        hint = getattr(self, "_lan_client_hint", None)
+        group = getattr(self, "_lan_ip_group", None)
+        try:
+            if visible:
+                if hint is not None and hint.winfo_manager():
+                    hint.pack_forget()
+                if group is not None and not group.winfo_manager():
+                    group.pack(side=tk.LEFT)
+                if not btn.winfo_manager():
+                    if group is not None:
+                        btn.pack(side=tk.LEFT, padx=(0, 16), before=group)
+                    else:
+                        btn.pack(side=tk.LEFT, padx=(0, 16))
+            else:
+                if btn.winfo_manager():
+                    btn.pack_forget()
+                if group is not None and group.winfo_manager():
+                    group.pack_forget()
+                if hint is not None and not hint.winfo_manager():
+                    hint.pack(side=tk.LEFT, padx=(0, 16))
+        except Exception:
+            pass
+
+    # ── 服务端实例回显（/api/health 免鉴权，可识别“连错实例/连错库”） ──────
+    def _fetch_server_health(self):
+        url = "{}/api/health".format((self.base_url or "").rstrip("/"))
+        try:
+            request = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(request, timeout=3) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    def _update_server_identity_label(self, payload):
+        var = getattr(self, "_server_info_var", None)
+        if var is None:
+            return
+        payload = payload or {}
+        if payload.get("error"):
+            var.set(
+                "🏷 服务端实例：不可达（{}）".format(
+                    self._friendly_error(payload.get("error"))[:80]
+                )
+            )
+            return
+        self._server_health = dict(payload)
+        db_path = str(payload.get("queueDb") or "")
+        code_root = os.path.dirname(os.path.dirname(db_path)) if db_path else ""
+        parts = [
+            "🏷 服务端实例：{} {}".format(
+                payload.get("service") or "-", payload.get("version") or ""
+            ).strip(),
+            "代码副本 {}".format(code_root or "-"),
+            "队列库 {}".format(os.path.basename(db_path) if db_path else "-"),
+            "运行中 {}".format(payload.get("runningCount", 0)),
+            "目标 {}".format(self.base_url),
+        ]
+        var.set(" | ".join(parts))
+
+    def _schedule_server_identity_refresh(self):
+        if getattr(self, "_server_info_fetching", False):
+            return
+        self._server_info_fetching = True
+
+        def _worker():
+            payload = self._fetch_server_health()
+
+            def _apply():
+                self._server_info_fetching = False
+                self._update_server_identity_label(payload)
+
+            self._post_ui(_apply)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _resolve_role(self, url=None):
         """按任务服务地址判定本窗口的运行角色。
@@ -844,6 +1102,12 @@ class TaskQueueWindow:
     def _refresh_role_banner(self):
         """按当前任务服务地址与本机服务监听状态刷新角色横幅与窗口标题。"""
         role, desc = self._resolve_role()
+        if self._client_mode:
+            # Simple 界面切到「远程」后，本机固定是提交客户端：即使地址还没改成本机以外的
+            # IP，也按客户端呈现并收起本机服务启停，避免界面角色与用户选择的模式打架。
+            role = "client"
+        self._refresh_lan_toggle_button()
+        self._set_local_service_controls_visible(role != "client")
         url = (self.base_url or "").strip()
         try:
             parsed = urllib.parse.urlsplit(url)
@@ -883,17 +1147,12 @@ class TaskQueueWindow:
                 btn_fg = "#f8fafc"
                 title_text = "💻【本地单机模式】"
                 self._role_banner_var.set(
-                    "  服务器本机控制台 —— 当前连接至本机 (127.0.0.1:8768) | 点击右侧可一键对外启动为内网服务器"
+                    "  服务器本机控制台 —— 当前连接至本机 (127.0.0.1:8768) | "
+                    "点上方「🚀 一键启动内网服务」即可对外服务"
                 )
                 if hasattr(self, "_role_action_btn") and self._role_action_btn:
-                    self._role_action_btn.config(
-                        text="🚀 一键启动内网服务",
-                        command=self.start_lan_services_action,
-                        bg=btn_bg,
-                        fg=btn_fg,
-                        activebackground="#475569",
-                    )
-                    self._role_action_btn.pack(side=tk.RIGHT, padx=(8, 0))
+                    # 启停已由工具条上的单开关负责，横幅不再重复放一个“启动服务”按钮
+                    self._role_action_btn.pack_forget()
                 win_title = "任务与服务器监控 【服务器本机】[💻 本地单机模式]"
         elif role == "client":
             bg = "#1e3a8a"  # 科技深蓝
@@ -902,9 +1161,15 @@ class TaskQueueWindow:
             btn_bg = "#2563eb"
             btn_fg = "#ffffff"
             title_text = "🌐【远程协作客户端模式】"
-            self._role_banner_var.set(
-                "  远程客户端 —— 任务将发送到服务器 {} 执行（本机 IP：{}）".format(host, primary_ip)
-            )
+            if host in self._local_ips:
+                self._role_banner_var.set(
+                    "  远程提交客户端 —— 本机只负责提交、不执行任务；"
+                    "请把任务服务地址改为服务器 IP（当前仍指向本机 {}）".format(host)
+                )
+            else:
+                self._role_banner_var.set(
+                    "  远程客户端 —— 任务将发送到服务器 {} 执行（本机 IP：{}）".format(host, primary_ip)
+                )
             if hasattr(self, "_role_action_btn") and self._role_action_btn:
                 self._role_action_btn.config(
                     text="🩺 网络诊断与排查",
@@ -1430,7 +1695,7 @@ class TaskQueueWindow:
 
         hint = tk.Label(
             top,
-            text="提示：本页显示服务器进程状态（8767 监控服务）",
+            text="提示：本页指标来自 8767 监控服务读取的 run_status.json（最近一次自动化运行记录），不代表任务服务(8768)是否连通",
             bg=pal["surface"],
             fg=pal["muted"],
             font=("Microsoft YaHei UI", 8),
@@ -1486,7 +1751,7 @@ class TaskQueueWindow:
         card1.grid(row=0, column=1, sticky="nsew", padx=4)
         tk.Label(
             card1,
-            text="⚡ 任务运行状态",
+            text="⚡ 上次运行状态",
             bg=pal["card"],
             fg=pal["muted"],
             font=("Microsoft YaHei UI", 8),
@@ -1541,7 +1806,7 @@ class TaskQueueWindow:
         card3.grid(row=0, column=3, sticky="nsew", padx=(4, 0))
         tk.Label(
             card3,
-            text="🛡️ 系统健康诊断",
+            text="🛡️ 上次运行健康",
             bg=pal["card"],
             fg=pal["muted"],
             font=("Microsoft YaHei UI", 8),
@@ -2184,6 +2449,7 @@ class TaskQueueWindow:
         self._sync_prefs_snapshot()
         self._save_settings()
         self._refresh_role_banner()
+        self._schedule_server_identity_refresh()
         self.refresh()
         self.refresh_monitor()
         self.refresh_flows()
@@ -2275,6 +2541,7 @@ class TaskQueueWindow:
     def _apply_tasks(self, tasks, stats=None):
         self.conn_var.set("已连接")
         self._queue_fail_streak = 0
+        self._queue_ever_ok = True
         self._hide_diag_banner()
         self._cached_tasks = list(tasks)
         self._apply_stats(stats)
@@ -2396,6 +2663,7 @@ class TaskQueueWindow:
         pal = wt_theme.get_palette()
         self.monitor_conn_var.set("已连接")
         self._monitor_fail_streak = 0
+        self._monitor_ever_ok = True
         if ping_ms is not None:
             if hasattr(self, "monitor_ping_var"):
                 self.monitor_ping_var.set(f"延迟: {ping_ms} ms")
@@ -2433,7 +2701,7 @@ class TaskQueueWindow:
 
         self.updated_var.set(str(status_payload.get("updatedAt") or "-"))
         if hasattr(self, "monitor_heartbeat_var"):
-            self.monitor_heartbeat_var.set("实时同步正常")
+            self.monitor_heartbeat_var.set("监控数据已同步")
 
         lines = logs_payload.get("lines", [])
         self._cached_monitor_logs = list(lines)
@@ -2998,8 +3266,8 @@ class TaskQueueWindow:
         lowered = text.lower()
         if "10061" in text or "connectionrefused" in lowered or "connection refused" in lowered:
             return (
-                "无法连接：任务队列/监控服务未启动或地址错误。"
-                "请先点击“启动任务队列服务”/“启动监控服务”，或检查任务服务地址与监控地址。"
+                "连接被拒绝：该地址上没有服务在监听。请确认目标机器已启动任务队列服务(8768)，"
+                "并检查任务服务地址与监控地址是否填写正确（客户端模式下不要填 127.0.0.1）。"
             )
         if "10060" in text or "timed out" in lowered or "timeout" in lowered:
             return "连接超时：服务未响应，请确认服务已启动且网络可达。"
@@ -3715,16 +3983,52 @@ class TaskQueueWindow:
                 results.append((title, "失败：{} {}".format(exc.code, detail)))
             except Exception as exc:
                 results.append((title, "失败：{}".format(exc)))
+        # 提交后立刻回查服务端队列：把“服务器上到底有没有这个任务”直接告诉用户
+        notice = self._verify_submitted_tasks_visible(task_ids) if task_ids else ""
         self._post_ui(
-            lambda: self._show_simple_submit_result(results, task_ids, completed_callback)
+            lambda: self._show_simple_submit_result(
+                results, task_ids, completed_callback, notice=notice
+            )
         )
+
+    def _verify_submitted_tasks_visible(self, task_ids):
+        """回查 /api/tasks，确认刚提交的任务确实出现在目标服务实例的队列里。
+
+        “服务器上不显示任务”最常见的原因是：任务提交到了另一台机器/另一个服务实例
+        （各自 logs/task_queue.db 不同），或服务器端窗口勾了“只看我的任务”。
+        这里把结论显式说明，避免用户以为提交没生效。
+        """
+        ids = [str(t) for t in (task_ids or []) if str(t).strip()]
+        if not ids:
+            return ""
+        try:
+            payload = self._get_json("/api/tasks?scope=all&ids={}".format(",".join(ids)))
+        except urllib.error.HTTPError as exc:
+            return "（服务端回查失败：HTTP {}，请稍后在队列页刷新确认）".format(exc.code)
+        except Exception as exc:
+            return "（服务端回查失败：{}，请稍后在队列页刷新确认）".format(
+                self._friendly_error(exc)
+            )
+        tasks = payload.get("tasks") if isinstance(payload, dict) else None
+        if not isinstance(tasks, list):
+            return ""
+        found = {str(item.get("taskId") or "") for item in tasks if isinstance(item, dict)}
+        missing = [tid for tid in ids if tid not in found]
+        if missing:
+            return (
+                "（注意：{} 个任务在 {} 的队列里没查到——请确认服务器端窗口连的是同一台机器，"
+                "且未勾选“只看我的任务”）".format(len(missing), self.base_url)
+            )
+        return "（已确认 {} 个任务出现在 {} 的服务端队列）".format(len(ids), self.base_url)
 
     @staticmethod
     def _flow_sha256(content):
         serialized = json.dumps(content, ensure_ascii=False, indent=2)
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
-    def _show_simple_submit_result(self, results, task_ids=None, completed_callback=None):
+    def _show_simple_submit_result(
+        self, results, task_ids=None, completed_callback=None, notice=""
+    ):
         # 成功消息以"已提交"开头（含"含项目参数/跳过上传"等修饰），其余按失败处理
         success = [item for item in results if str(item[1]).startswith("已提交")]
         failed = [item for item in results if not str(item[1]).startswith("已提交")]
@@ -3732,12 +4036,14 @@ class TaskQueueWindow:
         params_cnt = sum(1 for item in results if "含项目参数" in str(item[1]))
         skip_text = "，跳过上传 {} 个".format(skipped) if skipped else ""
         param_text = "，含项目参数 {} 个".format(params_cnt) if params_cnt else ""
+        notice_text = "。{}".format(notice) if notice else ""
         self._append_log_text(
-            "[queue] 提交完成：成功 {} 个，失败 {} 个{}{}".format(
+            "[queue] 提交完成：成功 {} 个，失败 {} 个{}{}{}".format(
                 len(success),
                 len(failed),
                 skip_text,
                 param_text,
+                "（目标 {}）{}".format(self.base_url, notice) if notice else "（目标 {}）".format(self.base_url),
             )
         )
         if failed:
@@ -3746,13 +4052,16 @@ class TaskQueueWindow:
             )
             messagebox.showwarning(
                 "提交所选板块",
-                "成功 {} 个，失败 {} 个：\n\n{}".format(
-                    len(success), len(failed), detail
+                "成功 {} 个，失败 {} 个：\n\n{}\n\n提交目标：{}{}".format(
+                    len(success), len(failed), detail, self.base_url, notice_text
                 ),
             )
         else:
             messagebox.showinfo(
-                "提交所选板块", "已成功提交 {} 个板块到远程队列。".format(len(success))
+                "提交所选板块",
+                "已成功提交 {} 个板块到远程队列。\n\n提交目标：{}{}".format(
+                    len(success), self.base_url, notice_text
+                ),
             )
         self.refresh()
         if completed_callback:
@@ -4115,6 +4424,12 @@ class TaskQueueWindow:
         # 流程仓库页签：跟随队列自动刷新（独立开关，默认随队列刷新）
         if getattr(self, "flows_auto_var", None) is not None and self.flows_auto_var.get():
             self.refresh_flows()
+        # 低频工作：本机服务启停状态（决定单开关文案）与服务端实例回显
+        self._poll_tick = getattr(self, "_poll_tick", 0) + 1
+        if self._poll_tick % 5 == 0:
+            self._schedule_lan_status_refresh()
+        if self._poll_tick % 5 == 3:
+            self._schedule_server_identity_refresh()
         self._after_id = self.window.after(
             self._poll_delay_ms(self._queue_fail_streak), self._poll_loop
         )
