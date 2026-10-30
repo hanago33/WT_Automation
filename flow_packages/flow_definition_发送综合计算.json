@@ -6059,18 +6059,18 @@
       ],
       "stepParams": {},
       "actionConfig": {
-        "timeoutSeconds": 2.5,
+        "timeoutSeconds": 15.0,
         "waitBefore": 0.0,
         "waitAfter": 0.12,
         "action": "click",
         "controlId": "control_map_744",
-        "retryCount": 0,
-        "retryInterval": 1.0,
+        "retryCount": 1,
+        "retryInterval": 1.5,
         "onError": "continue"
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "",
+      "notes": "WRA 编辑器『保存』：版本/机型/Wohler/半径等编辑器内改动必须先保存，HPC 计算才会用新配置（不保存则 HPC 提交的是旧状态，表现为『版本没生效』）。timeout 2.5→15s、重试 1 次：保存按钮在切换页签/重绘后会短暂消失，过短的 timeout 会让本步 onError=continue 静默跳过、整行白跑。",
       "stepTags": []
     },
     {
