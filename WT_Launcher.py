@@ -3076,15 +3076,17 @@ class LauncherApp:
             activebackground=theme["secondary_active"],
         )
 
-        self.simple_remote_var.trace_add("write", self._on_simple_remote_mode_changed)
-        self._on_simple_remote_mode_changed()
-
         self.simple_status_var = tk.StringVar(value="就绪")
         self.simple_status_label = tk.Label(
             toolbar_bottom, textvariable=self.simple_status_var, bg=theme["toolbar"],
             fg=theme["muted"], font=("Microsoft YaHei UI", 9), anchor="e",
         )
         self.simple_status_label.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(12, 0))
+
+        # 放在状态栏创建之后：首次同步会改写状态栏文案（远程模式/本机服务未启动提示），
+        # 先绑 trace 再手动触发一次，让启动时按钮与状态栏都与已保存的模式一致。
+        self.simple_remote_var.trace_add("write", self._on_simple_remote_mode_changed)
+        self._on_simple_remote_mode_changed()
 
         # ── 卡片滚动容器 ──
         canvas_frame = tk.Frame(parent, bg=theme["bg"])
@@ -5090,6 +5092,27 @@ class LauncherApp:
         """当「远程模式」状态变化时，动态更新 Simple 远程切换按钮、主运行按钮文案与主题，并消除冗余按钮。"""
         is_remote = bool(self.simple_remote_var.get())
         prev_mode = getattr(self, "_simple_remote_mode_applied", None)
+        # 远程任务在飞时不切换连接目标：中途改地址会把后续板块发到另一台机器（甚至本机）
+        if (
+            prev_mode is not None
+            and prev_mode != is_remote
+            and (
+                getattr(self, "_simple_remote_submitting", False)
+                or bool(getattr(self, "_simple_remote_task_ids", None))
+            )
+        ):
+            try:
+                messagebox.showwarning(
+                    "切换模式",
+                    "Simple 远程队列正在提交或运行中，请先停止，再切换本机/远程模式。",
+                    parent=getattr(self, "root", None),
+                )
+            except Exception:
+                pass
+            # 静默回退：先记录已应用值再 set，避免 set 触发的回调再次进入本分支
+            self._simple_remote_mode_applied = prev_mode
+            self.simple_remote_var.set(prev_mode)
+            return
         self._simple_remote_mode_applied = is_remote
         if hasattr(self, "btn_simple_remote"):
             if is_remote:
@@ -5127,8 +5150,11 @@ class LauncherApp:
             self.btn_simple_submit_remote.pack_forget()
         # 只有用户真正切换时才改动连接目标：每次启动都强制改写会覆盖用户已配好的地址。
         if prev_mode is None:
-            # 启动自愈：上次停在远程模式却仍连本机 → 切回记住的服务器地址
-            if is_remote and self._is_local_queue_url(getattr(self, "task_queue_url", "")):
+            # 启动自愈：Simple 界面 + 上次停在远程模式却仍连本机 → 切回记住的服务器地址。
+            # 仅在 Simple 界面生效，避免 Advanced 界面里被历史遗留的 simpleModeRemote 改写地址。
+            if self._simple_remote_client_active() and self._is_local_queue_url(
+                getattr(self, "task_queue_url", "")
+            ):
                 self._sync_simple_remote_target(True, quiet=True)
             else:
                 self._sync_task_queue_window()
@@ -5147,15 +5173,31 @@ class LauncherApp:
         except ValueError:
             return ""
 
+    def _local_queue_hosts(self):
+        """本机 IPv4 集合（30s 缓存）。
+
+        本方法会被地址栏逐键输入的保存回调间接触发；不缓存则每次按键都要做
+        getaddrinfo(hostname)，域环境 / VPN 下可能耗时数百毫秒，明显拖慢输入。
+        """
+        import time as _time
+
+        cached = getattr(self, "_local_queue_hosts_cache", None)
+        now = _time.time()
+        if cached is not None and (now - cached[0]) < 30:
+            return cached[1]
+        try:
+            hosts = frozenset(wt_queue_selfcheck.get_lan_ip_list())
+        except Exception:
+            hosts = frozenset()
+        self._local_queue_hosts_cache = (now, hosts)
+        return hosts
+
     def _is_local_queue_url(self, url):
         """任务服务地址是否指向本机（回环地址或本机任一 IPv4）。"""
         host = self._queue_url_host(url)
         if not host or host in ("127.0.0.1", "localhost"):
             return True
-        try:
-            return host in set(wt_queue_selfcheck.get_lan_ip_list())
-        except Exception:
-            return False
+        return host in self._local_queue_hosts()
 
     def _known_remote_queue_url(self):
         """挑一个已知的远程服务器地址：优先上次远程目标，其次历史记录里的非本机地址。"""

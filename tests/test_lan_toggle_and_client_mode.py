@@ -42,6 +42,18 @@ def _bare_window():
     return window
 
 
+def _patch_port_state(monkeypatch, task_running=False, monitor_running=False):
+    """单开关只做回环端口探测，不再解析本机 IP（避免逐键输入时触发 getaddrinfo）。"""
+    monkeypatch.setattr(
+        wt_queue_selfcheck,
+        "port_open",
+        lambda host, port, timeout=2: (
+            (port == wt_queue_selfcheck.PORT and task_running)
+            or (port == wt_queue_selfcheck.MONITOR_PORT and monitor_running)
+        ),
+    )
+
+
 def test_toggle_button_switches_text_with_local_service_state(monkeypatch):
     try:
         root = tk.Tk()
@@ -51,15 +63,11 @@ def test_toggle_button_switches_text_with_local_service_state(monkeypatch):
     try:
         window = _bare_window()
         window._lan_toggle_btn = tk.Button(root, text="🚀 一键启动内网服务")
-        monkeypatch.setattr(
-            wt_queue_selfcheck, "get_local_service_status", lambda: {"task_running": False}
-        )
+        _patch_port_state(monkeypatch, task_running=False)
         window._refresh_lan_toggle_button()
         assert "一键启动内网服务" in window._lan_toggle_btn.cget("text")
 
-        monkeypatch.setattr(
-            wt_queue_selfcheck, "get_local_service_status", lambda: {"task_running": True}
-        )
+        _patch_port_state(monkeypatch, task_running=True)
         window._refresh_lan_toggle_button()
         assert "停止内网服务" in window._lan_toggle_btn.cget("text")
     finally:
@@ -72,17 +80,51 @@ def test_toggle_action_dispatches_start_or_stop(monkeypatch):
     window.start_lan_services_action = lambda: calls.append("start")
     window.stop_lan_services_action = lambda: calls.append("stop")
 
-    monkeypatch.setattr(
-        wt_queue_selfcheck, "get_local_service_status", lambda: {"task_running": False}
-    )
+    _patch_port_state(monkeypatch, task_running=False)
     window.toggle_lan_services_action()
     assert calls == ["start"]
 
-    monkeypatch.setattr(
-        wt_queue_selfcheck, "get_local_service_status", lambda: {"monitor_running": True}
-    )
+    _patch_port_state(monkeypatch, monitor_running=True)
     window.toggle_lan_services_action()
     assert calls == ["start", "stop"]
+
+
+def test_local_service_probe_avoids_hostname_resolution(monkeypatch):
+    """开关状态探测必须只用回环端口，不得解析本机 IP（地址栏逐键输入会高频调用）。"""
+
+    def boom(*_a, **_k):
+        raise AssertionError("不应调用 get_local_service_status（内部会 getaddrinfo）")
+
+    monkeypatch.setattr(wt_queue_selfcheck, "get_local_service_status", boom)
+    monkeypatch.setattr(wt_queue_selfcheck, "port_open", lambda *a, **k: True)
+    assert wt_task_queue_window.TaskQueueWindow._local_services_running() is True
+
+
+def test_align_button_only_offered_for_task_service_banner():
+    """地址不一致时只在“任务服务连不上”的横幅上提供对齐，避免把能用的地址改坏。"""
+    try:
+        root = tk.Tk()
+        root.withdraw()
+    except tk.TclError:
+        pytest.skip("no display available")
+    window = None
+    try:
+        window = wt_task_queue_window.TaskQueueWindow(
+            root, "http://10.102.96.63:8768", "alice", "wt2026"
+        )
+        window.monitor_url_var.set("http://10.102.96.36:8767")
+        window.monitor_base_url = "http://10.102.96.36:8767"
+
+        window._show_diag_banner("connection refused", is_queue=True)
+        assert window._diag_align_btn.winfo_manager() == "pack"
+
+        window._hide_diag_banner()
+        window._show_diag_banner("connection refused", is_queue=False)
+        assert window._diag_align_btn.winfo_manager() == ""
+    finally:
+        if window is not None:
+            window.window.destroy()
+        root.destroy()
 
 
 def test_lan_control_row_has_single_action_button():
@@ -266,6 +308,36 @@ def test_launcher_switches_target_url_with_simple_mode():
     app._sync_simple_remote_target(False)
     assert app.task_queue_url == "http://127.0.0.1:8768"
     assert app.server_monitor_url == "http://127.0.0.1:8767"
+
+
+def test_simple_mode_toggle_reverts_while_remote_run_active(monkeypatch):
+    """远程任务在飞时切换模式会把后续板块发到另一台机器，必须拒绝并回退。"""
+    import WT_Launcher
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+    except tk.TclError:
+        pytest.skip("no display available")
+    monkeypatch.setattr(WT_Launcher.messagebox, "showwarning", lambda *a, **k: None)
+    try:
+        app = object.__new__(WT_Launcher.LauncherApp)
+        app.root = root
+        app.simple_remote_var = tk.BooleanVar(value=False, master=root)
+        app._simple_remote_mode_applied = False
+        app._simple_remote_submitting = True
+        app._simple_remote_task_ids = {"task_1": True}
+        app.simple_remote_var.trace_add("write", app._on_simple_remote_mode_changed)
+
+        app.simple_remote_var.set(True)
+        assert app.simple_remote_var.get() is False
+
+        app._simple_remote_submitting = False
+        app._simple_remote_task_ids = {}
+        app.simple_remote_var.set(True)
+        assert app.simple_remote_var.get() is True
+    finally:
+        root.destroy()
 
 
 def test_launcher_keeps_address_when_no_remote_target_known():

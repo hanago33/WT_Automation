@@ -336,10 +336,8 @@ class TaskQueueWindow:
         # 两侧服务的“曾经连通”标记，用于在横幅里区分“谁不通”而不是笼统报连不上
         self._queue_ever_ok = False
         self._monitor_ever_ok = False
-        self._lan_services_running = None
         self._lan_refreshing = False
         self._server_info_fetching = False
-        self._server_health = {}
         self._poll_tick = 0
 
         # 初始化历史地址列表（支持记忆与快速切换）
@@ -636,14 +634,29 @@ class TaskQueueWindow:
             pady=6,
         )
 
-        tk.Label(
+        self._diag_banner_label = tk.Label(
             self._diag_banner_frame,
             textvariable=self._diag_banner_text_var,
             bg="#fef2f2",
             fg="#991b1b",
             font=("Microsoft YaHei UI", 9, "bold"),
             anchor="w",
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+            justify=tk.LEFT,
+            # 文案会随“谁不通/地址不一致”变长：限宽换行，避免把右侧按钮挤出窗口
+            wraplength=680,
+        )
+        self._diag_banner_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        def _resize_banner_text(event):
+            # 按实际宽度给文字留出右侧按钮的空间（约 330px），窄窗口也不会顶掉按钮
+            try:
+                self._diag_banner_label.config(
+                    wraplength=max(240, int(event.width) - 330)
+                )
+            except Exception:
+                pass
+
+        self._diag_banner_frame.bind("<Configure>", _resize_banner_text)
 
         wt_theme.create_flat_button(
             self._diag_banner_frame,
@@ -761,7 +774,8 @@ class TaskQueueWindow:
         if extra:
             text += " " + extra
         self._diag_banner_text_var.set(text)
-        self._sync_diag_align_button()
+        # 只有“任务服务连不上、监控可达”时才提供对齐：反向对齐会把能用的地址改坏
+        self._sync_diag_align_button(allow=bool(is_queue))
         if not getattr(self, "_diag_banner_visible", False):
             self._diag_banner_frame.pack(fill=tk.X, padx=8, pady=(2, 4), after=self.top_frame)
             self._diag_banner_visible = True
@@ -786,7 +800,10 @@ class TaskQueueWindow:
             except ValueError:
                 return ""
 
-        return _host(self.base_url), _host(self.monitor_base_url)
+        return (
+            _host(getattr(self, "base_url", "")),
+            _host(getattr(self, "monitor_base_url", "")),
+        )
 
     def _banner_context_hint(self, is_queue=True):
         """补充“到底是哪个服务不通”，避免用户看到监控正常就以为提示是误报。
@@ -808,12 +825,12 @@ class TaskQueueWindow:
             hints.append("任务服务 8768 可连通，说明只是监控服务 8767 不通")
         return "（{}）".format("；".join(hints)) if hints else ""
 
-    def _sync_diag_align_button(self):
+    def _sync_diag_align_button(self, allow=True):
         btn = getattr(self, "_diag_align_btn", None)
         if btn is None:
             return
         task_host, mon_host = self._service_hosts()
-        need_align = bool(task_host and mon_host and task_host != mon_host)
+        need_align = bool(allow and task_host and mon_host and task_host != mon_host)
         try:
             if need_align and not btn.winfo_manager():
                 btn.pack(side=tk.RIGHT, padx=(6, 0))
@@ -922,12 +939,23 @@ class TaskQueueWindow:
     # ── 内网服务单开关（启动/停止合一） ────────────────────────────────────
     @staticmethod
     def _local_services_running():
-        """本机 8768/8767 是否有任一在监听。"""
+        """本机 8768/8767 是否有任一在监听。
+
+        只做回环端口探测（微秒级），不用 get_local_service_status：后者会解析本机
+        IP 列表（getaddrinfo），而本方法会被地址栏逐键触发的角色刷新调用，
+        在域环境/VPN 下解析可能耗时数百毫秒，会明显拖慢输入。
+        """
         try:
-            status = wt_queue_selfcheck.get_local_service_status()
+            return bool(
+                wt_queue_selfcheck.port_open(
+                    "127.0.0.1", wt_queue_selfcheck.PORT, timeout=0.2
+                )
+                or wt_queue_selfcheck.port_open(
+                    "127.0.0.1", wt_queue_selfcheck.MONITOR_PORT, timeout=0.2
+                )
+            )
         except Exception:
             return False
-        return bool(status.get("task_running") or status.get("monitor_running"))
 
     def _refresh_lan_toggle_button(self, running=None):
         """按本机服务实际状态切换开关按钮的文案与配色。"""
@@ -936,7 +964,6 @@ class TaskQueueWindow:
             return
         if running is None:
             running = self._local_services_running()
-        self._lan_services_running = bool(running)
         try:
             if running:
                 btn.config(text="⏹️ 停止内网服务")
@@ -964,12 +991,9 @@ class TaskQueueWindow:
 
         def _worker():
             running = self._local_services_running()
-
-            def _apply():
-                self._lan_refreshing = False
-                self._refresh_lan_toggle_button(running)
-
-            self._post_ui(_apply)
+            # 在 worker 里复位：窗口中途被关闭时 _post_ui 不再执行，标志也不会永久卡住
+            self._lan_refreshing = False
+            self._post_ui(lambda: self._refresh_lan_toggle_button(running))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1030,13 +1054,11 @@ class TaskQueueWindow:
             return
         payload = payload or {}
         if payload.get("error"):
-            var.set(
-                "🏷 服务端实例：不可达（{}）".format(
-                    self._friendly_error(payload.get("error"))[:80]
-                )
-            )
+            msg = self._friendly_error(payload.get("error")).strip()
+            if len(msg) > 42:
+                msg = msg[:42] + "…"
+            var.set("🏷 服务端实例：不可达（{}）".format(msg))
             return
-        self._server_health = dict(payload)
         db_path = str(payload.get("queueDb") or "")
         code_root = os.path.dirname(os.path.dirname(db_path)) if db_path else ""
         parts = [
@@ -1057,12 +1079,8 @@ class TaskQueueWindow:
 
         def _worker():
             payload = self._fetch_server_health()
-
-            def _apply():
-                self._server_info_fetching = False
-                self._update_server_identity_label(payload)
-
-            self._post_ui(_apply)
+            self._server_info_fetching = False
+            self._post_ui(lambda: self._update_server_identity_label(payload))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1088,12 +1106,12 @@ class TaskQueueWindow:
 
         primary_ip = getattr(self, "primary_lan_ip", "127.0.0.1")
         if host in self._local_ips:
-            status = wt_queue_selfcheck.get_local_service_status()
-            if status.get("task_running"):
+            # 只用回环端口探测：本方法会被地址栏逐键输入的预览反复调用
+            if self._local_services_running():
                 token = str(getattr(self, "token_var", None) and self.token_var.get() or "wt2026").strip()
                 desc = "服务器本机控制台 —— 服务监听 0.0.0.0:8768 / 8767 | 本机内网地址: http://{}:8768 | 令牌: {}".format(primary_ip, token)
             else:
-                desc = "服务器本机控制台 —— 本地单机模式 (127.0.0.1:8768) | 点击右侧可一键对外启动为内网服务器"
+                desc = "服务器本机控制台 —— 本地单机模式 (127.0.0.1:8768) | 点上方「一键启动内网服务」即可对外服务"
             return "server", desc
 
         desc = "远程客户端 —— 任务将发送到服务器 {} 执行（本机 IP：{}）".format(host, primary_ip)
@@ -1118,8 +1136,7 @@ class TaskQueueWindow:
         token = str(getattr(self, "token_var", None) and self.token_var.get() or "wt2026").strip()
 
         if role == "server":
-            status = wt_queue_selfcheck.get_local_service_status()
-            if status.get("task_running"):
+            if self._local_services_running():
                 bg = "#064e3b"  # 翡翠墨绿
                 fg = "#ffffff"
                 desc_fg = "#a7f3d0"
@@ -3283,6 +3300,7 @@ class TaskQueueWindow:
 
     def _mark_offline(self, message):
         self._queue_fail_streak += 1
+        self._queue_ever_ok = False
         friendly = self._friendly_error(message)
         self.conn_var.set("未连接：{}".format(friendly))
         self._show_diag_banner(message, is_queue=True)
@@ -3290,6 +3308,7 @@ class TaskQueueWindow:
     def _mark_monitor_offline(self, message):
         pal = wt_theme.get_palette()
         self._monitor_fail_streak += 1
+        self._monitor_ever_ok = False
         friendly = self._friendly_error(message)
         self._raw_monitor_error = message
         self.monitor_conn_var.set("未连接：{}".format(friendly))
@@ -3998,7 +4017,11 @@ class TaskQueueWindow:
         （各自 logs/task_queue.db 不同），或服务器端窗口勾了“只看我的任务”。
         这里把结论显式说明，避免用户以为提交没生效。
         """
-        ids = [str(t) for t in (task_ids or []) if str(t).strip()]
+        ids = []
+        for item in task_ids or []:
+            tid = str(item).strip()
+            if tid and tid not in ids:
+                ids.append(tid)  # 幂等重放会重复返回同一 taskId，去重后再核对
         if not ids:
             return ""
         try:
@@ -4019,7 +4042,15 @@ class TaskQueueWindow:
                 "（注意：{} 个任务在 {} 的队列里没查到——请确认服务器端窗口连的是同一台机器，"
                 "且未勾选“只看我的任务”）".format(len(missing), self.base_url)
             )
-        return "（已确认 {} 个任务出现在 {} 的服务端队列）".format(len(ids), self.base_url)
+        archived = [
+            item for item in tasks if isinstance(item, dict) and item.get("isArchived")
+        ]
+        archived_text = (
+            "（其中 {} 个已归档，默认列表不显示）".format(len(archived)) if archived else ""
+        )
+        return "（已确认 {} 个任务出现在 {} 的服务端队列）{}".format(
+            len(ids), self.base_url, archived_text
+        )
 
     @staticmethod
     def _flow_sha256(content):
@@ -4036,7 +4067,7 @@ class TaskQueueWindow:
         params_cnt = sum(1 for item in results if "含项目参数" in str(item[1]))
         skip_text = "，跳过上传 {} 个".format(skipped) if skipped else ""
         param_text = "，含项目参数 {} 个".format(params_cnt) if params_cnt else ""
-        notice_text = "。{}".format(notice) if notice else ""
+        notice_text = "\n\n{}".format(notice) if notice else ""
         self._append_log_text(
             "[queue] 提交完成：成功 {} 个，失败 {} 个{}{}{}".format(
                 len(success),
