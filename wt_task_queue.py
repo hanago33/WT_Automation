@@ -595,10 +595,13 @@ def list_tasks(user=None, scope="all", limit=200, db_path=DEFAULT_DB_PATH, task_
             params.append(user)
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY created_at ASC, rowid ASC LIMIT ?"
+        # 取「最新的 limit 条」再翻回升序返回：原实现取最早的 limit 条，
+        # 队列累计超过 limit（默认 200）后新提交的任务永远落在窗口之外，
+        # 表现为“提交成功了、服务器队列里却看不到新任务”。
+        query += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         params.append(int(limit))
         rows = conn.execute(query, params).fetchall()
-        tasks = [_row_to_task(row) for row in rows]
+        tasks = [_row_to_task(row) for row in reversed(rows)]
         if include_archived or (ids and len(tasks) < len(ids)):
             found_ids = {t["taskId"] for t in tasks}
             missing_ids = [tid for tid in ids if tid not in found_ids] if ids else []
@@ -616,11 +619,11 @@ def list_tasks(user=None, scope="all", limit=200, db_path=DEFAULT_DB_PATH, task_
                     arch_params.append(user)
                 if arch_conds:
                     arch_query += " WHERE " + " AND ".join(arch_conds)
-                arch_query += " ORDER BY created_at ASC, rowid ASC LIMIT ?"
+                arch_query += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
                 rem_limit = max(1, int(limit) - len(tasks))
                 arch_params.append(rem_limit)
                 arch_rows = conn.execute(arch_query, arch_params).fetchall()
-                for r in arch_rows:
+                for r in reversed(arch_rows):
                     t = _row_to_task(r)
                     if t:
                         t["isArchived"] = True
