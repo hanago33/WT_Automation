@@ -2615,6 +2615,13 @@ def _read_dropdown_row_value_text(dropdown_wrapper, ignore_norms=None):
         parent = None
     if parent is None:
         return ""
+    # 父级是顶层窗口/桌面（下拉框包装器本身是 Popup 等情况）时直接放弃：遍历桌面
+    # 子窗口既无意义又慢（UIA 枚举所有顶层窗口），不能塞进每条读值路径。
+    try:
+        if str(get_wrapper_control_type(parent) or "").lower() in {"window", "desktop"}:
+            return ""
+    except Exception:
+        pass
     rect = get_wrapper_rectangle(dropdown_wrapper) or {}
     if _rect_is_degenerate(rect):
         return ""
@@ -3313,7 +3320,11 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                         _verify_targets = (
                             [explicit_target]
                             if explicit_target and not is_placeholder_text(explicit_target)
-                            else [t for t in target_texts if t and t not in _dd_self_labels]
+                            else [
+                                t
+                                for t in target_texts
+                                if t and normalize_match_text(t).lower() not in _dd_self_labels
+                            ]
                         )
                         matched_target = _dropdown_display_matches_target(verify_value, _verify_targets)
                         if not matched_target:
