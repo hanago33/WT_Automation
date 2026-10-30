@@ -80,5 +80,56 @@ class PreconditionVisibleSkipTests(unittest.TestCase):
         self.assertIsNone(reason)
 
 
+class PreconditionSkipIfGoneTests(unittest.TestCase):
+    """actionConfig.precondition(condition=skip_if_gone) 的幂等跳过语义。
+
+    step_copy_goback：HPC 提交后 MUP 常已自动关闭编辑器（关闭按钮随视图消失），
+    此时再点必然"未命中控件"报失败。新前置要求"动作控件缺席 + alsoGoneControlId
+    （编辑器容器）也缺席"才允许跳过；只要容器还在就不跳过，让真实失败暴露。
+    """
+
+    def _action_config(self):
+        return {
+            "action": "click",
+            "controlId": "ctrl_close_editor",
+            "precondition": {
+                "condition": "skip_if_gone",
+                "controlId": "ctrl_close_editor",
+                "alsoGoneControlId": "ctrl_editor_container",
+                "timeoutSeconds": 0.4,
+            },
+        }
+
+    def _step_def(self):
+        return {"id": "step_copy_goback", "controls": []}
+
+    def _run(self, present_ids):
+        def fake_locate(_step_def, _step_id, **kwargs):
+            return MagicMock() if kwargs.get("control_id") in present_ids else None
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(wt_flow_executor, "_LOG_STEP", MagicMock()))
+            stack.enter_context(patch.object(wt_flow_executor, "_LOCATE_FLOW_CONTROL", MagicMock(side_effect=fake_locate)))
+            stack.enter_context(patch.object(
+                wt_flow_executor, "_call_with_control_map_path",
+                side_effect=lambda fn, *a, **k: fn(*a, **k)))
+            stack.enter_context(patch.object(wt_flow_executor.time, "sleep", return_value=None))
+            return wt_flow_executor._eval_precondition_skip(
+                "step_copy_goback", self._action_config(), self._step_def()
+            )
+
+    def test_control_present_executes_action(self):
+        self.assertIsNone(self._run({"ctrl_close_editor"}))
+
+    def test_control_and_view_gone_skips_action(self):
+        reason = self._run(set())
+        self.assertIsNotNone(reason)
+        self.assertIn("跳过", reason)
+
+    def test_control_gone_but_view_open_executes_action(self):
+        """关闭按钮缺席但编辑器容器仍在 → 不跳过（避免把未关闭的编辑器留在后台）。"""
+        self.assertIsNone(self._run({"ctrl_editor_container"}))
+
+
 if __name__ == "__main__":
     unittest.main()

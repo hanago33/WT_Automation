@@ -1962,19 +1962,19 @@
         "cpversion": "Cp0.429"
       },
       "actionConfig": {
-        "timeoutSeconds": 3.0,
+        "timeoutSeconds": 6.0,
         "waitBefore": 0.0,
         "waitAfter": 0.15,
         "action": "select_dropdown_item_runtime",
         "controlId": "PART_DropDownButton_版本_下拉框_Button",
-        "retryCount": 0,
-        "retryInterval": 1.0,
+        "retryCount": 1,
+        "retryInterval": 1.5,
         "onError": "continue",
         "text": "${stepParams.cpversion}"
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "修复：原 control_map_12 是 Text 值文本（非下拉框），select_dropdown_item_runtime 无法展开。改用“版本下拉框”（PART_DropDownButton,Button,版本），目标选项 text=Cp0.429。",
+      "notes": "修复：原 control_map_12 是 Text 值文本（非下拉框），select_dropdown_item_runtime 无法展开。改用“版本下拉框”（PART_DropDownButton,Button,版本），目标选项 text=${stepParams.cpversion}。2026-10-30 选值纠偏：该下拉无 ValuePattern、运行时 UIA Name 为空，显示值是同行的 WindTurbineTypeCurveParameter_TextBlock_Value（_read_dropdown_display_text 已支持读取）；此前读不到值 → 点击候选后一律“保留点击证据”报成功，参数表给了 Cp0.429 也可能停在其它版本。同时禁止“候选是目标子串”（Cp0.4 ⊂ Cp0.429）命中、单元素 optionValues 不再驱动 HOME 索引导航。timeout 3→6s、重试 1 次：首次校验失败会重新展开再选一次。",
       "stepTags": [
         "create",
         "copyfull"
@@ -6238,20 +6238,58 @@
             "helpText": "",
             "optionValues": []
           }
+        },
+        {
+          "id": "ctrl_editor_container",
+          "name": "WRA 编辑器滚动容器",
+          "role": "仅供前置判定：编辑器是否仍打开",
+          "enabled": true,
+          "windowTitle": "*",
+          "targetMethod": "automation_id,control_type",
+          "targetValue": "WRAAnalysisEditorView_ScrollViewer_Edition,Pane",
+          "templateKey": "",
+          "uiPath": "Window_Main > MicroScaleMainView_View_Main > MicroScale_TabControl_Site > MUP.MSC.SmartClient.Base.ViewModel.MUPSiteEditorViewModel > MUPMicroScaleView > MUPWRAAnalysisMainView > MUPWRAAnalysisMainView_TabControl_MainTabs > MUP.Module.WRA.Editor.ViewModel.MUPWRAAnalysisEditorViewModel > MUPWRAAnalysisEditorView > WRAAnalysisEditorView_ScrollViewer_Edition",
+          "notes": "编辑器仍在打开时该滚动容器必然存在（控件库实测 Pane/ScrollViewer）。step_copy_goback 的 skip_if_gone 前置用它做反向门禁：关闭按钮缺席但容器仍在 → 不跳过，仍执行点击并把真实失败暴露出来；两者都缺席 → 说明 HPC 提交后编辑器已自动关闭，跳过点击。",
+          "labelText": "",
+          "relatedLabelName": "",
+          "helpText": "",
+          "functionText": "",
+          "rawInspectText": "",
+          "optionValues": [],
+          "auxChecks": [],
+          "inspectData": {
+            "name": "",
+            "controlType": "Pane",
+            "localizedControlType": "pane",
+            "className": "ScrollViewer",
+            "automationId": "WRAAnalysisEditorView_ScrollViewer_Edition",
+            "frameworkId": "WPF",
+            "isEnabled": "True",
+            "recommendedTargetMethod": "automation_id,control_type",
+            "recommendedTargetValue": "WRAAnalysisEditorView_ScrollViewer_Edition,Pane"
+          }
         }
       ],
       "stepParams": {},
       "actionConfig": {
         "action": "click",
         "controlId": "ctrl_close_editor",
-        "timeoutSeconds": 2.5,
+        "timeoutSeconds": 20.0,
+        "retryCount": 1,
+        "retryInterval": 2.0,
         "waitBefore": 0.2,
         "waitAfter": 0.3,
-        "onError": "continue"
+        "onError": "continue",
+        "precondition": {
+          "condition": "skip_if_gone",
+          "controlId": "ctrl_close_editor",
+          "alsoGoneControlId": "ctrl_editor_container",
+          "timeoutSeconds": 6.0
+        }
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "副本配置并保存发送后，点击关闭按钮(MUPHeaderedClosableContentControl_Button_Close) 返回综合列表，供下一轮再次复制综合1。",
+      "notes": "副本配置并保存发送后，点击关闭按钮(MUPHeaderedClosableContentControl_Button_Close) 返回综合列表，供下一轮再次复制综合1。HPC 提交后 MUP 常已自动关闭编辑器（关闭按钮随视图消失），改配 precondition=skip_if_gone + alsoGoneControlId=编辑器容器：两者都缺席时按幂等跳过，避免每行都报'未命中控件'失败；timeout 提高到 20s、重试 1 次覆盖保存/HPC 后界面重绘的短暂真空。",
       "stepTags": [
         "copy",
         "copyfull"

@@ -2285,6 +2285,8 @@ def _sweep_dropdown_option_by_point(anchor_rect, target_texts, step=22, max_span
         y = top + 2
         misses = 0
         probes = 0
+        # 弱命中（选项文本是目标的子串，如 Cp0.4 ⊂ Cp0.429）只记录不点击
+        weak_hit = ""
         while y <= top + max_span and misses < 6 and probes < max_probes:
             probes += 1
             stats["probes"] += 1
@@ -2309,7 +2311,15 @@ def _sweep_dropdown_option_by_point(anchor_rect, target_texts, step=22, max_span
                         if len(stats["hitTexts"]) < 5 and text not in stats["hitTexts"]:
                             stats["hitTexts"].append(text)
                         text_norm = normalize_match_text(text).lower()
-                        if any(tt and (tt in text_norm or text_norm in tt) for tt in target_texts):
+                        # 只认"正向包含"（选项文本含目标）。反向包含（选项是目标的
+                        # 子串）会造成版本号前缀误点：目标 Cp0.429 命中扫掠到的
+                        # "Cp0.4" 并直接点击选中 → 静默选错版本。弱命中只记录，
+                        # 交给键盘键入搜索兜底（那条路能真正校验显示值）。
+                        _strong_match = any(tt and tt in text_norm for tt in target_texts)
+                        if not _strong_match and not weak_hit:
+                            if any(tt and text_norm in tt for tt in target_texts):
+                                weak_hit = text
+                        if _strong_match:
                             # 鼠标已在选项上，直接左键点击选中
                             if move_cursor:
                                 try:
@@ -2331,6 +2341,8 @@ def _sweep_dropdown_option_by_point(anchor_rect, target_texts, step=22, max_span
             else:
                 misses += 1
             y += step
+        if weak_hit:
+            stats["weakHitText"] = weak_hit
     finally:
         if move_cursor and original_pos is not None:
             try:
@@ -2504,29 +2516,168 @@ def click_dropdown_runtime_candidate(wrapper):
     return False, {}
 
 
-def _read_dropdown_display_text(dropdown_wrapper):
-    """读下拉框当前显示文本：优先 ValuePattern，其次 window_text，最后子 TextBlock。
+def _dropdown_self_label_texts(control_definition):
+    """控件自身的"标签类"文本（名称/标签/相关标签），用于从显示值读取中排除。
 
-    Telerik PART_DropDownButton 常无 ValuePattern 且 window_text 为空，
-    显示文本在内部 TextBlock 子控件中。
+    MUP 控件库给 `PART_DropDownButton` 回填的 name 是"版本 下拉框"这类标签，
+    运行时 UIA Name 为空；若把标签当"当前选中值"，目标值校验必然误判（要么
+    永远不匹配，要么被标签自己误判成功），进而反复点击不同选项把值点错。
+    """
+    control_definition = control_definition if isinstance(control_definition, dict) else {}
+    inspect_data = control_definition.get("inspectData", {}) or {}
+    texts = []
+    for value in (
+        control_definition.get("name", ""),
+        control_definition.get("labelText", ""),
+        control_definition.get("relatedLabelName", ""),
+        inspect_data.get("name", "") if isinstance(inspect_data, dict) else "",
+        inspect_data.get("labelText", "") if isinstance(inspect_data, dict) else "",
+    ):
+        normalized = normalize_match_text(value).lower()
+        if normalized and normalized not in texts:
+            texts.append(normalized)
+    return texts
+
+
+def _rect_center_inside(inner_rect, outer_rect, tolerance=6):
+    """inner 的中心是否落在 outer 矩形内（含容差）。用于"同行值文本"归属判定。"""
+    try:
+        inner_left = int(inner_rect.get("left", 0) or 0)
+        inner_top = int(inner_rect.get("top", 0) or 0)
+        inner_right = int(inner_rect.get("right", 0) or 0)
+        inner_bottom = int(inner_rect.get("bottom", 0) or 0)
+        outer_left = int(outer_rect.get("left", 0) or 0)
+        outer_top = int(outer_rect.get("top", 0) or 0)
+        outer_right = int(outer_rect.get("right", 0) or 0)
+        outer_bottom = int(outer_rect.get("bottom", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if inner_right <= inner_left or inner_bottom <= inner_top:
+        return False
+    cx = (inner_left + inner_right) // 2
+    cy = (inner_top + inner_bottom) // 2
+    return (
+        outer_left - tolerance <= cx <= outer_right + tolerance
+        and outer_top - tolerance <= cy <= outer_bottom + tolerance
+    )
+
+
+def _read_dropdown_row_value_text(dropdown_wrapper, ignore_norms=None):
+    """读下拉框同一行的"值文本"（同为父级子控件、中心落在下拉框矩形内的 Text）。
+
+    Telerik `PART_DropDownButton` 的当前值不挂在按钮自身（无 ValuePattern、
+    UIA Name 为空、Control View 也没有子 TextBlock），而是同行的独立
+    `WindTurbineTypeCurveParameter_TextBlock_Value`：按钮 rect 内叠加一层 Text。
+    只有把这一层读出来，选中后才能校验"选到的到底是哪个版本"。
+    """
+    ignore_norms = ignore_norms or set()
+    try:
+        parent = dropdown_wrapper.parent()
+    except Exception:
+        parent = None
+    if parent is None:
+        return ""
+    rect = get_wrapper_rectangle(dropdown_wrapper) or {}
+    if _rect_is_degenerate(rect):
+        return ""
+    try:
+        siblings = parent.children() or []
+    except Exception:
+        return ""
+    for sibling in siblings:
+        try:
+            if get_wrapper_control_type(sibling) not in {"Text", "TextBlock", "Static"}:
+                continue
+            text = normalize_match_text(get_wrapper_text(sibling))
+        except Exception:
+            continue
+        if not text or text.lower() in ignore_norms:
+            continue
+        sibling_rect = get_wrapper_rectangle(sibling) or {}
+        if not _rect_center_inside(sibling_rect, rect):
+            continue
+        return text
+    return ""
+
+
+def _read_dropdown_display_text(dropdown_wrapper, ignore_texts=None):
+    """读下拉框当前显示文本：ValuePattern → 同行值文本 → window_text → 子 TextBlock。
+
+    Telerik PART_DropDownButton 常无 ValuePattern 且运行时 UIA Name 为空；显示值
+    在同行叠加的 TextBlock 中（见 `_read_dropdown_row_value_text`）。
+    `ignore_texts` 传入控件自身的标签类文本，避免把"版本 下拉框"当选中值。
     """
     if dropdown_wrapper is None:
         return ""
-    value = get_wrapper_value(dropdown_wrapper)
-    if value:
-        return str(value).strip()
-    text = get_wrapper_text(dropdown_wrapper)
-    if text:
+    ignore_norms = {
+        normalize_match_text(item).lower() for item in (ignore_texts or []) if normalize_match_text(item)
+    }
+    value = normalize_match_text(get_wrapper_value(dropdown_wrapper))
+    if value and value.lower() not in ignore_norms:
+        return value
+    row_text = _read_dropdown_row_value_text(dropdown_wrapper, ignore_norms)
+    if row_text:
+        return row_text
+    text = normalize_match_text(get_wrapper_text(dropdown_wrapper))
+    if text and text.lower() not in ignore_norms:
         return text
     try:
         for child in dropdown_wrapper.children():
             if get_wrapper_control_type(child) in {"Text", "TextBlock", "Static"}:
-                child_text = get_wrapper_text(child)
-                if child_text:
+                child_text = normalize_match_text(get_wrapper_text(child))
+                if child_text and child_text.lower() not in ignore_norms:
                     return child_text
     except Exception:
         pass
     return ""
+
+
+def _dropdown_candidate_token_matches(cand_tokens, target_norm, strict=False):
+    """候选自身文本是否命中目标文本。
+
+    正向包含（候选含目标）命中；`strict=False` 时额外允许反向包含（候选是目标的
+    子串，用于命中控件名尾部带"文本/下拉框"等修饰的旧场景）。调用方给了显式目标
+    （参数表/actionConfig.text）时必须 strict=True：目标 Cp0.429 不得命中候选
+    Cp0.4/Cp0.42，否则会点错版本。
+    """
+    target_norm = str(target_norm or "").strip().lower()
+    if not target_norm:
+        return False
+    for token in cand_tokens or []:
+        token_norm = str(token or "").strip().lower()
+        if not token_norm:
+            continue
+        if target_norm in token_norm:
+            return True
+        if not strict and token_norm in target_norm:
+            return True
+    return False
+
+
+def _dropdown_display_matches_target(display_text, target_texts):
+    """显示值是否命中目标：显示值等于目标，或显示值包含目标（容忍"（默认）"等后缀）。
+
+    刻意不做反向包含：目标 "Cp0.429" 不能被显示值 "Cp0.4" 判成功——版本号前缀
+    互为子串是最典型的误判来源（下拉里同时存在 Cp0.4 / Cp0.429 时）。
+    """
+    display_norm = normalize_match_text(display_text).lower()
+    if not display_norm:
+        return False
+    for target in target_texts or []:
+        target_norm = normalize_match_text(target).lower()
+        if not target_norm or is_placeholder_text(target_norm):
+            continue
+        if display_norm == target_norm:
+            return True
+        start = display_norm.find(target_norm)
+        while start >= 0:
+            tail = display_norm[start + len(target_norm):]
+            # 尾随是数字说明是"更长的编号"（Cp0.4291 ≠ Cp0.429），不放行；
+            # 尾随是"（默认）"" (已选)"等说明文字时才允许包含命中。
+            if not tail or not tail[0].isdigit():
+                return True
+            start = display_norm.find(target_norm, start + 1)
+    return False
 
 
 def _escape_send_keys_text(text):
@@ -2639,6 +2790,10 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
     foreground_before = _try_get_window_by_handle(get_foreground_window_handle())
     expected_process_id = get_wrapper_process_id(foreground_before)
     target_texts = get_dropdown_runtime_target_texts(control_definition)
+    # 控件自身的标签类文本（如"版本 下拉框""版本"）：读显示值时必须排除，
+    # 否则控件名会被当成"当前选中值"，目标校验既可能永远不匹配（反复点错选项），
+    # 也可能被标签自己误判成功（静默选错）。
+    _dd_self_labels = _dropdown_self_label_texts(control_definition)
     # 如果调用方指定了目标选项文本（如 "组"），优先使用，并补充到候选文本中。
     explicit_target = str(target_option or "").strip()
     if explicit_target:
@@ -2743,10 +2898,11 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                 )
                 if dropdown_wrapper is not None:
                     # 值检查捷径：若下拉框当前值已等于目标选项（此前可能已选中），
-                    # 无需展开/枚举，直接判定成功。读取父级 ComboBox 的 ValuePattern。
+                    # 无需展开/枚举，直接判定成功。读取父级 ComboBox 的 ValuePattern
+                    # （不读同行值文本：捷径只处理"值模式可读"的明确场景）。
                     if search_text and not is_placeholder_text(search_text):
-                        current_value = get_wrapper_value(dropdown_wrapper)
-                        if current_value and normalize_match_text(current_value) == normalize_match_text(search_text):
+                        current_value = normalize_match_text(get_wrapper_value(dropdown_wrapper))
+                        if _dropdown_display_matches_target(current_value, [search_text]):
                             _LOG_STEP(
                                 "下拉框当前值已匹配目标: step={step_id}, control={control_id}, value={value}".format(
                                     step_id=step_id, control_id=control_id, value=current_value
@@ -2999,6 +3155,16 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                         sweep_probe["hits"] += _sweep_stats["hits"]
                         if _sweep_stats.get("hitTexts"):
                             sweep_probe["samples"] = list(_sweep_stats["hitTexts"][:5])
+                        if _sweep_stats.get("weakHitText"):
+                            _LOG_STEP(
+                                "点扫掠仅命中弱匹配（选项是目标的子串），不点击以免选错: "
+                                "step={step_id}, control={control_id}, weak={weak}, targets={targets}".format(
+                                    step_id=step_id,
+                                    control_id=control_id,
+                                    weak=_sweep_stats.get("weakHitText", ""),
+                                    targets=" / ".join(target_texts) or "(empty)",
+                                )
+                            )
                         if _opt_wrapper is not None and _opt_text:
                             sweep_probe["matched"] = _opt_text
                             _LOG_STEP(
@@ -3055,7 +3221,11 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                 # 以候选自身文本做一次前置否决：剔除后由枚举继续找正确项，最终自然落到
                 # 键盘键入过滤兜底（该类下拉已被实机证明可靠）。
                 _pre_target_norm = ""
-                if explicit_target and not is_placeholder_text(explicit_target):
+                # 显式目标（参数表/actionConfig.text）时只认"正向包含"：候选文本必须
+                # 等于目标或包含目标。反向包含（候选是目标的子串）会造成版本号前缀
+                # 误判——目标 Cp0.429 命中候选 Cp0.4/Cp0.42 并被点击，静默选错版本。
+                _pre_target_strict = bool(explicit_target) and not is_placeholder_text(explicit_target)
+                if _pre_target_strict:
                     _pre_target_norm = normalize_match_text(explicit_target).lower()
                 if not _pre_target_norm:
                     for _t in target_texts:
@@ -3073,11 +3243,9 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                     except Exception:
                         _cand_tokens = []
                     if _cand_tokens:
-                        _any_match = False
-                        for _tk in _cand_tokens:
-                            if _pre_target_norm in _tk or _tk in _pre_target_norm:
-                                _any_match = True
-                                break
+                        _any_match = _dropdown_candidate_token_matches(
+                            _cand_tokens, _pre_target_norm, strict=_pre_target_strict
+                        )
                         if not _any_match:
                             _LOG_STEP(
                                 "候选文本与目标不符，剔除并继续枚举: step={step_id}, control={control_id}, target={target}, candidate={candidate}".format(
@@ -3098,19 +3266,18 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                     verify_value = ""
                     if dropdown_wrapper is not None:
                         try:
-                            verify_value = _read_dropdown_display_text(dropdown_wrapper)
+                            verify_value = _read_dropdown_display_text(dropdown_wrapper, _dd_self_labels)
                         except Exception:
                             verify_value = ""
                     if verify_value:
-                        verify_norm = normalize_match_text(verify_value).lower()
-                        matched_target = False
-                        if explicit_target and not is_placeholder_text(explicit_target):
-                            matched_target = normalize_match_text(explicit_target).lower() == verify_norm
-                        if not matched_target:
-                            for target in target_texts:
-                                if target and normalize_match_text(target).lower() == verify_norm:
-                                    matched_target = True
-                                    break
+                        # 只与目标文本比较（显式目标优先），且不允许"控件自身标签"参与：
+                        # 标签（如"版本 下拉框"）曾被当选中值从而误判成功。
+                        _verify_targets = (
+                            [explicit_target]
+                            if explicit_target and not is_placeholder_text(explicit_target)
+                            else [t for t in target_texts if t and t not in _dd_self_labels]
+                        )
+                        matched_target = _dropdown_display_matches_target(verify_value, _verify_targets)
                         if not matched_target:
                             _LOG_STEP(
                                 "候选点击后显示值未确认: step={step_id}, control={control_id}, expected={expected}, actual={actual}".format(
@@ -3187,23 +3354,48 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                 )
             except Exception:
                 pass
-        if option_values:
-            # 在 optionValues 中查找目标文本的索引（精确或包含匹配）。
+        # optionValues 可信度守卫：控件库扫描只采到"当前显示值"一项时（实测版本
+        # 下拉 optionValues=["Cp0.429"]），它既不是真实选项全集、也不代表列表顺序。
+        # 据此做索引导航会 HOME 归零后再 ENTER，把高亮落到真实列表首项——选中
+        # "第一个版本"而不是目标（表现为"版本下拉选错且流程报成功"）。只有资产
+        # 注入的权威清单，或至少两项的选项列表，才允许索引导航。
+        option_values_trusted = bool(option_values) and (
+            option_values_injected or len(option_values) >= 2
+        )
+        if option_values and not option_values_trusted:
+            _LOG_STEP(
+                "跳过键盘索引导航（optionValues 仅 {count} 项，疑为当前显示值而非选项全集）: "
+                "step={step_id}, control={control_id}, options={options}".format(
+                    count=len(option_values),
+                    step_id=step_id,
+                    control_id=control_id,
+                    options=" / ".join(option_values[:5]),
+                )
+            )
+        if option_values_trusted:
+            # 在 optionValues 中查找目标文本的索引（精确优先；包含匹配要求唯一命中）。
             target_index = -1
             search_texts = [explicit_target] if explicit_target else target_texts
             for search in search_texts:
                 if not search:
                     continue
                 normalized_search = normalize_match_text(search).lower()
+                if not normalized_search:
+                    continue
                 for idx, opt in enumerate(option_values):
                     if normalize_match_text(opt).lower() == normalized_search:
                         target_index = idx
                         break
                 if target_index < 0:
-                    for idx, opt in enumerate(option_values):
-                        if normalized_search in normalize_match_text(opt).lower():
-                            target_index = idx
-                            break
+                    # 包含匹配只在"唯一命中"时采用：多命中时无法确定索引，
+                    # 盲算位移会错位选中其它选项。
+                    _contains = [
+                        idx
+                        for idx, opt in enumerate(option_values)
+                        if normalized_search in normalize_match_text(opt).lower()
+                    ]
+                    if len(_contains) == 1:
+                        target_index = _contains[0]
                 if target_index >= 0:
                     break
             if target_index >= 0:
@@ -3237,7 +3429,7 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                         # 从当前选中项出发做相对导航：重跑流程时下拉框当前值可能已落在目标
                         # 之前的某项，若每次都从固定起点 DOWN N 次会选到第 2N 项导致错位。
                         try:
-                            current_display = _read_dropdown_display_text(dropdown_wrapper)
+                            current_display = _read_dropdown_display_text(dropdown_wrapper, _dd_self_labels)
                         except Exception:
                             current_display = ""
                         downs, needs_home = _dropdown_nav_delta(option_values, current_display, target_index)
@@ -3261,15 +3453,15 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                     # 避免"防错位"被绕过导致点错。
                     navigate_ok = False
                     try:
-                        display = _read_dropdown_display_text(dropdown_wrapper) if dropdown_wrapper is not None else ""
+                        display = (
+                            _read_dropdown_display_text(dropdown_wrapper, _dd_self_labels)
+                            if dropdown_wrapper is not None
+                            else ""
+                        )
                     except Exception:
                         display = ""
                     if display:
-                        display_norm = normalize_match_text(display).lower()
-                        navigate_ok = any(
-                            normalize_match_text(s).lower() and normalize_match_text(s).lower() in display_norm
-                            for s in search_texts if s
-                        )
+                        navigate_ok = _dropdown_display_matches_target(display, search_texts)
                     if not navigate_ok:
                         _LOG_STEP(
                             "键盘导航后显示值未确认，转键入搜索兜底: step={step_id}, control={control_id}, option={option}".format(
@@ -3310,9 +3502,9 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                     step_id, control_id, timeout_seconds=2.0, window_title_hint=window_title_hint, control_map_path=control_map_path
                 )
             if dropdown_wrapper is not None:
-                current_value = get_wrapper_value(dropdown_wrapper)
+                current_value = normalize_match_text(get_wrapper_value(dropdown_wrapper))
                 # 1) 当前值已等于目标：无需展开选择，直接成功
-                if current_value and normalize_match_text(current_value) == normalize_match_text(search_text):
+                if _dropdown_display_matches_target(current_value, [search_text]):
                     _LOG_STEP(
                         "下拉框当前值已匹配目标: step={step_id}, control={control_id}, value={value}".format(
                             step_id=step_id, control_id=control_id, value=current_value
@@ -3418,8 +3610,8 @@ def select_dropdown_item_runtime(step_id, control_id, timeout_seconds=3, window_
                             )
                         )
                     else:
-                        verify_value = _read_dropdown_display_text(dropdown_wrapper)
-                        if verify_value and normalize_match_text(verify_value) == normalize_match_text(search_text):
+                        verify_value = _read_dropdown_display_text(dropdown_wrapper, _dd_self_labels)
+                        if _dropdown_display_matches_target(verify_value, [search_text]):
                             _LOG_STEP(
                                 "键盘键入搜索选中下拉项: step={step_id}, control={control_id}, option={option}".format(
                                     step_id=step_id, control_id=control_id, option=verify_value

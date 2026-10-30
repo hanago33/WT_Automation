@@ -155,7 +155,7 @@ class DropdownKeyboardNavigationTests(unittest.TestCase):
         sent_keys = []
         display_reads = [current_display, post_display]
 
-        def read_display(_wrapper):
+        def read_display(_wrapper, *_args, **_kwargs):
             return display_reads.pop(0) if display_reads else ""
 
         def record_keys(*args, **kwargs):

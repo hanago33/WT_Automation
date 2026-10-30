@@ -9727,7 +9727,7 @@ class FlowEditorApp:
         self.precond_condition_combo = ttk.Combobox(
             self.precond_frame,
             textvariable=self.var_precond_condition,
-            values=("", "toggle", "checked", "visible"),
+            values=("", "toggle", "checked", "visible", "wait_visible", "wait_exists", "skip_if_gone"),
             state="readonly",
         )
         self.precond_condition_combo.grid(row=2, column=1, sticky="ew", padx=(8, 12), pady=4)
@@ -11748,13 +11748,28 @@ class FlowEditorApp:
 
         # 展开/折叠前置判断（条件执行）
         precond_condition = self.var_precond_condition.get().strip()
+        # 条件未变时保留扩展键（如 skip_if_gone 的 alsoGoneControlId / timeoutSeconds）：
+        # 否则编辑器保存一次就会把手写的幂等前置裁成三字段，运行期语义静默丢失。
+        existing_precond = (
+            action_config.get("precondition")
+            if isinstance(action_config.get("precondition"), dict)
+            else {}
+        )
         if precond_condition:
             precond_control = self.var_precond_control.get().strip() or target_control_id
-            action_config["precondition"] = {
-                "condition": precond_condition,
-                "expected": self.var_precond_expected.get().strip() or "off",
-                "controlId": precond_control,
-            }
+            merged_precond = (
+                dict(existing_precond)
+                if str(existing_precond.get("condition", "")).strip() == precond_condition
+                else {}
+            )
+            merged_precond.update(
+                {
+                    "condition": precond_condition,
+                    "expected": self.var_precond_expected.get().strip() or "off",
+                    "controlId": precond_control,
+                }
+            )
+            action_config["precondition"] = merged_precond
         else:
             action_config.pop("precondition", None)
 

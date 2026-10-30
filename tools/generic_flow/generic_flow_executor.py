@@ -678,6 +678,64 @@ def _eval_precondition_skip(step_id, action_config, step_definition):
                 if _gc_was_enabled:
                     _gc.enable()
         return None
+    # 幂等前置：动作控件"已经不存在"时视为目标已达成，跳过动作。
+    # 场景：step_copy_goback 点编辑器关闭按钮返回综合列表——HPC 提交后 MUP 常已
+    # 自动回到列表，关闭按钮随编辑器一起消失；此时再点必然"未命中控件"报失败
+    # （实测连续 3 个参数行都红）。为避免把"控件正在渲染中"误判成"已达成"，
+    # 可配 alsoGoneControlId：要求该控件（通常是被关闭视图的容器）同样不存在，
+    # 才允许跳过；否则照常执行动作、让真实失败暴露出来。
+    if cond in {"skip_if_gone", "skip_if_absent", "skip_if_missing"}:
+        control_id = str(
+            pre.get("controlId", "") or action_config.get("controlId", "") or action_config.get("controlRef", "")
+        ).strip()
+        if not control_id:
+            return None
+        step_def = step_definition if isinstance(step_definition, dict) else {}
+        step_arg = str(step_def.get("id", "")).strip() or str(step_id)
+        window_title_hint = str(pre.get("windowTitleHint", "") or action_config.get("windowTitleHint", "")).strip()
+        timeout = float(str(pre.get("timeoutSeconds", "6")).strip() or "6")
+        deadline = time.time() + max(0.2, timeout)
+        present = False
+        while time.time() < deadline:
+            try:
+                candidate = _call_with_control_map_path(
+                    _LOCATE_FLOW_CONTROL, step_def, step_arg,
+                    control_id=control_id,
+                    timeout_seconds=min(2.0, max(0.2, deadline - time.time())),
+                    window_title_hint=window_title_hint,
+                )
+            except Exception:
+                candidate = None
+            if candidate is not None:
+                present = True
+                break
+            time.sleep(0.4)
+        if present:
+            if callable(_LOG_STEP):
+                _LOG_STEP(
+                    "前置[skip_if_gone] step=%s: 引用控件 %s 存在 → 执行动作" % (step_arg, control_id)
+                )
+            return None
+        also_gone_id = str(pre.get("alsoGoneControlId", "")).strip()
+        if also_gone_id:
+            try:
+                gate = _call_with_control_map_path(
+                    _LOCATE_FLOW_CONTROL, step_def, step_arg,
+                    control_id=also_gone_id,
+                    timeout_seconds=1.5,
+                    window_title_hint=window_title_hint,
+                )
+            except Exception:
+                gate = None
+            if gate is not None:
+                # 动作控件缺席但目标视图仍在：不跳过，让动作自然失败暴露真实问题
+                if callable(_LOG_STEP):
+                    _LOG_STEP(
+                        "前置[skip_if_gone] step=%s: %s 缺席但 %s 仍在（视图未关闭）→ 继续执行动作"
+                        % (step_arg, control_id, also_gone_id)
+                    )
+                return None
+        return "控件已不存在且目标视图已关闭，跳过执行(幂等): {}".format(control_id)
     # 可见性前置条件：用于"仅支持 Invoke、不暴露 ToggleState"的分区瓦片
     # (如 MTDTileView_Button_ToggleState)。通过引用控件的屏幕可见性(IsOffscreen)
     # 判断分区是否已展开/激活：
