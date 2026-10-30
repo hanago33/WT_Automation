@@ -513,7 +513,7 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "复制综合1后，等待新副本编辑器的'风机上的默认风机类型'下拉（WRAAnalysisEditorView_FlexibleComboBox_SelectWTT）进入 UIA 树。模板被参数表展开后每行复用（综合2/3/4…），名称用中性表述。配 preScrollToTop：等待前的定位遍历会先点击'风电场参数'标题唤醒编辑器（若标题不在树则对编辑器内容区做空白唤醒点击），使新副本 Tab 激活、控件实体化可探测——否则整树遍历单轮可达 200s+ 仍找不到（实测人工点击编辑器即恢复）。超时 900s 覆盖编辑器加载上限，onError=continue 兜底由 step_7 前置等待接管。",
+      "description": "复制综合1后，等待新副本编辑器的'风机上的默认风机类型'下拉（WRAAnalysisEditorView_FlexibleComboBox_SelectWTT）进入 UIA 树。模板被参数表展开后每行复用（综合2/3/4…），名称用中性表述。配 preScrollToTop：等待前的定位遍历会先点击'风电场参数'标题唤醒编辑器（若标题不在树则点击编辑器当前选中页签头等真实控件；空白点击仅在编辑器容器已实体化时兜底，不会落到整窗坐标/右侧地图上），使新副本 Tab 激活、控件实体化可探测——否则整树遍历单轮可达 200s+ 仍找不到（实测点真实控件即恢复）。超时 900s 覆盖编辑器加载上限，onError=continue 兜底由 step_7 前置等待接管。",
       "successLog": "",
       "windowTitle": "",
       "inspectHints": {

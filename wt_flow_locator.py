@@ -8545,10 +8545,10 @@ def _prescroll_top_once(windows, step_id):
             _LOG_STEP("[FlowLocator][preScrollToTop] step={} 未找到'风电场参数'Expander (FindAll=0)".format(step_id))
     finally:
         _PRESCROLL_FOCUSING = False
-    # [唤醒兜底] Expander 不在 UIA 树（新副本编辑器内容未实体化）时，对编辑器可视区做
-    # 一次物理空白点击：激活编辑器 Tab / 触发 WPF 布局实体化，使目标控件可被探测。
-    # 实证：整树遍历 200s+ 找不到时，人工在编辑器区域点一下即恢复（快查 3s 命中）。
-    _prescroll_wake_blank_click(windows, step_id)
+    # [唤醒兜底] Expander 不在 UIA 树（新副本编辑器内容未实体化）时，点击编辑器里的
+    # 真实控件（当前页签头等）触发 WPF 布局实体化，使目标控件可被探测；空白点击仅在
+    # 编辑器容器矩形可用时兜底。详见 _prescroll_wake_editor 的说明。
+    _prescroll_wake_editor(windows, step_id)
     # 降级：滚动容器 / 滚轮（原有逻辑）
     _scroll_windows = list(windows or [])
     if not _scroll_windows:
@@ -8691,80 +8691,285 @@ def _prescroll_top_once(windows, step_id):
     return True
 
 
-def _prescroll_wake_blank_click(windows, step_id):
-    """preScrollToTop 找不到"风电场参数"Expander 时的唤醒兜底：对编辑器可视区做一次
-    物理点击，激活新副本编辑器 Tab / 触发 WPF 布局实体化，使 UIA 树中目标控件可探测。
+def _step_config_text(step_id, key, default=""):
+    """读取步骤定义 actionConfig 中的文本配置（如 preWakeAutomationId）。"""
+    try:
+        step_def = _GET_STEP_DEFINITION(step_id) or {}
+        action_config = step_def.get("actionConfig", {}) or {}
+        value = action_config.get(key)
+        if value is None:
+            return default
+        text = str(value).strip()
+        return text or default
+    except Exception:
+        return default
 
-    背景：复制综合后新编辑器可能处于未激活/内容未实体化状态，UIA 遍历既慢又找不到
-    （整树单次可达 200s+，且无法被 Python 侧超时中断）。实测"人工在编辑器区域点一下
-    即恢复"——这里用坐标在编辑器内容区右侧空白处点一次，等效人工唤醒且尽量不落在
-    具体按钮/输入框上（右侧空白带，避开左侧表单控件列）。
+
+# ── preScrollToTop 唤醒目标 ────────────────────────────────────────────────
+# 实测结论（复制综合2后左侧配置区一直"未唤醒"）：对编辑器"空白处"点击无效——
+# 旧实现在编辑器滚动容器尚未实体化时退化到整窗矩形，按 (0.9W, 0.25H) 取点，坐标
+# 实际落在右侧地图/顶部工具栏上（日志中 (1728,260) 即此），对左侧配置区毫无作用；
+# 而点击真实控件（页签头、输入框、下拉框）能立即触发 WPF 布局实体化、唤醒控件树。
+# 因此唤醒顺序改为：
+#   1) actionConfig 指定的唤醒控件（preWakeControlId / preWakeAutomationId）
+#   2) WRA 编辑器"当前选中"页签头（真实控件；点已选页签不切换页面、不改表单值）
+#   3) 编辑器滚动容器 SetFocus（程序化聚焦，零副作用）
+#   4) 编辑器容器内的空白点击（仅当容器矩形可用，绝不落到整窗坐标）
+_WAKE_TAB_STRIP_AUTOMATION_ID = "MUPWRAAnalysisMainView_TabControl_MainTabs"
+_WAKE_EDITOR_SCROLL_AUTOMATION_ID = "WRAAnalysisEditorView_ScrollViewer_Edition"
+
+
+def _prescroll_foreground_ready(windows, step_id):
+    """确认 MUP 在前台，否则先激活；返回 True 表示可以安全派发物理点击。
+
+    点击坐标来自 MUP 候选窗口矩形，MUP 不在前台时物理点击会落到其它应用上
+    （多显示器/失焦场景）。异常时保守放行，由点击本身与下一轮唤醒兜底。
     """
     try:
-        _target_rect = None
-        # 优先定位编辑器滚动容器（内容实体化后即出现），其次退到整窗右下空白。
+        _fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+        _fg_pid = ctypes.c_ulong()
+        if _fg_hwnd:
+            ctypes.windll.user32.GetWindowThreadProcessId(_fg_hwnd, ctypes.byref(_fg_pid))
+        _exp_pid = 0
         for _win_cand in (windows or []):
             if _win_cand is None:
                 continue
             try:
-                _hits = _iter_uia_findall_by_automation_id(_win_cand, "WRAAnalysisEditorView_ScrollViewer_Edition")
+                _exp_pid = int(get_wrapper_process_id(_win_cand) or 0)
             except Exception:
-                _hits = []
-            for _sc in (_hits or []):
-                try:
-                    _rc = get_wrapper_rectangle(_sc) or {}
-                    if int(_rc.get("width", 0) or 0) > 100 and int(_rc.get("height", 0) or 0) > 100:
-                        _target_rect = _rc
-                        break
-                except Exception:
-                    continue
-            if _target_rect:
+                _exp_pid = 0
+            if _exp_pid:
                 break
-        if _target_rect is None:
-            # 编辑器滚动容器尚未实体化：退到候选主窗口右下区域（内容区空白带）
-            for _win_cand in (windows or []):
-                if _win_cand is None:
+        if not _fg_hwnd or not _exp_pid or int(_fg_pid.value or 0) == _exp_pid:
+            return True
+        _activated = _activate_process_main_window("MUPSmartClient")
+        _fg2 = ctypes.windll.user32.GetForegroundWindow()
+        _fg2_pid = ctypes.c_ulong()
+        if _fg2:
+            ctypes.windll.user32.GetWindowThreadProcessId(_fg2, ctypes.byref(_fg2_pid))
+        if not _fg2 or not _activated or int(_fg2_pid.value or 0) != _exp_pid:
+            return False
+        return True
+    except Exception:
+        return True
+
+
+def _prescroll_click_wrapper(wrapper, step_id, tag):
+    """物理点击一个真实控件（退化矩形自动改走 Invoke）；派发成功返回 True。"""
+    if wrapper is None:
+        return False
+    try:
+        _clicked, _invoked, _reason = _safe_click_input(wrapper, step_id=step_id, control_id=tag)
+    except Exception as _cexc:
+        _LOG_STEP("[FlowLocator][preScrollToTop] step={} 唤醒目标点击异常: {} ({})".format(
+            step_id, tag, repr(_cexc)[:120]))
+        return False
+    if not _clicked:
+        _LOG_STEP("[FlowLocator][preScrollToTop] step={} 唤醒目标未就绪放弃点击: {} ({})".format(
+            step_id, tag, _reason))
+        return False
+    time.sleep(0.6)
+    _LOG_STEP("[FlowLocator][preScrollToTop] step={} 已点击唤醒目标(真实控件): {}{}".format(
+        step_id, tag, " via Invoke" if _invoked else ""))
+    return True
+
+
+def _prescroll_iter_tab_items(tab_strip, max_depth=2):
+    """页签条内浅层查找 TabItem（只走 children，避免遍历整棵编辑器子树）。
+
+    编辑器未实体化时整树遍历可达 200s+，唤醒路径必须保持在毫秒级，故限制深度。
+    """
+    items = []
+    try:
+        frontier = list(tab_strip.children() or [])
+    except Exception:
+        return items
+    depth = 0
+    while frontier and depth <= max_depth:
+        nxt = []
+        for child in frontier:
+            try:
+                ctype = str(get_wrapper_control_type(child) or "").lower()
+                cname = str(get_wrapper_class_name(child) or "").lower()
+            except Exception:
+                continue
+            if ctype in ("tabitem", "tab") or "tabitem" in cname:
+                items.append(child)
+                continue
+            try:
+                nxt.extend(list(child.children() or []))
+            except Exception:
+                continue
+        frontier = nxt
+        depth += 1
+    return items
+
+
+def _prescroll_tab_is_active(tab):
+    """页签是否为当前激活页签：优先 SelectionItem 选中态，其次键盘焦点。"""
+    try:
+        if tab.is_selected():
+            return True
+    except Exception:
+        pass
+    try:
+        _focused = getattr(tab, "has_keyboard_focus", None)
+        if callable(_focused) and _focused():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _prescroll_wake_selected_editor_tab(windows, step_id):
+    """点击 WRA 编辑器"当前选中"页签头唤醒配置区控件树。
+
+    页签头是真实控件且语义安全：点击已选中的页签不会切换页面、不会改动表单，
+    只把鼠标/焦点落进编辑器，触发 WPF 布局实体化（实测可唤醒控件树）。
+    无法判定激活态时（且页签不唯一）放弃，避免误切到其它综合页签。
+    """
+    for _win_cand in (windows or []):
+        if _win_cand is None:
+            continue
+        try:
+            _strips = _iter_uia_findall_by_automation_id(_win_cand, _WAKE_TAB_STRIP_AUTOMATION_ID)
+        except Exception:
+            _strips = []
+        for _strip in (_strips or []):
+            _tabs = _prescroll_iter_tab_items(_strip)
+            _active_tabs = [tab for tab in _tabs if _prescroll_tab_is_active(tab)]
+            if not _active_tabs and len(_tabs) == 1:
+                # 只有一个页签时点击它不可能切错页面，可直接作为唤醒目标
+                _active_tabs = list(_tabs)
+            for _tab in _active_tabs:
+                if _rect_is_degenerate(get_wrapper_rectangle(_tab) or {}):
                     continue
+                _tab_name = get_wrapper_text(_tab) or "(未命名页签)"
+                if _prescroll_click_wrapper(_tab, step_id, "编辑器页签[{}]".format(_tab_name)):
+                    return True
+    return False
+
+
+def _prescroll_wake_editor_focus(windows, step_id):
+    """对编辑器滚动容器做 UIA SetFocus（不落鼠标点击、无副作用）。"""
+    for _win_cand in (windows or []):
+        if _win_cand is None:
+            continue
+        try:
+            _hits = _iter_uia_findall_by_automation_id(_win_cand, _WAKE_EDITOR_SCROLL_AUTOMATION_ID)
+        except Exception:
+            _hits = []
+        for _sc in (_hits or []):
+            try:
+                _sc.set_focus()
+                time.sleep(0.2)
+                _LOG_STEP("[FlowLocator][preScrollToTop] step={} 已对编辑器滚动容器 SetFocus".format(step_id))
+                return True
+            except Exception:
+                continue
+    return False
+
+
+def _prescroll_wake_configured_control(windows, step_id):
+    """按 actionConfig 指定目标点击真实控件唤醒（可选项，缺省不影响既有流程）。
+
+    支持两种写法（可同时配置，按顺序尝试）：
+      - preWakeControlId: 本步骤 controls 里的控件 id（走 find_flow_control 全链路定位）
+      - preWakeAutomationId（+ 可选 preWakeControlName 名称包含匹配）: UIA FindAll 直取
+    """
+    _control_id = _step_config_text(step_id, "preWakeControlId")
+    if _control_id:
+        _wake_control = None
+        try:
+            _wake_control = find_flow_control(step_id, control_id=_control_id, timeout_seconds=1.0)
+        except Exception:
+            _wake_control = None
+        if _wake_control is not None:
+            if _prescroll_click_wrapper(_wake_control, step_id, "配置唤醒控件[{}]".format(_control_id)):
+                return True
+        else:
+            _LOG_STEP("[FlowLocator][preScrollToTop] step={} 配置的唤醒控件未命中: {}".format(
+                step_id, _control_id))
+    _automation_id = _step_config_text(step_id, "preWakeAutomationId")
+    if not _automation_id:
+        return False
+    _expected_name = _step_config_text(step_id, "preWakeControlName")
+    for _win_cand in (windows or []):
+        if _win_cand is None:
+            continue
+        try:
+            _hits = _iter_uia_findall_by_automation_id(_win_cand, _automation_id)
+        except Exception:
+            _hits = []
+        for _hit in (_hits or []):
+            if _expected_name:
                 try:
-                    _rc = get_wrapper_rectangle(_win_cand) or {}
-                    if int(_rc.get("width", 0) or 0) > 300 and int(_rc.get("height", 0) or 0) > 300:
-                        _target_rect = _rc
-                        break
+                    if _expected_name not in (get_wrapper_text(_hit) or ""):
+                        continue
                 except Exception:
                     continue
+            if _rect_is_degenerate(get_wrapper_rectangle(_hit) or {}):
+                continue
+            if _prescroll_click_wrapper(_hit, step_id, "配置唤醒目标[{}]".format(_automation_id)):
+                return True
+    return False
+
+
+def _prescroll_editor_rect(windows):
+    """编辑器滚动容器矩形；容器未实体化时返回 None（不再退化成整窗矩形）。"""
+    for _win_cand in (windows or []):
+        if _win_cand is None:
+            continue
+        try:
+            _hits = _iter_uia_findall_by_automation_id(_win_cand, _WAKE_EDITOR_SCROLL_AUTOMATION_ID)
+        except Exception:
+            _hits = []
+        for _sc in (_hits or []):
+            _rc = get_wrapper_rectangle(_sc) or {}
+            if int(_rc.get("width", 0) or 0) > 100 and int(_rc.get("height", 0) or 0) > 100:
+                return _rc
+    return None
+
+
+def _prescroll_wake_editor(windows, step_id):
+    """唤醒左侧配置区控件树：真实控件优先，空白点击兜底。
+
+    返回 True 表示已成功派发唤醒点击（不代表控件树已实体化，由调用方继续轮询）。
+    """
+    if not _prescroll_foreground_ready(windows, step_id):
+        _LOG_STEP("[FlowLocator][preScrollToTop] step={} 前台非 MUP，跳过唤醒点击".format(step_id))
+        return False
+    if _prescroll_wake_configured_control(windows, step_id):
+        return True
+    if _prescroll_wake_selected_editor_tab(windows, step_id):
+        return True
+    # 无可用真实控件时的弱兜底：程序化聚焦 + 编辑器容器内空白点击（不落整窗坐标）
+    _prescroll_wake_editor_focus(windows, step_id)
+    _prescroll_wake_blank_click(windows, step_id)
+    return False
+
+
+def _prescroll_wake_blank_click(windows, step_id):
+    """兜底：在编辑器滚动容器内的空白带点一下，触发 WPF 布局实体化。
+
+    只允许落在编辑器容器矩形内（右侧空白带 x=0.9W、上部标题带 y=0.25H）。容器
+    尚未实体化时直接跳过——旧实现在此时退到整窗矩形取点，坐标实际落在右侧地图/
+    顶部工具栏（日志中的 (1728,260)），既唤不醒配置区又有误触风险。
+    """
+    try:
+        _target_rect = _prescroll_editor_rect(windows)
         if _target_rect is None:
+            _LOG_STEP(
+                "[FlowLocator][preScrollToTop] step={} 编辑器容器未实体化，跳过空白唤醒点击".format(step_id)
+            )
             return
         # 前台校验：点击坐标来自 MUP 候选窗口矩形，若 MUP 不在前台，物理点击会落在
-        # 其它应用上（多显示器/失焦场景）。比对前台窗口进程与候选窗口进程：不一致时
-        # 先激活 MUP；激活后仍不一致则放弃本次点击（由上层/下一轮再尝试）。
-        try:
-            _fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
-            _fg_pid = ctypes.c_ulong()
-            if _fg_hwnd:
-                ctypes.windll.user32.GetWindowThreadProcessId(_fg_hwnd, ctypes.byref(_fg_pid))
-            _exp_pid = 0
-            for _win_cand in (windows or []):
-                if _win_cand is None:
-                    continue
-                try:
-                    _exp_pid = int(get_wrapper_process_id(_win_cand) or 0)
-                except Exception:
-                    _exp_pid = 0
-                if _exp_pid:
-                    break
-            if _fg_hwnd and _exp_pid and int(_fg_pid.value or 0) != _exp_pid:
-                _activated = _activate_process_main_window("MUPSmartClient")
-                _fg2 = ctypes.windll.user32.GetForegroundWindow()
-                _fg2_pid = ctypes.c_ulong()
-                if _fg2:
-                    ctypes.windll.user32.GetWindowThreadProcessId(_fg2, ctypes.byref(_fg2_pid))
-                if not _fg2 or not _activated or int(_fg2_pid.value or 0) != _exp_pid:
-                    _LOG_STEP(
-                        "[FlowLocator][preScrollToTop] step={} 前台非 MUP，跳过空白唤醒点击".format(step_id)
-                    )
-                    return
-        except Exception:
-            pass
+        # 其它应用上（多显示器/失焦场景）。
+        if not _prescroll_foreground_ready(windows, step_id):
+            _LOG_STEP(
+                "[FlowLocator][preScrollToTop] step={} 前台非 MUP，跳过空白唤醒点击".format(step_id)
+            )
+            return
         _l = int(_target_rect.get("left", 0) or 0)
         _t = int(_target_rect.get("top", 0) or 0)
         _w = int(_target_rect.get("width", 0) or 0)
@@ -9871,9 +10076,10 @@ def wait_for_flow_control_condition(
                 held_control = None
         # 周期性补唤醒：preScrollToTop 的"点击'风电场参数'标题"只执行一次
         # （_PRESCROLL_TOP_DONE_GLOBAL 保证），若新副本编辑器始终未实体化则会一直
-        # 找不到目标控件（实测 wait 空转至超时）。人工在编辑器区域点一下即恢复，
-        # 故按 ~4 秒间隔补一次"编辑器空白点击"强制唤醒；仅对配置了 preScrollToTop
-        # 的等待步骤生效（如 step_copy_wait_editor），不影响普通等待步骤。
+        # 找不到目标控件（实测 wait 空转至超时）。故按 ~4 秒间隔补一次唤醒点击——
+        # 点击编辑器真实控件（当前页签头）而非空白带：实测只有点实体控件才能唤醒
+        # 左侧配置区控件树；仅对配置了 preScrollToTop 的等待步骤生效（如
+        # step_copy_wait_editor），不影响普通等待步骤。
         try:
             if _step_config_bool(step_id, "preScrollToTop") and (time.time() - _wait_wake_last) >= 4.0:
                 _wait_wake_last = time.time()
@@ -9882,7 +10088,7 @@ def wait_for_flow_control_condition(
                     window_title_hint=window_title_hint,
                     control_definition=control_definition,
                 ))
-                _prescroll_wake_blank_click(_wk_windows, step_id)
+                _prescroll_wake_editor(_wk_windows, step_id)
         except Exception:
             pass
         time.sleep(max(0.1, float(poll_interval_seconds)))
