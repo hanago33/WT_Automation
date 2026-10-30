@@ -3544,9 +3544,16 @@ class LauncherApp:
         path = self._simple_pick_directory()
         if not path:
             return
+        previous_dir = str(getattr(self, "project_work_dir", "") or "").strip()
         self.project_work_dir = path
-        # 自动读取项目内可选的 project.params.json（人工确认的项目计算参数）
-        self.project_params = wt_project_workdir_parser.load_project_params_from_work_dir(path)
+        # 自动读取项目内可选的 project.params.json（人工确认的项目计算参数）。
+        # 文件缺失时：同一目录再选一次保留手填值（此前会被清成 {}，表现为"明明设了
+        # Cp 版本，重选一次文件夹就失效"）；换到别的项目才清空，避免参数串项目。
+        loaded_params = wt_project_workdir_parser.load_project_params_from_work_dir(path)
+        if loaded_params:
+            self.project_params = loaded_params
+        elif os.path.normcase(previous_dir) != os.path.normcase(path):
+            self.project_params = {}
         # 识别项目中的测风塔编号，供「测风塔对象编号」下拉选择
         self.project_mast_ids = []
         self.parsed_project_info = None
@@ -4171,6 +4178,18 @@ class LauncherApp:
                     new_params.pop(key, None)
             self.project_params = new_params
             self._simple_save_state()
+            # 同步落到 <项目>/project.params.json：让"读取项目文件夹 + 保存"成为一份
+            # 可持久复用的项目参数（此前只写本机 launcher_state，换会话/换机器或远程
+            # 队列 worker 都拿不到，表现为"界面设了 Cp 版本，跑起来还是参数表默认值"）
+            persist_ok, persist_info = wt_project_workdir_parser.save_project_params_to_work_dir(
+                getattr(self, "project_work_dir", "") or "", new_params
+            )
+            if persist_ok:
+                persist_suffix = "，并已写入项目目录 project.params.json"
+            elif str(getattr(self, "project_work_dir", "") or "").strip():
+                persist_suffix = "（项目目录写入失败：{}）".format(persist_info)
+            else:
+                persist_suffix = ""
             _save_params_dialog_state()
             dialog.destroy()
             # 手输了下拉列表里没有的值时给个提示，引导用「＋」把它固化成选项
@@ -4184,15 +4203,18 @@ class LauncherApp:
                     pending_new.append((key, value))
             if pending_new:
                 self._simple_set_status(
-                    "项目计算参数已保存（{} 项）；{} 不在下拉列表中，可点该行「＋」加入".format(
+                    "项目计算参数已保存（{} 项）；{} 不在下拉列表中，可点该行「＋」加入{}".format(
                         len(new_params),
                         "、".join("{}={}".format(wt_simple_options.OPTION_KINDS[k]["title"], v)
                                   for k, v in pending_new),
+                        persist_suffix,
                     ),
                     "warning",
                 )
             else:
-                self._simple_set_status("项目计算参数已保存（{} 项）".format(len(new_params)), "idle")
+                self._simple_set_status(
+                    "项目计算参数已保存（{} 项）{}".format(len(new_params), persist_suffix), "idle"
+                )
 
         def _recalculate_spatial():
             work_dir = str(getattr(self, "project_work_dir", "") or "").strip()

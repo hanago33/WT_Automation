@@ -1136,3 +1136,45 @@ def load_project_params_from_work_dir(work_dir):
         return payload if isinstance(payload, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def save_project_params_to_work_dir(work_dir, project_params):
+    """把人工确认的项目计算参数写入 <项目>/project.params.json（与 load 配对）。
+
+    此前项目里这份文件只"读"不"写"：界面设的 cpVersion / 机型 / 海拔等只存在本机
+    launcher_state，换会话、换机器或远程队列 worker 都拿不到，表现为"界面设了 Cp
+    版本，跑起来仍是参数表默认值"。写入后这份文件即成为该项目的唯一可信参数载体：
+    本地启动、提交远程队列、worker 运行期补齐都读同一份。
+
+    返回 (ok, message)；ok=False 时 message 说明原因（目录不存在/无写权限）。
+    """
+    work_dir = (work_dir or "").strip().rstrip("\\/")
+    if not work_dir or not os.path.isdir(work_dir):
+        return False, "项目文件夹不存在"
+    payload = {}
+    if isinstance(project_params, dict):
+        for key, value in project_params.items():
+            key_text = str(key or "").strip()
+            value_text = str(value or "").strip()
+            if key_text and value_text:
+                payload[key_text] = value_text
+    params_path = os.path.join(work_dir, "project.params.json")
+    tmp_path = params_path + ".tmp"
+    try:
+        if not payload:
+            # 界面把参数清空时同步删文件，避免"界面空了、磁盘还留着旧版本"
+            if os.path.isfile(params_path):
+                os.remove(params_path)
+            return True, "参数为空，已清除 project.params.json"
+        with open(tmp_path, "w", encoding="utf-8") as fobj:
+            json.dump(payload, fobj, ensure_ascii=False, indent=2)
+            fobj.write("\n")
+        os.replace(tmp_path, params_path)
+        return True, params_path
+    except OSError as exc:
+        try:
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        return False, str(exc)

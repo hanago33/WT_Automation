@@ -837,6 +837,46 @@ def _load_json_env_runtime():
 	return env_runtime if isinstance(env_runtime, dict) else {}
 
 
+def _fill_runtime_from_project_params(runtime_config):
+	"""用 <项目>/project.params.json 补齐 runtime 里缺失的人工确认项（如 cpVersion）。
+
+	本地启动与远程队列 worker 的 runtime 都可能只带自动解析值：远程任务若从"非
+	Simple 面板"的入口提交，甚至完全没有项目参数。项目目录里的 project.params.json
+	（界面保存时写入，见 wt_project_workdir_parser.save_project_params_to_work_dir）
+	作为兜底来源：只填空缺、绝不覆盖已有非空值，保证"界面设了 Cp 版本"在本地与
+	队列两条链路都生效。
+	"""
+	if not isinstance(runtime_config, dict):
+		return {}
+	work_dir = str(runtime_config.get("projectWorkDir", "") or "").strip()
+	if not work_dir:
+		return runtime_config
+	try:
+		from wt_project_workdir_parser import load_project_params_from_work_dir
+		params = load_project_params_from_work_dir(work_dir) or {}
+	except Exception:
+		params = {}
+	filled = []
+	for key, value in (params.items() if isinstance(params, dict) else []):
+		text = str(value or "").strip()
+		if not text:
+			continue
+		if str(runtime_config.get(key, "") or "").strip():
+			continue
+		runtime_config[key] = text
+		filled.append(str(key))
+	if filled:
+		try:
+			log_step(
+				"[projectParams] 项目目录参数补齐（{} 项）：{}".format(
+					len(filled), ", ".join(sorted(filled))
+				)
+			)
+		except Exception:
+			pass
+	return runtime_config
+
+
 def _apply_param_table_expansion(merged_payload, target_payload):
 	"""若流程顶层含 paramTable 字段，按参数表展开模板步骤。
 
@@ -925,6 +965,11 @@ def _apply_param_table_expansion(merged_payload, target_payload):
 	_rt_env = _load_json_env_runtime()
 	if not isinstance(_rt_env, dict):
 		_rt_env = {}
+	# 项目目录 project.params.json 兜底：本地启动/远程队列任务都可能没带上人工确认项
+	# （远程非 Simple 入口提交时 runtimeConfig 为空），只要 runtime 里有 projectWorkDir
+	# 就从项目目录补齐缺失项（不覆盖已有值）。
+	_rt_merged = _fill_runtime_from_project_params(_rt_merged)
+	_rt_env = _fill_runtime_from_project_params(_rt_env)
 	_rt_turbine = str(_rt_env.get("turbineType", "") or "").strip() or str(_rt_merged.get("turbineType", "") or "").strip()
 	_rt_cp = str(_rt_env.get("cpVersion", "") or "").strip() or str(_rt_merged.get("cpVersion", "") or "").strip()
 	# 测风塔/气象引用：项目解析的测风塔编号覆盖参数表占位值（如 M1/Mast1/testMESO）。
