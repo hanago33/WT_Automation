@@ -1,7 +1,7 @@
 {
   "version": "1.1",
   "project": "recorded Wed Jul 22 20_10_01 2026",
-  "description": "由 pywinauto_recorder 录制脚本智能转换生成的 action 流程骨架（已语义分析 + a11y 富化优化）。",
+  "description": "【已弃用·原始录制骨架】只有 5 步且最后一步仅键入文件名，缺打开/性质/Apply。完整地形流程见 flow_definition_导入地形图.json（chain_manifest 绑定该文件）。",
   "lastUpdated": "2026-07-23T09:35:24",
   "feedbackHistory": [],
   "runtimeConfig": {
@@ -565,5 +565,7 @@
         ]
       }
     ]
-  }
+  },
+  "deprecated": true,
+  "supersededBy": "flow_packages/flow_definition_导入地形图.json"
 }

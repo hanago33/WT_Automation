@@ -3394,7 +3394,11 @@
       "towerTags": [
         "multi"
       ],
-      "notes": "多塔界面：点'添加'增加第二座塔配置行（第一座塔=参考点已在气象数据栏配好）。三座及以上塔时需在 step_mt_refpoint/refclim 后再加一组步骤。",
+      "notes": "多塔界面：按 CFT 实际塔数动态循环展开添加多塔（从第2座塔起，逐塔展开 step_mt_add + step_mt_refpoint/refclim_*）。支持任意 N 塔，并在流水/报告显式记录 towers_used 与 towers_dropped。",
+      "loopConfig": {
+        "type": "cft_mast_loop",
+        "description": "按 CFT 实际塔数动态循环展开"
+      },
       "actionConfig": {
         "action": "click",
         "controlId": "ctrl_mt_add",
@@ -6066,7 +6070,7 @@
         "controlId": "control_map_744",
         "retryCount": 1,
         "retryInterval": 1.5,
-        "onError": "continue"
+        "onError": "stop"
       },
       "auxChecks": [],
       "fallbacks": [],
@@ -6148,7 +6152,7 @@
         "controlId": "WRAAnalysisEditorView_Button_RunHPC_Button",
         "retryCount": 0,
         "retryInterval": 1.0,
-        "onError": "continue"
+        "onError": "stop"
       },
       "auxChecks": [],
       "fallbacks": [],

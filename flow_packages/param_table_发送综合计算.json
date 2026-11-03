@@ -13,7 +13,9 @@
     "cpVersion": "Cp0.429",
     "drawLayout": "不带绘图",
     "refMast2": "Mast1",
-    "refClimatology2": "Mast1"
+    "refClimatology2": "Mast1",
+    "refMast3": "Mast2",
+    "refClimatology3": "Mast2"
   },
   {
     "stepMode": "copy",
@@ -29,7 +31,9 @@
     "cpVersion": "",
     "drawLayout": "不带绘图",
     "refMast2": "Mast1",
-    "refClimatology2": "Mast1"
+    "refClimatology2": "Mast1",
+    "refMast3": "Mast2",
+    "refClimatology3": "Mast2"
   },
   {
     "stepMode": "copy",
@@ -45,7 +49,9 @@
     "cpVersion": "",
     "drawLayout": "不带绘图",
     "refMast2": "Mast1",
-    "refClimatology2": "Mast1"
+    "refClimatology2": "Mast1",
+    "refMast3": "Mast2",
+    "refClimatology3": "Mast2"
   },
   {
     "stepMode": "copyfull",
@@ -61,6 +67,8 @@
     "cpVersion": "Cp0.429",
     "drawLayout": "带绘图",
     "refMast2": "Mast1",
-    "refClimatology2": "Mast1"
+    "refClimatology2": "Mast1",
+    "refMast3": "Mast2",
+    "refClimatology3": "Mast2"
   }
 ]

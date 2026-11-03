@@ -25,11 +25,10 @@ import glob
 import sys
 from functools import lru_cache
 
+import mup_paths
+
 # 默认官方安装位置（探测兜底）
 MUP_DEFAULT_DIR = r"C:\Program Files\Meteodyn\MeteodynUniverse"
-
-# ProgramData 用户数据目录（粗糙度对应文件副本 + TIFF 版文件来源）
-MUP_DATA_ROOT = os.environ.get("MUP_DATA_DIR", r"C:\ProgramData\Meteodyn\MUP")
 
 # 探测提示：可由执行器/总控台在运行前传入 GM_EXE 等路径
 _exe_hint = os.environ.get("MUP_INSTALL_DIR") or None
@@ -156,10 +155,14 @@ def correspondance_dir():
 
 
 def _programdata_correspondance_dirs():
-    """返回 ProgramData 下所有 TOPOGRAPHY_CORRESPONDENCE 目录（glob local_*）。"""
-    if not os.path.isdir(MUP_DATA_ROOT):
+    """返回 ProgramData 下所有 TOPOGRAPHY_CORRESPONDENCE 目录（glob local_*）。
+
+    数据根与 mup_data_files/mup_vault_export 共用 mup_paths（env → 官方 ini → 盘符探测 → 默认）。
+    """
+    root = mup_paths.data_root()
+    if not root or not os.path.isdir(root):
         return []
-    dirs = glob.glob(os.path.join(MUP_DATA_ROOT, "local_*", "DATA", "TOPOGRAPHY_CORRESPONDENCE"))
+    dirs = glob.glob(os.path.join(root, "local_*", "DATA", "TOPOGRAPHY_CORRESPONDENCE"))
     return sorted(dirs)
 
 

@@ -10,6 +10,8 @@
     "projectionFilePath": "",
     "mastImportFilePath": "C:\\Users\\14830\\Desktop\\20241227黑龙江依兰泰霆项目\\03-WT输入\\CFT_Project_43.txt",
     "turbineImportFilePath": "C:\\Users\\14830\\Desktop\\20241227黑龙江依兰泰霆项目\\03-WT输入\\JWD_Project_43.txt",
+    "mastCoordFilePath": "C:\\Users\\14830\\Desktop\\20241227黑龙江依兰泰霆项目\\03-WT输入\\CFT_Project_43.txt",
+    "turbineCoordFilePath": "C:\\Users\\14830\\Desktop\\20241227黑龙江依兰泰霆项目\\03-WT输入\\JWD_Project_43.txt",
     "cfgName": "",
     "mastIdsJoined": "",
     "turbineIdsJoined": ""
@@ -370,11 +372,11 @@
         "retryCount": 1,
         "retryInterval": 1.0,
         "onError": "continue",
-        "text": "${runtime.mastImportFilePath}"
+        "text": "${runtime.mastCoordFilePath}"
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "改用 automation_id=1148 的 Edit 精确定位『文件名(N)』输入框并键入；路径取自 runtime.mastImportFilePath。原 relativeRegion(x=0.488,y=0.862) 在对话框尺寸/位置变化时落点漂移到『打开(O)』按钮行，键入失败。"
+      "notes": "改用 automation_id=1148 的 Edit 精确定位『文件名(N)』输入框并键入；测风点元素导入应投喂【测风塔坐标文件】(CFT)，改引用 runtime.mastCoordFilePath（原本误引用 mastImportFilePath 的 *-tim.txt 时段数据）。原 relativeRegion(x=0.488,y=0.862) 在对话框尺寸/位置变化时落点漂移到『打开(O)』按钮行，键入失败。"
     },
     {
       "id": "step_4",
@@ -684,11 +686,11 @@
         "retryCount": 1,
         "retryInterval": 1.0,
         "onError": "continue",
-        "text": "${runtime.turbineImportFilePath}"
+        "text": "${runtime.turbineCoordFilePath}"
       },
       "auxChecks": [],
       "fallbacks": [],
-      "notes": "改用 automation_id=1148 的 Edit 精确定位『文件名(N)』输入框并键入；文件路径取自 runtime.turbineImportFilePath。原 relativeRegion(x=0.488,y=0.862) 在对话框尺寸/位置变化时落点漂移到『打开(O)』按钮行，键入失败。"
+      "notes": "改用 automation_id=1148 的 Edit 精确定位『文件名(N)』输入框并键入；风机元素导入应投喂【机位坐标文件】(JWD)，改引用 runtime.turbineCoordFilePath（原本误引用 turbineImportFilePath 的 .wtg 功率曲线）。原 relativeRegion(x=0.488,y=0.862) 在对话框尺寸/位置变化时落点漂移到『打开(O)』按钮行，键入失败。"
     },
     {
       "id": "step_7",

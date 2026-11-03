@@ -41,6 +41,7 @@ from wt_flow_editor_utils import normalize_control_window_title
 import wt_task_queue_window
 import wt_queue_selfcheck
 import wt_project_workdir_parser
+import mup_input_contract
 import wt_simple_options
 import wt_mast_config_xml
 import wt_ui_state
@@ -91,6 +92,16 @@ FLOW_DEFINITION_ENV_KEY = "WT_FLOW_DEFINITION_FILE"
 RECORDER_LAUNCH_CMD_FILE = os.path.join(BASE_DIR, "_launch_pywinauto_recorder.cmd")
 _PYAUTOGUI_MODULE = None
 _PYAUTOGUI_IMPORT_ERROR = None
+
+
+class _SimpleGateCancelled(Exception):
+    """Simple 段间完成门被「停止排队」打断（后台线程内控制流信号，不外泄）。"""
+
+
+def _completion_gate_module():
+    """完成门模块（惰性导入；单测可替换此函数注入脚本化门）。"""
+    import mup_completion
+    return mup_completion
 
 
 def _inject_mast_config_xml_override(flow_path, text_ovr, rc, log_fn=None):
@@ -2616,6 +2627,11 @@ class LauncherApp:
         simple_enabled = launcher_state.get("simpleModeEnabled", {})
         if isinstance(simple_enabled, dict):
             self.simple_mode_enabled.update(simple_enabled)
+        # 板块绑定契约（P0-A1）：state 里没有绑定时用 chain_manifest 的默认流程，
+        # 有绑定但文件/流程包/占位符不匹配时启动即 fail-closed。
+        self.chain_manifest, self._chain_manifest_error = mup_input_contract.load_chain_manifest(BASE_DIR)
+        self._chain_manifest_problems = []
+        self._active_simple_section_key = ""
         raw_monitor_url = launcher_state.get("serverMonitorUrl") or SERVER_MONITOR_DEFAULT_URL
         self.server_monitor_url = str(raw_monitor_url).strip().rstrip("/") or SERVER_MONITOR_DEFAULT_URL
         raw_task_url = launcher_state.get("taskQueueUrl") or TASK_SERVER_DEFAULT_URL
@@ -2634,6 +2650,8 @@ class LauncherApp:
         self._simple_remote_lock = threading.RLock()
         self._simple_remote_task_ids = {}
         self._simple_remote_stop = False
+        # 段间完成门（cfd/comprehensive）的停止信号：背景门线程轮询它提前退出
+        self._simple_gate_cancel = False
         self._simple_remote_outcomes = {}
         self._simple_remote_total = 0
         # 市场项目工作文件夹（自动解析键入值，仅在选择后对 Simple 板块运行生效；未指定不影响现有流程）
@@ -2727,6 +2745,8 @@ class LauncherApp:
         self.run_report_step_items = []
         self._refresh_run_report_view()
         self._refresh_flow_steps()
+        # 启动即校验板块绑定（A1）：绑错文件/流程包/占位符不匹配 → 日志报错并阻止运行。
+        self._chain_validate(log=True)
         self.root.after(120, self._poll_output_queue)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -2904,16 +2924,231 @@ class LauncherApp:
 
     # ── Simple 模式界面 ──────────────────────────────────────────────────────
 
+    # ── Simple 模式板块执行序（列表即执行序驱动点，见 _run_simple_mode/_start_simple_queue）──
+    # 冷启动"全勾"时按下方依赖拓扑顺序执行：每个板块依赖上一步落盘/驻留于 MUP 库的产物，
+    # 若前序未完成（站点未建、投影未设、元素未挂），后续标签页在界面中根本不存在，会停在错误现场。
+    # 调整某板块顺序 = 调整此列表位置；勾选由 simple_section_vars 单独控制，互不影响。
+    #
+    #  · terrain(新建地形信息数据) 必须最先：新项目库中尚无地形对象，project 检索需要它，
+    #    地形对象是后续 project/weather/turbine/element 共同的地图基座。
+    #  · project(新建工程项目/站点) 次之：站点与投影确定后，气象/元素标签页才在站点编辑器
+    #    （MUP.MSC ...SiteEditorViewModel）下存在；此前强行进入 weather/element 会因标签缺失失败。
+    #  · weather(新建气象数据) → turbine(新建风机类型) → element(新增及配置元素)：顺序相依，
+    #    气象数据挂到站点，元素（测风点/风机）挂到已建的塔/机位上。
+    #  · cfd(发送 CFD 计算) → comprehensive(发送综合计算) → export_result(导出计算结果)：串行收尾。
     SIMPLE_SECTIONS = [
         {"key": "terrain", "title": "新建地形信息数据", "icon": "🗺️"},
-        {"key": "weather", "title": "新建气象数据", "icon": "🌤️"},
-        {"key": "element", "title": "新增及配置元素", "icon": "🧩"},
-        {"key": "turbine", "title": "新建风机类型", "icon": "🌬️"},
         {"key": "project", "title": "新建工程项目", "icon": "📋"},
+        {"key": "weather", "title": "新建气象数据", "icon": "🌤️"},
+        {"key": "turbine", "title": "新建风机类型", "icon": "🌬️"},
+        {"key": "element", "title": "新增及配置元素", "icon": "🧩"},
         {"key": "cfd", "title": "发送 CFD 计算", "icon": "⚙️"},
         {"key": "comprehensive", "title": "发送综合计算", "icon": "📊"},
         {"key": "export_result", "title": "导出计算结果", "icon": "📤"},
     ]
+
+    # ── 板块绑定契约与输入闸（P0 A1/A2/A4/A5/粗糙度）──────────────────────
+
+    def _chain_default_flow(self, section_key):
+        """manifest 声明的默认流程（state 未绑定时使用）。"""
+        return mup_input_contract.section_flow_path(
+            BASE_DIR, self.chain_manifest, section_key
+        )
+
+    def _chain_bound_flows(self):
+        flows = {}
+        for sec in self.SIMPLE_SECTIONS:
+            key = sec["key"]
+            info = getattr(self, "simple_section_vars", {}).get(key) or {}
+            path = str(info.get("path") or "").strip()
+            if not path:
+                path = str(getattr(self, "simple_mode_flows", {}).get(key) or "").strip()
+            if path:
+                flows[key] = path
+        return flows
+
+    def _chain_validate(self, log=True):
+        """校验板块绑定契约；结果缓存到 self._chain_manifest_problems。"""
+        problems = []
+        if self.chain_manifest is None:
+            problems.append(self._chain_manifest_error or "板块绑定清单不可用")
+        else:
+            problems = mup_input_contract.validate_chain_manifest(
+                self.chain_manifest,
+                BASE_DIR,
+                section_keys=[sec["key"] for sec in self.SIMPLE_SECTIONS],
+                bound_flows=self._chain_bound_flows(),
+            )
+        self._chain_manifest_problems = problems
+        if log:
+            for problem in problems:
+                self._append_log("板块绑定校验失败：" + problem, tag="error")
+            if problems:
+                self._simple_set_status_safe(
+                    "板块绑定校验失败（{} 项），已阻止运行".format(len(problems)), "error"
+                )
+        return problems
+
+    @staticmethod
+    def _chain_problem_is_fatal(problem):
+        """区分契约校验致命问题 vs 可降级问题。
+
+        致命（真绑定错误，必须阻止运行）：
+          · 绑定清单不可用 / 板块未声明 / 未知板块 / 未配置流程
+          · 流程文件不存在 / 非法 JSON —— 文件层面缺漏，运行必挂
+        可降级（manifest 与 flow 契约不一致，多半是 flow 被还原或 manifest 待更新）：
+          · flowPackageId 不匹配（"不含 flowPackages.id="）
+          · ${runtime.*} 未消费（"未消费"）
+        原则：flow 存在且合法、仅契约元数据错位 → 降级为告警，不改写校验逻辑本身，
+        也不吞掉正常运行时不应出现的真文件级错误。
+        """
+        return (
+            "无法读取" in problem or "不可用" in problem
+            or "未在" in problem or "未知板块" in problem
+            or "未配置流程" in problem or "文件不存在" in problem
+            or "不是合法 JSON" in problem
+        )
+
+    def _chain_block_if_invalid(self):
+        """运行/提交前拦截：致命绑定问题阻止运行（fail-closed），契约不一致仅告警。
+
+        设计（2026-11-03 修订）：flow 文件可能被还原/回滚，或 chain_manifest.json 仍
+        声明旧 id/旧 runtime 键，这种情况下「板块与实际流程文件不一致」若一味硬断会让
+        自动化无法启动。故分为两层：
+          · 致命（文件/清单缺漏）→ 仍 messagebox 硬断，禁止继续；
+          · 可降级（flowPackageId / runtime 键错位）→ 仅写入日志 + 状态提示，不阻断，
+            保证绑定关系更新前自动化仍可跑。
+        """
+        problems = self._chain_validate(log=True)
+        if not problems:
+            return False
+        fatal = [p for p in problems if self._chain_problem_is_fatal(p)]
+        degraded = [p for p in problems if not self._chain_problem_is_fatal(p)]
+        # 可降级问题先记录，但不断言（它们不影响文件存在性与合法性）
+        if degraded:
+            self._append_log(
+                "板块绑定契约警告（不阻断）：{}".format("；".join(degraded[:10])), tag="warning"
+            )
+        if not fatal:
+            # 只有契约元数据不一致，不阻断运行；校验精确性仍由 _chain_validate 保留。
+            self._simple_set_status_safe(
+                "板块绑定契约存在 {} 项警告（不阻断运行）".format(len(degraded)), "warning"
+            )
+            return False
+        messagebox.showerror(
+            "板块绑定校验未通过",
+            "以下板块绑定存在致命问题，已阻止运行：\n\n{}\n\n"
+            "请在对应板块重新选择正确的流程文件（或修正 chain_manifest.json）。".format(
+                "\n".join("· " + p for p in fatal[:10])
+            ),
+        )
+        return True
+
+    def _input_contract_problems(self, section_key, flow_path, runtime_config):
+        """运行前输入契约检查（地形 CRS / 曲线 / 粗糙度 / 必需 runtime 键）。"""
+        manifest = getattr(self, "chain_manifest", None)
+        key = str(section_key or "").strip()
+        if not key:
+            key = mup_input_contract.find_section_key_for_flow(manifest, BASE_DIR, flow_path)
+        spec = mup_input_contract.section_spec(manifest, key) if key else None
+        if not spec:
+            return []
+        problems = mup_input_contract.check_run_contract(
+            key, spec, runtime_config, getattr(self, "project_work_dir", "")
+        )
+        # 粗糙度索引名存在性（资产可探测时才判）
+        if spec.get("requireRoughness"):
+            index_file = str((runtime_config or {}).get("roughnessIndexFile") or "").strip()
+            if index_file:
+                verdict = mup_input_contract.roughness_asset_status(index_file)
+                if verdict.get("checked") and not verdict.get("found"):
+                    problems.append("板块 {}：{}".format(key, verdict.get("message")))
+                elif verdict.get("message"):
+                    self._append_log("粗糙度索引校验：" + verdict["message"], tag="warning")
+        return problems
+
+    def _config_import_fallback_flow(self, section_key, flow_path, runtime_config):
+        """配置导入分支：该塔无配置时改用基础氣象流程，显式跳过配置导入。
+
+        返回实际要跑的流程路径；不做任何文件改写。只在 manifest 声明 configImport
+        且当前绑定的是配置导入变体、configSource=none 时切换。
+        """
+        spec = mup_input_contract.section_spec(getattr(self, "chain_manifest", None), section_key)
+        if not spec or not spec.get("configImport"):
+            return flow_path
+        if str((runtime_config or {}).get("configSource") or "").strip().lower() != "none":
+            return flow_path
+        # 同名「_配置导入」变体优先去掉后缀（内网/外网各自回各自的基础流程）
+        stem, ext = os.path.splitext(str(flow_path or ""))
+        sibling = stem.replace("_配置导入", "") + ext
+        if sibling != flow_path and os.path.isfile(sibling):
+            self._append_log(
+                "板块 {} config_source=none：跳过配置导入，改用基础流程 {}".format(
+                    section_key, os.path.basename(sibling)
+                ),
+                tag="system",
+            )
+            return sibling
+        fallback = mup_input_contract.section_fallback_flow_path(
+            BASE_DIR, self.chain_manifest, section_key
+        )
+        if not fallback or not os.path.isfile(fallback):
+            self._append_log(
+                "板块 {} 无配置且未找到基础流程，仍按配置导入流程启动（可能失败）".format(section_key),
+                tag="warning",
+            )
+            return flow_path
+        self._append_log(
+            "板块 {} config_source=none：跳过配置导入，改用基础流程 {}".format(
+                section_key, os.path.basename(fallback)
+            ),
+            tag="system",
+        )
+        return fallback
+
+    def _log_input_preflight(self, summary):
+        """选完项目文件夹即做一次输入前置体检（A2/A4/A5/粗糙度），早暴露早修正。"""
+        summary = summary if isinstance(summary, dict) else {}
+        terrain = str(summary.get("terrain_file") or "").strip()
+        if terrain:
+            verdict = mup_input_contract.describe_terrain_crs(terrain)
+            self._append_log(
+                verdict.get("message") or "地形 CRS 检查完成",
+                tag="system" if verdict.get("ok") else "warning",
+            )
+        elif summary.get("terrain_ambiguous"):
+            self._append_log(
+                "地形文件不唯一（{} 份），未自动选择；请在项目参数指定 terrainFile".format(
+                    len(summary.get("terrain_candidates") or [])
+                ),
+                tag="warning",
+            )
+        elif summary.get("terrain_file") == "":
+            self._append_log("未解析到地形文件（02-地形图/*.tif）", tag="warning")
+        missing = list(summary.get("missing_turbine_files") or [])
+        if missing:
+            labels = {"power": "功率曲线", "thrust": "推力曲线"}
+            self._append_log(
+                "风机曲线槽位缺失：" + "、".join(labels.get(m, m) for m in missing),
+                tag="warning",
+            )
+        config_source = str(summary.get("config_source") or "").strip()
+        if config_source:
+            self._append_log(
+                "配置导入：config_source={}（{}）".format(
+                    config_source,
+                    os.path.basename(str(summary.get("config_file") or "")) or "不导入配置",
+                ),
+                tag="system",
+            )
+        roughness_source = str(summary.get("roughness_source") or "").strip()
+        if roughness_source:
+            self._append_log(
+                "粗糙度槽位：source={}，index={}".format(
+                    roughness_source, summary.get("roughness_index") or "(空)"
+                ),
+                tag="system",
+            )
 
     def _build_simple_panel(self, parent):
         """构建 Simple 模式界面：响应式卡片网格 + 顶部操作栏 + 底部状态行。"""
@@ -3147,7 +3382,11 @@ class LauncherApp:
             key = sec["key"]
             enabled_var = tk.BooleanVar(value=bool(self.simple_mode_enabled.get(key, True)))
             path_key = "simple_{}_path".format(key)
-            flow_path = getattr(self, path_key, "") or self.simple_mode_flows.get(key, "")
+            flow_path = (
+                getattr(self, path_key, "")
+                or self.simple_mode_flows.get(key, "")
+                or self._chain_default_flow(key)
+            )
 
             self.simple_section_vars[key] = {
                 "enabled": enabled_var,
@@ -3574,6 +3813,7 @@ class LauncherApp:
             self.parsed_diag = {"error": str(exc)}
         if self.parsed_project_info is None and self.parsed_diag is None:
             self.parsed_diag = wt_project_workdir_parser.diagnose_project_work_dir(path)
+        self._log_input_preflight(self.parsed_project_info)
         self._simple_update_work_dir_label()
         self._simple_save_state()
         self._simple_set_status("已选择项目文件夹：{}".format(path), "idle")
@@ -5499,6 +5739,9 @@ class LauncherApp:
         重复排队任务；每成功入队一个任务经 on_task_submitted 增量登记，使"停止排队"
         在提交进行中也能终止已提交的任务（避免孤儿任务）。
         """
+        # 板块绑定契约：绑错流程文件不允许提交（fail-closed）
+        if self._chain_block_if_invalid():
+            return False
         # 项目解析注入（对齐本地 Simple 运行）：应用覆盖、按塔展开、附带 runtimeConfig
         sections = self._prepare_remote_sections(sections)
         # 为每个板块注入客户端幂等标记，防止快速重复提交或网络重试导致任务重复创建
@@ -6001,9 +6244,12 @@ class LauncherApp:
         if self.process and self.process.poll() is None:
             messagebox.showinfo("提示", "已有自动化流程正在运行，请先等待其完成或停止。")
             return False
+        if self._chain_block_if_invalid():
+            return False
         self.btn_simple_run.config(state=tk.DISABLED)
         self.btn_simple_stop.config(state=tk.NORMAL)
         self._simple_set_status("准备运行 {} 个板块".format(len(keys)), "running")
+        self._simple_gate_cancel = False
         self._simple_run_queue = list(keys)
         self._simple_run_index = 0
         self._simple_run_next()
@@ -6021,6 +6267,7 @@ class LauncherApp:
             self._simple_remote_task_ids = {}
         window = getattr(self, "_task_queue_window", None)
         self._simple_remote_stop = True
+        self._simple_gate_cancel = True
         self._simple_run_queue = []
         self._simple_run_index = 0
         # 联动：多塔串行队列运行中时一并请求停止
@@ -6088,7 +6335,10 @@ class LauncherApp:
 
         key = self._simple_run_queue[self._simple_run_index]
         sec = next(s for s in self.SIMPLE_SECTIONS if s["key"] == key)
-        flow_path = self.simple_section_vars.get(key, {}).get("path", "")
+        # 运行期覆盖：综合门后生成的残余 GUI flow 只在本队列生效，不污染用户配置/落盘状态。
+        runtime_overrides = getattr(self, "_simple_runtime_flow_overrides", None) or {}
+        flow_path = (runtime_overrides.get(key)
+                     or self.simple_section_vars.get(key, {}).get("path", ""))
         idx = self._simple_run_index + 1
         total = len(self._simple_run_queue)
 
@@ -6099,7 +6349,12 @@ class LauncherApp:
             return
 
         self._simple_set_status("▶ {}/{} {} 启动中".format(idx, total, sec["title"]), "running")
+        # 段间完成门上下文：发送前拍摄基线（cfdId 号源 / 综合期望号集合），
+        # 写入侧进程与判据侧 gate 共用同一份「本次运行」事实。
+        gate_ctx = self._simple_gate_build_context(key, flow_path)
         original_path = self._get_flow_definition_path()
+        # 板块身份：运行前输入契约（地形 CRS / 曲线 / 粗糙度 / 配置导入分支）按它取 manifest 契约。
+        self._active_simple_section_key = key
         self.flow_definition_path_var.set(flow_path)
         # 仅当指定了项目工作文件夹时，本次运行启用自动解析注入；未指定则完全保持原逻辑
         self._simple_run_project_inject = bool(str(getattr(self, "project_work_dir", "") or "").strip())
@@ -6111,27 +6366,581 @@ class LauncherApp:
             self.root.after(800, self._simple_run_next)
             return
         self.flow_definition_path_var.set(original_path)
+        self._active_simple_section_key = ""
 
         self._simple_run_index += 1
         import threading as _th
-        _th.Thread(target=self._simple_wait_for_next, args=(idx, total, sec["title"]), daemon=True).start()
+        _th.Thread(
+            target=self._simple_wait_for_next,
+            args=(idx, total, sec["title"]),
+            kwargs={"section_key": key, "gate_ctx": gate_ctx},
+            daemon=True,
+        ).start()
 
-    def _simple_wait_for_next(self, idx, total, title, timeout=14400.0):
+    # ── Simple 段间完成门（P0-1/P0-2）────────────────────────────────────
+    # 语义：RPA 子进程退出 ≠ 计算完成。cfd/comprehensive 板块退出后必须过完成门，
+    # 门不过（含子进程失败/报告失败步骤）→ 中止排队，绝不把下一段跑在空结果上。
+    _GATE_SECTIONS = ("cfd", "comprehensive")
+    _GATE_ID_DISCOVERY_SECONDS = 600.0        # 等"发送后新 logout"出现的窗口
+    _GATE_CFD_TIMEOUT_SECONDS = 3600.0
+    _GATE_COMPREHENSIVE_TIMEOUT_SECONDS = 3600.0
+
+    def _simple_gate_cancelled(self):
+        return bool(getattr(self, "_simple_gate_cancel", False))
+
+    def _simple_gate_log(self, message, tag="system"):
+        """后台线程写日志：走 output_queue（Tk 控件只能在主线程碰）。"""
+        try:
+            self.output_queue.put(("log", (str(message), tag)))
+        except Exception:
+            pass
+
+    def _simple_gate_sleep(self, seconds):
+        """完成门轮询间隔：可被「停止排队」立即打断（抛 _SimpleGateCancelled）。
+
+        同时每 30 秒回写一次"完成门等待中"，避免长算例期间界面看似卡死
+        （原实现只在子进程存活期更新，门等待期会静默）。
+        """
+        end = time.time() + max(0.0, float(seconds))
+        while True:
+            if self._simple_gate_cancelled():
+                raise _SimpleGateCancelled()
+            now = time.time()
+            if now >= end:
+                return
+            started = float(getattr(self, "_simple_gate_wait_started", 0.0) or 0.0)
+            if started and now - float(getattr(self, "_simple_gate_last_hint", 0.0) or 0.0) >= 30.0:
+                self._simple_gate_last_hint = now
+                minutes = int((now - started) // 60)
+                self._post_ui(
+                    lambda m=minutes: self._simple_set_status(
+                        "⏳ 完成门等待中，已等待 {} 分钟".format(m), "running")
+                )
+            time.sleep(0.2)
+
+    def _simple_gate_snapshot_bin(self):
+        """发送前 BIN 快照（基线 {文件名: mtime}）。
+
+        只认本次运行新增或**被重写**的 `CALCUL_log_out_*.xml`：cfdId 是 MUP 进程内
+        计数器、跨会话从 1 重启，同名文件可能被覆盖，故不能只按"文件名不在基线"判新。
+        """
+        try:
+            import mup_paths
+            root = mup_paths.vault_root()
+            bin_dir = os.path.join(root, "BIN") if root else ""
+            if not bin_dir or not os.path.isdir(bin_dir):
+                return {}
+            snapshot = {}
+            for name in os.listdir(bin_dir):
+                try:
+                    snapshot[name] = os.path.getmtime(os.path.join(bin_dir, name))
+                except OSError:
+                    continue
+            return snapshot
+        except Exception:
+            return {}
+
+    def _simple_read_param_rows(self, flow_path):
+        """读取综合流程 paramTable（委托 export_s7_wiring → mup_vault_export）。"""
+        try:
+            import export_s7_wiring as wiring
+            return list(wiring.read_param_rows(flow_path) or [])
+        except Exception as exc:
+            self._simple_gate_log(
+                "综合完成门：参数表读取失败（{}），期望集合退化为自动发现".format(exc),
+                "warning")
+            return []
+
+    def _simple_is_case_guid(self, value):
+        try:
+            import mup_case_identity
+            return mup_case_identity.is_case_guid(value)
+        except Exception:
+            return False
+
+    def _simple_synthesis_row_cancelled(self, row):
+        try:
+            import export_s7_wiring as wiring
+            return wiring.is_cancelled_row(row)
+        except Exception:
+            return "cancel" in str((row or {}).get("error") or "").lower()
+
+    def _simple_expected_synthesis_numbers(self, flow_path, case_prefix="",
+                                           baseline_numbers=None,
+                                           excluded_ns=None):
+        """按 paramTable 行 + 基线 max 推导“实际创建卡号集合”（U-1/U-6/U-10）。
+
+        `synthesisName=综合N` 取 N；空名（copy/copyfull）按 MUP 自动命名
+        `综合{max+1}` 递增。绝不假设 [1..N]：DEMO 综合1 被 Cancel 时由
+        `excluded_ns` 剔除，期望集合是 2/3/4。
+        """
+        rows = self._simple_read_param_rows(flow_path)
+        baseline = list(baseline_numbers or [])
+        baseline_max = max(baseline or [0] or [0])
+        try:
+            import export_s7_wiring as wiring
+            numbers = wiring.actual_card_numbers(
+                rows, baseline_max=baseline_max, excluded_ns=excluded_ns or ())
+        except Exception as exc:
+            self._simple_gate_log(
+                "综合完成门：实际卡号推导失败（{}），期望集合退化为自动发现".format(exc),
+                "warning")
+            return []
+        self._simple_gate_log(
+            "综合完成门：paramTable {} 行 → 实际卡号 {}（基线 max={}，排除={}）".format(
+                len(rows), numbers or "-", baseline_max,
+                sorted({int(n) for n in (excluded_ns or ())}) or "-"))
+        return numbers
+
+    def _simple_gate_build_context(self, key, flow_path):
+        """构建完成门上下文（发送前调用；构建失败不阻塞启动，门在等待期 fail-closed）。
+
+        综合板块额外解析**产物前缀** `case_prefix`（`Cases.Id`）：真实 Vault 的综合
+        产物叫 `{CaseGUID}_synthesis_{n}.wri/.wrp`，人类站点名只作 `site_label`
+        （2026-11-02 蓝图 §5.5-b-7）。解析必须在发送前完成，否则首轮 watcher 会用错前缀。
+
+        同时在发送前落账基线综合号（LocalDB 快照）；发送后由完成门等待段取
+        “新增且未取消”的实际建卡集合，直取与残余 GUI 共用该集合。
+        """
+        if key not in self._GATE_SECTIONS:
+            return None
+        ctx = {
+            "section": key,
+            "site": "",
+            "site_label": "",
+            "case_prefix": "",
+            "case_source": "",
+            "expected_ns": [],
+            "expected_ns_source": "",
+            "cancelled_ns": [],
+            "created_ns": None,
+            "param_rows": [],
+            "baseline_synthesis": None,
+            "baseline_synthesis_rows": None,
+            "flow_path": flow_path,
+            "bin_baseline": {},
+            "launch_wall": time.time(),
+            "build_error": "",
+        }
+        try:
+            work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+            if work_dir:
+                # siteName 由「新建工程项目」键入的项目名生成（flow 只键入 projectName）
+                ctx["site"] = os.path.basename(work_dir.rstrip("\\/"))
+                ctx["site_label"] = ctx["site"]
+            if key == "cfd":
+                ctx["bin_baseline"] = self._simple_gate_snapshot_bin()
+            else:
+                # 先解析身份（产物前缀），再按该前缀查基线；顺序不能反。
+                if ctx["site"]:
+                    identity = self._simple_resolve_case_identity(ctx["site"])
+                    ctx["case_prefix"] = identity.case_prefix
+                    ctx["case_source"] = identity.source
+                    self._simple_gate_log(
+                        "综合完成门：站点={} → 产物前缀={}（解析来源={}，候选={}）".format(
+                            ctx["site"], identity.case_prefix or "-",
+                            identity.source, list(identity.candidates) or "-"))
+                ctx["param_rows"] = self._simple_read_param_rows(flow_path)
+                baseline_rows = None
+                if ctx["case_prefix"] and self._simple_is_case_guid(ctx["case_prefix"]):
+                    baseline_rows = self._simple_query_synthesis_numbers(ctx["case_prefix"])
+                ctx["baseline_synthesis_rows"] = baseline_rows
+                ctx["baseline_synthesis"] = (
+                    [row["n"] for row in baseline_rows]
+                    if isinstance(baseline_rows, list) else None)
+                cancelled = [row["n"] for row in (baseline_rows or [])
+                             if self._simple_synthesis_row_cancelled(row)]
+                baseline_max = max([row["n"] for row in (baseline_rows or [])] or [0])
+                ctx["expected_ns"] = self._simple_expected_synthesis_numbers(
+                    flow_path, ctx["case_prefix"],
+                    baseline_numbers=ctx["baseline_synthesis"],
+                    excluded_ns=cancelled)
+                ctx["expected_ns_source"] = "param-table"
+                if baseline_rows is None:
+                    self._simple_gate_log(
+                        "综合完成门：LocalDB 基线不可用，按 paramTable 推导期望号 {}"
+                        "（无法排除历史取消卡）".format(ctx["expected_ns"] or "-"),
+                        "warning")
+        except Exception as exc:
+            ctx["build_error"] = str(exc)
+        return ctx
+
+    def _simple_resolve_case_identity(self, site):
+        """站点名 → 产物前缀（`Cases.Id`）。DB 查询在接线层注入，leaf 保持纯 stdlib。"""
+        import mup_case_identity
+        vault_root = ""
+        try:
+            import mup_paths
+            vault_root = mup_paths.vault_root()
+        except Exception:
+            vault_root = ""
+        return mup_case_identity.resolve_case_identity(
+            site, vault_root=vault_root, query_case_id=self._simple_query_case_guid)
+
+    def _simple_query_case_guid(self, site):
+        """LocalDB 查询 `Sites.Name -> Cases.Id`（仅接线层可 spawn sqlcmd）。
+
+        失败/超时/未装 sqlcmd 一律返回 ""（由 leaf 降级到下一级，不阻塞发送）。
+        站点名来自项目文件夹名，单引号按 SQL 字面量转义（`''`）。
+        """
+        literal = str(site or "").replace("'", "''")
+        if not literal:
+            return ""
+        sql = ("SET NOCOUNT ON; SELECT TOP 1 c.Id FROM Cases c "
+               "JOIN Sites s ON c.Parent_Id = s.Id WHERE s.Name = '%s';" % literal)
+        cmd = ["sqlcmd", "-S", "(localdb)\\Meteodyn", "-d", "MUPLocalDb",
+               "-h", "-1", "-W", "-Q", sql]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if proc.returncode != 0:
+            return ""
+        lines = [line.strip() for line in str(proc.stdout or "").splitlines() if line.strip()]
+        return lines[-1] if lines else ""
+
+    def _simple_query_synthesis_numbers(self, case_prefix):
+        """只读查询某 Case 的综合卡号与最后一次执行的 ErrorCode。
+
+        返回 `[{"n": int, "error": str}, ...]`；`None` 表示 DB 不可用/查询失败，
+        与“查询成功但没有卡”的 `[]` 严格区分（前者不得用于“全量当新增”）。
+        """
+        literal = str(case_prefix or "").replace("'", "''")
+        if not literal or not self._simple_is_case_guid(case_prefix):
+            return None
+        sql = (
+            "SET NOCOUNT ON; SELECT w.SynthesisNumber, "
+            "ISNULL((SELECT TOP 1 o.ErrorCode FROM WROutputs o "
+            "WHERE o.WRAnalysis_Id = w.Id ORDER BY o.Date DESC), '') "
+            "FROM WRAAnalysis w JOIN ComputationObject co "
+            "ON w.ComputationObject_Id = co.Id "
+            "WHERE co.Parent_Id = '%s' ORDER BY w.SynthesisNumber;" % literal
+        )
+        cmd = ["sqlcmd", "-S", "(localdb)\\Meteodyn", "-d", "MUPLocalDb",
+               "-h", "-1", "-W", "-s", "|", "-Q", sql]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        rows = []
+        for line in str(proc.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("|")
+            if len(parts) < 2:
+                parts = line.split(None, 1)
+            try:
+                number = int(parts[0].strip())
+            except (ValueError, IndexError):
+                continue
+            error = parts[1].strip() if len(parts) > 1 else ""
+            rows.append({"n": number, "error": error})
+        return rows
+
+    def _simple_wait_new_cfd_ids(self, root, baseline, send_wall, expected_count):
+        """cfdId 自动发现：BIN 里「发送后新出现/被重写 + mtime 新鲜」的 logout 数字 id。
+
+        单一归一 owner：委托 mup_vault_names.discover_fresh_cfd_ids 处理新鲜度与基线，
+        消除与完成门内联判据的漂移。等不到 → 空（调用方 fail-closed）。
+        """
+        import mup_vault_names
+        completion = _completion_gate_module()
+        deadline = time.time() + float(self._GATE_ID_DISCOVERY_SECONDS)
+        bin_dir = os.path.join(root, "BIN")
+        baseline = baseline if isinstance(baseline, dict) else {}
+        clock_grace = getattr(completion, "DEFAULT_CLOCK_GRACE", mup_vault_names.DEFAULT_CLOCK_GRACE)
+        while time.time() < deadline:
+            if self._simple_gate_cancelled():
+                raise _SimpleGateCancelled()
+            try:
+                names = os.listdir(bin_dir)
+            except OSError:
+                names = []
+            entries = {}
+            for name in names:
+                try:
+                    entries[name] = os.path.getmtime(os.path.join(bin_dir, name))
+                except OSError:
+                    continue
+            picked, all_ids = mup_vault_names.discover_fresh_cfd_ids(
+                entries, send_wall, baseline=baseline,
+                clock_grace=clock_grace,
+                expected_count=expected_count)
+            if len(picked) >= int(expected_count):
+                if len(all_ids) > len(picked):
+                    self._simple_gate_log(
+                        "CFD 完成门：发现 {} 个新 cfdId {}，本波只对最新 {} 个过门"
+                        "（多方向批量等待金样口径）".format(
+                            len(all_ids), all_ids, picked), "warning")
+                return picked
+            time.sleep(2.0)
+        return []
+
+    def _simple_gate_wait_section(self, key, ctx):
+        """后台线程：跑段间完成门，返回 (ok, 诊断)。不碰 Tk 控件。"""
+        if key not in self._GATE_SECTIONS:
+            return True, ""
+        ctx = ctx or {}
+        if ctx.get("build_error"):
+            return False, "完成门上下文构建失败：{}".format(ctx["build_error"])
+        try:
+            import mup_paths
+            completion = _completion_gate_module()
+        except Exception as exc:
+            return False, "完成门模块不可用：{}".format(exc)
+        root = mup_paths.vault_root()
+        if not root:
+            return False, "完成门无法定位 MUP vault 根（mup_paths.data_root 不可用）"
+        self._simple_gate_wait_started = time.time()
+        self._simple_gate_last_hint = self._simple_gate_wait_started
+        send_wall = float(ctx.get("launch_wall") or time.time())
+        if key == "cfd":
+            gate = completion.CompletionGate(
+                root, timeout_seconds=self._GATE_CFD_TIMEOUT_SECONDS,
+                sleep=self._simple_gate_sleep)
+            self._simple_gate_log(
+                "CFD 完成门：基线 logout {} 个，等待发送后新 cfdId（窗口 {:.0f}s）".format(
+                    len(ctx.get("bin_baseline") or ()), self._GATE_ID_DISCOVERY_SECONDS))
+            ids = self._simple_wait_new_cfd_ids(
+                root, ctx.get("bin_baseline") or {}, send_wall, 1)
+            if not ids:
+                return False, ("CFD 完成门：发送后未发现新的 CALCUL_log_out_<id>.xml"
+                               "（发送未发生或落盘失败，cfdId 无从确认）")
+            failures = []
+            for cfd_id in ids:
+                self._simple_gate_log("CFD 完成门：等待 cfdId={}（logout 新鲜 + 结果增量齐）".format(cfd_id))
+                frame = gate.wait_cfd(cfd_id, send_wall=send_wall)
+                self._simple_gate_log("CFD 完成门 cfdId={} → {}｜{}".format(
+                    cfd_id, frame.get("status"), frame.get("reason")))
+                if not frame.get("ok"):
+                    failures.append("cfdId={} status={} {}".format(
+                        cfd_id, frame.get("status"), frame.get("reason")))
+            if failures:
+                return False, "CFD 完成门未通过：" + "；".join(failures)
+            return True, "CFD 完成门通过：cfdId={}".format(ids)
+
+        gate = completion.CompletionGate(
+            root, timeout_seconds=self._GATE_COMPREHENSIVE_TIMEOUT_SECONDS,
+            sleep=self._simple_gate_sleep)
+        site = str(ctx.get("site") or "")
+        site_label = str(ctx.get("site_label") or site)
+        case_prefix = str(ctx.get("case_prefix") or "")
+        expected_ns = list(ctx.get("expected_ns") or [])
+        expected_source = str(ctx.get("expected_ns_source") or "param-table")
+
+        # 发送后：以 LocalDB 实际新增卡号为准（U-6 n 漂移 / U-10 DEMO 综合1 Cancel）。
+        cancelled = list(ctx.get("cancelled_ns") or [])
+        created_ns = ctx.get("created_ns")
+        if case_prefix and self._simple_is_case_guid(case_prefix):
+            current_rows = self._simple_query_synthesis_numbers(case_prefix)
+            baseline = ctx.get("baseline_synthesis")
+            if isinstance(current_rows, list) and isinstance(baseline, list):
+                import export_s7_wiring as wiring
+                new_ns, db_source, cancelled = wiring.db_expected_numbers(
+                    current_rows, baseline)
+                if db_source == "db-new":
+                    expected_ns = new_ns
+                    expected_source = "db-new"
+                    created_ns = sorted(set(new_ns) | set(cancelled))
+                elif db_source == "db-new-all-cancelled":
+                    return False, (
+                        "综合完成门：发送后新建综合卡均被取消（{}），无产物可等".format(
+                            cancelled))
+                else:
+                    baseline_max = max([int(n) for n in baseline] or [0])
+                    expected_ns = wiring.actual_card_numbers(
+                        ctx.get("param_rows") or [], baseline_max=baseline_max,
+                        excluded_ns=cancelled)
+                    expected_source = "param-table-minus-cancelled"
+                    created_ns = sorted(set(expected_ns) | set(cancelled))
+                self._simple_gate_log(
+                    "综合完成门：实际建卡号={}（来源={}；基线={}；取消={}）".format(
+                        expected_ns or "-", expected_source,
+                        sorted(int(n) for n in baseline) or "-",
+                        cancelled or "-"))
+            elif current_rows is None:
+                self._simple_gate_log(
+                    "综合完成门：LocalDB 不可用，沿用 paramTable 期望号 {}".format(
+                        expected_ns or "自动发现"), "warning")
+        ctx["expected_ns"] = list(expected_ns)
+        ctx["expected_ns_source"] = expected_source
+        ctx["cancelled_ns"] = list(cancelled)
+        ctx["created_ns"] = created_ns
+
+        self._simple_gate_log(
+            "综合完成门：站点={} 产物前缀={}（来源={}）期望综合号={}（来源={}）".format(
+                site_label or "自动发现", case_prefix or "-",
+                ctx.get("case_source") or "-", expected_ns or "自动发现",
+                expected_source))
+        frame = gate.wait_comprehensive(site, send_wall=send_wall,
+                                        expected_ns=expected_ns or None,
+                                        case_prefix=case_prefix or None,
+                                        site_label=site_label or None)
+        self._simple_gate_log("综合完成门 → {}｜{}".format(frame.get("status"), frame.get("reason")))
+        if not frame.get("ok"):
+            return False, "综合完成门未通过：{} {}".format(frame.get("status"), frame.get("reason"))
+
+        # 门通过后才允许直取；直取失败同样 fail-closed，不推进残余 GUI。
+        export_ok, export_detail = self._simple_export_after_gate(
+            ctx, frame, root, expected_ns)
+        if not export_ok:
+            return False, export_detail
+        return True, "综合完成门通过：站点={} 产物前缀={} 综合号={}；{}".format(
+            frame.get("siteLabel") or site_label,
+            frame.get("casePrefix") or frame.get("targetSite") or case_prefix,
+            frame.get("expectedNs") or expected_ns or frame.get("targetN"),
+            export_detail)
+
+    def _simple_export_after_gate(self, ctx, frame, root, expected_ns):
+        """综合门通过后：Vault 直取 → manifest 双计数 → 生成并挂载残余 GUI 流。
+
+        只调用 `export_s7` / `mup_vault_export`，不重写其直取实现。任何必出
+        `.wri/.wrp` 缺失或期望卡未齐套 → 返回 False，调用方中止队列（fail-closed）。
+        """
+        try:
+            import export_s7_wiring as wiring
+        except Exception as exc:
+            return False, "导出接线模块不可用：{}".format(exc)
+
+        site_label = str(ctx.get("site_label") or frame.get("siteLabel")
+                         or ctx.get("site") or "")
+        case_prefix = str(frame.get("casePrefix") or frame.get("targetSite")
+                          or ctx.get("case_prefix") or "")
+        work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+        output_dir = (os.path.join(work_dir, "04-WT输出") if work_dir
+                      else os.path.join(BASE_DIR, "04-WT输出"))
+        param_rows = list(ctx.get("param_rows") or [])
+        baseline = ctx.get("baseline_synthesis") or []
+        baseline_max = max([int(n) for n in baseline] or [0])
+        safe_site = "".join(c if c.isalnum() else "_" for c in (site_label or "site"))
+        flow_path = os.path.join(
+            BASE_DIR, "workspace",
+            "flow_definition_export_residual_{}.json".format(safe_site))
+
+        res = wiring.export_and_build_residual(
+            site_label=site_label,
+            case_prefix=case_prefix,
+            param_rows=param_rows,
+            expected_ns=expected_ns,
+            output_dir=output_dir,
+            vault_root=root,
+            baseline_max=baseline_max,
+            flow_output_path=flow_path,
+            include_matrix=True,
+            copy=True,
+            diagnostics={},
+            created_ns=ctx.get("created_ns"),
+        )
+        if not res.get("ok"):
+            return False, "综合直取未通过：{}".format(
+                res.get("failure_reason") or "unknown")
+
+        self._simple_gate_log(
+            "综合直取完成：完成集合={}（含 copyfull/无导出），交付集合={}（mN 非空），"
+            "拷贝 {} 个文件；manifest={}".format(
+                res.get("completed_cases_count", 0),
+                res.get("delivered_cases_count", 0),
+                res.get("copied_count", 0),
+                res.get("manifest_path", "")), "success")
+        self._simple_gate_log(
+            "综合直取：期望综合号={}（来源={}）；manifest cases={}；丢弃号={}".format(
+                expected_ns or "自动发现",
+                ctx.get("expected_ns_source") or "-",
+                [c.get("index") for c in (res.get("manifest") or {}).get("cases") or []],
+                res.get("dropped_ns") or "-"), "system")
+
+        if flow_path and os.path.isfile(flow_path):
+            overrides = getattr(self, "_simple_runtime_flow_overrides", None)
+            if not isinstance(overrides, dict):
+                overrides = {}
+                self._simple_runtime_flow_overrides = overrides
+            overrides["export_result"] = flow_path
+            queued = "export_result" in (getattr(self, "_simple_run_queue", None) or [])
+            if queued:
+                self._simple_gate_log(
+                    "残余 GUI 已挂载到 export_result（运行期覆盖）：{} 步"
+                    "（Excel/IEC + 矩阵块保留），flow={}".format(
+                        (res.get("residual_flow") or {}).get("totalSteps", 0),
+                        flow_path), "success")
+            else:
+                self._simple_gate_log(
+                    "残余 GUI flow 已生成，但 export_result 未在本次队列，未自动执行：{}".format(
+                        flow_path), "warning")
+
+        ctx["export_manifest"] = res.get("manifest")
+        ctx["export_manifest_path"] = res.get("manifest_path")
+        ctx["residual_flow_path"] = flow_path
+        return True, "直取完成：完成集合={} 交付集合={}".format(
+            res.get("completed_cases_count", 0),
+            res.get("delivered_cases_count", 0))
+
+    def _simple_report_failed_steps(self, since_wall):
+        """读本次运行报告里的失败步骤；报告不是本次的（mtime 过旧）返回 (None, 诊断)。"""
+        try:
+            if not os.path.isfile(LAST_RUN_REPORT_FILE):
+                return None, "运行报告不存在"
+            if os.path.getmtime(LAST_RUN_REPORT_FILE) < float(since_wall) - 5.0:
+                return None, "运行报告 mtime 早于本次启动，非本次产物"
+            report, error = load_json_file(LAST_RUN_REPORT_FILE)
+        except OSError as exc:
+            return None, str(exc)
+        if error or not isinstance(report, dict):
+            return None, error or "运行报告格式不正确"
+        failed = []
+        for item in report.get("stepResults") or []:
+            if isinstance(item, dict) and str(item.get("status", "")).lower() == "failed":
+                failed.append("{} {}".format(
+                    str(item.get("stepId") or "?").strip(),
+                    str(item.get("stepName") or "").strip()).strip())
+        summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+        if not failed and int(summary.get("failedCount", 0) or 0) > 0:
+            failed.append("failedCount={}".format(summary.get("failedCount")))
+        return failed, ""
+
+    def _simple_eval_section_result(self, key, ctx, exit_code, since_wall):
+        """段间放行判定：进程退出码 + 运行报告失败步骤 + 完成门（fail-closed）。"""
+        if exit_code is None:
+            return False, "{} 板块未启动子进程（启动被拒绝或提前返回），判定失败".format(key)
+        if exit_code != 0:
+            return False, "{} 板块进程退出码 {}，判定失败".format(key, exit_code)
+        failed, report_error = self._simple_report_failed_steps(since_wall)
+        if report_error:
+            self._simple_gate_log(
+                "段间门：无法核对运行报告失败步骤（{}），仅凭退出码/完成门判定".format(report_error),
+                "warning")
+        if failed:
+            return False, "{} 板块运行报告含失败步骤：{}".format(key, "；".join(failed))
+        return self._simple_gate_wait_section(key, ctx)
+
+    def _simple_wait_for_next(self, idx, total, title, timeout=14400.0,
+                              section_key=None, gate_ctx=None):
         """等待当前板块/多塔队列完成，然后调度下一个板块（后台线程）。
 
         多塔串行队列需等待队列整体完成（_mast_queue_active 置 False），而非单个塔退出，
         否则 Simple 队列会在第一塔结束时提前推进下一个板块，与后续塔并发运行。
         等待期间周期性回写"已等待时长"，避免长时间无提示被误判为卡死；
         timeout 用于兜底（默认 4 小时），超时则中止排队并明确提示。
+
+        退出后依次做段间判定（P0-1/P0-2，全部 fail-closed）：
+          1) 子进程退出码非 0 → 中止排队；
+          2) 本次运行报告含 failed 步骤 → 中止排队；
+          3) cfd/comprehensive 板块跑完成门（mup_completion），门不过 → 中止排队。
+        只有全部通过才调度下一板块——不再"点完发送就当完成"。
         """
         deadline = time.time() + max(1.0, float(timeout))
         started = time.time()
         last_hint = 0.0
         timed_out = False
+        last_proc = None
         try:
             while True:
                 queue_active = bool(getattr(self, "_mast_queue_active", False))
                 proc = self.process
+                if proc is not None:
+                    last_proc = proc
                 proc_running = bool(proc) and proc.poll() is None
                 if not queue_active and not proc_running:
                     break
@@ -6151,16 +6960,42 @@ class LauncherApp:
         except Exception:
             pass
         time.sleep(0.5)
+        # 用户已请求停止：队列已清空，不再做判定/推进（避免把"停止"报成"失败"）
+        if self._simple_gate_cancelled() or not getattr(self, "_simple_run_queue", None):
+            return
         if timed_out:
             self._mast_queue_stop = True
             self._post_ui(
                 lambda t=title: self._simple_abort_queue("等待 {} 超时，已停止排队".format(t))
             )
             return
+        exit_code = last_proc.returncode if last_proc is not None else None
+        try:
+            ok, reason = self._simple_eval_section_result(
+                section_key or "", gate_ctx, exit_code,
+                float((gate_ctx or {}).get("launch_wall") or started))
+        except _SimpleGateCancelled:
+            return
+        except Exception as exc:  # noqa: BLE001 —— 门自身异常一律不放行
+            self._post_ui(
+                lambda t=title, e=exc: self._simple_abort_queue(
+                    "{} 段间判定异常，已停止排队：{}".format(t, e))
+            )
+            return
+        if not ok:
+            reason_full = "{} 未完成，已停止后续板块：{}".format(title, reason)
+            self._simple_gate_log("❌ " + reason_full, "error")
+            self._post_ui(
+                lambda r=reason_full: self._simple_abort_queue(r)
+            )
+            return
+        if section_key in self._GATE_SECTIONS:
+            self._simple_gate_log("✅ {} 段间完成门通过".format(title), "success")
         self.root.after(0, self._simple_run_next)
 
     def _simple_abort_queue(self, reason):
         """中止 Simple 排队：清空待跑队列、恢复按钮并提示原因。"""
+        self._simple_gate_cancel = True
         self._simple_run_queue = []
         self._simple_run_index = 0
         self.btn_simple_run.config(state=tk.NORMAL)
@@ -8068,7 +8903,8 @@ class LauncherApp:
         if mup_files:
             parts = []
             new_map = mup_files.get("new", {}) or {}
-            _dir_label = {"terrain": "地形", "timeseries": "气象", "roughness": "粗糙度", "results": "计算", "synthesis": "合成"}
+            _dir_label = {"terrain": "地形", "timeseries": "气象", "roughness": "粗糙度", "results": "计算", "synthesis": "合成",
+                          "bin": "CFD日志", "information": "信息", "projects": "工程", "geosys": "地形系统", "multimeso": "中尺度"}
             for key, files in sorted(new_map.items()):
                 if files:
                     parts.append("{label}新增{count}个".format(label=_dir_label.get(key, key), count=len(files)))
@@ -8836,6 +9672,35 @@ class LauncherApp:
                 payload["paramTable"] = abs_param
         return payload
 
+    # 项目参数覆盖的必需键：它们是「创建一个新建模」的键入占位符，
+    # 不走 text_overrides 的 required_keys，故单独做键缺失检查。
+    _REQUIRED_PROJECT_KEYS = ("projectName", "terrainName", "projectionAbbrev")
+
+    def _override_audit_problem(self, text_overrides, runtime_config):
+        """覆盖审计硬失败判据：返回拒绝启动的诊断串；空串表示通过。
+
+        判据（任一命中即拒绝启动）：
+          1) `__override_audit__.zero_hit` 非空：必需旧文本在流程步骤里 0 命中，
+             覆盖会静默不生效（模板改版/旧值漂移），跑起来也是错的；
+          2) `projectName`/`terrainName`/`projectionAbbrev` 任一键缺失：项目/地形/投影
+             根本没被解析出来，后续流程会用模板里的旧值。
+        """
+        audit_key = wt_project_workdir_parser.OVERRIDE_AUDIT_KEY
+        audit = (text_overrides or {}).get(audit_key) or {}
+        zero_hit = [str(k) for k in (audit.get("zero_hit") or []) if str(k)]
+        missing = [
+            key for key in self._REQUIRED_PROJECT_KEYS
+            if not str((runtime_config or {}).get(key, "") or "").strip()
+        ]
+        if not zero_hit and not missing:
+            return ""
+        parts = []
+        if zero_hit:
+            parts.append("覆盖 0 命中（{} 个）：{}".format(len(zero_hit), "、".join(zero_hit)))
+        if missing:
+            parts.append("项目参数键缺失：{}".format("、".join(missing)))
+        return "；".join(parts)
+
     def _write_project_tmp_flow(self, flow_path, text_overrides, path_prefix_overrides,
                                 absolutize_param_table=True,
                                 tmp_name="flow_definition_project_tmp.json"):
@@ -8963,6 +9828,24 @@ class LauncherApp:
             parsed_rc = parsed.get("runtime_config") or {}
             if isinstance(parsed_rc, dict):
                 runtime_config.update(parsed_rc)
+            # 配置导入分支（A5）+ 输入契约（A2/A4/粗糙度）：不通过则不提交该板块。
+            flow_path = self._config_import_fallback_flow(sec.get("key"), flow_path, runtime_config)
+            if flow_path != str(sec.get("path") or ""):
+                _base_runtime = load_flow_runtime_config(flow_path)
+                if isinstance(parsed_rc, dict):
+                    _base_runtime.update(parsed_rc)
+                runtime_config = _base_runtime
+            contract_problems = self._input_contract_problems(
+                sec.get("key"), flow_path, runtime_config
+            )
+            if contract_problems:
+                self._append_log(
+                    "板块 {} 输入契约未通过，已从远程提交中剔除：{}".format(
+                        sec.get("title") or sec.get("key"), "；".join(contract_problems[:4])
+                    ),
+                    tag="error",
+                )
+                return []
             text_ovr = parsed.get("text_overrides") or {}
             path_ovr = parsed.get("path_prefix_overrides") or {}
         self._apply_tower_mode(runtime_config, project_work_dir)
@@ -9007,19 +9890,34 @@ class LauncherApp:
             cur_runtime = dict(load_flow_runtime_config(flow_path))
             cur_runtime.update(rc_parsed)
             cur_runtime["towerMode"] = "single"
+            # 配置导入分支（A5）：本塔无配置 → 提交基础气象流程，config_source=none 入报告。
+            _mast_flow = self._config_import_fallback_flow(
+                sec.get("key"), flow_path, cur_runtime
+            )
+            _mast_contract = self._input_contract_problems(
+                sec.get("key"), _mast_flow, cur_runtime
+            )
+            if _mast_contract:
+                self._append_log(
+                    "板块 {} 塔 {} 输入契约未通过，跳过该塔：{}".format(
+                        title, mast, "；".join(_mast_contract[:4])
+                    ),
+                    tag="error",
+                )
+                continue
             text_ovr = _inject_mast_config_xml_override(
-                flow_path, parsed.get("text_overrides") or {}, rc_parsed, self._append_log
+                _mast_flow, parsed.get("text_overrides") or {}, rc_parsed, self._append_log
             )
             path_ovr = parsed.get("path_prefix_overrides") or {}
             tmp_path = self._write_project_tmp_flow_for_mast(
-                flow_path, text_ovr, path_ovr, mast,
+                _mast_flow, text_ovr, path_ovr, mast,
                 absolutize_param_table=False,
             )
             item = dict(sec)
             item["title"] = "{}·{}".format(title, mast)
             # 上传名按塔区分：多塔临时流程内容互不相同，若共用原始文件名会
             # 在服务器端互相覆盖/产生混淆的版本归档
-            stem, ext = os.path.splitext(os.path.basename(flow_path))
+            stem, ext = os.path.splitext(os.path.basename(_mast_flow))
             item["name"] = "{}{}{}".format(stem, mast, ext)
             if tmp_path:
                 item["path"] = tmp_path
@@ -9095,13 +9993,39 @@ class LauncherApp:
                     cur_runtime.update(rc)
                     # 每塔独立跑「新建气象数据」：显式单塔，避免 mastIds 全量被下游误判为 multi
                     cur_runtime["towerMode"] = "single"
+                    # 配置导入分支（A5）：本塔无配置 → 改跑基础气象流程，报告 config_source=none。
+                    _mast_section = str(getattr(self, "_active_simple_section_key", "") or "").strip()
+                    if not _mast_section:
+                        _mast_section = mup_input_contract.find_section_key_for_flow(
+                            self.chain_manifest, BASE_DIR, flow_definition_path
+                        )
+                    _mast_flow = self._config_import_fallback_flow(
+                        _mast_section, flow_definition_path, cur_runtime
+                    )
+                    _enqueue_log(
+                        "[{}/{}] 塔 {} 配置来源={}（{}）".format(
+                            idx, total, mast,
+                            cur_runtime.get("configSource") or "none",
+                            os.path.basename(str(cur_runtime.get("configFilePath") or "")) or "不导入配置",
+                        ),
+                        "system",
+                    )
+                    _mast_contract = self._input_contract_problems(_mast_section, _mast_flow, cur_runtime)
+                    if _mast_contract:
+                        _enqueue_log(
+                            f"[{idx}/{total}] 塔 {mast} 输入契约未通过，跳过该塔：" + "；".join(_mast_contract[:4]),
+                            "error",
+                        )
+                        last_rc = -1
+                        done_skip.append(mast)
+                        continue
                     text_ovr = _inject_mast_config_xml_override(
-                        flow_definition_path, parsed.get("text_overrides", {}) or {}, rc, self._append_log
+                        _mast_flow, parsed.get("text_overrides", {}) or {}, rc, self._append_log
                     )
                     path_ovr = parsed.get("path_prefix_overrides", {}) or {}
-                    tmp_path = self._write_project_tmp_flow_for_mast(flow_definition_path, text_ovr, path_ovr, mast)
+                    tmp_path = self._write_project_tmp_flow_for_mast(_mast_flow, text_ovr, path_ovr, mast)
                     if not tmp_path:
-                        tmp_path = flow_definition_path
+                        tmp_path = _mast_flow
                     # 启动单塔子进程并等待
                     process_env = self._apply_model_env(os.environ.copy())
                     process_env["GM_RUNTIME_CONFIG_JSON"] = json.dumps(cur_runtime, ensure_ascii=False)
@@ -9359,6 +10283,41 @@ class LauncherApp:
                     parsed_rc = parsed.get("runtime_config", {}) or {}
                     if isinstance(parsed_rc, dict):
                         runtime_config.update(parsed_rc)
+                    # ── 板块输入契约（A2 CRS 闸 / A4 曲线 / 粗糙度 / A5 配置分支）──
+                    _sec_key = str(getattr(self, "_active_simple_section_key", "") or "").strip()
+                    if not _sec_key:
+                        _sec_key = mup_input_contract.find_section_key_for_flow(
+                            self.chain_manifest, BASE_DIR, self._get_flow_definition_path()
+                        )
+                    _origin_flow = flow_definition_path
+                    if _sec_key:
+                        _origin_flow = str(
+                            (self.simple_section_vars.get(_sec_key) or {}).get("path") or ""
+                        ).strip() or flow_definition_path
+                    _swapped_flow = self._config_import_fallback_flow(
+                        _sec_key, _origin_flow, runtime_config
+                    )
+                    if _swapped_flow != _origin_flow:
+                        flow_definition_path = _swapped_flow
+                        _base_runtime = load_flow_runtime_config(flow_definition_path)
+                        _base_runtime.update(parsed_rc)
+                        runtime_config = _base_runtime
+                    contract_problems = self._input_contract_problems(
+                        _sec_key, flow_definition_path, runtime_config
+                    )
+                    if contract_problems:
+                        detail = "\n".join("· " + item for item in contract_problems[:8])
+                        self._append_log(
+                            "启动已阻止（输入契约未通过）：\n" + detail, tag="error"
+                        )
+                        self._set_running_state(False)
+                        self.status_var.set("状态：输入契约未通过，未启动")
+                        messagebox.showerror(
+                            "启动失败",
+                            "输入契约未通过，已阻止启动（避免把错数据/空路径送进 MUP）。\n\n"
+                            "{}\n\n请修正项目输入后重试。".format(detail),
+                        )
+                        return
                     # ── 单塔/多塔自动决定 + 综合描述注入 ──
                     # 按项目解析出的测风塔数量决定 towerMode：≥2 → multi，否则 single。
                     # 仅当确实解析到测风塔列表时才注入，避免干扰未指定项目文件夹的默认行为。
@@ -9401,6 +10360,23 @@ class LauncherApp:
                         flow_definition_path, parsed.get("text_overrides", {}) or {}, parsed_rc, self._append_log
                     )
                     path_ovr = parsed.get("path_prefix_overrides", {}) or {}
+                    # P0-4：覆盖审计硬失败 —— 写临时流程前先验「覆盖真的会生效」。
+                    # 0 命中 = 模板改版/旧值漂移导致静默 no-op；关键项目参数键缺失 =
+                    # 项目/地形/投影没配置。任一命中都拒绝启动，不再带着空覆盖跑。
+                    audit_problem = self._override_audit_problem(text_ovr, runtime_config)
+                    if audit_problem:
+                        self._append_log(
+                            "启动已阻止（项目参数覆盖校验未通过）：{}".format(audit_problem),
+                            tag="error",
+                        )
+                        self._set_running_state(False)
+                        self.status_var.set("状态：项目参数覆盖校验未通过，未启动")
+                        messagebox.showerror(
+                            "启动失败",
+                            "项目参数覆盖校验未通过，已阻止启动（避免静默 no-op）。\n\n"
+                            "{}\n\n请检查项目文件夹与流程模板后重试。".format(audit_problem),
+                        )
+                        return
                     if text_ovr or path_ovr:
                         tmp_path = self._write_project_tmp_flow(flow_definition_path, text_ovr, path_ovr)
                         if tmp_path:

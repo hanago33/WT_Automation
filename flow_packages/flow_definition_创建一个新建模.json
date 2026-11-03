@@ -7,11 +7,15 @@
     "gmExe": "",
     "sourceFilePath": "",
     "outputDir": "",
-    "projectionFilePath": ""
+    "projectionFilePath": "",
+    "projectName": "202608_Test1",
+    "terrainName": "TEST1_Project_43",
+    "projectionAbbrev": "CGCS2000 43",
+    "roughnessIndexFile": ""
   },
   "flowPackages": [
     {
-      "id": "test",
+      "id": "创建一个新建模",
       "name": "创建一个新建模",
       "description": "",
       "stepIds": [
@@ -331,7 +335,7 @@
         "retryCount": 0,
         "retryInterval": 1.0,
         "onError": "continue",
-        "text": "202608_Test1"
+        "text": "${runtime.projectName}"
       },
       "auxChecks": [],
       "fallbacks": [],
@@ -988,7 +992,7 @@
         "retryCount": 0,
         "retryInterval": 1.0,
         "onError": "stop",
-        "text": "CGCS2000 43"
+        "text": "${runtime.projectionAbbrev}"
       },
       "auxChecks": [],
       "fallbacks": [],
@@ -1107,7 +1111,7 @@
         "controlId": "CGCS2000_3-degree_Gauss-Kruger_zone_43_Text",
         "retryCount": 0,
         "retryInterval": 1.0,
-        "onError": "continue"
+        "onError": "stop"
       },
       "auxChecks": [],
       "fallbacks": [],
@@ -1563,7 +1567,7 @@
         "retryCount": 0,
         "retryInterval": 1.0,
         "onError": "continue",
-        "text": "TEST1_Project_43"
+        "text": "${runtime.terrainName}"
       },
       "auxChecks": [],
       "fallbacks": [],
@@ -2140,8 +2144,7 @@
         "controlId": "PART_DropDownButton_粗糙度数据库赋值索引文件_下拉框_Button",
         "retryCount": 0,
         "retryInterval": 1.0,
-        "onError": "continue",
-        "value": "TEST1_Project_43"
+        "onError": "continue"
       },
       "auxChecks": [],
       "fallbacks": [],
@@ -2158,7 +2161,7 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "通过流程链路匹配点击目标按钮。优先使用 automation_id + Button，名称仅作为补充。",
+      "description": "选择粗糙度索引文件；索引名由项目参数注入（${runtime.roughnessIndexFile}），缺槽位时运行前即拒绝。",
       "successLog": "",
       "windowTitle": "*",
       "inspectHints": {
@@ -2258,7 +2261,7 @@
         "retryCount": 1,
         "retryInterval": 1.0,
         "onError": "fail",
-        "value": "ESA2020.txt"
+        "value": "${runtime.roughnessIndexFile}"
       },
       "auxChecks": [],
       "fallbacks": [],

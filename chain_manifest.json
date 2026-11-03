@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "description": "全链输入板块绑定契约（P0-A1）。每个板块 key 固定：流程文件、期望 flowPackages.id、期望 ${runtime.*} 键。启动与运行前校验，绑错即 fail-closed，不再依赖人手在界面上逐个选文件。",
+  "sections": {
+    "terrain": {
+      "title": "新建地形信息数据",
+      "flow": "flow_packages/flow_definition_导入地形图.json",
+      "flowPackageId": "地形导入",
+      "requiresRuntime": ["sourceFilePath"],
+      "terrainCrsGate": true
+    },
+    "project": {
+      "title": "新建工程项目",
+      "flow": "flow_packages/flow_definition_创建一个新建模.json",
+      "flowPackageId": "创建一个新建模",
+      "requiresRuntime": ["projectName"],
+      "requireRoughness": true
+    },
+    "weather": {
+      "title": "新建气象数据",
+      "flow": "flow_packages/flow_definition_新建气象数据_内网_配置导入.json",
+      "flowPackageId": "气象数据录入",
+      "requiresRuntime": [],
+      "configImport": true,
+      "fallbackFlow": "flow_packages/flow_definition_新建气象数据_内网.json"
+    },
+    "turbine": {
+      "title": "新建风机类型",
+      "flow": "flow_packages/flow_definition_新建风机类型.json",
+      "flowPackageId": "新建风机类型",
+      "requiresRuntime": ["turbineImportFilePath", "thrustCurveFilePath"]
+    },
+    "element": {
+      "title": "新增及配置元素",
+      "flow": "flow_packages/flow_definition_导入并配置元素.json",
+      "flowPackageId": "导入并配置元素",
+      "requiresRuntime": ["mastCoordFilePath", "turbineCoordFilePath"]
+    },
+    "cfd": {
+      "title": "发送 CFD 计算",
+      "flow": "flow_packages/flow_definition_发送CFD计算.json",
+      "flowPackageId": "发送CFD计算",
+      "requiresRuntime": []
+    },
+    "comprehensive": {
+      "title": "发送综合计算",
+      "flow": "flow_packages/flow_definition_发送综合计算.json",
+      "flowPackageId": "发送综合计算",
+      "requiresRuntime": []
+    },
+    "export_result": {
+      "title": "导出计算结果",
+      "flow": "flow_packages/flow_definition_导出综合计算结果.json",
+      "flowPackageId": "发送综合计算",
+      "requiresRuntime": ["outputDir"]
+    }
+  }
+}

@@ -1,0 +1,175 @@
+{
+  "schema": "mup_vault_export/manifest/v2",
+  "site": "YunNanSite",
+  "case_prefix": "",
+  "mapping": {
+    "综合1": "m1",
+    "综合2": "m4",
+    "综合3": "m10",
+    "综合4": "(none)"
+  },
+  "case_mapping": [
+    {
+      "case": "综合1",
+      "m": "m1",
+      "wohler": "1"
+    },
+    {
+      "case": "综合2",
+      "m": "m4",
+      "wohler": "4"
+    },
+    {
+      "case": "综合3",
+      "m": "m10",
+      "wohler": "10"
+    },
+    {
+      "case": "综合4",
+      "m": "",
+      "wohler": "1"
+    }
+  ],
+  "mandatory": [
+    "{P}_synthesis_{n}.wri",
+    "{P}_synthesis_{n}.wrp"
+  ],
+  "optional": [
+    "{P}_synthesis_{n}.wrt",
+    "{P}_synthesis_{kind}_{n}.wrtd",
+    "{P}_timeserie*_{n}.dat",
+    "{P}_{ElementGUID}_{n}.wrm"
+  ],
+  "cases": [
+    {
+      "index": 1,
+      "case": "综合1",
+      "wohler": "1",
+      "m_dir": "m1",
+      "stepMode": "create",
+      "drawLayout": "不带绘图",
+      "export": true,
+      "status": "export",
+      "mandatory_present": 0,
+      "optional_present": 0,
+      "mandatory_missing": [],
+      "optional_missing": []
+    },
+    {
+      "index": 2,
+      "case": "综合2",
+      "wohler": "4",
+      "m_dir": "m4",
+      "stepMode": "copy",
+      "drawLayout": "不带绘图",
+      "export": true,
+      "status": "export",
+      "mandatory_present": 0,
+      "optional_present": 0,
+      "mandatory_missing": [],
+      "optional_missing": []
+    },
+    {
+      "index": 3,
+      "case": "综合3",
+      "wohler": "10",
+      "m_dir": "m10",
+      "stepMode": "copy",
+      "drawLayout": "不带绘图",
+      "export": true,
+      "status": "export",
+      "mandatory_present": 0,
+      "optional_present": 0,
+      "mandatory_missing": [],
+      "optional_missing": []
+    },
+    {
+      "index": 4,
+      "case": "综合4",
+      "wohler": "1",
+      "m_dir": "(none)",
+      "stepMode": "copyfull",
+      "drawLayout": "带绘图",
+      "export": false,
+      "status": "completed_with_gaps",
+      "mandatory_present": 0,
+      "optional_present": 0,
+      "mandatory_missing": [],
+      "optional_missing": [],
+      "gap_reason": "综合4（copyfull 带绘图）无导出，记 completed_with_gaps"
+    }
+  ],
+  "vault_root": "H:\\ProgramData\\Meteodyn\\MUP\\local_liao_be917e43-a15c-4db7-8573-822cecb16f78",
+  "synthesis_vault_dir": "H:\\ProgramData\\Meteodyn\\MUP\\local_liao_be917e43-a15c-4db7-8573-822cecb16f78\\SYNTHESIS_FILES",
+  "target_dir": "",
+  "direct_available_families": [
+    "matrix",
+    "synthesis",
+    "wake",
+    "map",
+    "sre",
+    "timeserie",
+    "wrtd"
+  ],
+  "direct_available_descriptions": [
+    {
+      "family": "matrix",
+      "desc": "风频/湍流等矩阵文件（{site}_matrix_{n}.txt）",
+      "direct": true
+    },
+    {
+      "family": "synthesis",
+      "desc": "综合 XML / 描述（{site}_synthesis_{n}.xml/.txt）",
+      "direct": true
+    },
+    {
+      "family": "wake",
+      "desc": "尾流损失文件（{site}_losswake_{n}.txt）",
+      "direct": true
+    },
+    {
+      "family": "map",
+      "desc": "风资源图文件（{site}_map_{n}.pdr/.wrm）",
+      "direct": true
+    },
+    {
+      "family": "sre",
+      "desc": "SRE 扇区能量文件（{site}_SRE_{n}.xml/.ruw/.vuw）",
+      "direct": true
+    },
+    {
+      "family": "timeserie",
+      "desc": "时序数据文件（{site}_timeserie*_{n}.dat）",
+      "direct": true
+    },
+    {
+      "family": "wrtd",
+      "desc": "风流参数分布（{site}_synthesis_{kind}_{n}.wrtd）",
+      "direct": true
+    }
+  ],
+  "requires_gui": [
+    {
+      "family": "excel_total",
+      "desc": "Excel 总表（综合计算结果.xlsx）",
+      "requires_gui": true
+    },
+    {
+      "family": "iec_summary",
+      "desc": "IEC 总结（IEC总结.xlsx）",
+      "requires_gui": true
+    }
+  ],
+  "gaps": [
+    {
+      "case": "综合4",
+      "reason": "综合4（copyfull 带绘图）无导出，记 completed_with_gaps"
+    }
+  ],
+  "total_cases": 4,
+  "completed_cases_count": 0,
+  "delivered_cases_count": 0,
+  "export_cases_count": 3,
+  "gap_cases_count": 1,
+  "overall_status": "pending"
+}

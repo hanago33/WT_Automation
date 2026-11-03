@@ -7,7 +7,9 @@
     "gmExe": "",
     "sourceFilePath": "",
     "outputDir": "",
-    "projectionFilePath": ""
+    "projectionFilePath": "",
+    "turbineImportFilePath": "",
+    "thrustCurveFilePath": ""
   },
   "flowPackages": [
     {
@@ -2299,7 +2301,7 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在性能曲线版本管理栏中点击“添加”按钮（WTTypePerformanceCurveVersionManagerEditView_Button_AddNew）。",
+      "description": "新增性能曲线版本（曲线文件在 step_25..29 载入）。",
       "successLog": "点击 添加性能曲线",
       "windowTitle": "*",
       "inspectHints": {
@@ -2719,7 +2721,7 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在“打开”对话框的文件名输入框键入功率曲线文件路径。",
+      "description": "功率曲线文件路径由项目解析注入（${runtime.turbineImportFilePath}），不再写死本机路径。",
       "successLog": "功率曲线路径",
       "windowTitle": "打开",
       "inspectHints": {
@@ -2734,7 +2736,7 @@
       "stepParams": {},
       "actionConfig": {
         "action": "type_text_relative",
-        "text": "C:\\Users\\14830\\Desktop\\测试\\功率曲线.wtg",
+        "text": "${runtime.turbineImportFilePath}",
         "timeoutSeconds": 3.0,
         "waitBefore": 0.0,
         "waitAfter": 0.5,
@@ -3081,7 +3083,7 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在“打开”对话框的文件名输入框键入推力系数曲线文件路径。",
+      "description": "推力曲线文件路径由项目解析注入（${runtime.thrustCurveFilePath}）。禁止用功率曲线 .wtg 顶替；缺推力曲线时由运行前输入契约 fail-closed。",
       "successLog": "推力系数曲线路径",
       "windowTitle": "打开",
       "inspectHints": {
@@ -3096,7 +3098,7 @@
       "stepParams": {},
       "actionConfig": {
         "action": "type_text_relative",
-        "text": "C:\\Users\\14830\\Desktop\\测试\\功率曲线.wtg",
+        "text": "${runtime.thrustCurveFilePath}",
         "timeoutSeconds": 3.0,
         "waitBefore": 0.0,
         "waitAfter": 0.5,

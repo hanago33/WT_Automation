@@ -586,5 +586,264 @@ class ProjectParamsSyncTests(unittest.TestCase):
                 self.assertGreaterEqual(int(timeout or 0), 742)
 
 
+class MultiMastLoopTests(unittest.TestCase):
+    """总纲 §4-A7 多塔循环与统计测试（U-3 裁决落地）。
+
+    1. 真实塔数来自 CFT mastIds 长度；
+    2. 支持任意 N 塔动态循环展开（step_mt_add + step_mt_refpoint/refclim_*）；
+    3. 报告/流水显式标明 towers_used=N、towers_dropped=真实塔数-N；
+    4. 超过上限时不静默丢弃，显式记录 towers_dropped；
+    5. 单塔/双塔既有用例零回归。
+    """
+
+    def _run_with_template(self, runtime, template_steps, csv_rows=None):
+        tmp = tempfile.mkdtemp(prefix="multimast_loop_")
+        csv_path = os.path.join(tmp, "params.csv")
+        merged = {"runtimeConfig": {}, "flowPackages": [], "steps": template_steps}
+        try:
+            with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                if csv_rows:
+                    for r in csv_rows:
+                        w.writerow(r)
+                else:
+                    w.writerow(["stepMode", "towerMode", "refmast", "weathername", "refmast2", "refclimatology2", "refmast3", "refclimatology3"])
+                    w.writerow(["create", "multi", "M1", "M1", "Mast1", "Mast1", "Mast2", "Mast2"])
+            old = os.environ.get("GM_RUNTIME_CONFIG_JSON")
+            os.environ["GM_RUNTIME_CONFIG_JSON"] = json.dumps(runtime, ensure_ascii=False)
+            try:
+                return WT_AUT_recorded._apply_param_table_expansion(merged, {"paramTable": csv_path})
+            finally:
+                if old is None:
+                    os.environ.pop("GM_RUNTIME_CONFIG_JSON", None)
+                else:
+                    os.environ["GM_RUNTIME_CONFIG_JSON"] = old
+        finally:
+            try:
+                os.remove(csv_path)
+                os.rmdir(tmp)
+            except OSError:
+                pass
+
+    def _make_base_multimast_steps(self):
+        return [
+            {
+                "id": "step_single_ref",
+                "name": "配置单塔气象",
+                "stepTags": ["create", "copyfull"],
+                "towerTags": ["single"],
+                "actionConfig": {"action": "type_text", "text": "${stepParams.weathername}"},
+            },
+            {
+                "id": "step_mt_open",
+                "name": "点击-多塔按钮",
+                "stepTags": ["create", "copyfull"],
+                "towerTags": ["multi"],
+                "actionConfig": {"action": "click", "controlId": "btn_open"},
+            },
+            {
+                "id": "step_mt_add",
+                "name": "点击-添加塔",
+                "stepTags": ["create", "copyfull"],
+                "towerTags": ["multi"],
+                "actionConfig": {"action": "click", "controlId": "btn_add"},
+            },
+            {
+                "id": "step_mt_refpoint",
+                "name": "选择-参考点测风塔",
+                "stepTags": ["create", "copyfull"],
+                "towerTags": ["multi"],
+                "actionConfig": {"action": "select_dropdown_item_runtime", "text": "${stepParams.refmast2}"},
+            },
+            {
+                "id": "step_mt_refclim_open",
+                "name": "点击-参考气象下拉框",
+                "stepTags": ["create", "copyfull"],
+                "towerTags": ["multi"],
+                "actionConfig": {"action": "click_relative_anchor", "controlId": "combo_clim"},
+            },
+            {
+                "id": "step_mt_refclim_search",
+                "name": "键入-参考气象全文检索",
+                "stepTags": ["create", "copyfull"],
+                "towerTags": ["multi"],
+                "actionConfig": {"action": "type_text", "text": "${stepParams.refclimatology2}"},
+            },
+            {
+                "id": "step_mt_refclim_select",
+                "name": "选择-参考气象数据",
+                "stepTags": ["create", "copyfull"],
+                "towerTags": ["multi"],
+                "controls": [
+                    {
+                        "id": "ctrl_select",
+                        "targetValue": "${stepParams.refclimatology2},Text,MTDClimatologySelectorControl",
+                    }
+                ],
+                "actionConfig": {"action": "double_click", "controlId": "ctrl_select"},
+            },
+            {
+                "id": "step_mt_goback",
+                "name": "点击-多塔面板返回",
+                "stepTags": ["create", "copyfull"],
+                "towerTags": ["multi"],
+                "actionConfig": {"action": "click", "controlId": "btn_goback"},
+            },
+        ]
+
+    def test_three_towers_expands_to_full_three_towers(self):
+        """验收标准：CFT 3 塔时支持完整 3 塔，且 towers_used=3、towers_dropped=0。"""
+        runtime = {
+            "mastIds": ["W2512960", "C2536", "C1832"],
+            "mastName": "W2512960",
+            "mastEntries": [
+                {"mastName": "W2512960", "hubHeight": "140", "meteoName": "W2512960_140_Auto"},
+                {"mastName": "C2536", "hubHeight": "140", "meteoName": "C2536_140_Auto"},
+                {"mastName": "C1832", "hubHeight": "120", "meteoName": "C1832_120_Auto"},
+            ],
+        }
+        out = self._run_with_template(runtime, self._make_base_multimast_steps())
+        self.assertEqual(out["towers_used"], 3)
+        self.assertEqual(out["towers_dropped"], 0)
+        self.assertEqual(out["real_towers"], 3)
+        self.assertEqual(out["runtimeConfig"]["towers_used"], 3)
+        self.assertEqual(out["runtimeConfig"]["towers_dropped"], 0)
+
+        # 验证步骤包含第 2 塔与第 3 塔
+        step_ids = [s.get("id", "") for s in out["steps"]]
+        self.assertTrue(any("step_mt_add" in sid and "tower3" not in sid for sid in step_ids))
+        self.assertTrue(any("step_mt_add_tower3" in sid for sid in step_ids))
+        self.assertTrue(any("step_mt_refpoint_tower3" in sid for sid in step_ids))
+        self.assertTrue(any("step_mt_refclim_search_tower3" in sid for sid in step_ids))
+        self.assertTrue(any("step_mt_refclim_select_tower3" in sid for sid in step_ids))
+
+        # 验证第 3 塔的 stepParams 覆盖正确
+        t3_step = next(s for s in out["steps"] if "step_mt_refpoint_tower3" in s.get("id", ""))
+        self.assertEqual(t3_step.get("stepParams", {}).get("refmast3"), "C1832")
+        t3_clim = next(s for s in out["steps"] if "step_mt_refclim_search_tower3" in s.get("id", ""))
+        self.assertEqual(t3_clim.get("stepParams", {}).get("refclimatology3"), "C1832_120_Auto")
+
+    def test_three_towers_with_cap_reports_towers_dropped(self):
+        """验收标准：CFT 3 塔但设置上限为 2 塔时，报告显式出现 towers_dropped=1，不得静默丢弃。"""
+        runtime = {
+            "mastIds": ["W2512960", "C2536", "C1832"],
+            "mastName": "W2512960",
+            "maxTowers": 2,
+            "mastEntries": [
+                {"mastName": "W2512960", "hubHeight": "140", "meteoName": "W2512960_140_Auto"},
+                {"mastName": "C2536", "hubHeight": "140", "meteoName": "C2536_140_Auto"},
+                {"mastName": "C1832", "hubHeight": "120", "meteoName": "C1832_120_Auto"},
+            ],
+        }
+        out = self._run_with_template(runtime, self._make_base_multimast_steps())
+        self.assertEqual(out["towers_used"], 2)
+        self.assertEqual(out["towers_dropped"], 1)
+        self.assertEqual(out["real_towers"], 3)
+        self.assertEqual(out["runtimeConfig"]["towers_used"], 2)
+        self.assertEqual(out["runtimeConfig"]["towers_dropped"], 1)
+
+        # 确认未展开第 3 塔步骤
+        step_ids = [s.get("id", "") for s in out["steps"]]
+        self.assertFalse(any("tower3" in sid for sid in step_ids))
+
+    def test_single_mast_stats_and_no_regression(self):
+        """单塔：towers_used=1, towers_dropped=0，多塔步骤被过滤。"""
+        runtime = {
+            "mastIds": ["W2512960"],
+            "mastName": "W2512960",
+            "mastEntries": [
+                {"mastName": "W2512960", "hubHeight": "140", "meteoName": "W2512960_140_Auto"},
+            ],
+        }
+        out = self._run_with_template(runtime, self._make_base_multimast_steps())
+        self.assertEqual(out["towers_used"], 1)
+        self.assertEqual(out["towers_dropped"], 0)
+        self.assertEqual(out["real_towers"], 1)
+        # 单塔时 multi 步骤全被过滤
+        step_ids = [s.get("id", "") for s in out["steps"]]
+        self.assertFalse(any("step_mt_" in sid for sid in step_ids))
+
+    def test_four_towers_full_expansion(self):
+        """4 塔全展开：towers_used=4, towers_dropped=0。"""
+        runtime = {
+            "mastIds": ["T1", "T2", "T3", "T4"],
+            "mastName": "T1",
+            "mastEntries": [
+                {"mastName": "T1", "hubHeight": "100", "meteoName": "T1_100_Auto"},
+                {"mastName": "T2", "hubHeight": "100", "meteoName": "T2_100_Auto"},
+                {"mastName": "T3", "hubHeight": "100", "meteoName": "T3_100_Auto"},
+                {"mastName": "T4", "hubHeight": "100", "meteoName": "T4_100_Auto"},
+            ],
+        }
+        out = self._run_with_template(runtime, self._make_base_multimast_steps())
+        self.assertEqual(out["towers_used"], 4)
+        self.assertEqual(out["towers_dropped"], 0)
+        self.assertEqual(out["real_towers"], 4)
+
+        step_ids = [s.get("id", "") for s in out["steps"]]
+        self.assertTrue(any("tower3" in sid for sid in step_ids))
+        self.assertTrue(any("tower4" in sid for sid in step_ids))
+
+    def test_run_reporting_records_towers_fields(self):
+        """运行报告：start_run_report 与 finalize_run_report 显式记录 towers 统计。"""
+        import wt_run_reporting
+        tmp = tempfile.mkdtemp(prefix="reporting_test_")
+        try:
+            wt_run_reporting.configure_run_reporting(base_dir=tmp, log_step=lambda m: None)
+            rc = {"towers_used": 3, "towers_dropped": 0, "real_towers": 3}
+            report = wt_run_reporting.start_run_report(["s1"], rc)
+            self.assertEqual(report.get("towers_used"), 3)
+            self.assertEqual(report.get("towers_dropped"), 0)
+            self.assertEqual(report.get("summary", {}).get("towers_used"), 3)
+            self.assertEqual(report.get("summary", {}).get("towers_dropped"), 0)
+
+            path = wt_run_reporting.finalize_run_report(report, "success")
+            with open(path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertEqual(saved.get("towers_used"), 3)
+            self.assertEqual(saved.get("towers_dropped"), 0)
+            self.assertEqual(saved.get("summary", {}).get("towers_used"), 3)
+            self.assertEqual(saved.get("summary", {}).get("towers_dropped"), 0)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_real_flow_definition_full_expansion(self):
+        """真实综合流程 JSON 端到端展开 3 塔。"""
+        flow_path = os.path.join(
+            PROJECT_DIR, "flow_packages", "flow_definition_发送综合计算.json"
+        )
+        param_path = os.path.join(
+            PROJECT_DIR, "flow_packages", "param_table_发送综合计算.json"
+        )
+        with open(flow_path, encoding="utf-8") as f:
+            flow_def = json.load(f)
+        runtime = {
+            "mastIds": ["W2512960", "C2536", "C1832"],
+            "mastName": "W2512960",
+            "mastEntries": [
+                {"mastName": "W2512960", "hubHeight": "140", "meteoName": "W2512960_140_Auto"},
+                {"mastName": "C2536", "hubHeight": "140", "meteoName": "C2536_140_Auto"},
+                {"mastName": "C1832", "hubHeight": "120", "meteoName": "C1832_120_Auto"},
+            ],
+        }
+        old = os.environ.get("GM_RUNTIME_CONFIG_JSON")
+        os.environ["GM_RUNTIME_CONFIG_JSON"] = json.dumps(runtime, ensure_ascii=False)
+        try:
+            out = WT_AUT_recorded._apply_param_table_expansion(flow_def, {"paramTable": param_path})
+        finally:
+            if old is None:
+                os.environ.pop("GM_RUNTIME_CONFIG_JSON", None)
+            else:
+                os.environ["GM_RUNTIME_CONFIG_JSON"] = old
+
+        self.assertEqual(out["towers_used"], 3)
+        self.assertEqual(out["towers_dropped"], 0)
+        self.assertEqual(out["real_towers"], 3)
+        step_ids = [s.get("id", "") for s in out["steps"]]
+        self.assertTrue(any("step_mt_refpoint_tower3" in sid for sid in step_ids))
+        self.assertTrue(any("step_mt_add_tower3" in sid for sid in step_ids))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -1784,7 +1784,7 @@
         "controlId": "发送CFD计算_Button",
         "retryCount": 0,
         "retryInterval": 1.0,
-        "onError": "continue"
+        "onError": "stop"
       },
       "auxChecks": [],
       "fallbacks": [],

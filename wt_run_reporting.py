@@ -69,13 +69,14 @@ def start_run_report(steps_to_run, runtime_config):
     run_id = now.strftime("wt_run_%Y%m%d_%H%M%S") + "_{:03d}_{:03d}".format(
         now.microsecond // 1000, _RUN_SEQUENCE[0] % 1000
     )
-    return {
+    rc = dict(runtime_config or {})
+    report = {
         "runId": run_id,
         "startedAt": started_at,
         "endedAt": "",
         "status": "running",
         "stepsRequested": list(steps_to_run or []),
-        "runtimeConfig": dict(runtime_config or {}),
+        "runtimeConfig": rc,
         "stepResults": [],
         "summary": {
             "requestedCount": len(list(steps_to_run or [])),
@@ -90,6 +91,11 @@ def start_run_report(steps_to_run, runtime_config):
         "reportPath": "",
         "lastReportPath": "",
     }
+    for field in ("towers_used", "towers_dropped", "real_towers"):
+        if field in rc:
+            report[field] = rc[field]
+            report["summary"][field] = rc[field]
+    return report
 
 
 def report_step_result(run_report, step_id, step_name, status, action_type="", strategy="", elapsed=0.0, error="", extra=None):

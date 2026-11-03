@@ -34,10 +34,16 @@ _TERRAIN_KEYWORDS = ("地形", "tif", "terrain")
 _COORDS_KEYWORDS = ("坐标", "机位", "测风塔及", "coord")
 _MASTDATA_KEYWORDS = ("测风塔数据", "气象", "mast")
 _TURBINE_KEYWORDS = ("功率", "风机", "curve", "turbine")
+_ROUGHNESS_KEYWORDS = ("粗糙度", "roughness", "rough", "地表粗糙")
+# MUP 安装目录 Assets/CorrespondanceFiles 下的内置粗糙度索引（flow 原写死值）
+DEFAULT_ROUGHNESS_INDEX_FILE = "ESA2020.txt"
 
 _PROJ_ABBREV_RE = re.compile(r"(CGCS2000\s*\d{1,3}|UTM\s*\d{1,2}[A-Z]?|WGS84\s*\d{0,3})", re.IGNORECASE)
-# 数字对：第一个数字前不能是字母/数字/下划线（避免把 C1831 里的 1831 当成坐标）
-_COORD_PAIR_RE = re.compile(r"(?<![A-Za-z0-9_])-?\d+(?:\.\d+)?\s+[+-]?\d+(?:\.\d+)?")
+# 数字对：第一个数字前不能是字母/数字/下划线（避免把 C1831 里的 1831 当成坐标）；
+# 两数之间允许半角/全角空格或半角/全角逗号分隔（用户可能用中文标点写坐标/参数行）
+_COORD_PAIR_RE = re.compile(r"(?<![A-Za-z0-9_])-?\d+(?:\.\d+)?[\s,，]++[+-]?\d+(?:\.\d+)?")
+# 字段分隔：兼容半角/全角空格、半角/全角逗号，避免用户用中文标点把整行挤成无分隔
+_FIELD_SEP_RE = re.compile(r"[\s,，;；]+")
 
 
 def _is_terrain(name):
@@ -54,6 +60,45 @@ def _is_mastdata(name):
 
 def _is_turbine(name):
     return any(k in name for k in _TURBINE_KEYWORDS)
+
+
+def _is_roughness(name):
+    return any(k in name.lower() for k in _ROUGHNESS_KEYWORDS)
+
+
+# ── 风机曲线槽位（A4：功率曲线 ≠ 推力曲线，禁止互相顶替）──
+# 推力曲线：文件名含「推力」/thrust，或独立的 ct 词元（避免 project 里误命中 ct）。
+_THRUST_CURVE_RE = re.compile(r"(^|[_\-\s.])ct([_\-\s.]|$)", re.IGNORECASE)
+_POWER_CURVE_KEYWORDS = ("功率", "power", "cp")
+
+
+def _is_thrust_curve(path):
+    base = os.path.basename(str(path or "")).lower()
+    return "推力" in base or "thrust" in base or bool(_THRUST_CURVE_RE.search(base))
+
+
+def _is_power_curve(path):
+    base = os.path.basename(str(path or "")).lower()
+    if _is_thrust_curve(path):
+        return False
+    if base.endswith(".wtg"):
+        return True
+    return any(k in base for k in _POWER_CURVE_KEYWORDS)
+
+
+def _scan_curve_files(input_root):
+    """扫描 04-功率曲线 类目录下的曲线文件，返回 (功率曲线, 推力曲线)。"""
+    files = _scan_files(input_root, (".wtg", ".txt", ".csv"))
+    # 坐标/气象/配置/粗糙度文件不参与曲线分类
+    files = [
+        p for p in files
+        if not any(k in p.lower() for k in ("-tim", "-ti.", "-tis", "配置信息"))
+        and not _is_roughness(p)
+        and not _is_mast_coord(p)
+    ]
+    power = [p for p in files if _is_power_curve(p)]
+    thrust = [p for p in files if _is_thrust_curve(p)]
+    return power, thrust
 
 
 def _scan_files(root_dir, suffixes):
@@ -87,7 +132,8 @@ def _read_utm_pair(txt_path):
                 if not line or line.startswith("#"):
                     continue
                 for m in _COORD_PAIR_RE.finditer(line):
-                    parts = m.group(0).split()
+                    parts = _FIELD_SEP_RE.split(m.group(0))
+                    parts = [p for p in parts if p != ""]
                     if len(parts) >= 2:
                         try:
                             x = float(parts[0])
@@ -158,7 +204,7 @@ def _parse_cft_info_file(info_path):
                 line = raw.strip()
                 if not line or line.startswith("#"):
                     continue
-                parts = re.split(r"[\s,;]+", line)
+                parts = _FIELD_SEP_RE.split(line)
                 parts = [p.strip() for p in parts if p.strip() != ""]
                 if len(parts) < 2:
                     continue
@@ -281,11 +327,27 @@ def _parse_wtg_meta(wtg_path):
     return out
 
 
+_PATH_HEIGHT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:m|米|mtr|meter)", re.IGNORECASE)
+
+
+def _path_measure_height(path):
+    """从文件路径中提取「测量高度」（如 C1831_10m_tim.txt → 10.0）。
+    未识别到明确高度返回 None。仅用于同一塔多高度文件间做低高度优先排序。"""
+    if not path:
+        return None
+    found = [float(mm.group(1)) for mm in _PATH_HEIGHT_RE.finditer(os.path.basename(path))]
+    if not found:
+        return None
+    return min(found)
+
+
 def _pick_mast_file(all_files, mast_name, input_root):
     """
     从文件列表中挑出指定测风塔的数据文件。
     优先 <03-测风塔数据>/<mastName>/ 目录下，回退「父目录名 == mastName」匹配。
-    未匹配返回 ""。
+
+    选中高度：同一塔存在多个高度文件时，优先「最低测量高度」文件（通常 10m，惯例为
+    参考风速列），排序稳定（同高度保留原先后序），避免选到哪个高度不确定。
     """
     if not mast_name:
         return ""
@@ -295,16 +357,23 @@ def _pick_mast_file(all_files, mast_name, input_root):
             if _is_mastdata(name):
                 mast_root = os.path.join(input_root, name)
                 break
+
+    candidates = []
     if mast_root and os.path.isdir(mast_root):
         cand_dir = os.path.join(mast_root, mast_name)
         if os.path.isdir(cand_dir):
-            for p in all_files:
-                if p.startswith(cand_dir + os.sep) or os.path.dirname(p) == cand_dir:
-                    return p
-    for p in all_files:
-        if os.path.basename(os.path.dirname(p)) == mast_name:
-            return p
-    return ""
+            candidates = [
+                p for p in all_files
+                if p.startswith(cand_dir + os.sep) or os.path.dirname(p) == cand_dir
+            ]
+    if not candidates:
+        candidates = [p for p in all_files if os.path.basename(os.path.dirname(p)) == mast_name]
+    if not candidates:
+        return ""
+    # 仅当存在 ≥2 个高度候选时做低高度优先；否则维持原第一个（保持稳定）。
+    if len(candidates) > 1:
+        candidates.sort(key=lambda p: (_path_measure_height(p) is None, _path_measure_height(p) or 0.0, p))
+    return candidates[0]
 
 
 def _is_mast_coord(path):
@@ -324,7 +393,10 @@ def _collect_name_tokens(txt_path):
                 line = raw_line.strip()
                 if not line or line.startswith("#"):
                     continue
-                token = line.split()[0]
+                tokens_cells = [p for p in _FIELD_SEP_RE.split(line) if p != ""]
+                if not tokens_cells:
+                    continue
+                token = tokens_cells[0]
                 if _MAST_TOKEN_RE.match(token):
                     tokens.append(token)
     except OSError:
@@ -347,10 +419,15 @@ def _collect_mast_ids(input_root, coord_txts, tim_files):
             if os.path.isdir(full) and _is_mastdata(name):
                 for sub in os.listdir(full):
                     if os.path.isdir(os.path.join(full, sub)) and not sub.startswith("."):
-                        ids.add(sub)
+                        # 只收"测风塔数据文件"对应的塔 id；目录名/容器名（如 测风塔数据 本身、
+                        # TI/TISD 分目录）不满足编号规则的一律剔除，避免把目录名混进 mastIds
+                        if _MAST_TOKEN_RE.match(sub):
+                            ids.add(sub)
     for path in tim_files:
         parent = os.path.basename(os.path.dirname(path))
-        if parent and parent != "03-WT输入":
+        # 父目录须为「合理塔 id」，而非测风塔数据容器目录自身名或关键字子目录。
+        # 文件直接挂在 <03-测风塔数据>/ 下时 parent 会把容器名当塔 id 混入。
+        if parent and _MAST_TOKEN_RE.match(parent):
             ids.add(parent)
     for path in coord_txts:
         # 只把「测风塔坐标文件」里的编号计入测风塔对象（CFT*）；JWD* 为机位点，不计入
@@ -359,6 +436,121 @@ def _collect_mast_ids(input_root, coord_txts, tim_files):
         for token in _collect_name_tokens(path):
             ids.add(token)
     return sorted(ids)
+
+
+def _select_terrain_file(terrain_files, project_params):
+    """从候选地形中确定「唯一」文件（A2：禁止多份 tif 静默取首）。
+
+    规则（按优先级）：
+      1. 项目参数显式指定 terrainFile（绝对路径或文件名）；
+      2. 只有一份候选；
+      3. 多份候选中恰好一份通过 EPSG:4531 CRS 闸；
+    其余情况返回空路径 + ambiguous 标记，由上层 fail-closed。
+    返回 (path, info)；info 含 selection / candidates / crs。
+    """
+    project_params = project_params if isinstance(project_params, dict) else {}
+    unique = []
+    seen = set()
+    for path in terrain_files or []:
+        key = os.path.normcase(os.path.abspath(str(path)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(str(path))
+
+    explicit = str(project_params.get("terrainFile") or "").strip()
+    if explicit:
+        target = os.path.normcase(os.path.abspath(explicit))
+        for path in unique:
+            if os.path.normcase(os.path.abspath(path)) == target:
+                return path, {"selection": "explicit", "candidates": unique, "crs": None}
+        # 允许只写文件名（换机器后盘符不同）
+        by_name = [p for p in unique if os.path.basename(p).lower() == os.path.basename(explicit).lower()]
+        if len(by_name) == 1:
+            return by_name[0], {"selection": "explicit_name", "candidates": unique, "crs": None}
+        return "", {"selection": "explicit_missing", "candidates": unique, "crs": None}
+
+    if not unique:
+        return "", {"selection": "none", "candidates": [], "crs": None}
+    if len(unique) == 1:
+        return unique[0], {"selection": "unique", "candidates": unique, "crs": None}
+
+    passing = []
+    crs_map = {}
+    try:
+        import mup_input_contract
+    except Exception:
+        mup_input_contract = None
+    if mup_input_contract is not None:
+        for path in unique:
+            verdict = mup_input_contract.describe_terrain_crs(path)
+            crs_map[path] = verdict
+            if verdict.get("ok"):
+                passing.append(path)
+    if len(passing) == 1:
+        return passing[0], {"selection": "crs_4531", "candidates": unique, "crs": crs_map}
+    return "", {"selection": "ambiguous", "candidates": unique, "crs": crs_map}
+
+
+def _find_mast_config_xml(input_root, mast_name):
+    """定位 <塔名>配置信息.xml（A5：per-mast，禁止串用其它塔的配置）。
+
+    优先父目录名 == 塔名；否则接受文件名以塔名开头的唯一匹配。
+    返回 (path, candidates)。
+    """
+    mast = str(mast_name or "").strip()
+    if not mast or not input_root or not os.path.isdir(input_root):
+        return "", []
+    target = mast.lower()
+    candidates = []
+    for dirpath, _dirs, files in os.walk(input_root):
+        for fname in files:
+            low = fname.lower()
+            if not low.endswith(".xml"):
+                continue
+            if not any(k in low for k in ("配置信息", "config")):
+                continue
+            if low.startswith(target) or os.path.basename(dirpath).lower() == target:
+                candidates.append(os.path.join(dirpath, fname))
+    if not candidates:
+        return "", []
+    candidates.sort(key=lambda p: (
+        os.path.basename(os.path.dirname(p)).lower() != target,
+        len(os.path.basename(p)),
+        p,
+    ))
+    return candidates[0], candidates
+
+
+def _resolve_roughness_slot(input_root, project_params):
+    """粗糙度槽位（P0）：项目文件 > 显式索引名 > MUP 内置默认索引。
+
+    返回 dict：path / indexFile / source(project|explicit|builtin) / candidates。
+    MUP 的粗糙度是「索引文件下拉」而非项目内导入文件：项目有时会给自定义索引，
+    没有时退回内置 ESA2020.txt（存在性由运行前资产校验负责，缺失即 fail-closed）。
+    """
+    project_params = project_params if isinstance(project_params, dict) else {}
+    candidates = []
+    for path in _scan_files(input_root, (".txt", ".csv", ".map", ".rough")):
+        if _is_roughness(path):
+            candidates.append(path)
+    explicit = str(project_params.get("roughnessIndexFile") or "").strip()
+    if candidates:
+        candidates.sort()
+        return {
+            "path": candidates[0],
+            "indexFile": os.path.basename(candidates[0]),
+            "source": "project",
+            "candidates": candidates,
+        }
+    if explicit:
+        return {"path": "", "indexFile": explicit, "source": "explicit", "candidates": []}
+    return {
+        "path": "",
+        "indexFile": DEFAULT_ROUGHNESS_INDEX_FILE,
+        "source": "builtin",
+        "candidates": [],
+    }
 
 
 def _parse_work_dir(work_dir, project_params=None):
@@ -385,25 +577,54 @@ def _parse_work_dir(work_dir, project_params=None):
 
     # ── 03-WT输入 文件分类扫描 ──
     terrain_files = _scan_files(input_root, (".tif", ".asc", ".tiff"))
-    wtg_files = _scan_files(input_root, (".wtg",))
+    power_curve_files, thrust_curve_files = _scan_curve_files(input_root)
+    wtg_files = power_curve_files
     tim_files = _scan_files(input_root, (".txt",))
     tim_files = [p for p in tim_files if "-tim" in p.lower() or "tim." in p.lower()]
     ti_files = [p for p in _scan_files(input_root, (".txt",)) if "-ti." in p.lower() or "ti." in p.lower()]
     tis_files = [p for p in _scan_files(input_root, (".txt",)) if "-tis" in p.lower() or "tis." in p.lower()]
 
     # 其余 txt（机位点 / 测风塔坐标 / 粗糙度 / 障碍物 / 网格）
-    coord_txts = [p for p in _scan_files(input_root, (".txt",)) if p not in tim_files + ti_files + tis_files]
+    # 曲线/粗糙度文件不属于坐标槽，必须先剔除，避免被 _collect_name_tokens 当成机位编号。
+    coord_txts = [
+        p for p in _scan_files(input_root, (".txt",))
+        if p not in tim_files + ti_files + tis_files
+        and not _is_power_curve(p)
+        and not _is_thrust_curve(p)
+        and not _is_roughness(p)
+    ]
     # 测风塔坐标文件（CFT*）与机位点坐标文件（JWD*）区分
     mast_coords = [p for p in coord_txts if _is_mast_coord(p)]
     turbine_coords = [p for p in coord_txts if not _is_mast_coord(p)]
 
+    # ── 机位/测风塔坐标文件（元素导入槽，S4）──
+    # 注意区分三个语义不同的键：
+    #   · mastCoordFilePath / turbineCoordFilePath：真正的坐标文件（CFT*/JWD*.txt），
+    #     供「导入并配置元素」的测风点/风机导入槽消费（S4 之前误用了 mastImportFilePath/turbineImportFilePath）。
+    #   · mastImportFilePath（*-tim.txt）/ turbineImportFilePath（*.wtg）：时段数据/功率曲线，
+    #     供「新建气象数据」「新建风机类型」板块消费，二者语义不同，不可互换。
+    #   · turbinePosFilePath：历史遗留键（机位坐标），全仓无占位符消费，保留作向后兼容。
+    if mast_coords:
+        rc["mastCoordFilePath"] = mast_coords[0]
+    if turbine_coords:
+        rc["turbineCoordFilePath"] = turbine_coords[0]
+
     # ── 地形图 → sourceFilePath / 投影缩写 / 地形名 ──
-    if terrain_files:
-        terrain_path = terrain_files[0]
+    # A2：多份 tif 不再静默取首。唯一匹配（或恰好一份通过 EPSG:4531）才落 sourceFilePath；
+    # 其余情况只记录候选与歧义标记，由运行前 CRS 闸 fail-closed。
+    terrain_path, terrain_info = _select_terrain_file(terrain_files, project_params)
+    if terrain_info.get("candidates"):
+        rc["terrainCandidates"] = list(terrain_info["candidates"])
+    if terrain_info.get("selection") == "ambiguous":
+        rc["terrainAmbiguous"] = True
+    if terrain_info.get("selection") == "explicit_missing":
+        rc["terrainExplicitMissing"] = str(project_params.get("terrainFile") or "")
+    if terrain_path:
         rc["sourceFilePath"] = terrain_path
         rc["projectionFilePath"] = terrain_path
         terrain_name = _basename_without_ext(terrain_path)
         rc["terrainName"] = terrain_name
+        rc["terrainSelection"] = terrain_info.get("selection") or "unique"
         abbrev = _extract_projection_abbrev(terrain_path)
         if abbrev:
             rc["projectionAbbrev"] = abbrev
@@ -581,6 +802,7 @@ def _parse_work_dir(work_dir, project_params=None):
     rc["mastIdsJoined"] = ",".join(mast_ids) if mast_ids else ""
 
     # ── 功率曲线 → turbineImportFilePath / 机型 / 性能曲线版本 ──
+    # A4：功率曲线与推力曲线是两套槽位，禁止用 .wtg 顶替推力曲线。
     if wtg_files:
         wtg_path = wtg_files[0]
         rc["turbineImportFilePath"] = wtg_path
@@ -598,11 +820,25 @@ def _parse_work_dir(work_dir, project_params=None):
             rc["turbineType"] = meta["description"].split(" ")[0]
         if not str(rc.get("hubHeight", "")).strip() and meta.get("hubHeight"):
             rc["hubHeight"] = meta["hubHeight"]
+    if thrust_curve_files:
+        rc["thrustCurveFilePath"] = thrust_curve_files[0]
+        rc["thrustCurveCandidates"] = list(thrust_curve_files)
+    missing_turbine = []
+    if not wtg_files:
+        missing_turbine.append("power")
+    if not thrust_curve_files:
+        missing_turbine.append("thrust")
+    if missing_turbine:
+        rc["missingTurbineFiles"] = missing_turbine
     # ── 机位名单 turbineIds / joined ──
+    # turbine_coords 为文件路径列表；此前写 r[0] 取的是路径首字符（如 C:\... 的 "C"），
+    # 导致 turbineIds=["C"] 错数据。改为读取机位点坐标文件各行的首列编号（JWD1/J2…），
+    # 与 mastIds 的取法同源，过滤规则一致。
     turbine_ids: list[str] = []
     if turbine_coords:
-        turbine_ids = [str(r[0]).strip() for r in turbine_coords
-                       if r and str(r[0]).strip()]
+        for _tc_path in turbine_coords:
+            turbine_ids.extend(_collect_name_tokens(_tc_path))
+        turbine_ids = [str(t).strip() for t in turbine_ids if str(t).strip()]
         if turbine_ids:
             rc["turbineIds"] = sorted(set(turbine_ids))
             rc["turbineIdsJoined"] = ",".join(rc["turbineIds"])
@@ -636,6 +872,29 @@ def _parse_work_dir(work_dir, project_params=None):
         _mn = str(rc.get("mastName", "")).strip()
         _hub = str(rc.get("hubHeight", "") or "").strip()
         rc["meteoName"] = f"{_mn}_{_hub}_Auto" if _hub else f"{_mn}_Auto"
+
+    # ── 配置导入槽位（A5）：<塔名>配置信息.xml 按塔解析，不跨塔串用 ──
+    # 找不到时显式标记 configSource=none，由调用方改走「不导入配置」的基础气象流程；
+    # 绝不回退到流程里写死的其它塔配置（C1831）路径。
+    if str(rc.get("mastName", "")).strip():
+        config_path, config_candidates = _find_mast_config_xml(input_root, rc.get("mastName", ""))
+        if config_candidates:
+            rc["configCandidates"] = config_candidates
+        if config_path:
+            rc["configFilePath"] = config_path
+            rc["configSource"] = "file"
+        else:
+            rc["configSource"] = "none"
+
+    # ── 粗糙度槽位（P0）：项目文件 > 显式索引名 > 缺失（缺失即 fail-closed）──
+    roughness = _resolve_roughness_slot(input_root, project_params)
+    rc["roughnessSource"] = roughness.get("source") or "none"
+    if roughness.get("path"):
+        rc["roughnessFilePath"] = roughness["path"]
+    if roughness.get("indexFile"):
+        rc["roughnessIndexFile"] = roughness["indexFile"]
+    if roughness.get("candidates"):
+        rc["roughnessCandidates"] = list(roughness["candidates"])
 
     # ── 项目计算参数（人工确认项）透传进 runtime_config ──
     calc_keys = ("radius", "cfdHRes", "cfdBuf", "cfdMax", "cfdMin",
@@ -742,11 +1001,21 @@ def summarize_project_work_dir(work_dir, project_params=None):
         "utm_y": rc.get("utmY", ""),
         "terrain_file": rc.get("sourceFilePath", ""),
         "terrain_name": rc.get("terrainName", ""),
+        "terrain_selection": rc.get("terrainSelection", ""),
+        "terrain_ambiguous": bool(rc.get("terrainAmbiguous")),
+        "terrain_candidates": list(rc.get("terrainCandidates") or []),
         "turbine_pos_file": rc.get("turbinePosFilePath", ""),
         "mast_tim": rc.get("mastImportFilePath", ""),
         "mast_ti": rc.get("tiFilePath", ""),
         "mast_tis": rc.get("tisFilePath", ""),
         "turbine_curve": rc.get("turbineImportFilePath", ""),
+        "thrust_curve": rc.get("thrustCurveFilePath", ""),
+        "missing_turbine_files": list(rc.get("missingTurbineFiles") or []),
+        "config_file": rc.get("configFilePath", ""),
+        "config_source": rc.get("configSource", ""),
+        "roughness_file": rc.get("roughnessFilePath", ""),
+        "roughness_index": rc.get("roughnessIndexFile", ""),
+        "roughness_source": rc.get("roughnessSource", ""),
         # 风机类型 / 性能曲线版本（从 04-功率曲线 文件名与 wtg 元信息解析）
         "turbine_type": rc.get("turbineType", ""),
         "cp_version": rc.get("cpVersion", ""),
@@ -935,16 +1204,21 @@ def build_text_overrides(flow_path, runtime_config, base_overrides=None):
       - 坐标类步骤的数值文本（调用方难以精确识别时，此处仅做文件名主体替换）
     """
     overrides = dict(base_overrides or {})
+    # 受审计的「必需命中」键：语义明确的写死值替换（气象/空间/气象数据文件路径）。
+    # 条件性替换（投影缩写 50N/UTM、文件名主体、输出前缀）不在此列——它们本就带
+    # 不确定语义（可能该板块不含该文本），0 命中不算静默假成功。
+    required_keys = set()
+
     if not flow_path or not os.path.isfile(flow_path):
-        return overrides
+        return _attach_override_audit(flow_path, overrides, required_keys)
 
     try:
         with open(flow_path, "r", encoding="utf-8") as fobj:
             payload = json.load(fobj)
     except (OSError, ValueError):
-        return overrides
+        return _attach_override_audit(flow_path, overrides, required_keys)
     if not isinstance(payload, dict):
-        return overrides
+        return _attach_override_audit(flow_path, overrides, required_keys)
 
     old_runtime = payload.get("runtimeConfig") or {}
     new_runtime = runtime_config or {}
@@ -952,40 +1226,6 @@ def build_text_overrides(flow_path, runtime_config, base_overrides=None):
     def _same_ext(a, b):
         return os.path.splitext(str(a))[1].lower() == os.path.splitext(str(b))[1].lower()
 
-    # 旧文件名主体 → 新文件名主体（如 旧地形名 C1831 → 新 TEST1_Project_CGCS2000 43）
-    def _collect_name_pairs():
-        pairs = []
-        for key in ("sourceFilePath", "mastImportFilePath", "turbineImportFilePath", "outputDir"):
-            old = str(old_runtime.get(key, "")).strip()
-            new = str(new_runtime.get(key, "")).strip()
-            if old and new and os.path.basename(old) != os.path.basename(new) and _same_ext(old, new):
-                old_base = _basename_without_ext(old)
-                new_base = _basename_without_ext(new)
-                if old_base and new_base:
-                    pairs.append((old_base, new_base))
-                # 输出路径旧前缀 → 新根
-                if key == "outputDir" and old and new:
-                    overrides.setdefault(old, new)
-        return pairs
-
-    name_pairs = _collect_name_pairs()
-
-    # 收集旧 runtimeConfig 里未在解析器覆盖中的旧值（如 sourceFilePath 旧文件路径）→ 新值
-    for key, new_val in new_runtime.items():
-        if key in old_runtime:
-            old_val = str(old_runtime[key])
-            new_val_str = str(new_val)
-            if old_val and new_val_str and old_val != new_val_str and not old_val.startswith("${"):
-                if key in ("sourceFilePath", "mastImportFilePath", "turbineImportFilePath", "outputDir"):
-                    if _same_ext(old_val, new_val_str):
-                        overrides[old_val] = new_val_str
-
-    # 将文件名主体替换合并（旧地形名 → 新地形名）
-    for old_base, new_base in name_pairs:
-        if old_base and new_base:
-            overrides[old_base] = new_base
-
-    # ── 气象流程（新建气象数据）写死值精确替换 ──
     # 收集旧 actionConfig.text
     _old_texts = set()
     _old_text_list = []
@@ -998,68 +1238,382 @@ def build_text_overrides(flow_path, runtime_config, base_overrides=None):
             if isinstance(_t, str) and _t.strip():
                 _old_texts.add(_t.strip())
                 _old_text_list.append(_t.strip())
-    def _add_meteo_override(old_val, new_val):
-        if not old_val or not new_val:
-            return
+
+    # ── A6 槽位化覆盖映射（总纲 §4-A6）：按槽位而不是 runtime 键配对 ──
+    # 核心原则：
+    #   1. mastCoordFilePath 只与坐标槽配对；
+    #   2. mastImportFilePath 只与时序槽配对；
+    #   3. 同一旧文本命中多个槽位时拒绝启动（fail-closed），不再静默选一个；
+    #   4. 同时含坐标与时序字面量的流程，映射不得交叉。
+    _SLOT_MAST_COORD = "mastCoord"
+    _SLOT_MAST_TIM = "mastTim"
+    _SLOT_TURBINE_COORD = "turbineCoord"
+    _SLOT_TURBINE_CURVE = "turbineCurve"
+    _SLOT_TI = "ti"
+    _SLOT_TIS = "tis"
+    _SLOT_TERRAIN = "terrain"
+    _SLOT_OUTPUT_DIR = "outputDir"
+
+    _slot_targets_full = {
+        _SLOT_MAST_COORD: str(new_runtime.get("mastCoordFilePath", "")).strip(),
+        _SLOT_MAST_TIM: str(new_runtime.get("mastImportFilePath", "")).strip(),
+        _SLOT_TURBINE_COORD: str(new_runtime.get("turbineCoordFilePath", "")).strip(),
+        _SLOT_TURBINE_CURVE: str(new_runtime.get("turbineImportFilePath", "")).strip(),
+        _SLOT_TI: str(new_runtime.get("tiFilePath", "")).strip(),
+        _SLOT_TIS: str(new_runtime.get("tisFilePath", "")).strip(),
+        _SLOT_TERRAIN: str(new_runtime.get("sourceFilePath", "")).strip(),
+        _SLOT_OUTPUT_DIR: str(new_runtime.get("outputDir", "")).strip(),
+    }
+    _slot_targets_base = {
+        s: (_basename_without_ext(p) if s != _SLOT_OUTPUT_DIR else p)
+        for s, p in _slot_targets_full.items()
+    }
+
+    def _match_slots(cand):
+        """按槽位语义（非 runtime 键名）判断 candidate 命中哪些槽位。返回匹配槽位集合。"""
+        cand_str = str(cand).strip()
+        if not cand_str or cand_str.startswith("${"):
+            return set()
+
+        low = cand_str.lower()
+        base = os.path.basename(cand_str).lower()
+        ext = os.path.splitext(cand_str)[1].lower()
+
+        # 排除已由数值/气象名称作用域映射处理的非文件字面量
+        if low in ("cft01", "cft1", "99", "40.5", "120.5", "125", "35.0", "1.220", "5000",
+                   "43557986.525", "5136125.583", "43546603.1", "5151337.3", "43559303.1", "5138637.3"):
+            return set()
+
+        matched = set()
+
+        is_mast_coord_kw = (
+            ("cft" in base and low not in ("cft01", "cft1"))
+            or "测风塔" in base
+            or ("coord" in base and "jwd" not in base and "turbine" not in base)
+        )
+        is_turb_coord_kw = (
+            "jwd" in base
+            or "机位" in base
+            or ("coord" in base and ("jwd" in base or "turbine" in base))
+        )
+        is_mast_tim_kw = ("tim" in base and "tis" not in base)
+
+        # 1. 输出目录槽 (outputDir)
+        old_out = str(old_runtime.get("outputDir", "")).strip()
+        if old_out and cand_str == old_out:
+            matched.add(_SLOT_OUTPUT_DIR)
+
+        # 2. 地形槽 (tif / asc / dem / sourceFilePath)
+        old_src = str(old_runtime.get("sourceFilePath", "")).strip()
+        if ext in (".tif", ".tiff", ".asc", ".dem"):
+            matched.add(_SLOT_TERRAIN)
+        elif old_src and (cand_str == old_src or cand_str == _basename_without_ext(old_src)):
+            if ext in ("", ".tif", ".tiff", ".asc", ".dem"):
+                matched.add(_SLOT_TERRAIN)
+
+        # 3. 风机/功率曲线槽 (.wtg / turbineImportFilePath)
+        old_turb_imp = str(old_runtime.get("turbineImportFilePath", "")).strip()
+        if ext == ".wtg":
+            matched.add(_SLOT_TURBINE_CURVE)
+        elif old_turb_imp and (cand_str == old_turb_imp or cand_str == _basename_without_ext(old_turb_imp)):
+            # 若本身为机位坐标文件（如 JWD_Project_43.txt），绝不误入功率曲线槽
+            if not is_turb_coord_kw and ext in ("", ".wtg"):
+                matched.add(_SLOT_TURBINE_CURVE)
+
+        # 4. TIS 槽 (tisFilePath)
+        if "tis" in base:
+            matched.add(_SLOT_TIS)
+
+        # 5. TI 槽 (tiFilePath)
+        if "-ti." in base or base.endswith("-ti.txt") or (base.endswith("ti.txt") and "tim" not in base and "tis" not in base):
+            matched.add(_SLOT_TI)
+
+        # 6. 测风塔时序槽 (mastTim / mastImportFilePath):
+        # 必须具备时序语义：包含 "tim" 且非 tis
+        # 或者是 old_runtime 的 mastImportFilePath（但若其本身为坐标文件则绝不入此槽，A6 核心）
+        old_mast_imp = str(old_runtime.get("mastImportFilePath", "")).strip()
+        old_mast_coord = str(old_runtime.get("mastCoordFilePath", "")).strip()
+
+        is_mast_coord_kw = (
+            "cft" in base
+            or "测风塔" in base
+            or ("coord" in base and "jwd" not in base and "turbine" not in base)
+        )
+        is_mast_tim_kw = ("tim" in base and "tis" not in base)
+
+        if is_mast_tim_kw:
+            if ext in ("", ".txt") or (old_mast_imp and ext == os.path.splitext(old_mast_imp)[1].lower()):
+                matched.add(_SLOT_MAST_TIM)
+        elif old_mast_imp and (cand_str == old_mast_imp or cand_str == _basename_without_ext(old_mast_imp)):
+            if not is_mast_coord_kw:
+                if ext in ("", ".txt") or ext == os.path.splitext(old_mast_imp)[1].lower():
+                    matched.add(_SLOT_MAST_TIM)
+
+        # 7. 测风塔坐标槽 (mastCoord / mastCoordFilePath):
+        # 必须具备坐标语义：包含 cft / 测风塔 / (coord 且非 turbine/jwd)
+        # 或者等于 old_runtime 的 mastCoordFilePath
+        if is_mast_coord_kw:
+            if ext in ("", ".txt") or (old_mast_coord and ext == os.path.splitext(old_mast_coord)[1].lower()):
+                matched.add(_SLOT_MAST_COORD)
+        elif old_mast_coord and (cand_str == old_mast_coord or cand_str == _basename_without_ext(old_mast_coord)):
+            if ext in ("", ".txt") or ext == os.path.splitext(old_mast_coord)[1].lower():
+                matched.add(_SLOT_MAST_COORD)
+
+        # 8. 机位点坐标槽 (turbineCoord / turbineCoordFilePath):
+        old_turb_coord = str(old_runtime.get("turbineCoordFilePath", "")).strip()
+        is_turb_coord_kw = (
+            "jwd" in base
+            or "机位" in base
+            or ("coord" in base and ("jwd" in base or "turbine" in base))
+        )
+        if is_turb_coord_kw:
+            if ext in ("", ".txt") or (old_turb_coord and ext == os.path.splitext(old_turb_coord)[1].lower()):
+                matched.add(_SLOT_TURBINE_COORD)
+        elif old_turb_coord and (cand_str == old_turb_coord or cand_str == _basename_without_ext(old_turb_coord)):
+            if ext in ("", ".txt") or ext == os.path.splitext(old_turb_coord)[1].lower():
+                matched.add(_SLOT_TURBINE_COORD)
+
+        return matched
+
+    def _is_file_candidate(cand):
+        c_str = str(cand).strip()
+        if not c_str or c_str.startswith("${"):
+            return False
+        low = c_str.lower()
+        if low in ("cft01", "cft1", "99", "40.5", "120.5", "125", "35.0", "1.220", "5000",
+                   "43557986.525", "5136125.583", "43546603.1", "5151337.3", "43559303.1", "5138637.3"):
+            return False
+        ext = os.path.splitext(c_str)[1].lower()
+        if ext in (".txt", ".tif", ".tiff", ".asc", ".dem", ".wtg"):
+            return True
+        if ":\\" in c_str or ":/" in c_str or "\\" in c_str or "/" in c_str:
+            return True
+        base = os.path.basename(c_str).lower()
+        if any(kw in base for kw in ("tim", "tis", "-ti.", "cft", "jwd", "coord", "测风塔", "机位")):
+            return True
+        for k in ("sourceFilePath", "mastImportFilePath", "turbineImportFilePath",
+                  "mastCoordFilePath", "turbineCoordFilePath", "outputDir"):
+            v = str(old_runtime.get(k, "")).strip()
+            if v and (c_str == v or c_str == _basename_without_ext(v)):
+                return True
+        return False
+
+    # 收集待判槽候选集：old_runtime 路径/主体 + steps 中的文件类字面量
+    _slot_candidates = set()
+    for _k in ("sourceFilePath", "mastImportFilePath", "turbineImportFilePath",
+               "mastCoordFilePath", "turbineCoordFilePath", "outputDir"):
+        _v = str(old_runtime.get(_k, "")).strip()
+        if _v and not _v.startswith("${"):
+            _slot_candidates.add(_v)
+            _b = _basename_without_ext(_v)
+            if _b:
+                _slot_candidates.add(_b)
+
+    for _t in _old_text_list:
+        if _is_file_candidate(_t):
+            _slot_candidates.add(_t)
+            if ":\\" in _t or ":/" in _t or os.path.splitext(_t)[1]:
+                _b = _basename_without_ext(_t)
+                if _b and _is_file_candidate(_b):
+                    _slot_candidates.add(_b)
+
+    # 遍历候选集按槽位配对；长串优先（路径优先于文件名主体）
+    for _cand in sorted(_slot_candidates, key=lambda x: (len(x), x), reverse=True):
+        _slots = _match_slots(_cand)
+        if len(_slots) > 1:
+            raise ValueError(
+                "旧文本 '{0}' 同时命中多个槽位 {1}（拒绝启动，fail-closed）".format(
+                    _cand, sorted(_slots)
+                )
+            )
+        if len(_slots) == 1:
+            _slot = next(iter(_slots))
+            if _slot == _SLOT_OUTPUT_DIR:
+                _new_tgt = _slot_targets_full.get(_slot, "")
+                if _new_tgt and _cand != _new_tgt:
+                    overrides.setdefault(_cand, _new_tgt)
+            else:
+                _has_ext = bool(os.path.splitext(_cand)[1])
+                _is_path = ":\\" in _cand or ":/" in _cand or "\\" in _cand or "/" in _cand
+                if _has_ext or _is_path:
+                    _new_tgt = _slot_targets_full.get(_slot, "")
+                    if _new_tgt and _cand != _new_tgt:
+                        if not _has_ext or _same_ext(_cand, _new_tgt):
+                            overrides[_cand] = _new_tgt
+                            if _cand in _old_texts:
+                                required_keys.add(_cand)
+                else:
+                    _new_tgt = _slot_targets_base.get(_slot, "")
+                    if _new_tgt and _cand != _new_tgt:
+                        overrides[_cand] = _new_tgt
+                        if _cand in _old_texts:
+                            required_keys.add(_cand)
+    # ── 流程家族（只读判定）：决定哪些写死值只对该类流程纳入必需命中审计 ──
+    # F1 修复（T4 复核）：旧实现在 __只要项目参数提供新值__ 就把全部气象/空间键加进每个
+    # flow 的 required_keys，有测风塔/气象信息的项目就让【非气象/非建模】板块（发送CFD、
+    # 创建综合、Simple 全队列含气象板块）被 zero_hit 非空拒启。改按 flow 家族收窄：
+    #   - meteo 字面量（CFT01/99/40.5/120.5/125）：仅气象数据录入家族纳入必需（含模板。
+    #     映射_target 即该家族 4 个"新建气象数据_*"文件 + 基础 flow_definition）。
+    #   - 综合数值（35.0/1.220）：仅发送综合计算家族纳入必需。
+    #   - 建模域键（domainCenter*/domainRadiusR=创建新建模 3 键 / domainNw|Se*=导入并配置
+    #     元素 4 键）：分别仅对对应建模/元素家族纳入必需。
+    # 家族依据 flow 文件名 / flowPackages.id（只读、唯一不串扰），不依赖运行时 rc，
+    # 也不靠宽松的"payload 含某词"（发送CFD/发送综合等 payload 也带气象/新建模字样）。
+    _flow_basename = os.path.basename(str(flow_path or ""))
+    _flow_pkg_ids = {
+        str(p.get("id")) for p in (payload.get("flowPackages") or []) if isinstance(p, dict)
+    }
+    _is_meteo_flow = (
+        "新建气象数据" in _flow_basename
+        or "气象数据录入" in _flow_basename
+        or "气象数据录入" in _flow_pkg_ids
+    )
+    _is_composite_flow = "发送综合计算" in _flow_basename
+    _is_create_model_flow = "创建一个新建模" in _flow_basename
+    _is_element_flow = "导入并配置元素" in _flow_basename
+
+    def _add_scoped_override(old_val, new_val, *, required):
+        """把旧文本加入覆盖（若 flow 文本实际含它并替换），并按 required 登记必需命中。
+
+        - 替换语义与旧版完全一致：只要该 flow 的 actionConfig.text 实际含旧值且新值非空、
+          与旧值不同，就写入 overrides（无论是否该家族）。apply_overrides_to_payload 不受
+          必需判定影响。
+        - 必需命中（继承并强化 fail-closed）：仅当 required=True（该 flow 属于该家族，该键
+          是它真正需要的）才登记为必需——
+            * 新值与旧值相同：模板已含正确值，无需替换，也不登记必需（不误拒）；
+            * 新值为空（项目没配该关键值，如气象 flow 缺 meteoName / 建模 flow 缺 domain*）：
+              登记必需但不进 overrides → 审计 0 命中 → 硬失败拒启；
+            * 模板改版致旧值消失：登记必需但 old_s 不在 _old_texts → 0 命中 → 硬失败。
+          非家族 flow（required=False）绝不因该键被拒启（F1 收窄核心）。
+        """
         old_s = str(old_val).strip()
-        new_s = str(new_val).strip()
-        if old_s and new_s and old_s != new_s and old_s in _old_texts:
+        if not old_s:
+            return
+        new_s = str(new_val or "").strip()
+        if required:
+            if new_s == old_s:
+                # 模板已含正确默认值，无替换意图也不缺配 → 不登记必需、不误拒。
+                return
+            required_keys.add(old_s)
+        if new_s and new_s != old_s and old_s in _old_texts:
             overrides[old_s] = new_s
 
-    # 硬编码 meteo 键（CFT01/99/40.5/120.5/125）→ 新 rc
-    # CFT01（气象对象名）替换为 meteoName（塔名_轮毂高度_Auto），与测风塔元素名区分
+    # ── 气象数据录入 家族：meteo 字面量（CFT01/99/40.5/120.5/125）→ 新 rc ──
+    # CFT01（气象对象名）替换为 meteoName（塔名_轮毂高度_Auto），与测风塔元素名区分。
+    # CFT1 已删除：任何 flow 均无该旧值，在映射数组里纯属噪音（T4 指认）。
     _meteo_map = [
         ("CFT01", new_runtime.get("meteoName") or new_runtime.get("mastName")),
-        ("CFT1", new_runtime.get("mastName")),
         ("99", new_runtime.get("elevation")),
         ("40.5", new_runtime.get("latitude")),
         ("120.5", new_runtime.get("longitude")),
         ("125", new_runtime.get("hubHeight")),
-        # 综合计算数值项：流程模板写死值（35.0 极风 / 1.220 空气密度）→ 项目人工确认值。
-        # 同步约束：WT_Launcher.DEFAULT_PROJECT_PARAMS 的 wind50/airDensity 已与模板对齐，
-        # 避免"弹窗预填默认值经保存无条件固化"（_save 会把全部非空字段写入 project_params）
-        # 后，映射上线把未人工确认的默认值静默替换进输入框。
+    ]
+    for _old, _new in _meteo_map:
+        _add_scoped_override(_old, _new, required=_is_meteo_flow)
+
+    # ── 发送综合计算 家族：综合数值项（35.0 极风 / 1.220 空气密度）→ 项目人工确认值 ──
+    # 同步约束：WT_Launcher.DEFAULT_PROJECT_PARAMS 的 wind50/airDensity 已与模板对齐，
+    # 避免"弹窗预填默认值经保存无条件固化"（_save 会把全部非空字段写入 project_params）
+    # 后，映射上线把未人工确认的默认值静默替换进输入框。
+    _composite_map = [
         ("35.0", new_runtime.get("wind50")),
         ("1.220", new_runtime.get("airDensity")),
     ]
-    for _old, _new in _meteo_map:
-        _add_meteo_override(_old, _new)
+    for _old, _new in _composite_map:
+        _add_scoped_override(_old, _new, required=_is_composite_flow)
 
-    # ── 空间计算域精确覆盖（创建一个新建模 & 导入并配置元素）──
-    _spatial_map = [
-        # 创建一个新建模 写死值
+    # ── 空间计算域精确覆盖：仅对应建模/元素家族纳入必需 ──
+    # 创建一个新建模 3 键：domainCenterX/Y、domainRadiusR=5000
+    _create_model_map = [
         ("43557986.525", new_runtime.get("domainCenterX")),
         ("5136125.583", new_runtime.get("domainCenterY")),
         ("5000", new_runtime.get("domainRadiusR")),
-        # 导入并配置元素 绘图元素写死值
+    ]
+    for _old, _new in _create_model_map:
+        _add_scoped_override(_old, _new, required=_is_create_model_flow)
+    # 导入并配置元素 4 键：domainNwX/Y、domainSeX/Y（绘图元素）
+    _element_map = [
         ("43546603.1", new_runtime.get("domainNwX")),
         ("5151337.3", new_runtime.get("domainNwY")),
         ("43559303.1", new_runtime.get("domainSeX")),
         ("5138637.3", new_runtime.get("domainSeY")),
     ]
-    for _old, _new in _spatial_map:
-        _add_meteo_override(_old, _new)
-    #  hub 高度多处复用：若新 hub 与旧 125 相同则无需覆盖，但仍处理 elevation 误用 99 的情况
-    #  文件路径精确替换（tim/TI/TISD）
-    for _old in _old_text_list:
-        low = _old.lower()
-        is_path = (":\\" in _old or ":/" in _old or _old.lower().endswith(".txt")) and os.path.isabs(_old)
-        if not is_path:
-            # 也处理非绝对但含 tim 关键字的旧值（部分流程写死为全路径，必为绝对）
-            if not (low.endswith(".txt") and ("tim" in low or "ti" in low or "tis" in low)):
-                continue
-            if ":\\" not in _old and ":/" not in _old:
-                continue
-        new_target = ""
-        if "tis" in low:
-            new_target = str(new_runtime.get("tisFilePath", "")).strip()
-        elif "-ti." in low or low.endswith("-ti.txt") or (low.endswith("ti.txt") and "tim" not in low and "tis" not in low):
-            new_target = str(new_runtime.get("tiFilePath", "")).strip()
-        elif "tim" in low:
-            new_target = str(new_runtime.get("mastImportFilePath", "")).strip()
-        if new_target and _old != new_target:
-            overrides[_old] = new_target
+    for _old, _new in _element_map:
+        _add_scoped_override(_old, _new, required=_is_element_flow)
 
+    return _attach_override_audit(flow_path, overrides, required_keys)
+
+
+# 审计结果在 text_overrides dict 内的保留键（键名以 "__" 起止，避免与真实旧文本 Key 冲突）
+# 调用方（如 WT_Launcher 的启动前置检查）用公开名读取；内部保留旧私有名作别名。
+OVERRIDE_AUDIT_KEY = "__override_audit__"
+_OVERRIDE_AUDIT_KEY = OVERRIDE_AUDIT_KEY
+
+
+def audit_text_override_hits(flow_path, overrides, required_keys=None):
+    """
+    覆盖命中审计：对受导的必需键，统计它在流程步骤 actionConfig.text 中的命中次数。
+
+    关键点：apply_overrides_to_payload 只替换与 Key 完全相等的 text 值。若某必需键在流程里
+    根本不存在（流程已改版 / 旧值写法与当前模板不符），覆盖会「静默不生效」——上层还以为
+    配置成功。本函数把 0 命中项组装为失败诊断，供调用方判定而非静默吞掉。
+
+    参数：
+        flow_path     : 流程 JSON 路径
+        overrides     : 已构造的覆盖 dict {old_text: new_text}
+        required_keys : 必须命中的旧文本集合；None 表示"全部覆盖键"都算必需。
+
+    返回 dict：
+        {
+            "hits": {old_text: count},   # 每个覆盖 Key 的实际命中次数
+            "zero_hit": ["old1", ...],   # 必需键中 0 命中（未生效）者
+            "required": [old1, ...],     # 本次判定为必需的键
+        }
+    流程无效（不可读/无 steps）返回 {"hits": {}, "zero_hit": [], "required": []}。
+    """
+    all_keys = list(overrides or {})
+    if required_keys is None:
+        required = list(all_keys)
+    else:
+        required_set = set(required_keys)
+        # required 包含两类：a) 已在 overrides 中的覆盖键；b) 仅登记为必需但模板不含
+        # 该旧值（模板改版/旧值漂移）而尚未进入 overrides 的键——后者正是审计要抓的"静默 0 命中"。
+        required = [k for k in all_keys if k in required_set] + \
+                   [k for k in required_keys if k not in overrides]
+    meta = {"hits": {}, "zero_hit": [], "required": required}
+    if not flow_path or not os.path.isfile(flow_path):
+        return meta
+    try:
+        with open(flow_path, "r", encoding="utf-8") as fobj:
+            payload = json.load(fobj)
+    except (OSError, ValueError):
+        return meta
+    steps = payload.get("steps")
+    if not isinstance(steps, list):
+        return meta
+
+    for key in all_keys:
+        meta["hits"][key] = 0
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        ac = step.get("actionConfig")
+        if isinstance(ac, dict) and isinstance(ac.get("text"), str):
+            t = ac.get("text").strip()
+            if t in meta["hits"]:
+                meta["hits"][t] += 1
+    meta["zero_hit"] = [k for k in required if meta["hits"].get(k, 0) == 0]
+    return meta
+
+
+def _attach_override_audit(flow_path, overrides, required_keys):
+    """
+    在返回 overrides 前写入命中审计，供调用方判定「覆盖是否真的会生效」。
+    把审计结果塞进 overrides 的保留键 **_OVERRIDE_AUDIT_KEY**，不修改链路的替换语义
+    （apply_overrides_to_payload 不受该键影响）。
+    """
+    overrides.pop(_OVERRIDE_AUDIT_KEY, None)
+    overrides[_OVERRIDE_AUDIT_KEY] = audit_text_override_hits(flow_path, overrides, required_keys)
     return overrides
 
 

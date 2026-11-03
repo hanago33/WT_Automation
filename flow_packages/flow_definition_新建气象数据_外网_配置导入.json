@@ -8,7 +8,8 @@
     "sourceFilePath": "",
     "outputDir": "",
     "projectionFilePath": "",
-    "multiMast": true
+    "multiMast": true,
+    "configFilePath": ""
   },
   "flowPackages": [
     {
@@ -1089,7 +1090,7 @@
     },
     {
       "id": "step_17",
-      "name": "键入-配置文件路径",
+      "name": "键入-配置文件路径(按塔)",
       "stage": "",
       "strategy": "script",
       "actionType": "action",
@@ -1098,7 +1099,7 @@
       "codeSymbol": "",
       "codeReference": "",
       "packageRef": "",
-      "description": "在“打开”文件对话框的文件名输入框键入该塔的导入配置文件 XML 路径。",
+      "description": "配置 XML 路径按当前测风塔解析为 <塔名>配置信息.xml；无配置时改走基础气象流程。",
       "successLog": "配置文件路径",
       "windowTitle": "打开",
       "inspectHints": {
@@ -1180,7 +1181,7 @@
       "actionConfig": {
         "action": "type_text",
         "controlId": "step_14_control_1",
-        "text": "C:\\Users\\14830\\Desktop\\202608_Test\\03-WT输入\\03-测风塔数据\\C1831\\C1831配置信息.xml",
+        "text": "${runtime.configFilePath}",
         "timeoutSeconds": 2.5,
         "waitBefore": 0.5,
         "waitAfter": 1,

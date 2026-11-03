@@ -1,5 +1,6 @@
 # encoding: utf-8
-"""读取 MUP 用户数据目录（C:\\ProgramData\\Meteodyn\\MUP），提供流程产物落盘检测。
+"""读取 MUP 用户数据目录（默认 C:\\ProgramData\\Meteodyn\\MUP，本机实际在 H:），
+提供流程产物落盘检测。
 
 背景：MUP 每个流程动作都有文件落盘在用户数据目录：
   OROGRAPHY/  <project>_<zone>.tif      —— 导入的地形数据
@@ -11,7 +12,8 @@
 "是否真生效"的客观铁证（不依赖 UI 读值，避免假成功）。
 
 目录命名：local_<用户名>_<机器GUID>（跨机器变化，用 glob 匹配）。
-数据目录可通过环境变量 MUP_DATA_DIR 覆盖（测试/换机场景）。
+数据根解析统一委托 `mup_paths`（env → 官方 ini → 盘符探测 → 默认），且**每次调用
+运行时解析**（不在模块导入时固化），换机/测试改 env 立即生效。
 
 本模块提供：
 - locate_data_dir()：定位用户数据目录
@@ -22,30 +24,35 @@
 零外部依赖；数据目录缺失时全部降级为空，不阻塞自动化。
 """
 import os
-import glob
-from functools import lru_cache
 
-MUP_DATA_ROOT = os.environ.get("MUP_DATA_DIR", r"C:\ProgramData\Meteodyn\MUP")
+import mup_paths
 
 # 关注的业务子目录（相对用户数据目录），中文名用于报告展示
+# BIN/INFORMATION/PROJECTS/GEOSYS/MULTIMESO 是 CFD/综合产物与工程模型的落点，
+# 缺了它们就看不到「计算真的算了」的证据（BIN 落 CALCUL_log_out_<cfdId>.xml）。
 _BUSINESS_DIRS = (
     ("DATAFILES\\OROGRAPHY", "terrain"),
     ("DATAFILES\\TIMESERIES", "timeseries"),
     ("DATAFILES\\ROUGHNESS", "roughness"),
     ("RESULT_FILES", "results"),
     ("SYNTHESIS_FILES", "synthesis"),
+    ("BIN", "bin"),
+    ("INFORMATION", "information"),
+    ("PROJECTS", "projects"),
+    ("GEOSYS", "geosys"),
+    ("DATAFILES\\MULTIMESO", "multimeso"),
 )
+
+# business_key → 相对路径（由 _BUSINESS_DIRS 反推，单一真相）
+_REL_BY_KEY = {business_key: rel for rel, business_key in _BUSINESS_DIRS}
 
 
 def locate_data_dir():
-    """定位用户数据目录（local_* 子目录，按修改时间取最新）；不可用返回空串。"""
-    if not os.path.isdir(MUP_DATA_ROOT):
-        return ""
-    candidates = glob.glob(os.path.join(MUP_DATA_ROOT, "local_*"))
-    if not candidates:
-        return ""
-    candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return candidates[0]
+    """定位用户数据目录（local_* 子目录，按修改时间取最新）；不可用返回空串。
+
+    数据根每次运行时解析（见 mup_paths），不在模块导入时固化。
+    """
+    return mup_paths.newest_local(mup_paths.data_root())
 
 
 def _dir_path(business_key):
@@ -88,10 +95,11 @@ def snapshot():
 
 
 def rel_dir(business_key):
-    """业务目录相对用户数据目录的路径。business_key 为 "terrain"/"timeseries"/..."""
-    return {"terrain": "DATAFILES\\OROGRAPHY", "timeseries": "DATAFILES\\TIMESERIES",
-            "roughness": "DATAFILES\\ROUGHNESS", "results": "RESULT_FILES",
-            "synthesis": "SYNTHESIS_FILES"}.get(business_key) or ""
+    """业务目录相对用户数据目录的路径。business_key 为 "terrain"/"timeseries"/...
+
+    映射由 _BUSINESS_DIRS 反推（单一真相），避免键表与相对路径两处各写一份后漂移。
+    """
+    return _REL_BY_KEY.get(business_key) or ""
 
 
 def diff(before, after):

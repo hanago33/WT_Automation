@@ -143,3 +143,15 @@ uia_tree_dumper/**/obj/
 
 # 工具运行时配置（GUI 自动记忆项，不随版本控制）
 txt2wtg/txt2wtg_gui_config.json
+
+# ===== 2026-11-03 会话留痕（不入库，仅在本地/重构时使用）=====
+# flow 还原/恢复过程的备份目录（当前状态已由 git 记录，双份备份为本地冗余）
+/_flow_backups_20261103/
+/_flow_originals_20261103/
+# 逆向工作区与过程探针
+/_recon_4a/
+/_scratch_probes/
+/cleanup_plan.md
+# 自动化输出产物（运行期生成，非源码）
+/04-WT输出/
+/MUP_recon/

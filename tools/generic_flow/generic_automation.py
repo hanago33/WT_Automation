@@ -796,6 +796,86 @@ def _load_json_env_runtime():
 	return env_runtime if isinstance(env_runtime, dict) else {}
 
 
+from copy import deepcopy
+
+
+def _expand_multimast_steps(template_steps, target_extra_towers=1):
+	"""把模板步骤中的多塔组(step_mt_add ~ step_mt_refclim_select)按目标附加塔数展开。
+
+	参数：
+		template_steps: 模板步骤列表。
+		target_extra_towers: 附加塔数（实际测风塔总数 - 1）。
+			<= 1 时保持原样（1 组，即第二座塔）；
+			>= 2 时为第 3..N 座塔生成克隆步骤组，分别使用 refmast{i} / refclimatology{i}。
+	返回：
+		展开后的步骤列表。
+	"""
+	if not isinstance(template_steps, list) or target_extra_towers <= 1:
+		return [deepcopy(s) if isinstance(s, dict) else s for s in (template_steps or [])]
+
+	mt_step_ids = [
+		"step_mt_add",
+		"step_mt_refpoint",
+		"step_mt_refclim_open",
+		"step_mt_refclim_search",
+		"step_mt_refclim_select",
+	]
+	found_indices = []
+	for idx, s in enumerate(template_steps):
+		if isinstance(s, dict) and s.get("id") in mt_step_ids:
+			found_indices.append(idx)
+	if len(found_indices) < len(mt_step_ids):
+		# 模板不含完整多塔 5 步组（如简化单元测试中的假模板），原样返回
+		return [deepcopy(s) if isinstance(s, dict) else s for s in template_steps]
+
+	last_idx = max(found_indices)
+	base_mt_steps = [deepcopy(s) for s in template_steps if isinstance(s, dict) and s.get("id") in mt_step_ids]
+
+	# 保留至第一组多塔配置完成（第 2 座塔）
+	expanded = [deepcopy(s) if isinstance(s, dict) else s for s in template_steps[:last_idx + 1]]
+
+	# 循环生成第 3..N 座塔的步骤（总塔数 = 1 + target_extra_towers）
+	for tower_idx in range(3, target_extra_towers + 2):
+		for s in base_mt_steps:
+			clone = deepcopy(s)
+			orig_id = clone.get("id", "")
+			clone["id"] = f"{orig_id}_tower{tower_idx}"
+			orig_name = str(clone.get("name", "")).strip()
+			clone["name"] = f"{orig_name}(第{tower_idx}塔)"
+			clone["notes"] = f"多塔配置(第{tower_idx}座塔)：由 CFT 多塔循环动态展开。"
+
+			# 替换占位符 refmast2 -> refmast{tower_idx}, refclimatology2 -> refclimatology{tower_idx}
+			ac = clone.get("actionConfig")
+			if isinstance(ac, dict):
+				t = str(ac.get("text", ""))
+				if "${stepParams.refmast2}" in t:
+					ac["text"] = t.replace("${stepParams.refmast2}", f"${{stepParams.refmast{tower_idx}}}")
+				if "${stepParams.refclimatology2}" in t:
+					ac["text"] = t.replace("${stepParams.refclimatology2}", f"${{stepParams.refclimatology{tower_idx}}}")
+
+			for ctrl in clone.get("controls", []):
+				if isinstance(ctrl, dict):
+					tv = str(ctrl.get("targetValue", ""))
+					if "refclimatology2" in tv:
+						ctrl["targetValue"] = tv.replace("refclimatology2", f"refclimatology{tower_idx}")
+					if "refmast2" in tv:
+						ctrl["targetValue"] = tv.replace("refmast2", f"refmast{tower_idx}")
+
+			sp = clone.get("stepParams")
+			if isinstance(sp, dict):
+				new_sp = {}
+				for k, v in sp.items():
+					if "2" in k:
+						new_sp[k.replace("2", str(tower_idx))] = v
+					else:
+						new_sp[k] = v
+				clone["stepParams"] = new_sp
+			expanded.append(clone)
+
+	expanded.extend([deepcopy(s) if isinstance(s, dict) else s for s in template_steps[last_idx + 1:]])
+	return expanded
+
+
 def _apply_param_table_expansion(merged_payload, target_payload):
 	"""若流程顶层含 paramTable 字段，按参数表展开模板步骤。
 
@@ -811,29 +891,47 @@ def _apply_param_table_expansion(merged_payload, target_payload):
 	if not os.path.isabs(param_table):
 		param_table = os.path.join(os.path.dirname(FLOW_DEFINITION_FILE), param_table)
 	if not os.path.exists(param_table):
-		log_step(f"[paramTable] 参数表不存在，跳过展开：{param_table}")
-		return merged_payload
+		# 防御：Simple 模式把流程写到 workspace/ 临时文件后，FLOW_DEFINITION_FILE 所在
+		# 目录不再是流程原目录；参数表通常与流程文件同在 flow_packages/，按文件名回退查找。
+		fallback_param = os.path.join(
+			os.path.dirname(__file__), "flow_packages", os.path.basename(param_table)
+		)
+		if os.path.exists(fallback_param):
+			param_table = fallback_param
+		else:
+			log_step(f"[paramTable] 参数表不存在，跳过展开：{param_table}")
+			return merged_payload
 	template_steps_for_scan = merged_payload.get("steps", [])
-	# stepTags 缺失的硬失败在 ParameterScanner.scan 内判定（过滤启用且存在请求模式的行
-	# 但模板零 stepTags 时才抛 StepModeFilterUnavailable），此处不再冗余宽泛告警。
+
+	# ── 项目解析值覆盖参数表默认值（机型 / Cp 版本 / 测风塔多塔信息）──
+	_rt_merged = merged_payload.get("runtimeConfig", {})
+	if not isinstance(_rt_merged, dict):
+		_rt_merged = {}
+	_rt_env = _load_json_env_runtime()
+	if not isinstance(_rt_env, dict):
+		_rt_env = {}
+
+	# 测风塔/气象引用：项目解析的测风塔编号覆盖参数表占位值（如 M1/Mast1/testMESO）。
+	_mast_ids_rt = _rt_env.get("mastIds") if _rt_env.get("mastIds") else _rt_merged.get("mastIds")
+	_mast_names = [str(x).strip() for x in _mast_ids_rt if str(x).strip()] if isinstance(_mast_ids_rt, list) else []
+	_mast_entries_rt = _rt_env.get("mastEntries") if _rt_env.get("mastEntries") else _rt_merged.get("mastEntries")
+	_ordered_mast_names = []
+	if isinstance(_mast_entries_rt, list):
+		for _e in _mast_entries_rt:
+			if not isinstance(_e, dict):
+				continue
+			_n = str(_e.get("mastName", "") or "").strip()
+			if _n and _n not in _ordered_mast_names:
+				_ordered_mast_names.append(_n)
+	if not _ordered_mast_names:
+		_ordered_mast_names = list(_mast_names)
+
 	# ── 单塔/多塔自动决定：按项目解析出的测风塔数量覆盖参数表 towerMode 列 ──
-	# Simple 界面选择项目文件夹后，把项目解析结果（含 mastIds）经 GM_RUNTIME_CONFIG_JSON
-	# 环境变量传给子进程；这里读环境覆盖值（优先级最高），其次流程 runtimeConfig。
 	tower_mode_override = None
-	_mast_ids: list[str] = []
 	for _src in (
-		{"payload": merged_payload.get("runtimeConfig", {})},
-		{"payload": _load_json_env_runtime()},
+		{"payload": _rt_merged},
+		{"payload": _rt_env},
 	):
-		_rc = _src["payload"]
-		if not isinstance(_rc, dict):
-			continue
-		_mast_ids_value = _rc.get("mastIds")
-		if isinstance(_mast_ids_value, list) and _mast_ids_value:
-			_mast_ids = [str(item) for item in _mast_ids_value if str(item).strip()]
-			break
-	# 显式 towerMode（如 Simple 界面已决定）优先，其次按测风塔数量推断。
-	for _src in ({"payload": merged_payload.get("runtimeConfig", {})}, {"payload": _load_json_env_runtime()}):
 		_rc = _src["payload"]
 		if not isinstance(_rc, dict):
 			continue
@@ -841,10 +939,66 @@ def _apply_param_table_expansion(merged_payload, target_payload):
 		if _tm in ("single", "multi"):
 			tower_mode_override = _tm
 			break
-	if tower_mode_override is None and len(_mast_ids) >= 2:
-		tower_mode_override = "multi"
+	if tower_mode_override is None:
+		if len(_mast_names) >= 2:
+			tower_mode_override = "multi"
+		elif len(_mast_names) == 1:
+			tower_mode_override = "single"
 	if tower_mode_override is not None:
-		log_step(f"[paramTable] 按项目条件决定塔模式：towerMode={tower_mode_override}（测风塔数={len(_mast_ids)}）")
+		log_step(f"[paramTable] 按项目条件决定塔模式：towerMode={tower_mode_override}（测风塔数={len(_mast_names)}）")
+
+	# 真实塔数来自 CFT 的 mastIds 长度（回退 _ordered_mast_names）
+	real_towers = len(_mast_names) if _mast_names else (len(_ordered_mast_names) if _ordered_mast_names else (1 if tower_mode_override == "single" else 2))
+	_rt_ref_primary = str(_rt_env.get("mastName", "") or "").strip() or str(_rt_merged.get("mastName", "") or "").strip() or (_ordered_mast_names[0] if _ordered_mast_names else "")
+	available_extra_towers = [m for m in _ordered_mast_names if m and m != _rt_ref_primary]
+
+	# 流程支持上限或人为上限截断（如 maxTowers/max_towers）
+	max_towers_cfg = (
+		_rt_env.get("maxTowers")
+		or _rt_env.get("max_towers")
+		or _rt_merged.get("maxTowers")
+		or _rt_merged.get("max_towers")
+		or os.environ.get("WT_MAX_TOWERS")
+	)
+	if max_towers_cfg is not None:
+		try:
+			max_towers_val = max(1, int(str(max_towers_cfg).strip()))
+			max_extra_allowed = max(0, max_towers_val - 1)
+			expanded_extra_towers = available_extra_towers[:max_extra_allowed]
+		except (ValueError, TypeError):
+			expanded_extra_towers = available_extra_towers
+	else:
+		expanded_extra_towers = available_extra_towers
+
+	if tower_mode_override == "single":
+		towers_used = 1
+		towers_dropped = max(0, real_towers - 1)
+	else:
+		towers_used = 1 + len(expanded_extra_towers)
+		towers_dropped = max(0, real_towers - towers_used)
+
+	merged_payload["towers_used"] = towers_used
+	merged_payload["towers_dropped"] = towers_dropped
+	merged_payload["real_towers"] = real_towers
+	if "runtimeConfig" in merged_payload and isinstance(merged_payload["runtimeConfig"], dict):
+		merged_payload["runtimeConfig"]["towers_used"] = towers_used
+		merged_payload["runtimeConfig"]["towers_dropped"] = towers_dropped
+		merged_payload["runtimeConfig"]["real_towers"] = real_towers
+
+	log_step(f"[paramTable] 测风塔多塔统计：towers_used={towers_used}, towers_dropped={towers_dropped}（真实塔数={real_towers}）")
+	if towers_dropped > 0:
+		log_step(
+			f"[paramTable] ⚠️ 测风塔丢弃警告：CFT 真实塔数={real_towers} 超过当前流程支持上限({towers_used})，"
+			f"towers_dropped={towers_dropped}（已显式记录，非静默丢弃）"
+		)
+
+	# ── 多塔循环展开：把 step_mt_add + step_mt_refpoint/refclim_* 按实际附加塔数展开 ──
+	if tower_mode_override == "multi" and len(expanded_extra_towers) >= 2:
+		template_steps_for_scan = _expand_multimast_steps(
+			template_steps_for_scan,
+			target_extra_towers=len(expanded_extra_towers),
+		)
+
 	try:
 		# 真实综合流程的模板步骤位于 flow.steps（已规整进 merged_payload["steps"]），
 		# 直接用 ParameterScanner.scan 以合并后的步骤为模板展开，避免 scan_from_flow
@@ -865,41 +1019,9 @@ def _apply_param_table_expansion(merged_payload, target_payload):
 	if not isinstance(scanned_steps, list) or not scanned_steps:
 		log_step("[paramTable] 参数表无有效数据行，跳过展开。")
 		return merged_payload
-	# ── 项目解析值覆盖参数表默认值（机型 / Cp 版本）──
-	# Simple 界面注入的项目解析/人工填写值（GM_RUNTIME_CONFIG_JSON 优先，其次流程 runtimeConfig）
-	# 优先于参数表模板默认值。仅当 runtime 有非空值时才覆盖，避免污染既有行为。
-	_rt_merged = merged_payload.get("runtimeConfig", {})
-	if not isinstance(_rt_merged, dict):
-		_rt_merged = {}
-	_rt_env = _load_json_env_runtime()
-	if not isinstance(_rt_env, dict):
-		_rt_env = {}
+
 	_rt_turbine = str(_rt_env.get("turbineType", "") or "").strip() or str(_rt_merged.get("turbineType", "") or "").strip()
 	_rt_cp = str(_rt_env.get("cpVersion", "") or "").strip() or str(_rt_merged.get("cpVersion", "") or "").strip()
-	# 测风塔/气象引用：项目解析的测风塔编号覆盖参数表占位值（如 M1/Mast1/testMESO）。
-	# 参考点/极风速=测风塔名（mastName 优先，其次 mastEntries/mastIds 首座）；气象参考=气象对象名
-	# （塔名_轮毂高度_Auto，与测风塔元素名区分，见 wt_project_workdir_parser.meteoName）。
-	# 多塔第二塔=第二座塔。⚠ 不能取 sorted(mastIds)[1]：mastIds 在解析器里是 sorted(set(...))，
-	# 排序会打乱 CFT 行序（如 CFT=[W2512960, C2536] → mastIds=["C2536","W2512960"]），曾致
-	# 第二塔被覆盖成第一塔的气象。须按 mastEntries（CFT 行序）取"第一个不同于主塔的塔"；
-	# 无 mastEntries 时才回退 mastIds。单塔时第二塔引用保持参数表原样（其步骤被 towerMode 过滤）。
-	_mast_ids_rt = _rt_env.get("mastIds") if _rt_env.get("mastIds") else _rt_merged.get("mastIds")
-	_mast_names = [str(x).strip() for x in _mast_ids_rt if str(x).strip()] if isinstance(_mast_ids_rt, list) else []
-	_mast_entries_rt = _rt_env.get("mastEntries") if _rt_env.get("mastEntries") else _rt_merged.get("mastEntries")
-	_ordered_mast_names = []
-	if isinstance(_mast_entries_rt, list):
-		for _e in _mast_entries_rt:
-			if not isinstance(_e, dict):
-				continue
-			_n = str(_e.get("mastName", "") or "").strip()
-			if _n and _n not in _ordered_mast_names:
-				_ordered_mast_names.append(_n)
-	if not _ordered_mast_names:
-		_ordered_mast_names = list(_mast_names)
-	_rt_ref_primary = str(_rt_env.get("mastName", "") or "").strip() or str(_rt_merged.get("mastName", "") or "").strip() or (_ordered_mast_names[0] if _ordered_mast_names else "")
-	# 第二座塔 = 行序（或回退序）中第一个非主塔者；推导为空/与主塔同名时保持空，
-	# 宁可保留参数表原样，也不把第二塔引用覆盖成与第一塔相同的气象（假成功）。
-	_rt_ref_secondary = next((m for m in _ordered_mast_names if m and m != _rt_ref_primary), "")
 
 	def _meteo_for(_mast_name, _hub_default):
 		"""气象对象名：优先 mastEntries 里的 meteoName，否则按 mastName_hubHeight_Auto 拼接。"""
@@ -919,7 +1041,7 @@ def _apply_param_table_expansion(merged_payload, target_payload):
 	_rt_meteo = str(_rt_env.get("meteoName", "") or "").strip() or str(_rt_merged.get("meteoName", "") or "").strip()
 	if not _rt_meteo:
 		_rt_meteo = _meteo_for(_rt_ref_primary, _rt_hub)
-	_rt_meteo2 = _meteo_for(_rt_ref_secondary, _rt_hub) if _rt_ref_secondary else ""
+
 	_mast_overrides = {}
 	if _mast_names:
 		_mast_overrides.update({
@@ -927,11 +1049,11 @@ def _apply_param_table_expansion(merged_payload, target_payload):
 			"weathername": _rt_meteo,
 			"mettowername": _rt_ref_primary,
 		})
-	if _rt_ref_secondary:
-		_mast_overrides.update({
-			"refmast2": _rt_ref_secondary,
-			"refclimatology2": _rt_meteo2 or _rt_ref_secondary,
-		})
+	for idx, extra_mast in enumerate(expanded_extra_towers, start=2):
+		_extra_meteo = _meteo_for(extra_mast, _rt_hub) or extra_mast
+		_mast_overrides[f"refmast{idx}"] = extra_mast
+		_mast_overrides[f"refclimatology{idx}"] = _extra_meteo
+
 	if _rt_turbine or _rt_cp or _mast_overrides:
 		_ovr = []
 		for _s in scanned_steps:
@@ -952,11 +1074,53 @@ def _apply_param_table_expansion(merged_payload, target_payload):
 				if _k in _sp and _v and str(_sp[_k]).strip() != _v:
 					_ovr.append(f"{_k}:{_sp[_k]}->{_v}")
 					_sp[_k] = _v
+				elif (_k.startswith("refmast") or _k.startswith("refclimatology")) and _v:
+					_sp[_k] = _v
 		if _ovr:
 			log_step(f"[paramTable] 项目解析值覆盖参数表默认（{len(_ovr)} 处）：{'；'.join(dict.fromkeys(_ovr))}")
 	# 包 stepIds 同步映射：参数表展开会把模板步骤 id 改为 `{原id}_scan{行}_{序号}`，
 	# 若不改写，flowPackages 中登记整流程的包（stepIds 引用原模板 id）在校验时会报
 	# "引用了不存在的步骤"。把每个原 id 替换为展开后对应的一批 id，保持包与 steps 一致。
+	base_to_expanded = {}
+	scanned_ids = set()
+	for s in scanned_steps:
+		if not isinstance(s, dict):
+			continue
+		sid = str(s.get("id", "")).strip()
+		if sid:
+			scanned_ids.add(sid)
+		base = sid.rsplit("_scan", 1)[0] if "_scan" in sid else sid
+		if base:
+			base_to_expanded.setdefault(base, []).append(sid)
+	mapped_packages = []
+	for pkg in merged_payload.get("flowPackages", []):
+		if not isinstance(pkg, dict):
+			mapped_packages.append(pkg)
+			continue
+		new_pkg = dict(pkg)
+		new_step_ids = []
+		for pid in pkg.get("stepIds", []) or []:
+			pid = str(pid).strip()
+			if pid in base_to_expanded:
+				new_step_ids.extend(base_to_expanded[pid])
+			elif pid in scanned_ids:
+				# 非模板步骤（展开后仍以原 id 存在）保留
+				new_step_ids.append(pid)
+			# 其余：模板 id 被行级过滤（如多塔模式下单塔专属步骤）排除，直接丢弃，
+			# 否则校验会报"流程包引用了不存在的步骤"。
+		new_pkg["stepIds"] = new_step_ids
+		mapped_packages.append(new_pkg)
+	expanded = {
+		"runtimeConfig": dict(merged_payload.get("runtimeConfig", {})),
+		"flowPackages": mapped_packages,
+		"steps": [s for s in scanned_steps if isinstance(s, dict)],
+		"towers_used": towers_used,
+		"towers_dropped": towers_dropped,
+		"real_towers": real_towers,
+	}
+	expanded["runtimeConfig"]["towers_used"] = towers_used
+	expanded["runtimeConfig"]["towers_dropped"] = towers_dropped
+	expanded["runtimeConfig"]["real_towers"] = real_towers
 	base_to_expanded = {}
 	scanned_ids = set()
 	for s in scanned_steps:
