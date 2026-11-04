@@ -172,5 +172,108 @@ class TestWeatherPlanSql(unittest.TestCase):
         sql = res.data["plan_obj"].sql
         self.assertIn("N''" + ",", sql)
 
+
+class TestVariableWidthReadChannel(unittest.TestCase):
+    """P1-A 的归属边界：sqlcmd 的 `-W` 与 `-y` 互斥，读变长列必须换通道。
+
+    这一族断言直接钉住 argv —— 旧实现同时给 `-h -1 -W` 和变长值，sqlcmd 按默认
+    256 个显示字符裁剪并在 rc=0 下返回：长值（生产 NSParameters_kl_cmu 108 字符）
+    静默变成 64 字符，写后校验还报 [OK]。只在调用方断言「读到几段」抓不住这个回归，
+    因为裁剪发生在参数层。
+    """
+
+    @staticmethod
+    def _capture_run():
+        seen = {}
+
+        class FakeProc:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        def fake_run(command, **kwargs):
+            seen["command"] = list(command)
+            seen["kwargs"] = kwargs
+            return FakeProc()
+
+        return fake_run, seen
+
+    def test_default_channel_uses_w_and_has_no_width_flag(self):
+        fake_run, seen = self._capture_run()
+        with unittest.mock.patch.object(w.subprocess, "run", side_effect=fake_run):
+            ok, _out, _err = w._run_sql("MUPLocalDb_verify", "SELECT 1;")
+        self.assertTrue(ok)
+        self.assertIn("-W", seen["command"])
+        self.assertNotIn("-y", seen["command"])
+
+    def test_var_width_channel_uses_y_and_never_w(self):
+        # 互斥是根因：带 -y 时再给 -W 会让 -y 失效，值又被裁回 256 字符。
+        fake_run, seen = self._capture_run()
+        with unittest.mock.patch.object(w.subprocess, "run", side_effect=fake_run):
+            w._run_sql("MUPLocalDb_verify", "SELECT 1;", var_width=912)
+        self.assertIn("-y", seen["command"])
+        self.assertEqual(seen["command"][seen["command"].index("-y") + 1], "912")
+        self.assertNotIn("-W", seen["command"])
+
+    def test_read_sized_rows_carries_the_width_to_the_channel(self):
+        fake_run, seen = self._capture_run()
+        with unittest.mock.patch.object(w.subprocess, "run", side_effect=fake_run):
+            w.read_sized_rows("MUPLocalDb_verify", "SELECT 1;", var_width=4008)
+        self.assertIn("-y", seen["command"])
+        self.assertEqual(seen["command"][seen["command"].index("-y") + 1], "4008")
+        self.assertNotIn("-W", seen["command"])
+
+    def test_var_column_width_sizes_the_hex_channel(self):
+        # hex 每字节两个显示字符 + 余量；宽度只影响填充，正确性由完整性断言保证。
+        with unittest.mock.patch.object(w, "_query_rows", return_value=[["452"]]):
+            self.assertEqual(w.var_column_width("MUPLocalDb_verify", "SELECT 1;"), 912)
+        with unittest.mock.patch.object(w, "_query_rows", return_value=[["1"]]):
+            self.assertEqual(w.var_column_width("MUPLocalDb_verify", "SELECT 1;"),
+                             w.VAR_READ_MIN_WIDTH)
+
+    def test_var_column_width_refuses_over_the_sqlcmd_cap(self):
+        # 超过 -y 上限时主动抛错（调用方 fail-closed），而不是让 sqlcmd 静默裁剪。
+        with unittest.mock.patch.object(w, "_query_rows", return_value=[["4000"]]):
+            with self.assertRaises(RuntimeError) as ctx:
+                w.var_column_width("MUPLocalDb_verify", "SELECT 1;")
+        self.assertIn("上限", str(ctx.exception))
+
+    def test_var_column_width_does_not_guess_a_missing_probe_result(self):
+        for rows in ([], [[]], [["  "]], [["abc"]], [["-3"]]):
+            with unittest.mock.patch.object(w, "_query_rows", return_value=rows):
+                with self.assertRaises(RuntimeError):
+                    w.var_column_width("MUPLocalDb_verify", "SELECT 1;")
+
+    def test_hex_length_reason_catches_truncation_before_decoding(self):
+        # 生产 dbo.Parameters 的 NSParameters_kl_cmu 真值：108 个字符 / 10 段，
+        # nvarchar 的 DATALENGTH = 216 字节 ⇒ hex 通道需要 432 个显示字符；
+        # 旧通道按 256 个字符裁剪，解码只剩 6 段，这里必须在解码前抓住。
+        value = ("0.02022549|0.01315743|0.01472236|0.01825944|0.02210621|0.02653888|"
+                 "0.0298916|0.03274137|0.03031528|0.01277354")
+        self.assertEqual(len(value), 108)
+        self.assertEqual(len(value.split("|")), 10)
+        data_length = len(value.encode("utf-16-le"))
+        full = value.encode("utf-16-le").hex().upper()
+        self.assertEqual(len(full), 2 * data_length)
+        self.assertIsNone(w.hex_length_reason(full, str(data_length)))
+        reason = w.hex_length_reason(full[:256], str(data_length))
+        self.assertIsNotNone(reason)
+        self.assertIn("裁剪", reason)
+        self.assertIn("2×DATALENGTH=432", reason)
+        # 按残缺值解码只剩 64 个字符 / 6 段——正是 P1-A 报告里的观测值；
+        # 断言的作用就是不让这种残值走到解码这一步。
+        clipped = bytes.fromhex(full[:256]).decode("utf-16-le")
+        self.assertEqual(len(clipped), 64)
+        self.assertEqual(len(clipped.split("|")), 6)
+
+    def test_hex_length_reason_shapes(self):
+        self.assertIsNone(w.hex_length_reason("", "0"))      # 零长度列
+        self.assertIsNone(w.hex_length_reason("zz", "-1"))   # NULL 哨兵
+        self.assertIn("奇数", w.hex_length_reason("ABC", "1"))
+        self.assertIn("不是整数", w.hex_length_reason("AB", None))
+        self.assertIn("负数", w.hex_length_reason("AB", "-7"))
+        # 长度自洽但不是 hex（库里手写的文本值）：这里只判完整性，保留原样由调用方决定。
+        self.assertIsNone(w.hex_length_reason("zz", "1"))
+
 if __name__ == "__main__":
     unittest.main()

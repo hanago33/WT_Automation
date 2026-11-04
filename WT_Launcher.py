@@ -3568,6 +3568,30 @@ class LauncherApp:
                     btn_row2, text="⚡ 数据层录入", command=self._simple_terrain_data_layer,
                     tone="primary", font=("Microsoft YaHei UI", 8), padx=9, pady=3
                 ).pack(side=tk.LEFT, padx=(8, 0))
+            if key == "element":
+                # 数据层录入：测风点/风机/结果点元素走 mup_element_import。
+                # 绘图（Mapping）是元素模块里的一个元素类别，不是独立 tab，故同在本板块；
+                # 但它是独立接口 mup_mapping_import（Quad_* 几何），所以另给一个并列按钮。
+                wt_theme.create_flat_button(
+                    btn_row2, text="⚡ 数据层录入(元素)", command=self._simple_element_data_layer,
+                    tone="primary", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+                ).pack(side=tk.LEFT, padx=(8, 0))
+                wt_theme.create_flat_button(
+                    btn_row2, text="⚡ 数据层录入(绘图)", command=self._simple_mapping_data_layer,
+                    tone="primary", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+                ).pack(side=tk.LEFT, padx=3)
+            if key == "cfd":
+                # 数据层录入：只建 CFD 计算对象与参数快照，绝不触发求解器/HPC。
+                wt_theme.create_flat_button(
+                    btn_row2, text="⚡ 数据层录入", command=self._simple_cfd_data_layer,
+                    tone="primary", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+                ).pack(side=tk.LEFT, padx=(8, 0))
+            if key == "comprehensive":
+                # 数据层录入：只建综合对象与 CFD 扇区引用，绝不提交计算、不写 vault 产物。
+                wt_theme.create_flat_button(
+                    btn_row2, text="⚡ 数据层录入", command=self._simple_comprehensive_data_layer,
+                    tone="primary", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+                ).pack(side=tk.LEFT, padx=(8, 0))
 
             section_widgets[key] = {
                 "frame": card,
@@ -7202,6 +7226,702 @@ class LauncherApp:
             self.root.after(0, _finish)
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    # ── 表单四接口数据层录入（元素/绘图/CFD/综合）：共用骨架 ──────────────────
+    #
+    # 与气象/风机/地形三个按钮同一条红线：生产 MUPLocalDb 一律拒写，只允许
+    # *_verify / _test / _sandbox 副本库（与 mup_weather_import.apply_ok 白名单同口径）。
+    # 闸门在 GUI 侧无条件先跑一遍，不靠接口自己的守卫兜底 —— 总控台永远没有写生产库的权限。
+    #
+    # 这四个接口都只写库、不写 vault（mup_*_import 里没有 vault 落点），
+    # 所以这里不弹「选副本 vault 根」：拿一个没人用的目录只会让人以为它会写进去。
+    COPY_DB_SUFFIXES = ("_verify", "_test", "_sandbox")
+
+    # 编排契约（99_synthesis/2026-11-05-form-fix-codex.md §5）：退出码 → 用户下一步做什么。
+    DATALAYER_EXIT_HINTS = {
+        0: "成功",
+        2: "输入不合法（含非整数跨度、选择器歧义）：改参数再来",
+        3: "计算/生成失败",
+        4: "库守卫或读写失败：核对副本库名与连接",
+        5: "写后校验失败（已自动回滚）：看校验原因，别原样重试",
+        6: "同名/同(风向,稳定度)对象已存在：换名字或换参数再来",
+        7: "缺前置条件：先补地形/绘图/元素/工况，再回来重试同一份输入",
+    }
+
+    # 绘图表单的 GUI 侧默认值，与 mup_mapping_import.MappingSpec 的字段默认同口径。
+    MAPPING_DEFAULT_HEIGHT = 125.0
+    MAPPING_DEFAULT_STEP = 100.0
+
+    _ELEMENT_KIND_LABEL = {"mast": "测风点", "turbine": "风机", "result": "结果点"}
+
+    def _datalayer_dlg(self, kind, label, message, **kwargs):
+        """统一弹窗出口（parent 用 root，与气象/风机/地形范式一致）。"""
+        return getattr(messagebox, kind)(label, message,
+                                         parent=getattr(self, "root", None), **kwargs)
+
+    def _datalayer_busy(self, lock_attr, label):
+        """防重入：同一接口上一次录入没结束就不再开第二个（各自独立持锁）。"""
+        if getattr(self, lock_attr, False):
+            self._datalayer_dlg("showinfo", label, "上一次录入仍在进行，请稍候。")
+            return True
+        return False
+
+    def _datalayer_work_dir(self, label):
+        work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+        if not work_dir or not os.path.isdir(work_dir):
+            self._datalayer_dlg("showinfo", label, "请先选择项目工作目录。")
+            return ""
+        return work_dir
+
+    def _datalayer_ask_copy_db(self, label, initialvalue):
+        """副本库名输入 + 白名单守卫。取消或被拒都返回 ""（调用方直接 return）。"""
+        db = simpledialog.askstring(
+            label, "目标数据库（只允许副本库 *_verify/_test/_sandbox）：",
+            initialvalue=initialvalue, parent=getattr(self, "root", None))
+        if not db:
+            return ""
+        db = db.strip()
+        if not db.lower().endswith(self.COPY_DB_SUFFIXES):
+            self._datalayer_dlg(
+                "showerror", label,
+                "拒绝写入 {}：只允许副本库（*_verify/_test/_sandbox）。\n"
+                "总控台与这四个数据层接口都不支持写生产库，CLI 侧也没有生产放行开关。".format(db))
+            return ""
+        return db
+
+    def _datalayer_ask_site(self, label, work_dir, default=""):
+        """站点名：默认取工程目录基名（与离线导出同一解析口径），允许用户改。
+
+        `default` 非空时以它为首选值（综合接口用 "DEMO"：只有 DEMO 站有 CFD 结果金样）。
+        """
+        base = os.path.basename(str(work_dir or "").rstrip("\\/")).strip()
+        value = simpledialog.askstring(
+            label, "站点名（dbo.Sites.Name，默认取工程目录基名）：",
+            initialvalue=default or base, parent=getattr(self, "root", None))
+        if value is None:
+            return ""
+        value = value.strip() or (default or base)
+        if not value:
+            self._datalayer_dlg("showinfo", label, "无法从工程目录名得到站点名，请重新填写。")
+            return ""
+        return value
+
+    def _datalayer_result_text(self, res):
+        """ImportResult → 可操作摘要：直接展示负载里的 rollback/clash/verify/产物目录。
+
+        接口已把失败原因结构化（data["rollback"]/["verify_message"]/["clash"]/["issues"]），
+        总控台不再从消息文本里猜该做哪一步（§5 编排契约）。校验事实有两种落点：顶层
+        （编排侧自己拼的负载）与 data["verify"] 下（四个接口 apply_plan 的真负载），都取。
+        """
+        lines = [str(res.message)]
+        code = res.exit_code()
+        if not res.ok and code in self.DATALAYER_EXIT_HINTS:
+            lines.append("exit={}：{}".format(code, self.DATALAYER_EXIT_HINTS[code]))
+        data = res.data or {}
+        # 真负载把校验细节嵌在 data["verify"]（apply_plan 的返回）里，顶层只剩 .sql 路径：
+        # 只读顶层会让界面写着「看校验原因」却不给原因（把关 P2-4），所以两处都认。
+        verify = data.get("verify") if isinstance(data.get("verify"), dict) else {}
+        verify_message = data.get("verify_message") or verify.get("verify_message")
+        if verify_message:
+            lines.append("校验原因：{}".format(verify_message))
+        checks = verify.get("checks")
+        if not isinstance(checks, dict):
+            checks = data.get("checks") if isinstance(data.get("checks"), dict) else {}
+        failed = sorted(str(name) for name, ok in checks.items() if not ok)
+        if failed:
+            # 元素多时 checks 可能有上百个键： messagebox 里铺满名字就没法读了，取前 12 个 + 总数
+            head = "、".join(failed[:12])
+            more = "" if len(failed) <= 12 else " 等 {} 项".format(len(failed))
+            lines.append("校验不一致：{}{}".format(head, more))
+        rollback = data.get("rollback")
+        if isinstance(rollback, dict) and rollback.get("executed"):
+            lines.append("自动回滚：{}".format(
+                "已执行且成功" if rollback.get("ok") else "失败（需人工介入）"))
+        elif rollback:
+            lines.append("回滚脚本：{}".format(rollback))
+            nested = verify.get("rollback")
+            if isinstance(nested, dict) and nested.get("executed"):
+                lines.append("自动回滚：{}".format(
+                    "已执行且成功" if nested.get("ok") else "失败（需人工介入）"))
+        clash = data.get("clash")
+        if clash:
+            lines.append("冲突项：{}".format("；".join(str(item) for item in clash)))
+        for issue in res.issues or []:
+            lines.append("  {} {}".format(issue.code, issue.message))
+        for key in ("counts", "element_count"):
+            if verify.get(key) is not None:
+                lines.append("写后校验 {}={}".format(key, verify[key]))
+        for key in ("work_dir", "out_dir"):
+            if data.get(key):
+                lines.append("产物目录：{}".format(data[key]))
+                break
+        return "\n".join(lines)
+
+    def _datalayer_start(self, lock_attr, label, work_dir, artifact_dir, call):
+        """后台线程跑 call(out_dir)，回主线程汇报（沿用气象范式）。
+
+        call 收到 pathlib.Path 的独占产物目录：接口默认的 %TEMP% 目录在并发下会互相
+        覆盖 plan.json/apply.sql（CFD 已修，其余仍是共享），总控台统一显式传 out_dir。
+        """
+        from pathlib import Path as _Path
+        setattr(self, lock_attr, True)
+        self._append_log("{}开始".format(label), tag="system")
+
+        def _worker():
+            out_dir = _Path(os.path.join(work_dir or os.getcwd(), "04-WT输出", artifact_dir))
+            res = None
+            crash = ""
+            try:
+                res = call(out_dir)
+            except Exception as exc:  # noqa: BLE001
+                crash = "异常：{}".format(exc)
+            self.root.after(0, lambda: self._datalayer_finish(lock_attr, label, res, crash))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _datalayer_finish(self, lock_attr, label, res, crash):
+        setattr(self, lock_attr, False)
+        if res is None:
+            self._append_log("{}：{}".format(label, crash), tag="error")
+            self._datalayer_dlg("showerror", label, "{}失败\n{}".format(label, crash))
+            return
+        for issue in res.issues or []:
+            self._append_log("{} issue：{} {}".format(label, issue.code, issue.message),
+                             tag="warning")
+        self._append_log("{}：{}".format(label, res.message),
+                         tag="success" if res.ok else "error")
+        text = self._datalayer_result_text(res)
+        if res.ok:
+            self._datalayer_dlg("showinfo", label, "{}完成\n\n{}".format(label, text))
+        else:
+            self._datalayer_dlg("showerror", label, "{}失败\n\n{}".format(label, text))
+
+    def _simple_element_data_layer(self):
+        """数据层录入站点元素（测风点/风机/结果点）→ 副本 LocalDB。
+
+        与「新增及配置元素」GUI 流程并列，不改动原流程文件：
+          · 测风点/风机坐标自动取 03-WT输入 的 CFT/JWD 坐标文件（投影米，与站点同带号），
+            第 4 列缺失时测风点退回 CFT信息.txt 的海拔、风机退回项目参数轮毂高度；
+          · 结果点判别值 MTDElementPoint 属推断判别值（生产 0 行、未经 MUP 渲染验收），
+            默认不写，只有在确认框里显式放行才映射到 --allow-unverified-result-point；
+          · 只写库，不写 vault，也不触发任何计算。
+        """
+        try:
+            import mup_element_import
+        except Exception as exc:  # noqa: BLE001
+            self._datalayer_dlg("showerror", "元素数据层录入",
+                                "mup_element_import 不可用：{}".format(exc))
+            return
+        label = "元素数据层录入"
+        if self._datalayer_busy("_element_import_running", label):
+            return
+        work_dir = self._datalayer_work_dir(label)
+        if not work_dir:
+            return
+        db = self._datalayer_ask_copy_db(label, "MUPLocalDb_element_verify")
+        if not db:
+            return
+        site = self._datalayer_ask_site(label, work_dir)
+        if not site:
+            return
+        case = simpledialog.askstring(
+            label, "计算案例名（站点下的 dbo.Cases.Name）：",
+            initialvalue=mup_element_import.DEFAULT_CASE_NAME,
+            parent=getattr(self, "root", None))
+        if not case or not case.strip():
+            return
+        config = simpledialog.askstring(
+            label, "挂载配置名（dbo.Configurations.Name）：",
+            initialvalue=mup_element_import.DEFAULT_CONFIG_NAME,
+            parent=getattr(self, "root", None))
+        if config is None:
+            return
+        case = case.strip()
+        config = config.strip() or mup_element_import.DEFAULT_CONFIG_NAME
+
+        try:
+            import wt_spatial_domain_calc
+            points = wt_spatial_domain_calc.parse_points_from_input_dir(
+                os.path.join(work_dir, "03-WT输入"))
+        except Exception as exc:  # noqa: BLE001
+            self._datalayer_dlg("showerror", label, "解析 CFT/JWD 坐标文件失败：{}".format(exc))
+            return
+        elevations = {}
+        for ent in wt_project_workdir_parser.list_mast_entries(work_dir):
+            mast = str(ent.get("mastName") or "").strip()
+            if mast:
+                elevations[mast] = str(ent.get("elevation") or "").strip()
+        default_hub = str((getattr(self, "project_params", {}) or {}).get("hubHeight") or "").strip()
+
+        def _fallback_z(kind, name):
+            text = elevations.get(name, "") if kind == "mast" else default_hub
+            try:
+                return float(text) if text else 0.0
+            except ValueError:
+                return 0.0
+
+        specs = []
+        rows = []
+        for pt in points:
+            kind = "mast" if pt.category == "CFT" else "turbine"
+            z = float(pt.z or 0.0) or _fallback_z(kind, str(pt.name))
+            specs.append(mup_element_import.ElementSpec(
+                kind=kind, label=str(pt.name), x=float(pt.x), y=float(pt.y), z=z))
+            rows.append(self._element_row_text(specs[-1], ""))
+        if not specs:
+            self._datalayer_dlg(
+                "showinfo", label,
+                "项目 03-WT输入 下未解析到测风点/风机坐标（CFT*/JWD* 坐标文件）。")
+            return
+
+        extra = simpledialog.askstring(
+            label,
+            "追加元素（可选，一段一条：kind,label,x,y,z[,wtg]，kind 取 mast|turbine|result；"
+            "多条之间用分号 ; 隔开）\n留空则只用上面自动解析的 {} 条：".format(len(specs)),
+            parent=getattr(self, "root", None))
+        if extra is None:
+            return
+        # 分号分隔而不是换行：本机 tkinter 的 simpledialog.askstring 是单行 Entry，
+        # 收不到多行文本；元素段内部只用逗号，所以分号是安全的记录分隔符。
+        # 全角逗号按接口 CLI 同一口径归一（mup_cfd_import.main 也这么做）。
+        for line in re.split(r"[;\n；]+", str(extra).replace("，", ",")):
+            line = line.strip()
+            if not line:
+                continue
+            head, sep, tail = line.partition(",")
+            if not sep:
+                self._datalayer_dlg("showerror", label,
+                                    "追加行格式不对：{}（需要 kind,label,x,y,z[,wtg]）".format(line))
+                return
+            spec, err = mup_element_import.parse_element_arg(head.strip().lower(), tail)
+            if err:
+                self._datalayer_dlg("showerror", label, "追加行解析失败：{}\n{}".format(line, err))
+                return
+            specs.append(spec)
+            rows.append(self._element_row_text(spec, "（手工）"))
+
+        # 结果点判别值属推断：默认不写（对应 --allow-unverified-result-point 默认不勾）。
+        dropped = [s for s in specs if s.kind == "result"]
+        allow_result = False
+        if dropped:
+            allow_result = self._datalayer_dlg(
+                "askyesno", label,
+                "本批含结果点 {} 个：{}\n\n结果点判别值 MTDElementPoint 属推断值"
+                "（EF6「判别值=类名」惯例 + 类型层次观测，生产库 0 行，尚未经 MUP "
+                "打开站点渲染验收）。\n\n确认接受这份未验证写入？\n"
+                "选「否」将剔除结果点，只写测风点/风机。".format(
+                    len(dropped), "、".join(s.label for s in dropped)))
+            if not allow_result:
+                specs = [s for s in specs if s.kind != "result"]
+                rows = [self._element_row_text(s, "") for s in specs]
+                self._append_log("{}：用户未放行，已剔除 {} 个结果点".format(
+                    label, len(dropped)), tag="warning")
+        if not specs:
+            self._datalayer_dlg("showinfo", label, "剔除结果点后没有可写入的元素。")
+            return
+
+        if not self._datalayer_dlg(
+                "askyesno", label,
+                "将向副本库 {} 写入元素：\n站点 {} / 案例 {} / 配置 {}\n\n{}\n\n"
+                "本接口只写副本库，不写 vault、不触发计算。\n继续？".format(
+                    db, site, case, config, "\n".join(rows))):
+            return
+
+        def _call(out_dir):
+            return mup_element_import.run(
+                specs, db, site=site, case=case, config_name=config, apply=True,
+                out_dir=out_dir, allow_unverified_result=allow_result)
+
+        self._datalayer_start("_element_import_running", label, work_dir,
+                              os.path.join("element_import", site, self._datalayer_stamp()),
+                              _call)
+
+    def _element_row_text(self, spec, suffix):
+        """元素行的一行摘要（仅供确认框展示，解释仍归 mup_element_import）。"""
+        def _num(value):
+            return "{:.1f}".format(value) if value is not None else "(空)"
+        return "{} {} (X={}, Y={}) Z={}{}".format(
+            self._ELEMENT_KIND_LABEL.get(spec.kind, spec.kind), spec.label,
+            _num(spec.x), _num(spec.y), _num(spec.z), suffix)
+
+    def _datalayer_mapping_default_bounds(self, work_dir):
+        """绘图范围默认值：项目已解析的计算域角点 → 站点中心 ±1km → None。
+
+        一律向步长整倍数吸附：非整数跨度现在在计划期硬拒（exit 2），
+        默认值就给整倍数比让用户撞墙省事。返回 (x_min, x_max, y_min, y_max)。
+        """
+        import math
+        summary = None
+        try:
+            summary = wt_project_workdir_parser.summarize_project_work_dir(
+                work_dir, getattr(self, "project_params", {}) or {})
+        except Exception:  # noqa: BLE001 - 默认值解析失败不该阻断，交给用户填
+            summary = None
+        if not summary:
+            return None
+        box = None
+        try:
+            box = (float(summary["domain_nw_x"]), float(summary["domain_se_x"]),
+                   float(summary["domain_se_y"]), float(summary["domain_nw_y"]))
+        except (TypeError, ValueError, KeyError):
+            box = None
+        if box is None:
+            try:
+                cx = float(summary["utm_x"])
+                cy = float(summary["utm_y"])
+            except (TypeError, ValueError, KeyError):
+                return None
+            box = (cx - 1000.0, cx + 1000.0, cy - 1000.0, cy + 1000.0)
+        step = self.MAPPING_DEFAULT_STEP
+        cx = (box[0] + box[1]) / 2.0
+        cy = (box[2] + box[3]) / 2.0
+        half_x = math.ceil((box[1] - box[0]) / 2.0 / step) * step
+        half_y = math.ceil((box[3] - box[2]) / 2.0 / step) * step
+        return (cx - half_x, cx + half_x, cy - half_y, cy + half_y)
+
+    def _simple_mapping_data_layer(self):
+        """数据层新增绘图（Mapping）元素 → 副本 LocalDB。
+
+        绘图不是独立 tab，是「元素」模块里的 Mapping 类别（见
+        99_synthesis/2026-11-04-calibration-for-form-agents.md），所以按钮放在 element
+        板块；但它是独立接口 mup_mapping_import（Quad_* 几何），所以单独一个入口。
+
+        默认范围取项目已解析的计算域角点（与站点同投影同带号），并吸附到步长整倍数：
+        跨度不是步长整数倍现在会在计划期就硬拒（exit 2），不会再「照给定角点写库、
+        到写后校验才报角点反算失配」。
+        """
+        try:
+            import mup_mapping_import
+        except Exception as exc:  # noqa: BLE001
+            self._datalayer_dlg("showerror", "绘图数据层录入",
+                                "mup_mapping_import 不可用：{}".format(exc))
+            return
+        label = "绘图数据层录入"
+        if self._datalayer_busy("_mapping_import_running", label):
+            return
+        work_dir = self._datalayer_work_dir(label)
+        if not work_dir:
+            return
+        db = self._datalayer_ask_copy_db(label, "MUPLocalDb_mapping_verify")
+        if not db:
+            return
+        site = self._datalayer_ask_site(label, work_dir)
+        if not site:
+            return
+        bounds = self._datalayer_mapping_default_bounds(work_dir)
+        initial = ",".join("{:.1f}".format(v) for v in bounds) if bounds else ""
+        text = simpledialog.askstring(
+            label,
+            "绘图范围 XMin,XMax,YMin,YMax（投影米，与站点同带号）：",
+            initialvalue=initial, parent=getattr(self, "root", None))
+        if text is None:
+            return
+        chunks = [chunk for chunk in re.split(r"[,\s，]+", str(text).strip()) if chunk]
+        if len(chunks) != 4:
+            self._datalayer_dlg("showerror", label,
+                                "需要 4 个数 XMin,XMax,YMin,YMax（收到 {} 个）".format(len(chunks)))
+            return
+        try:
+            x_min, x_max, y_min, y_max = [float(chunk) for chunk in chunks]
+        except ValueError:
+            self._datalayer_dlg("showerror", label, "四个角点值必须都是数值：{}".format(text))
+            return
+        height = self._datalayer_ask_number(
+            label, "高度 m（Quad_Origin_Z，GUI 属性行 _Height）", self.MAPPING_DEFAULT_HEIGHT)
+        if height is None:
+            return
+        step = self._datalayer_ask_number(
+            label, "步长 m（两条边同值，须整除跨度）", self.MAPPING_DEFAULT_STEP)
+        if step is None:
+            return
+        name = simpledialog.askstring(
+            label, "绘图名称（Elements.Label，留空自动 Mapping(n)）：",
+            initialvalue="", parent=getattr(self, "root", None))
+        if name is None:
+            return
+        spec = mup_mapping_import.MappingSpec.from_bounds(
+            site, x_min, x_max, y_min, y_max, height=height, step=step, label=name.strip())
+        # 输入门用接口自己的解释者（MappingSpec.validate）：非整数跨度在这里就说清楚，
+        # 而不是让用户到写库那一轮才看到 exit 2/5。
+        issues = spec.validate()
+        if issues:
+            self._datalayer_dlg(
+                "showerror", label,
+                "输入不合法（exit=2，不会写库）：\n" +
+                "\n".join("{}：{}".format(i.code, i.message) for i in issues))
+            return
+        link = self._datalayer_dlg(
+            "askyesno", label,
+            "同时把绘图挂到风机配置（dbo.Configuration_Element）？\n"
+            "选「否」只写 Elements 一行，配置里看不到它。")
+        if not self._datalayer_dlg(
+                "askyesno", label,
+                "将向副本库 {} 新增绘图：\n站点 {}\nXMin={} XMax={} YMin={} YMax={}\n"
+                "高度 {} m / 步长 {} m（{} x {} 步）\n名称 {}\n挂载配置 {}\n\n"
+                "本接口只写副本库，不写 vault、不触发计算。\n"
+                "前置：站点需已有 0-9000 m 的测风/风机元素，否则 exit 7。\n继续？".format(
+                    db, site, x_min, x_max, y_min, y_max, height, step,
+                    int(round(spec.width / step)), int(round(spec.north_south / step)),
+                    name.strip() or "自动 Mapping(n)", "是" if link else "否")):
+            return
+
+        def _call(out_dir):
+            return mup_mapping_import.run(spec, db, apply=True,
+                                          link_configuration=bool(link), out_dir=out_dir)
+
+        self._datalayer_start("_mapping_import_running", label, work_dir,
+                              os.path.join("mapping_import", site, self._datalayer_stamp()),
+                              _call)
+
+    def _datalayer_ask_number(self, label, prompt, default):
+        """带默认值的数值输入；取消返回 None，留空返回默认值。"""
+        value = simpledialog.askstring(
+            label, prompt + "（留空用默认 {}）：".format(
+                ("%g" % default) if isinstance(default, float) else default),
+            initialvalue="" if default is None else ("%g" % default),
+            parent=getattr(self, "root", None))
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return float(default)
+        try:
+            return float(text)
+        except ValueError:
+            self._datalayer_dlg("showerror", label, "{} 不是数值。".format(prompt))
+            return None
+
+    def _datalayer_ask_int(self, label, prompt, minimum=1):
+        """整数输入收口（把关 P1-2）：返回 (是否中止, 值)。
+
+        留空 = (False, None)：沿用快照默认、不写覆盖键；取消 = (True, None)：调用方直接 return；
+        非整数或低于下限 = (True, None)，且已经把错误弹回去。`_form_value` 原样透传非数字，
+        所以 GUI 必须自己挡住「abc 进参数快照」；接口侧 CfdSpec.validate() 有同口径的正整数门。
+        """
+        value = simpledialog.askstring(
+            label, prompt + "（留空 = 沿用表单默认，不覆盖快照）：",
+            initialvalue="", parent=getattr(self, "root", None))
+        if value is None:
+            return True, None
+        text = str(value).strip()
+        if not text:
+            return False, None
+        try:
+            number = int(text)
+        except ValueError:
+            self._datalayer_dlg("showerror", label,
+                                "{} 需要是整数：{}".format(prompt, text))
+            return True, None
+        if number < minimum:
+            self._datalayer_dlg("showerror", label,
+                                "{} 需要不小于 {}：{}".format(prompt, minimum, text))
+            return True, None
+        return False, number
+
+    @staticmethod
+    def _datalayer_stamp():
+        return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    def _simple_cfd_data_layer(self):
+        """数据层新建 CFD 计算对象 → 副本 LocalDB（只建对象与参数快照，绝不触发计算）。
+
+        与「发送 CFD 计算」GUI 流程并列，不改动原流程文件：
+          · 站点取工程目录基名；工况留空时单工况自动取，多工况必须选（否则 exit 7）；
+          · 风向留空 = 按气象风频矩阵自动取非零扇区；稳定度留空 = 表单默认；
+          · 迭代/线程/收敛阈值留空 = 沿用快照默认，给了就覆盖对应 DAS_ 键；
+            迭代与核数按整数解释，非整数（含 0 与 1.5）在 GUI 就弹回，接口 validate 同口径；
+          · Atlas 不勾（本库 CFDAtlas 0 行、无金样），也不提交 HPC/本地求解、不写 CFDOutputs；
+          · (风向, 稳定度) 与既有对象重复会拒（exit 6）并给出 clash 明细。
+        """
+        try:
+            import mup_cfd_import
+        except Exception as exc:  # noqa: BLE001
+            self._datalayer_dlg("showerror", "CFD 数据层录入",
+                                "mup_cfd_import 不可用：{}".format(exc))
+            return
+        label = "CFD 数据层录入"
+        if self._datalayer_busy("_cfd_import_running", label):
+            return
+        work_dir = self._datalayer_work_dir(label)
+        if not work_dir:
+            return
+        db = self._datalayer_ask_copy_db(label, "MUPLocalDb_cfd_verify")
+        if not db:
+            return
+        site = self._datalayer_ask_site(label, work_dir)
+        if not site:
+            return
+        case = simpledialog.askstring(
+            label, "工况名或 Cases.Id（站点只有一个工况时留空自动取；"
+                   "多个工况必须选，否则 exit 7）：",
+            initialvalue="", parent=getattr(self, "root", None))
+        if case is None:
+            return
+        direction_text = simpledialog.askstring(
+            label, "风向列表（逗号分隔，如 10,30,50；留空 = 按气象风频矩阵自动取"
+                   "全部非零扇区）：",
+            initialvalue="", parent=getattr(self, "root", None))
+        if direction_text is None:
+            return
+        directions = None
+        if str(direction_text).strip():
+            try:
+                directions = [int(chunk) for chunk
+                              in re.split(r"[,\s，]+", str(direction_text).strip()) if chunk]
+            except ValueError:
+                self._datalayer_dlg("showerror", label, "风向必须是整数角度：{}".format(direction_text))
+                return
+            if not directions:
+                self._datalayer_dlg("showerror", label, "风向列表为空不会生成任何计算对象。")
+                return
+        stability_text = simpledialog.askstring(
+            label, "热稳定度类别号（留空 = 表单默认，本机 2=“2 - 中性”；-1 = 不分桶）：",
+            initialvalue="", parent=getattr(self, "root", None))
+        if stability_text is None:
+            return
+        stability = None
+        if str(stability_text).strip():
+            try:
+                stability = int(str(stability_text).strip())
+            except ValueError:
+                self._datalayer_dlg("showerror", label,
+                                    "热稳定度需要整数类别号：{}".format(stability_text))
+                return
+        overrides = {}
+        # 迭代次数/核数在快照里按整数解释：这两个框走整数收口，非数字在这里就弹回。
+        for attr, prompt in (("iterations", "最大迭代次数"),
+                             ("threads", "每方向核数")):
+            aborted, number = self._datalayer_ask_int(label, prompt, minimum=1)
+            if aborted:
+                return
+            if number is not None:
+                overrides[mup_cfd_import.FORM_KEY_MAP[attr]] = str(number)
+        value = simpledialog.askstring(
+            label, "收敛阈值（百分数，默认表 95 / 应用下限 90）"
+                   "（留空 = 沿用表单默认，不覆盖快照）：",
+            initialvalue="", parent=getattr(self, "root", None))
+        if value is None:
+            return
+        if str(value).strip():
+            key = mup_cfd_import.FORM_KEY_MAP["convergence_threshold"]
+            # 百分数口径沿用接口自己的解释者与校验（_convergence_threshold_issues），
+            # GUI 不重实现；上面两个整数框的口径由 _positive_int_issues 兜底。
+            overrides[key] = mup_cfd_import._form_value(key, value)
+        spec = mup_cfd_import.CfdSpec(
+            site=site, case=case.strip() or None, directions=directions,
+            stability=stability, overrides=overrides)
+        issues = spec.validate()
+        if issues:
+            self._datalayer_dlg(
+                "showerror", label,
+                "输入不合法（exit=2，不会写库）：\n" +
+                "\n".join("{}：{}".format(i.code, i.message) for i in issues))
+            return
+        summary = "{} 个风向".format(len(spec.directions) if spec.directions else "自动判定")
+        if not self._datalayer_dlg(
+                "askyesno", label,
+                "将向副本库 {} 新建 CFD 计算对象：\n站点 {} / 工况 {}\n风向 {} / 稳定度 {}\n"
+                "覆盖的表单键：{}\n\n"
+                "红线：只建 CFD 对象与参数快照，绝不提交 HPC/本地求解、绝不写 CFDOutputs、"
+                "不启动 MUP。与既有 (风向, 稳定度) 重复会被拒（exit 6）。\n"
+                "前置：需已有地形/绘图/元素/气象，否则 exit 7。\n继续？".format(
+                    db, site, case.strip() or "（单工况自动取）", summary,
+                    stability if stability is not None else "表单默认",
+                    "、".join(sorted(overrides)) or "（无，全部沿用快照默认）")):
+            return
+
+        def _call(out_dir):
+            return mup_cfd_import.run(spec, db, apply=True, out_dir=out_dir)
+
+        # 每次调用独占产物目录：CFD 的 blob 构建是 build→读回同一文件，并发共用会互相污染。
+        self._datalayer_start("_cfd_import_running", label, work_dir,
+                              os.path.join("cfd_import", site, self._datalayer_stamp()), _call)
+
+    def _simple_comprehensive_data_layer(self):
+        """数据层新建综合（WRA Analysis）对象 → 副本 LocalDB（只建对象/引用，绝不实跑）。
+
+        与「发送综合计算」GUI 流程并列，不改动原流程文件：
+          · 综合对象要承接 CFD 结果扇区，本轮只在 DEMO 站验证过该形状，故默认站点 DEMO，
+            改成别的站点需用户再确认一次（多半返回 exit 7 缺前置）；
+          · EWR（ExtremeWindReference）保真克隆：默认原样克隆源行的两列，
+            只有在接口侧的清空开关下才成对写 (NULL, 0)，不会造生产未观测的半清空形状；
+          · 只建对象/引用，不提交计算、不产生/删除 vault 产物；不支持 --replace，
+            同名/同序号一律 fail-closed。
+        """
+        try:
+            import mup_synthesis_import
+        except Exception as exc:  # noqa: BLE001
+            self._datalayer_dlg("showerror", "综合数据层录入",
+                                "mup_synthesis_import 不可用：{}".format(exc))
+            return
+        label = "综合数据层录入"
+        if self._datalayer_busy("_synthesis_import_running", label):
+            return
+        work_dir = self._datalayer_work_dir(label)
+        if not work_dir:
+            return
+        db = self._datalayer_ask_copy_db(label, "MUPLocalDb_synth_verify")
+        if not db:
+            return
+        site = self._datalayer_ask_site(label, work_dir, default="DEMO")
+        if not site:
+            return
+        if site.upper() != "DEMO":
+            if not self._datalayer_dlg(
+                    "askyesno", label,
+                    "站点 {} 不是 DEMO。\n综合对象要承接 CFD 结果扇区，本轮只在 DEMO 站"
+                    "验证过「有 CFD 结果」的形状；非 DEMO 站点大概率返回 exit 7"
+                    "（缺前置条件）。\n\n仍要继续？".format(site)):
+                return
+        case = simpledialog.askstring(
+            label, "工况名或 Cases.Id（站点只有一个工况时留空自动取）：",
+            initialvalue="", parent=getattr(self, "root", None))
+        if case is None:
+            return
+        clone = simpledialog.askstring(
+            label, "克隆源综合（名称/序号/Id；留空 = 自动选元素集与配置一致的那个）：",
+            initialvalue="", parent=getattr(self, "root", None))
+        if clone is None:
+            return
+        configuration = simpledialog.askstring(
+            label, "风机配置名（dbo.Configurations.Name）：",
+            initialvalue=mup_synthesis_import.DEFAULT_CONFIGURATION,
+            parent=getattr(self, "root", None))
+        if configuration is None:
+            return
+        name = simpledialog.askstring(
+            label, "综合名称（留空 = 综合{max+1} 自动编号）：",
+            initialvalue="", parent=getattr(self, "root", None))
+        if name is None:
+            return
+        spec = mup_synthesis_import.SynthesisSpec(
+            site=site, case=case, name=name, clone_from=clone,
+            configuration=configuration.strip() or mup_synthesis_import.DEFAULT_CONFIGURATION)
+        issues = spec.validate()
+        if issues:
+            self._datalayer_dlg(
+                "showerror", label,
+                "输入不合法（exit=2，不会写库）：\n" +
+                "\n".join("{}：{}".format(i.code, i.message) for i in issues))
+            return
+        if not self._datalayer_dlg(
+                "askyesno", label,
+                "将向副本库 {} 新建综合对象：\n站点 {} / 工况 {} / 配置 {}\n"
+                "克隆源 {} / 名称 {}\n\n"
+                "红线：只建综合对象与 CFD 扇区引用，绝不提交计算、不产生/删除 vault 产物、"
+                "不启动 MUP；EWR 两列原样克隆源行；不支持 --replace，同名/同序号一律拒。\n"
+                "前置：站点需已有带结果的 CFD，否则 exit 7。\n继续？".format(
+                    db, site, case.strip() or "（单工况自动取）",
+                    spec.configuration, clone.strip() or "（自动选）",
+                    name.strip() or "综合{max+1}")):
+            return
+
+        def _call(out_dir):
+            return mup_synthesis_import.run(spec, db, apply=True, out_dir=out_dir)
+
+        self._datalayer_start("_synthesis_import_running", label, work_dir,
+                              os.path.join("synthesis_import", site, self._datalayer_stamp()),
+                              _call)
 
     def _simple_offline_export(self):
         """离线导出（不启动 MUP）：先确认项目身份与输出名，再从 .wrp 生成交付文件。

@@ -86,6 +86,9 @@ class ImportCode:
     VERIFY = "verify_failed"
     CONFLICT = "name_exists"
     UNSUPPORTED = "unsupported"
+    # 「缺前置条件」不是「同名已存在」：缺地形/缺绘图/缺点位/缺气象时，上层编排要做的是
+    # 先去补前置，而不是换个名字重试。两者共用一个 code 会把这两种分支并成一个（P4）。
+    PRECONDITION = "precondition_missing"
 
 
 @dataclass
@@ -130,6 +133,7 @@ class ImportResult:
             ImportCode.VERIFY: 5,
             ImportCode.CONFLICT: 6,
             ImportCode.UNSUPPORTED: 2,
+            ImportCode.PRECONDITION: 7,
         }.get(self.code, 1)
 
 
@@ -239,10 +243,56 @@ def _sql_hex(data: bytes) -> str:
     return "0x" + data.hex().upper()
 
 
-def _run_sql(db: str, sql: str, timeout: int = 120) -> tuple[bool, str, str]:
-    """执行 SQL（stdin 传脚本，避免 Windows 路径转换问题）。"""
+# --- 读通道（P1-A 的归属边界）-----------------------------------------------
+# sqlcmd 的 -W（去掉列尾空格）与 -y（变长列显示宽）**互斥**；不带 -y 时变长数据按默认
+# 256 个显示字符裁剪。库里的 nvarchar 列一律是「变长」，所以一条 108 个字符的值在 hex
+# 通道里表现为 432→256 个 hex 字符：值被静默砍掉一半，解码后只剩 6 段（真值 10 段），
+# 而且返回码仍是 0。默认通道只适合读定宽/短值；读变长值必须走 var_column_width() +
+# read_sized_rows()，并用 hex_length_reason() 在解码前断言完整性。
+VAR_READ_MIN_WIDTH = 512
+VAR_READ_MAX_WIDTH = 8000
+
+
+def var_column_width(db: str, probe_sql: str, timeout: int = 120) -> int:
+    """问出「这批变长列最大有多少字节」，换算成 read_sized_rows 的 -y 宽度。
+
+    probe_sql 必须只返回一个整数，例如
+    `SELECT ISNULL(MAX(DATALENGTH(Value)),0) FROM dbo.Parameters WHERE ...`。
+    hex 通道每字节占 2 个显示字符，所以宽度 = 2*字节 + 余量。宽度只影响填充开销，
+    不影响正确性 —— 正确性由 hex_length_reason() 的断言保证：万一还有别的原因导致
+    裁剪，断言会 fail-closed 而不是静默少读。
+
+    sqlcmd 的 -y 有硬上限 8000 个显示字符（实测 `-y 16008` 直接拒绝启动），所以单个
+    变长列超过 3996 字节时这条通道读不完整：这里主动抛错，调用方必须 fail-closed，
+    需要更长值时改走 .NET SqlClient 通道，而不是让 sqlcmd 静默裁剪。
+    """
+    rows = _query_rows(db, probe_sql, timeout=timeout)
+    if not rows or not rows[0] or not str(rows[0][0]).strip():
+        raise RuntimeError("变长列宽度探测没有返回整数: " + probe_sql)
+    try:
+        nbytes = int(str(rows[0][0]).strip())
+    except ValueError as exc:
+        raise RuntimeError("变长列宽度探测结果不是整数: %r" % rows[0][0]) from exc
+    if nbytes < 0:
+        raise RuntimeError("变长列宽度探测返回负数: %d" % nbytes)
+    needed = 2 * nbytes + 8
+    if needed > VAR_READ_MAX_WIDTH:
+        raise RuntimeError(
+            "变长列最大 %d 字节，hex 通道需要 %d 个显示字符，超过 sqlcmd -y 上限 %d；"
+            "这条通道读不完整，必须改走 .NET SqlClient 取字节（不要按裁剪值继续）"
+            % (nbytes, needed, VAR_READ_MAX_WIDTH))
+    return max(VAR_READ_MIN_WIDTH, needed)
+
+
+def _run_sql(db: str, sql: str, timeout: int = 120,
+             var_width: Optional[int] = None) -> tuple[bool, str, str]:
+    """执行 SQL（stdin 传脚本，避免 Windows 路径转换问题）。
+
+    var_width 非空 ⇒ 用 -y <width> 且不带 -W（读变长列，见上面注释）。
+    """
+    width_args = ["-y", str(int(var_width))] if var_width else ["-W"]
     command = [_sqlcmd(), "-S", os.environ.get("MUP_LOCALDB_SERVER", r"(localdb)\Meteodyn"),
-               "-d", db, "-b", "-r1", "-h", "-1", "-W", "-s", "|", "-f", "65001"]
+               "-d", db, "-b", "-r1", "-h", "-1", "-s", "|", "-f", "65001"] + width_args
     try:
         proc = subprocess.run(command, input=sql.encode("utf-8"), capture_output=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -261,8 +311,10 @@ def _decode_console(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def _query_rows(db: str, sql: str) -> list[list[str]]:
-    ok, out, err = _run_sql(db, "SET NOCOUNT ON;\n" + sql)
+def _query_rows(db: str, sql: str, timeout: int = 120,
+                var_width: Optional[int] = None) -> list[list[str]]:
+    ok, out, err = _run_sql(db, "SET NOCOUNT ON;\n" + sql, timeout=timeout,
+                            var_width=var_width)
     if not ok:
         raise RuntimeError(err or out or "sqlcmd failed")
     rows = []
@@ -270,6 +322,39 @@ def _query_rows(db: str, sql: str) -> list[list[str]]:
         if line.strip():
             rows.append([p.strip() for p in line.split("|")])
     return rows
+
+
+def read_sized_rows(db: str, sql: str, var_width: int, timeout: int = 600) -> list[list[str]]:
+    """定宽读变长列：宽度来自 var_column_width()，此通道不带 -W（与 -y 互斥）。"""
+    return _query_rows(db, sql, timeout=timeout, var_width=var_width)
+
+
+def hex_length_reason(hex_token: str, data_length_token: str,
+                      null_length: int = -1) -> Optional[str]:
+    """解码前的完整性断言：`len(hex) 必须 == 2 * DATALENGTH(col)`。
+
+    返回 None 表示这一行完整可读；否则返回可操作的失败原因，调用方必须据此
+    fail-closed（不要退回「按已读到的部分继续」，那正是 P1-A 的失效模式）。
+    NULL 走 null_length 哨兵（调用方把 DATALENGTH 写成
+    `CASE WHEN col IS NULL THEN -1 ELSE DATALENGTH(col) END`），必须在断言之前
+    由调用方自己判 NULL 哨兵，这里不猜。
+    """
+    raw = (hex_token or "").strip()
+    try:
+        nbytes = int(str(data_length_token).strip())
+    except (TypeError, ValueError):
+        return "DATALENGTH 列不是整数: %r" % data_length_token
+    if nbytes == null_length:
+        return None
+    if nbytes < 0:
+        return "DATALENGTH 是负数 %d（既不是 NULL 哨兵也不是合法长度）" % nbytes
+    expected = 2 * nbytes
+    if len(raw) % 2:
+        return "hex 长度是奇数 %d，不可能是完整字节序列" % len(raw)
+    if len(raw) != expected:
+        return ("hex 长度 %d ≠ 2×DATALENGTH=%d：值被读取通道裁剪或列发生错位，"
+                "拒绝按残缺值继续" % (len(raw), expected))
+    return None
 
 
 def _prod_vault_root() -> Optional[Path]:
