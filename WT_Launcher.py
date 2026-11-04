@@ -3544,6 +3544,30 @@ class LauncherApp:
                 btn_row2, text="导出", command=_make_export(),
                 tone="subtle", font=("Microsoft YaHei UI", 8), padx=9, pady=3
             ).pack(side=tk.LEFT, padx=3)
+            if key == "export_result":
+                # 离线导出：与 46 步 GUI 流程并列的新入口，不改动原流程文件。
+                wt_theme.create_flat_button(
+                    btn_row2, text="⚡ 离线导出", command=self._simple_offline_export,
+                    tone="primary", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+                ).pack(side=tk.LEFT, padx=(8, 0))
+            if key == "weather":
+                # 数据层录入：C# 服务算矩阵 + 写副本库；默认拒绝生产库。
+                wt_theme.create_flat_button(
+                    btn_row2, text="⚡ 数据层录入", command=self._simple_weather_data_layer,
+                    tone="primary", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+                ).pack(side=tk.LEFT, padx=(8, 0))
+            if key == "turbine":
+                # 数据层录入：.wtg 解析 + blob 重建（byte-exact）+ 12 行落库；默认拒绝生产库。
+                wt_theme.create_flat_button(
+                    btn_row2, text="⚡ 数据层录入", command=self._simple_turbine_data_layer,
+                    tone="primary", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+                ).pack(side=tk.LEFT, padx=(8, 0))
+            if key == "terrain":
+                # 数据层录入：GeoTIFF 元数据 + footprint + GeoData/Files 两行落库；默认拒绝生产库。
+                wt_theme.create_flat_button(
+                    btn_row2, text="⚡ 数据层录入", command=self._simple_terrain_data_layer,
+                    tone="primary", font=("Microsoft YaHei UI", 8), padx=9, pady=3
+                ).pack(side=tk.LEFT, padx=(8, 0))
 
             section_widgets[key] = {
                 "frame": card,
@@ -6793,6 +6817,632 @@ class LauncherApp:
             frame.get("casePrefix") or frame.get("targetSite") or case_prefix,
             frame.get("expectedNs") or expected_ns or frame.get("targetN"),
             export_detail)
+
+    def _simple_weather_data_layer(self):
+        """数据层录入气象对象（模式 B）：MUP C# 服务算矩阵 → 副本 LocalDB。
+
+        与「新建气象数据」GUI 流程并列，不改动原流程文件：
+          · TI/TISD 矩阵：C# 服务导入（已与 GUI 金样逐格一致）；
+          · 风频矩阵：FillStatisticsFromTimeSeries（内网正常；本机受限时仅告警）；
+          · 写入：默认只允许 *_verify / *_test / *_sandbox 副本库，生产库需 CLI 显式授权。
+        """
+        try:
+            import mup_weather_import
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("数据层录入", "mup_weather_import 不可用：{}".format(exc),
+                                 parent=getattr(self, "root", None))
+            return
+        if getattr(self, "_weather_import_running", False):
+            messagebox.showinfo("数据层录入", "上一次录入仍在进行，请稍候。",
+                                parent=getattr(self, "root", None))
+            return
+        work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+        if not work_dir or not os.path.isdir(work_dir):
+            messagebox.showinfo("数据层录入", "请先选择项目工作目录。",
+                                parent=getattr(self, "root", None))
+            return
+        try:
+            entries = wt_project_workdir_parser.parse_all_masts(
+                work_dir, project_params=getattr(self, "project_params", {}) or {})
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("数据层录入", "测风塔解析失败：{}".format(exc),
+                                 parent=getattr(self, "root", None))
+            return
+        if not entries:
+            messagebox.showinfo("数据层录入", "项目目录下未解析到测风塔（03-测风塔数据）。",
+                                parent=getattr(self, "root", None))
+            return
+        db = simpledialog.askstring(
+            "数据层录入",
+            "目标数据库（只允许副本库 *_verify/_test/_sandbox）：",
+            initialvalue="MUPLocalDb_mupx_verify",
+            parent=getattr(self, "root", None),
+        )
+        if not db:
+            return
+        db = db.strip()
+        if not db.lower().endswith(("_verify", "_test", "_sandbox")):
+            messagebox.showerror(
+                "数据层录入",
+                "拒绝写入 {}：只允许副本库。\n生产库请用 CLI 并显式 --danger-write-prod。".format(db),
+                parent=getattr(self, "root", None),
+            )
+            return
+        vault_root = filedialog.askdirectory(
+            title="选择配对副本 vault 根（不得指向生产 vault）",
+            initialdir="H:/ProgramData/Meteodyn",
+            parent=getattr(self, "root", None))
+        if not vault_root:
+            return
+        plan_names = []
+        jobs = []
+        for ent in entries:
+            mast = str(ent.get("mastName") or "").strip() or "mast"
+            name = "{}_副本".format(mast)
+            try:
+                height = float(str(ent.get("hubHeight") or "125").strip() or 125)
+            except ValueError:
+                height = 125.0
+            try:
+                lat = float(str(ent.get("latitude") or "0").strip() or 0)
+                lon = float(str(ent.get("longitude") or "0").strip() or 0)
+                elev = float(str(ent.get("elevation") or "0").strip() or 0)
+            except ValueError:
+                messagebox.showerror("数据层录入", "塔 {} 的经纬度/海拔不是数值。".format(mast),
+                                     parent=getattr(self, "root", None))
+                return
+            from pathlib import Path as _Path
+            tim_path = str(ent.get("mastImportFilePath") or "").strip()
+            tim_is_internal = False
+            if tim_path and os.path.isfile(tim_path):
+                try:
+                    with open(tim_path, "rb") as _fh:
+                        tim_is_internal = b"VERSION2.0" in _fh.read(32)
+                except OSError:
+                    tim_is_internal = False
+            files = mup_weather_import.SourceFiles(
+                tim=_Path(tim_path) if tim_is_internal else None,
+                ti=_Path(ent["tiFilePath"]) if ent.get("tiFilePath") else None,
+                tisd=_Path(ent["tisFilePath"]) if ent.get("tisFilePath") else None,
+            )
+            tim_from = None if tim_is_internal else mast
+            spec = mup_weather_import.MastSpec(
+                name=name, latitude=lat, longitude=lon, elevation=elev,
+                height=height, access_level=mup_weather_import.ACCESS_LEVELS["private"],
+            )
+            jobs.append((spec, files, tim_from))
+            plan_names.append(name)
+        if not messagebox.askyesno(
+                "数据层录入",
+                "将向副本库 {} 写入 {} 个气象对象：\n{}\n副本 vault：{}\n\n继续？".format(
+                    db, len(jobs), "、".join(plan_names), vault_root),
+                parent=getattr(self, "root", None)):
+            return
+        self._weather_import_running = True
+        self._append_log("数据层录入开始：db={} masts={}".format(db, len(jobs)), tag="system")
+
+        def _worker():
+            results = []
+            for spec, files, tim_from in jobs:
+                out_dir = os.path.join(work_dir, "04-WT输出", "weather_import", spec.name)
+                try:
+                    res = mup_weather_import.run(
+                        spec, files, db, apply=True, out_dir=out_dir,
+                        vault_root=vault_root,
+                        tim_from=tim_from, source_db="MUPLocalDb")
+                except Exception as exc:  # noqa: BLE001
+                    results.append((spec.name, False, "异常：{}".format(exc)))
+                    continue
+                detail = res.message
+                if res.data.get("verify"):
+                    detail += " counts={}".format(res.data["verify"].get("counts"))
+                for w in res.data.get("warnings") or []:
+                    self.root.after(0, lambda w=w, n=spec.name: self._append_log(
+                        "{} 警告：{}".format(n, w), tag="warning"))
+                results.append((spec.name, res.ok, detail))
+
+            def _finish():
+                self._weather_import_running = False
+                for name, ok, detail in results:
+                    self._append_log(
+                        "数据层录入 {}：{}".format(name, detail),
+                        tag="success" if ok else "error")
+                ok_count = sum(1 for _, ok, _ in results if ok)
+                messagebox.showinfo(
+                    "数据层录入",
+                    "完成：{}/{} 成功\n\n{}".format(
+                        ok_count, len(results),
+                        "\n".join("{}: {}".format(n, d) for n, _, d in results)),
+                    parent=getattr(self, "root", None))
+
+            self.root.after(0, _finish)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _simple_turbine_data_layer(self):
+        """数据层录入风机类型（模式 B）：.wtg 解析 → blob 重建 → 副本 LocalDB。
+
+        与「新建风机类型」GUI 向导并列，不改动原流程文件（对标气象数据层录入）：
+          · 曲线 blob：BinaryFormatter DataSet（RemotingFormat=Binary + CultureInfo(30724)），
+            已与 GUI 金样逐字节一致（6491/6491 diff=0，2026-11-04 双验证）；
+          · 写入：默认只允许 *_verify / *_test / *_sandbox 副本库，生产库需 CLI 显式授权；
+          · .wtg 原文不留存（与 GUI 一致）；轮毂高度/海拔无库级落点，仅记入 plan.json。
+        """
+        try:
+            import mup_turbine_import
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("数据层录入", "mup_turbine_import 不可用：{}".format(exc),
+                                 parent=getattr(self, "root", None))
+            return
+        if getattr(self, "_turbine_import_running", False):
+            messagebox.showinfo("数据层录入", "上一次录入仍在进行，请稍候。",
+                                parent=getattr(self, "root", None))
+            return
+        work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+        initial_dir = os.path.join(work_dir, "03-WT输入") if work_dir and os.path.isdir(
+            os.path.join(work_dir, "03-WT输入")) else (work_dir or None)
+        wtg_path = filedialog.askopenfilename(
+            title="选择风机 .wtg 文件（原文不留存）",
+            filetypes=[("Windographer 风机文件", "*.wtg"), ("所有文件", "*.*")],
+            initialdir=initial_dir, parent=getattr(self, "root", None))
+        if not wtg_path:
+            return
+        parsed = mup_turbine_import.parse_wtg(wtg_path)
+        if not parsed.ok:
+            messagebox.showerror("数据层录入", "解析 .wtg 失败：{}".format(parsed.message),
+                                 parent=getattr(self, "root", None))
+            return
+        meta = parsed.data["wtg_meta"]
+        from pathlib import Path as _Path
+        prefix = mup_turbine_import.description_prefix(meta["description"]) or \
+            _Path(wtg_path).stem
+        name = simpledialog.askstring(
+            "数据层录入", "风机类型名称（WTType.Name）：",
+            initialvalue="{}-Test".format(prefix), parent=getattr(self, "root", None))
+        if not name or not name.strip():
+            return
+        model = simpledialog.askstring(
+            "数据层录入", "风机型号 TurbineModel（GUI 亦为用户输入）：",
+            initialvalue=prefix, parent=getattr(self, "root", None))
+        if model is None:
+            return
+        version_name = simpledialog.askstring(
+            "数据层录入", "曲线版本名（如 Cp0.429，必填）：",
+            parent=getattr(self, "root", None))
+        if not version_name or not version_name.strip():
+            return
+        db = simpledialog.askstring(
+            "数据层录入",
+            "目标数据库（只允许副本库 *_verify/_test/_sandbox）：",
+            initialvalue="MUPLocalDb_mupx_verify",
+            parent=getattr(self, "root", None),
+        )
+        if not db:
+            return
+        db = db.strip()
+        if not db.lower().endswith(("_verify", "_test", "_sandbox")):
+            messagebox.showerror(
+                "数据层录入",
+                "拒绝写入 {}：只允许副本库。\n生产库请用 CLI 并显式 --danger-write-prod。".format(db),
+                parent=getattr(self, "root", None),
+            )
+            return
+        if not messagebox.askyesno(
+                "数据层录入",
+                "将向副本库 {} 写入风机类型：\n  名称：{}\n  型号：{}\n  曲线版本：{}\n"
+                "  点位：{} 个（功率+推力）\n\n继续？".format(
+                    db, name.strip(), model.strip() or "（空）", version_name.strip(),
+                    len(parsed.data["points"])),
+                parent=getattr(self, "root", None)):
+            return
+        spec = mup_turbine_import.TurbineSpec(
+            name=name.strip(), version_name=version_name.strip(),
+            turbine_model=model.strip(),
+            access_level=2,  # Private（GUI 建型默认，MTDAccessLevel.Private=2）
+        )
+        self._turbine_import_running = True
+        self._append_log("风机类型数据层录入开始：db={} name={}".format(db, spec.name), tag="system")
+
+        def _worker():
+            out_dir = os.path.join(work_dir or os.getcwd(), "04-WT输出", "turbine_import", spec.name)
+            try:
+                res = mup_turbine_import.run(spec, wtg_path, db, apply=True, out_dir=out_dir)
+            except Exception as exc:  # noqa: BLE001
+                res = None
+                detail = "异常：{}".format(exc)
+            else:
+                detail = res.message
+                if res.data.get("verify"):
+                    detail += " counts={}".format(res.data["verify"].get("counts"))
+                for issue in res.issues:
+                    self.root.after(0, lambda i=issue: self._append_log(
+                        "风机类型数据层录入 issue：{} {}".format(i.code, i.message), tag="warning"))
+
+            def _finish():
+                self._turbine_import_running = False
+                ok = bool(res and res.ok)
+                self._append_log("风机类型数据层录入 {}：{}".format(
+                    spec.name, detail), tag="success" if ok else "error")
+                if ok:
+                    messagebox.showinfo(
+                        "数据层录入",
+                        "风机类型 {} 已写入 {} 并通过写后校验。\n\nwttype_id={}".format(
+                            spec.name, db, res.data.get("plan", {}).get("wttype_id", "")),
+                        parent=getattr(self, "root", None))
+                else:
+                    rollback = res.data.get("rollback", "") if res else ""
+                    messagebox.showerror(
+                        "数据层录入",
+                        "风机类型 {} 写入失败：{}\n{} ".format(
+                            spec.name, detail,
+                            "\n回滚脚本：{}".format(rollback) if rollback else ""),
+                        parent=getattr(self, "root", None))
+
+            self.root.after(0, _finish)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _simple_terrain_data_layer(self):
+        """数据层录入地形图（模式 B，对标气象/风机数据层录入）：GeoTIFF 元数据解析
+        → WGS84 footprint → GeoData+Files 两行落库 + vault 原样复制。
+
+        与「新建地形信息数据」GUI 流程并列，不改动原流程文件：
+          · 与 GUI 金样逐字段同构（WktProjection=NULL、FileExtension=5、Nature=1、
+            Longitude/Latitude=0.0、AccessLevel=2，2026-11-04 生产金样观测）；
+          · 默认只允许副本库 *_verify/_test/_sandbox + 配对副本 vault（生产 vault 拒写）；
+          · 站点挂载（--site）为 CLI 扩展，此处走 GeoData 全局库路线。
+        """
+        try:
+            import mup_terrain_import
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("数据层录入", "mup_terrain_import 不可用：{}".format(exc),
+                                 parent=getattr(self, "root", None))
+            return
+        if getattr(self, "_terrain_import_running", False):
+            messagebox.showinfo("数据层录入", "上一次录入仍在进行，请稍候。",
+                                parent=getattr(self, "root", None))
+            return
+        work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+        initial_dir = os.path.join(work_dir, "03-WT输入", "02-地形图") if work_dir and os.path.isdir(
+            os.path.join(work_dir, "03-WT输入", "02-地形图")) else (work_dir or None)
+        tif_path = filedialog.askopenfilename(
+            title="选择地形 GeoTIFF（原样字节复制进副本 vault）",
+            filetypes=[("GeoTIFF", "*.tif *.tiff"), ("所有文件", "*.*")],
+            initialdir=initial_dir, parent=getattr(self, "root", None))
+        if not tif_path:
+            return
+        parsed = mup_terrain_import.parse_geotiff(tif_path)
+        if not parsed.ok:
+            messagebox.showerror("数据层录入", "解析 GeoTIFF 失败：{}".format(parsed.message),
+                                 parent=getattr(self, "root", None))
+            return
+        meta = parsed.data["meta_obj"]
+        from pathlib import Path as _Path
+        name = simpledialog.askstring(
+            "数据层录入", "地形名称（GeoData.Title）：",
+            initialvalue=_Path(tif_path).stem, parent=getattr(self, "root", None))
+        if not name or not name.strip():
+            return
+        db = simpledialog.askstring(
+            "数据层录入",
+            "目标数据库（只允许副本库 *_verify/_test/_sandbox）：",
+            initialvalue="MUPLocalDb_terrain_verify",
+            parent=getattr(self, "root", None),
+        )
+        if not db:
+            return
+        db = db.strip()
+        if not db.lower().endswith(("_verify", "_test", "_sandbox")):
+            messagebox.showerror(
+                "数据层录入",
+                "拒绝写入 {}：只允许副本库。\n生产库请用 CLI 并显式 --danger-write-prod。".format(db),
+                parent=getattr(self, "root", None))
+            return
+        vault_root = filedialog.askdirectory(
+            title="选择配对副本 vault 根（不得指向生产 vault）",
+            initialdir="H:/ProgramData/Meteodyn",
+            parent=getattr(self, "root", None))
+        if not vault_root:
+            return
+        if not messagebox.askyesno(
+                "数据层录入",
+                "将向副本库 {} 写入地形资产：\n  名称：{}\n  文件：{}\n  尺寸：{} x {} 像元\n"
+                "  投影：EPSG:{}（tif GeoKeys）\n  MD5：{}\n  副本 vault：{}\n\n继续？".format(
+                    db, name.strip(), _Path(tif_path).name, meta.width, meta.height,
+                    meta.epsg if meta.epsg else "--", meta.md5.hex().upper()[:16] + "…",
+                    vault_root),
+                parent=getattr(self, "root", None)):
+            return
+        spec = mup_terrain_import.TerrainSpec(
+            terrain_name=name.strip(),
+            access_level=2,  # Private（GUI「地理信息数据」金样默认，MTDAccessLevel.Project=2）
+        )
+        self._terrain_import_running = True
+        self._append_log("地形数据层录入开始：db={} name={}".format(db, spec.terrain_name),
+                         tag="system")
+
+        def _worker():
+            out_dir = os.path.join(work_dir or os.getcwd(), "04-WT输出", "terrain_import",
+                                   spec.terrain_name)
+            try:
+                res = mup_terrain_import.run(spec, tif_path, db, apply=True,
+                                             out_dir=out_dir, vault_root=vault_root)
+            except Exception as exc:  # noqa: BLE001
+                res = None
+                detail = "异常：{}".format(exc)
+            else:
+                detail = res.message
+                if res.data.get("verify"):
+                    detail += " counts={}".format(res.data["verify"].get("counts"))
+                for issue in res.issues:
+                    self.root.after(0, lambda i=issue: self._append_log(
+                        "地形数据层录入 issue：{} {}".format(i.code, i.message), tag="warning"))
+
+            def _finish():
+                self._terrain_import_running = False
+                ok = bool(res and res.ok)
+                self._append_log("地形数据层录入 {}：{}".format(
+                    spec.terrain_name, detail), tag="success" if ok else "error")
+                if ok:
+                    messagebox.showinfo(
+                        "数据层录入",
+                        "地形 {} 已写入 {} 并通过写后校验（GeoData+Files 两行，与 GUI 金样同构）。\n\n"
+                        "geodata_id={}".format(spec.terrain_name, db,
+                                               res.data.get("plan", {}).get("geodata_id", "")),
+                        parent=getattr(self, "root", None))
+                else:
+                    rollback = res.data.get("rollback", "") if res else ""
+                    messagebox.showerror(
+                        "数据层录入",
+                        "地形 {} 写入失败：{}\n{} ".format(
+                            spec.terrain_name, detail,
+                            "\n回滚脚本：{}".format(rollback) if rollback else ""),
+                        parent=getattr(self, "root", None))
+
+            self.root.after(0, _finish)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _simple_offline_export(self):
+        """离线导出（不启动 MUP）：先确认项目身份与输出名，再从 .wrp 生成交付文件。
+
+        与「导出综合计算结果」46 步 GUI 流程并列：不改动任何原步骤，只把同一批交付物
+        （风频/湍流/发电量矩阵 + 综合总表 + IEC 总结）改为离线生成。
+
+        身份链：工程目录名 → LocalDB CaseGUID → Vault 的 {CaseGUID}_synthesis_{n}.wrp。
+        解析不到时列出 Vault 中真实存在的项目让用户选，绝不"只剩一个就默认用它"。
+        MUP 的导出文件名由用户保存时输入，因此这里也把名字交给用户确认。
+        """
+        try:
+            import mup_context_db
+            import mup_excel_export_p1
+            import mup_matrix_expander
+            import mup_offline_export
+            import mup_vault_export
+        except Exception as exc:  # noqa: BLE001 — 缺模块时给出可读原因
+            messagebox.showerror("离线导出", "离线导出模块不可用：{}".format(exc),
+                                 parent=getattr(self, "root", None))
+            return
+
+        if getattr(self, "_offline_export_running", False):
+            messagebox.showinfo("离线导出", "上一次离线导出仍在进行，请稍候。",
+                                parent=getattr(self, "root", None))
+            return
+
+        work_dir = str(getattr(self, "project_work_dir", "") or "").strip()
+        if not work_dir:
+            messagebox.showinfo("离线导出", "请先选择项目工作目录。",
+                                parent=getattr(self, "root", None))
+            return
+        site = os.path.basename(work_dir.rstrip("\\/")) or "site"
+        out_dir = os.path.join(work_dir, "04-WT输出")
+        synthesis = simpledialog.askinteger(
+            "离线导出", "综合号（如 2 / 3 / 4）", initialvalue=2, minvalue=1,
+            parent=getattr(self, "root", None))
+        if not synthesis:
+            return
+
+        try:
+            vault_root = mup_vault_export.resolve_vault_root()
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("离线导出", "无法定位 MUP Vault：{}".format(exc),
+                                 parent=getattr(self, "root", None))
+            return
+
+        # ---- 1) 项目身份：站点名 → CaseGUID（解析不到就列出来让用户选）----
+        case_prefix, case_note = mup_offline_export.resolve_case_prefix(site, vault_root)
+        if not case_prefix:
+            try:
+                cases = mup_offline_export.list_vault_cases(vault_root)
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("离线导出", "无法读取 Vault 项目列表：{}".format(exc),
+                                     parent=getattr(self, "root", None))
+                return
+            if not cases:
+                messagebox.showerror(
+                    "离线导出",
+                    "Vault 里没有任何综合产物（{} 下的 SYNTHESIS_FILES）。\n"
+                    "该项目可能只在天河/HPC 上算过，请改用 GUI 导出。".format(vault_root),
+                    parent=getattr(self, "root", None))
+                return
+            if len(cases) == 1:
+                target = cases[0]
+                stamp = datetime.fromtimestamp(target["latest_mtime"]).strftime("%Y-%m-%d %H:%M")
+                if not messagebox.askyesno(
+                        "项目名未匹配",
+                        "按项目名「{}」在 LocalDB 中没有找到对应 Case。\n\n"
+                        "Vault 里只有 1 个综合项目：\n"
+                        "CaseGUID：{}\n综合卡：{}\n最近修改：{}\n\n"
+                        "是否改为导出这个项目？".format(
+                            site, target["case"], target["syntheses"], stamp),
+                        parent=getattr(self, "root", None)):
+                    return
+                case_prefix = target["case"]
+                case_note = "用户确认 Vault 唯一项目"
+            else:
+                rows = []
+                for index, item in enumerate(cases, start=1):
+                    stamp = datetime.fromtimestamp(item["latest_mtime"]).strftime("%Y-%m-%d %H:%M")
+                    rows.append("{}. {}   综合{}   {}".format(
+                        index, item["case"], item["syntheses"], stamp))
+                choice = simpledialog.askstring(
+                    "选择要导出的项目",
+                    "按项目名「{}」没有匹配到 Case。Vault 中有 {} 个项目：\n\n{}\n\n"
+                    "请输入序号或粘贴 CaseGUID：".format(site, len(cases), "\n".join(rows)),
+                    parent=getattr(self, "root", None))
+                if not choice:
+                    return
+                token = choice.strip()
+                if token.isdigit() and 1 <= int(token) <= len(cases):
+                    case_prefix = cases[int(token) - 1]["case"]
+                elif mup_offline_export.is_case_guid(token):
+                    case_prefix = token.lower()
+                else:
+                    messagebox.showerror("离线导出", "无效的选择：{}".format(token),
+                                         parent=getattr(self, "root", None))
+                    return
+                case_note = "用户手动选择"
+
+        # ---- 2) 定位源 .wrp，拿到真实的综合卡与机位信息 ----
+        try:
+            wrp_path = mup_matrix_expander.discover_wrp(
+                case=case_prefix, synthesis=synthesis, vault=vault_root)
+            wrp = mup_matrix_expander.open_wrp(wrp_path)
+            turbines = wrp.wind_turbine_labels()
+            stamp = datetime.fromtimestamp(wrp_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            available = sorted({
+                int(name.rsplit("_synthesis_", 1)[1].split(".")[0])
+                for name in os.listdir(os.path.dirname(str(wrp_path)))
+                if name.startswith(case_prefix + "_synthesis_") and name.endswith(".wrp")
+            })
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(
+                "离线导出",
+                "没有找到该项目的综合产物：\n{}\n\n解析：{}".format(exc, case_note),
+                parent=getattr(self, "root", None))
+            return
+
+        # ---- 3) LocalDB 元数据（失败只降级，不阻断矩阵）----
+        context = None
+        context_note = ""
+        try:
+            build = mup_context_db.build_context(case_prefix, synthesis)
+            context = mup_excel_export_p1.ExportContext.from_dict(build.data)
+            db_name = str((build.data or {}).get("case_name") or "").strip()
+            if build.missing:
+                context_note = "；元数据缺项 {} 项".format(len(build.missing))
+        except Exception as exc:  # noqa: BLE001
+            db_name = ""
+            context_note = "；LocalDB 元数据不可用（{}）".format(exc)
+
+        # ---- 4) 身份 + 输出名确认（MUP 的文件名本来就是导出时输入的）----
+        prompt = (
+            "项目（LocalDB）：{db}\n"
+            "CaseGUID：{guid}\n"
+            "综合号：{n}（Vault 里该 Case 有：{all_n}）\n"
+            "源文件：{src}\n"
+            "文件时间：{stamp}\n"
+            "机位数：{count} 台\n"
+            "输出目录：{out}\n\n"
+            "输出文件名前缀（可修改）："
+        ).format(
+            db=db_name or "（未取到）",
+            guid=case_prefix,
+            n=synthesis,
+            all_n=available,
+            src=wrp_path.name,
+            stamp=stamp,
+            count=len(turbines),
+            out=out_dir,
+        )
+        name = simpledialog.askstring("确认导出项目与名称", prompt,
+                                      initialvalue=site,
+                                      parent=getattr(self, "root", None))
+        if name is None:
+            return
+        name = name.strip() or site
+
+        # ---- 5) 覆盖确认 ----
+        overwrite = False
+        existing = [
+            filename
+            for filename in mup_offline_export.build_output_names(name, synthesis).values()
+            if os.path.isfile(os.path.join(out_dir, filename))
+        ]
+        if existing:
+            preview = "\n".join(existing[:4])
+            if not messagebox.askyesno(
+                    "目标已存在",
+                    "输出目录已有同名交付文件：\n{}\n{}\n\n是否覆盖？".format(
+                        preview, "…" if len(existing) > 4 else ""),
+                    parent=getattr(self, "root", None)):
+                return
+            overwrite = True
+
+        self._offline_export_running = True
+        self._offline_export_result = None
+        self._simple_gate_log(
+            "离线导出开始：case={} synthesis={} name={} → {}".format(
+                case_prefix, synthesis, name, out_dir))
+
+        def _poll():
+            payload = getattr(self, "_offline_export_result", None)
+            if payload is None:
+                if getattr(self, "_offline_export_running", False):
+                    self.root.after(200, _poll)
+                return
+            self._offline_export_result = None
+            result, error, note = payload
+            self._offline_export_finished(result, error, note)
+
+        self.root.after(200, _poll)
+
+        def _worker():
+            try:
+                result = mup_offline_export.export_case(
+                    out_dir,
+                    case=case_prefix,
+                    synthesis=synthesis,
+                    name=name,
+                    context=context,
+                    overwrite=overwrite,
+                    vault=vault_root,
+                    wrp_path=wrp_path,
+                )
+            except Exception as exc:  # noqa: BLE001 — 统一回报，不让后台线程静默死掉
+                self._offline_export_result = (None, str(exc), "")
+                return
+            self._offline_export_result = (result, "", context_note)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _offline_export_finished(self, result, error, context_note=""):
+        """后台导出结束后的主线程收尾：恢复按钮状态并汇报结果。"""
+        self._offline_export_running = False
+        if error or result is None:
+            self._simple_gate_log("离线导出失败：{}".format(error), "error")
+            messagebox.showerror("离线导出失败", str(error),
+                                 parent=getattr(self, "root", None))
+            return
+
+        self._simple_gate_log(
+            "离线导出完成：{} 个文件，manifest={}".format(
+                len(result.files), result.manifest_path), "success")
+
+        gate = result.gate or {}
+        freshness = ("PASS" if gate.get("freshness_ok") else "FAIL") \
+            if gate.get("freshness_checked") else "未校验"
+        lines = ["输出目录：{}".format(result.output_dir), ""]
+        for role, path in result.files.items():
+            lines.append("· {}：{}".format(role, path.name))
+        lines.append("")
+        lines.append("源文件：{}".format(result.source_wrp.name))
+        lines.append("门禁：格式 {}｜新鲜度 {}{}".format(
+            "PASS" if gate.get("format_ok") else "FAIL", freshness, context_note))
+        if result.warnings:
+            lines.append("提示：" + "；".join(result.warnings[:2]))
+        messagebox.showinfo("离线导出完成", "\n".join(lines),
+                            parent=getattr(self, "root", None))
 
     def _simple_export_after_gate(self, ctx, frame, root, expected_ns):
         """综合门通过后：Vault 直取 → manifest 双计数 → 生成并挂载残余 GUI 流。

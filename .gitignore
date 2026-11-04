@@ -155,3 +155,11 @@ txt2wtg/txt2wtg_gui_config.json
 # 自动化输出产物（运行期生成，非源码）
 /04-WT输出/
 /MUP_recon/
+
+# MUP 数据层接口本地测试产物（不入库）
+_verify_out/
+_recon_input_landing/
+terrain_import_out/
+turbine_import_out/
+site_import_out/
+weather_import_out/
