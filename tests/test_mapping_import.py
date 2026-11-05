@@ -136,8 +136,14 @@ class TestGoldenGeometry(unittest.TestCase):
         self.assertEqual(res.code, mw.ImportCode.INPUT)
 
     def test_non_finite_corner_does_not_crash_the_span_gate(self):
-        issues = make_spec(nw_x=float("nan")).validate()
-        self.assertTrue(any(i.code == mw.ImportCode.INPUT for i in issues), issues)
+        for bad_val in (float("nan"), float("inf"), float("-inf")):
+            issues = make_spec(nw_x=bad_val).validate()
+            self.assertTrue(any(i.code == mw.ImportCode.INPUT and "有限数值" in i.message for i in issues), (bad_val, issues))
+            issues_y = make_spec(nw_y=bad_val).validate()
+            self.assertTrue(any(i.code == mw.ImportCode.INPUT and "有限数值" in i.message for i in issues_y), (bad_val, issues_y))
+        for bad_step in (float("nan"), float("inf"), float("-inf"), 0.0, -10.0):
+            issues_step = make_spec(step=bad_step).validate()
+            self.assertTrue(any(i.code == mw.ImportCode.INPUT for i in issues_step), (bad_step, issues_step))
 
 
 class TestGates(unittest.TestCase):

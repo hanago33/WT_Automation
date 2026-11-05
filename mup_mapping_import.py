@@ -116,6 +116,8 @@ class MappingSpec:
         """G-1：跨度不是步长整数倍 ⇒ 输入不合法（不是 note）。"""
         issues: list[mw.ImportIssue] = []
         for name, value in zip(("东西向", "南北向"), self.nb_steps()):
+            if not math.isfinite(value):
+                continue
             if abs(value - round(value)) <= 1e-6:
                 continue
             rounded = int(round(value))
@@ -137,27 +139,47 @@ class MappingSpec:
             issues.append(mw.ImportIssue(mw.ImportCode.INPUT, "站点名称/Id 不能为空"))
         for name, value in (("西北角X", self.nw_x), ("西北角Y", self.nw_y),
                             ("东南角X", self.se_x), ("东南角Y", self.se_y),
-                            ("高度", self.height)):
-            if not math.isfinite(float(value)):
-                issues.append(mw.ImportIssue(mw.ImportCode.INPUT, "%s 不是有限数值: %s" % (name, value)))
-        if float(self.step) <= 0:
-            issues.append(mw.ImportIssue(mw.ImportCode.INPUT, "步长必须大于 0（当前 %s）" % self.step))
-        if self.width <= 0 or self.north_south <= 0:
-            issues.append(mw.ImportIssue(
-                mw.ImportCode.INPUT,
-                "角点顺序不对：需 东南X>西北X 且 西北Y>东南Y（当前宽=%s 高=%s）" % (self.width, self.north_south)))
-        # G-1（zcode 双轮实机）：非整数跨度过去只在计划期 note + int(round())，apply 照样落库
-        # （库里 NbStep 已是取整值），到写后校验才因角点反算失配报 verify_failed(exit 5)。
-        # 调用方把 exit 5 读成「输入被拒」，实则残留一行 + 一条挂载。NbStep 是整数列，GUI 也是
-        # 靠它反算角点 ⇒ 计划期硬拒才是 fail-closed，也与 element 侧的输入门对称。
-        if float(self.step) > 0 and self.width > 0 and self.north_south > 0:
-            issues.extend(self._span_multiple_issues())
-        if float(self.height) < ELEMENT_HEIGHT_MIN or float(self.height) > ELEMENT_HEIGHT_MAX:
-            issues.append(mw.ImportIssue(
-                mw.ImportCode.INPUT,
-                "高度 %s m 超出 GUI 允许区间 %s-%s" % (self.height, ELEMENT_HEIGHT_MIN, ELEMENT_HEIGHT_MAX)))
-        if int(self.hz_coord_type) not in (0, 1, 2):
-            issues.append(mw.ImportIssue(mw.ImportCode.INPUT, "Quad_HZCoordType 只能是 0/1/2（金样=1）"))
+                            ("高度", self.height), ("步长", self.step)):
+            try:
+                val = float(value)
+                if not math.isfinite(val):
+                    issues.append(mw.ImportIssue(mw.ImportCode.INPUT, "%s 不是有限数值: %s" % (name, value)))
+            except (ValueError, TypeError):
+                issues.append(mw.ImportIssue(mw.ImportCode.INPUT, "%s 不是数值: %s" % (name, value)))
+
+        try:
+            step_val = float(self.step)
+            if not (math.isfinite(step_val) and step_val > 0):
+                issues.append(mw.ImportIssue(mw.ImportCode.INPUT, "步长必须大于 0（当前 %s）" % self.step))
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            w = self.width
+            ns = self.north_south
+            if not (math.isfinite(w) and math.isfinite(ns)) or w <= 0 or ns <= 0:
+                issues.append(mw.ImportIssue(
+                    mw.ImportCode.INPUT,
+                    "角点顺序不对：需 东南X>西北X 且 西北Y>东南Y（当前宽=%s 高=%s）" % (w, ns)))
+            elif float(self.step) > 0 and math.isfinite(float(self.step)):
+                issues.extend(self._span_multiple_issues())
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            h = float(self.height)
+            if not (math.isfinite(h) and ELEMENT_HEIGHT_MIN <= h <= ELEMENT_HEIGHT_MAX):
+                issues.append(mw.ImportIssue(
+                    mw.ImportCode.INPUT,
+                    "高度 %s m 超出 GUI 允许区间 %s-%s" % (self.height, ELEMENT_HEIGHT_MIN, ELEMENT_HEIGHT_MAX)))
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            if int(self.hz_coord_type) not in (0, 1, 2):
+                issues.append(mw.ImportIssue(mw.ImportCode.INPUT, "Quad_HZCoordType 只能是 0/1/2（金样=1）"))
+        except (ValueError, TypeError):
+            issues.append(mw.ImportIssue(mw.ImportCode.INPUT, "Quad_HZCoordType 必须是整数 0/1/2"))
         return issues
 
     def sanity_issues(self, center_x: float, center_y: float, radius: float) -> list[mw.ImportIssue]:

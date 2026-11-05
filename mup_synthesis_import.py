@@ -85,10 +85,17 @@ ImportCode = mw.ImportCode
 ImportIssue = mw.ImportIssue
 ImportResult = mw.ImportResult
 
+
+class PreconditionError(LookupError):
+    """前置依赖缺失（exit 7，对齐 P4 口径）：引导上游补数据，非用户输入错误。"""
+    pass
+
+
 __all__ = [
     "ImportIssue",
     "ImportResult",
     "ImportCode",
+    "PreconditionError",
     "SynthesisSpec",
     "WritePlan",
     "build_plan",
@@ -374,7 +381,7 @@ def _resolve_site(db: str, selector: str) -> tuple[str, str]:
 def _resolve_case(db: str, site_id: str, selector: Optional[str]) -> tuple[str, str, list]:
     rows = _rows(db, "SELECT Id, Name FROM dbo.Cases WHERE Parent_Id=" + _lit(site_id) + ";")
     if not rows:
-        raise LookupError(f"站点 {site_id} 下没有工况（Cases）")
+        raise PreconditionError(f"站点 {site_id} 下没有工况（Cases）：先用 mup_site_import.py 建站点/工况再来")
     if selector:
         hit = [r for r in rows if r[0] == selector or r[1] == selector]
         if not hit:
@@ -385,7 +392,7 @@ def _resolve_case(db: str, site_id: str, selector: Optional[str]) -> tuple[str, 
         return hit[0][0], hit[0][1], rows
     if len(rows) > 1:
         names = ", ".join(f"{r[1]}({r[0]})" for r in rows)
-        raise LookupError(f"站点有 {len(rows)} 个工况，请用 --case 指定: {names}")
+        raise PreconditionError(f"站点有 {len(rows)} 个工况，请用 --case 指定: {names}")
     return rows[0][0], rows[0][1], rows
 
 
@@ -422,7 +429,7 @@ def _pick_clone_source(db: str, case_id: str, case_name: str, spec: SynthesisSpe
                        config_id: str, config_size: int) -> tuple[dict, Optional[mw.ImportIssue]]:
     analyses = _analyses_of_case(db, case_id)
     if not analyses:
-        raise LookupError(f"工况 {case_name} 下没有任何既有综合，无法确定克隆源/编号基线")
+        raise PreconditionError(f"工况 {case_name} 下没有任何既有综合，无法确定克隆源/编号基线：需至少先有 1 个基础综合")
 
     if spec.clone_from:
         hit = [a for a in analyses
@@ -586,6 +593,8 @@ def build_plan(spec: SynthesisSpec, db: str) -> mw.ImportResult:
     try:
         site_id, site_name = _resolve_site(db, spec.site)
         case_id, case_name, _ = _resolve_case(db, site_id, spec.case)
+    except PreconditionError as exc:
+        return mw.ImportResult(False, mw.ImportCode.PRECONDITION, str(exc))
     except LookupError as exc:
         return mw.ImportResult(False, mw.ImportCode.INPUT, str(exc))
 
@@ -610,6 +619,8 @@ def build_plan(spec: SynthesisSpec, db: str) -> mw.ImportResult:
     # 2) 克隆源
     try:
         source, warn = _pick_clone_source(db, case_id, case_name, spec, config_id, config_size)
+    except PreconditionError as exc:
+        return mw.ImportResult(False, mw.ImportCode.PRECONDITION, str(exc))
     except LookupError as exc:
         return mw.ImportResult(False, mw.ImportCode.INPUT, str(exc))
 
@@ -624,7 +635,7 @@ def build_plan(spec: SynthesisSpec, db: str) -> mw.ImportResult:
         " AND co.Discriminator=" + _lit(DISC_CFD_OBJECT) + cfd_filter +
         " ORDER BY cfd.Direction;")
     if not cfd_rows:
-        return mw.ImportResult(False, mw.ImportCode.INPUT,
+        return mw.ImportResult(False, mw.ImportCode.PRECONDITION,
                                "工况没有 CFD 计算结果（DASCFDObject）——新建综合必须先有 CFD 结果"
                                + (f"（Stability={spec.stability} 过滤后为空）" if spec.stability is not None else ""))
     cfd_ids = [r[0] for r in cfd_rows]

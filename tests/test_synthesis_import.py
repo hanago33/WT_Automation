@@ -697,5 +697,95 @@ class TestRunAndApplyGuards(unittest.TestCase):
         self.assertFalse(result.data["rollback"]["ok"])
 
 
+class TestSynthesisPreconditions(unittest.TestCase):
+    """P4 错误代数对齐：前置依赖缺失（工况/克隆源/CFD结果）必须返回 PRECONDITION (exit 7)。"""
+
+    def test_missing_case_is_precondition(self):
+        with mock.patch.object(si, "_rows", side_effect=[
+            _schema_rows(si.T_COMPUTATION_OBJECT), _schema_rows(si.T_WRA_ANALYSIS),
+            _schema_rows(si.T_CLIMATO_CONFIG), _schema_rows(si.T_LINK_CLIMATO),
+            _schema_rows(si.T_LINK_TEMPORAL), _schema_rows(si.T_LINK_CFD),
+            _schema_rows(si.T_ELEMENTS), _schema_rows(si.T_CPM),
+            _schema_rows(si.T_LARGE_PARK), _schema_rows(si.T_PARAMETERS),
+            [[SITE_ID, "DEMO"]],  # Sites
+            [],                   # Cases 为空
+        ]):
+            res = si.build_plan(si.SynthesisSpec(site="DEMO"), DB_OK)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.code, mw.ImportCode.PRECONDITION)
+        self.assertEqual(res.exit_code(), 7)
+        self.assertIn("没有工况", res.message)
+
+    def test_multiple_cases_without_case_selector_is_precondition(self):
+        with mock.patch.object(si, "_rows", side_effect=[
+            _schema_rows(si.T_COMPUTATION_OBJECT), _schema_rows(si.T_WRA_ANALYSIS),
+            _schema_rows(si.T_CLIMATO_CONFIG), _schema_rows(si.T_LINK_CLIMATO),
+            _schema_rows(si.T_LINK_TEMPORAL), _schema_rows(si.T_LINK_CFD),
+            _schema_rows(si.T_ELEMENTS), _schema_rows(si.T_CPM),
+            _schema_rows(si.T_LARGE_PARK), _schema_rows(si.T_PARAMETERS),
+            [[SITE_ID, "DEMO"]],
+            [["C1", "WT1"], ["C2", "WT2"]],  # 多个 Case
+        ]):
+            res = si.build_plan(si.SynthesisSpec(site="DEMO"), DB_OK)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.code, mw.ImportCode.PRECONDITION)
+        self.assertEqual(res.exit_code(), 7)
+        self.assertIn("--case", res.message)
+
+    def test_missing_clone_source_is_precondition(self):
+        with mock.patch.object(si, "_rows", side_effect=[
+            _schema_rows(si.T_COMPUTATION_OBJECT), _schema_rows(si.T_WRA_ANALYSIS),
+            _schema_rows(si.T_CLIMATO_CONFIG), _schema_rows(si.T_LINK_CLIMATO),
+            _schema_rows(si.T_LINK_TEMPORAL), _schema_rows(si.T_LINK_CFD),
+            _schema_rows(si.T_ELEMENTS), _schema_rows(si.T_CPM),
+            _schema_rows(si.T_LARGE_PARK), _schema_rows(si.T_PARAMETERS),
+            [[SITE_ID, "DEMO"]],
+            [[CASE_ID, "WT"]],
+            [[CFG_ID, "CaseElementConfiguration"]],
+            [["2"]],
+            [],  # analyses 为空（无既有综合）
+        ]):
+            res = si.build_plan(si.SynthesisSpec(site="DEMO"), DB_OK)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.code, mw.ImportCode.PRECONDITION)
+        self.assertEqual(res.exit_code(), 7)
+        self.assertIn("没有任何既有综合", res.message)
+
+    def test_missing_cfd_results_is_precondition(self):
+        with mock.patch.object(si, "_rows", side_effect=[
+            _schema_rows(si.T_COMPUTATION_OBJECT), _schema_rows(si.T_WRA_ANALYSIS),
+            _schema_rows(si.T_CLIMATO_CONFIG), _schema_rows(si.T_LINK_CLIMATO),
+            _schema_rows(si.T_LINK_TEMPORAL), _schema_rows(si.T_LINK_CFD),
+            _schema_rows(si.T_ELEMENTS), _schema_rows(si.T_CPM),
+            _schema_rows(si.T_LARGE_PARK), _schema_rows(si.T_PARAMETERS),
+            [[SITE_ID, "DEMO"]],
+            [[CASE_ID, "WT"]],
+            [[CFG_ID, "CaseElementConfiguration"]],
+            [["2"]],
+            [[SRC_A, "综合1", "1", SRC_CO, "2"]],  # _pick_clone_source analyses
+            [["2"]],                                # both count check
+            [],                                     # CFD 结果为空！
+        ]):
+            res = si.build_plan(si.SynthesisSpec(site="DEMO"), DB_OK)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.code, mw.ImportCode.PRECONDITION)
+        self.assertEqual(res.exit_code(), 7)
+        self.assertIn("工况没有 CFD 计算结果", res.message)
+
+    def test_unknown_site_remains_input_error(self):
+        with mock.patch.object(si, "_rows", side_effect=[
+            _schema_rows(si.T_COMPUTATION_OBJECT), _schema_rows(si.T_WRA_ANALYSIS),
+            _schema_rows(si.T_CLIMATO_CONFIG), _schema_rows(si.T_LINK_CLIMATO),
+            _schema_rows(si.T_LINK_TEMPORAL), _schema_rows(si.T_LINK_CFD),
+            _schema_rows(si.T_ELEMENTS), _schema_rows(si.T_CPM),
+            _schema_rows(si.T_LARGE_PARK), _schema_rows(si.T_PARAMETERS),
+            [],  # 站点不存在
+        ]):
+            res = si.build_plan(si.SynthesisSpec(site="NONEXISTENT"), DB_OK)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.code, mw.ImportCode.INPUT)
+        self.assertEqual(res.exit_code(), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
