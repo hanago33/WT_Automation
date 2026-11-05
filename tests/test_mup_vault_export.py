@@ -413,6 +413,33 @@ def test_resolve_site_case_id_engineering_root_cause_fixes():
         assert "vault_heuristic_multi_guids" in diag4 or "candidates" in diag4
 
 
+def test_identity_resolution_queries_db_once(monkeypatch):
+    """回归：一次身份解析只查一次 LocalDB。
+
+    旧实现有一条 `elif hasattr(mup_case_identity, "resolve_site_case_id")` 死分支，
+    在 lambda 里把 `_default_db_query_cases` 写了两次（命中即两次 sqlcmd）；
+    该分支因 `resolve_case_identity` 恒存在而不可达，现已拆除。本用例同时钉死：
+      · 运行期：命中一次 → 恰好 1 次注入查询；
+      · 静态：源码任何一行都不得出现两次 `_default_db_query_cases(`。
+    """
+    calls = []
+
+    def counted(site, case_name=None):
+        calls.append((site, case_name))
+        return [{"id": "ea368c7f-9810-487d-be4c-bbcc9339c83e", "name": "综合2"}]
+
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "SYNTHESIS_FILES"), exist_ok=True)
+        resolved = mup_vault_export.resolve_site_case_id(
+            "DEMO", vault_root=td, db_query_fn=counted, diagnostics={})
+    assert resolved == "ea368c7f-9810-487d-be4c-bbcc9339c83e"
+    assert calls == [("DEMO", None)], "一次解析只允许一次 DB 查询"
+
+    with open(mup_vault_export.__file__, "r", encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, 1):
+            assert line.count("_default_db_query_cases(") <= 1, (lineno, line)
+
+
 def test_wrong_site_zero_match_and_explicit_reason(tmp_path):
     """验证故意输入错误 site 时：零匹配 + 明确失败原因，绝不得生成空 manifest 当作成功！"""
     out_dir = tmp_path / "04-WT输出_错site"

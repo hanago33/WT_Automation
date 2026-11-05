@@ -94,6 +94,25 @@ class WtNodeLocatorTests(unittest.TestCase):
             mla.WtNodeLocator("point", "1326,595")
 
 
+class ShippedLocatorTests(unittest.TestCase):
+    """出厂配置必须钉在已观测的 WT 模块卡片锚点上。
+
+    锚点证据：flow_packages/flow_definition_创建一个新建模.json step_1「点击-WT」
+    （automationId=MainPage_Button_Microscale，uiPath=Window_Main > MUPHomePageMainView > OpenModule）。
+    """
+
+    def test_shipped_locator_pins_microscale_module_card(self):
+        self.assertEqual(mla.WT_NODE_LOCATOR.kind, "automation_id")
+        self.assertEqual(mla.WT_NODE_LOCATOR.value, "MainPage_Button_Microscale")
+
+    def test_shipped_locator_resolves_card_center(self):
+        # 实测包围盒 [l=1447,t=743,r=1867,b=1034]
+        w = _Window([_Element("DashboardView_Button_Refresh"),
+                     _Element("MainPage_Button_Microscale",
+                              rect=_Rect(1447, 743, 1867, 1034))])
+        self.assertEqual(mla.resolve_wt_target(w), (1657, 888))
+
+
 class EnterDashboardWiringTests(unittest.TestCase):
     def test_already_on_dashboard_returns_true_without_click(self):
         w = _Window([_Element("DashboardView_Button_Refresh")])

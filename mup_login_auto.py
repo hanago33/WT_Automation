@@ -48,8 +48,13 @@ class WtNodeLocator:
 
 
 # === 唯一配置点：拿到 WT 节点 AutomationId 后只改这一行的 value ===
-# 占位空值 = 第三步的 id 定位挂起；运行时会退回已实测的绿色弧兜底。
-WT_NODE_LOCATOR = WtNodeLocator(kind="automation_id", value="")
+# 已确认锚点：主面板模块枢纽的「WT」卡片 =
+#   automationId=MainPage_Button_Microscale, controlName='Open Module 按钮',
+#   uiPath=Window_Main > MUPHomePageMainView > OpenModule,
+#   子节点含 'WT' / 'WT微尺度模拟' TextBlock。
+# 证据：flow_packages/flow_definition_创建一个新建模.json step_1「点击-WT」
+#   （create_model 流程实测可打开模块）。value 为空时退回绿色弧兜底。
+WT_NODE_LOCATOR = WtNodeLocator(kind="automation_id", value="MainPage_Button_Microscale")
 
 SPECIAL = {
     "{": "{{}", "}": "{}}", "+": "{+}", "^": "{^}", "%": "{%}",

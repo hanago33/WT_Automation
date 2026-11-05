@@ -711,14 +711,6 @@ def resolve_site_case_id(site, vault_root=None, case_name=None, db_query_fn=None
                 return s if fallback_to_site else ""
 
             return ident.case_prefix
-        elif hasattr(mup_case_identity, "resolve_site_case_id"):
-            diagnostics["identity_provider"] = "mup_case_identity"
-            res = mup_case_identity.resolve_site_case_id(
-                site=s,
-                vault_root=str(vault_root or ""),
-                query_case_id=lambda lbl: _default_db_query_cases(lbl, case_name=case_name, diagnostics=diagnostics)[0]["id"] if _default_db_query_cases(lbl, case_name=case_name, diagnostics=diagnostics) else "",
-            )
-            return res
     except ImportError:
         pass
 

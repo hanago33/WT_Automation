@@ -230,33 +230,23 @@ def test_reconcile_all_real_cells():
 
 
 @requires_real
-def test_rendered_data_lines_match_gui_export():
+def test_rendered_frequency_matrix_is_byte_identical_to_mup():
     wrp = m.open_wrp(WRP_PATH)
-    rendered = wrp.render_gui_text().splitlines()
-    reference = GUI_PATH.read_text(encoding="utf-8-sig").splitlines()
-    starts = [i for i, line in enumerate(reference) if line.startswith("Label")]
-
-    expected_diff = {"W1": 0, "W2": 0, "W3": 0, "W4": 0, "W5": 0, "W6": 0}
-    for start in starts:
-        label = reference[start].split("=", 1)[1].strip()
-        produced_start = rendered.index(f"Label = {label}")
-        diffs = sum(
-            rendered[produced_start + offset].split()
-            != reference[start + offset].split()
-            for offset in range(5, 5 + 1 + 59)  # Dir + Speed + Freq + 59 rows
-        )
-        assert diffs == expected_diff[label], label
+    produced = b"\xef\xbb\xbf" + wrp.render_gui_text().encode("utf-8")
+    assert produced == GUI_PATH.read_bytes()
 
 
 @requires_real
 def test_rendered_block_has_16_by_59_grid_and_separator():
     wrp = m.open_wrp(WRP_PATH)
     lines = wrp.render_gui_text(["W1"]).splitlines()
-    assert len(lines) == 8 + 59 + 3
-    assert lines[0] == "Label = W1"
-    assert lines[5].startswith("Dir (deg)")
-    assert lines[6].startswith("Speed (m/s)")
-    assert lines[7].startswith("Freq (%)")
+    assert len(lines) == 5 + 3 + 59 + 3
+    assert lines[0] == "Label \t= \tW1"
+    assert lines[1] == "X\u00a0(m)\t= \t38556424"
+    assert lines[4].startswith("Mean\u00a0wind\u00a0speed\u00a0(m/s) = ")
+    assert lines[5].startswith("Dir\u00a0(deg)")
+    assert lines[6].startswith("Speed\u00a0(m/s)")
+    assert lines[7].startswith("Freq\u00a0(%)")
     assert lines[8].startswith("1 ")
     assert len(lines[8]) == 12 + 16 * 12
     assert lines[-1] == ""
@@ -300,7 +290,7 @@ def test_other_real_cases_parse_and_close():
         assert all(row_sum == pytest.approx(1000.0, abs=1e-2) for row_sum in matrix.row_sums())
 
         text = wrp.render_gui_text()
-        assert text.count("Label = ") == turbines
+        assert text.count("Label 	= 	") == turbines
 
 
 def _build_synthetic_wrp(
@@ -432,8 +422,10 @@ def test_cli_wrp_write_output(tmp_path: Path):
     code = m.main(["--wrp", str(WRP_PATH), "--out", str(out), "--label", "W1"])
     assert code == 0
     text = out.read_text(encoding="utf-8-sig")
-    assert text.startswith("Label = W1")
-    assert text.count("Label = ") == 1
+    assert text.startswith("Label \t= \tW1")
+    assert text.count("Label \t= \t") == 1
+    assert out.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert b"\r\n" not in out.read_bytes()
 
 
 def test_wri_reads_gb18030_labels(tmp_path: Path):
@@ -495,9 +487,9 @@ def test_cli_rejects_negative_tolerance(capsys):
 def test_explicit_label_order_is_preserved():
     wrp = m.open_wrp(WRP_PATH)
     lines = wrp.render_gui_text(["W3", "W1"]).splitlines()
-    assert lines[0] == "Label = W3"
-    assert "Label = W1" in lines
-    assert lines.index("Label = W3") < lines.index("Label = W1")
+    assert lines[0] == "Label \t= \tW3"
+    assert "Label \t= \tW1" in lines
+    assert lines.index("Label \t= \tW3") < lines.index("Label \t= \tW1")
 
 
 def test_discover_wrp_by_case_guid(tmp_path: Path):
@@ -564,16 +556,12 @@ def test_turbulence_render_and_sections():
     rendered = matrix.render_block().splitlines()
     reference = TURB_PATH.read_text(encoding="utf-8-sig").splitlines()
     assert len(rendered) == 268
-    assert rendered[0] == "Label = W1"
+    assert rendered[0] == "Label \t= \tW1"
+    assert rendered[1] == "X (m)\t= \t38556424"
     assert rendered[5] == "Mean total turbulence for strong winds"
     assert rendered[6].strip() == "0.424"
 
-    # Metadata lines differ only in whitespace between this writer and the gold copy.
-    data_diffs = sum(
-        rendered[index].split() != reference[index].split()
-        for index in range(5, 267)
-    )
-    assert data_diffs == 0
+    assert rendered == reference[: len(rendered)]
 
 
 @requires_real
@@ -589,8 +577,8 @@ def test_cli_turbulence_export_and_reconcile(tmp_path: Path, capsys):
     ])
     assert code == 0
     text = out.read_text(encoding="utf-8-sig")
-    assert text.startswith("Label = W1")
-    assert text.count("Label = ") == 1
+    assert text.startswith("Label \t= \tW1")
+    assert text.count("Label \t= \t") == 1
     captured = capsys.readouterr()
     assert "TURBULENCE MATRIX RECONCILIATION" in captured.out
     assert "exact=4012/4012" in captured.out

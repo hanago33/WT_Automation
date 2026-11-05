@@ -49,6 +49,9 @@ __all__ = [
     "WrpBlock",
     "WrpFile",
     "FrequencyMatrix",
+    "ProductionKind",
+    "ProductionMatrix",
+    "PRODUCTION_KINDS",
     "TurbulenceBlock",
     "TurbulenceMatrix",
     "GuiTurbulence",
@@ -130,6 +133,8 @@ DATA_SENSE = {
     "iec_radius": 91,
     "direction": 92,
 }
+
+_NBSP = " "
 
 DIRECTION_COUNT = 16
 SPEED_BIN_COUNT = 59
@@ -466,6 +471,8 @@ class WrpBlock:
 
 
 _DTYPE_WIDTH = {0: 4, 1: 8, 2: 1, 3: 2, 4: 4}
+# 每块只解码一次：144 机案例共有 ~4k 个被访问块，重复解码是主要耗时。
+_BLOCK_CACHE_LIMIT = 8192
 
 
 @dataclass
@@ -484,6 +491,7 @@ class WrpFile:
     _data: bytes = field(repr=False)
     blocks: list[WrpBlock] = field(default_factory=list)
     _index: dict[tuple[int, int, int], WrpBlock] = field(default_factory=dict, repr=False)
+    _cache: dict[int, list] = field(default_factory=dict, repr=False)
 
     # -- construction -----------------------------------------------------
 
@@ -628,6 +636,9 @@ class WrpFile:
             ) from exc
 
     def _read_block(self, block: WrpBlock) -> list:
+        cached = self._cache.get(block.index)
+        if cached is not None:
+            return cached
         width = self._payload_width(block)
         end = block.offset + self.nb_points * width
         if block.offset < 0 or end > len(self._data):
@@ -637,21 +648,26 @@ class WrpFile:
             )
         raw = self._data[block.offset:end]
         if block.dtype == 5:
-            return [
+            values = [
                 _decode_label(raw[i * width:(i + 1) * width])
                 for i in range(self.nb_points)
             ]
-        if block.dtype == 0:
-            return list(struct.unpack_from(f"<{self.nb_points}f", raw))
-        if block.dtype == 1:
-            return list(struct.unpack_from(f"<{self.nb_points}d", raw))
-        if block.dtype == 2:
-            return list(raw)
-        if block.dtype == 3:
-            return list(struct.unpack_from(f"<{self.nb_points}h", raw))
-        if block.dtype == 4:
-            return list(struct.unpack_from(f"<{self.nb_points}i", raw))
-        raise WrpFormatError(f"{self.path}: unsupported dtype {block.dtype}")
+        elif block.dtype == 0:
+            values = list(struct.unpack_from(f"<{self.nb_points}f", raw))
+        elif block.dtype == 1:
+            values = list(struct.unpack_from(f"<{self.nb_points}d", raw))
+        elif block.dtype == 2:
+            values = list(raw)
+        elif block.dtype == 3:
+            values = list(struct.unpack_from(f"<{self.nb_points}h", raw))
+        elif block.dtype == 4:
+            values = list(struct.unpack_from(f"<{self.nb_points}i", raw))
+        else:
+            raise WrpFormatError(f"{self.path}: unsupported dtype {block.dtype}")
+        if len(self._cache) >= _BLOCK_CACHE_LIMIT:
+            self._cache.clear()
+        self._cache[block.index] = values
+        return values
 
     def _read_labels(self) -> list[str]:
         candidates = [block for block in self.blocks if block.sense == DATA_SENSE["label"]]
@@ -772,19 +788,37 @@ class WrpFile:
         index = self.label_index(label)
         speeds = range(1, self.nb_windspeeds)
 
+        # 频率是否为 0 是块无关的门控，先算一遍，避免在 4 个块里重复四舍五入。
+        present: list[list[bool]] = []
+        for direction in range(self.nb_directions):
+            angle = direction * self.direction_step
+            present.append(
+                [
+                    abs(
+                        _round(
+                            float(
+                                self.values(
+                                    DATA_SENSE["frequency"], angle, float(speed)
+                                )[index]
+                            ),
+                            3,
+                        )
+                    )
+                    >= 1e-5
+                    for speed in speeds
+                ]
+            )
+
         def block(sense: int, gate: bool = True, zero_sense: int | None = None) -> TurbulenceBlock:
             directions: list[list[float]] = []
             for direction in range(self.nb_directions):
                 angle = direction * self.direction_step
                 column: list[float] = []
-                for speed in speeds:
-                    frequency = _round(
-                        float(self.values(DATA_SENSE["frequency"], angle, float(speed))[index]), 3
-                    )
+                for speed_index, speed in enumerate(speeds):
                     value = _round(
                         float(self.values(sense, angle, float(speed))[index]), 3
                     )
-                    if gate and abs(frequency) < 1e-5:
+                    if gate and not present[direction][speed_index]:
                         value = -1.0
                     column.append(value)
                 directions.append(column)
@@ -854,6 +888,80 @@ class WrpFile:
         blocks = [self.turbulence_matrix(label).render_block() for label in selected]
         return "\n".join(blocks) + "\n"
 
+    def production_matrix(
+        self,
+        label: str,
+        kind: str = "with_wake",
+        reference: str | None = None,
+    ) -> "ProductionMatrix":
+        """Replicate MTDWRExportMatrix.ResultMatrixProduction (IL RVA 0x35290)."""
+
+        spec = PRODUCTION_KINDS.get(kind)
+        if spec is None:
+            raise MatrixExpandError(
+                f"unknown production kind {kind!r}; expected one of {sorted(PRODUCTION_KINDS)}"
+            )
+        index = self.label_index(label)
+        step = self.direction_step
+        direction_production: list[float] = []
+        direction_speed: list[float] = []
+        direction_frequency: list[float] = []
+        for direction in range(self.nb_directions):
+            angle = direction * step
+            direction_production.append(float(self.values(spec.sense, angle, -1.0)[index]))
+            direction_speed.append(
+                float(self.values(DATA_SENSE["wind_speed"], angle, -1.0)[index])
+            )
+            direction_frequency.append(
+                float(self.values(DATA_SENSE["frequency"], angle, -1.0)[index])
+            )
+        speed_rows: list[tuple[int, list[float]]] = []
+        for speed in range(1, self.nb_windspeeds):
+            speed_rows.append(
+                (
+                    speed,
+                    [
+                        float(self.values(spec.sense, d * step, float(speed))[index])
+                        for d in range(self.nb_directions)
+                    ],
+                )
+            )
+        if reference is None:
+            turbine_labels = set(self.wind_turbine_labels())
+            masts = [item for item in self.labels if item not in turbine_labels]
+            reference = masts[0] if masts else ""
+        return ProductionMatrix(
+            label=label,
+            kind=spec,
+            reference=reference,
+            x=float(self.values(DATA_SENSE["coordinate_x"])[index]),
+            y=float(self.values(DATA_SENSE["coordinate_y"])[index]),
+            h=float(self.values(DATA_SENSE["coordinate_h"])[index]),
+            mean_wind_speed=float(self.values(DATA_SENSE["wind_speed"], -1, -1.0)[index]),
+            total=float(self.values(spec.sense, -1, -1.0)[index]),
+            direction_production=direction_production,
+            direction_speed=direction_speed,
+            direction_frequency=direction_frequency,
+            speed_rows=speed_rows,
+            direction_count=self.nb_directions,
+            speed_bin_count=self.nb_windspeeds - 1,
+        )
+
+    def render_production_gui_text(
+        self,
+        labels: Sequence[str] | None = None,
+        kind: str = "with_wake",
+    ) -> str:
+        if labels is None:
+            selected = self.wind_turbine_labels()
+            selected.sort(key=_natural_key)
+        else:
+            selected = list(labels)
+        if not selected:
+            raise WrpFormatError(f"{self.path}: no wind-turbine labels to render")
+        blocks = [self.production_matrix(label, kind).render_block() for label in selected]
+        return "\n".join(blocks) + "\n"
+
     def render_gui_text(self, labels: Sequence[str] | None = None) -> str:
         if labels is None:
             selected = self.wind_turbine_labels()
@@ -869,27 +977,28 @@ class WrpFile:
         index = self.label_index(label)
         meta = self.metadata(label)
         lines: list[str] = [
-            f"Label = {label}",
-            f"X (m)= {_format_fixed(meta['x'], 1, single=False)}",
-            f"Y (m)= {_format_fixed(meta['y'], 1, single=False)}",
-            f"H (m)= {_format_fixed(meta['h'], 1, single=False)}",
-            f"Mean wind speed (m/s) = {_format_fixed(meta['mean_wind_speed'], 2)}",
+            f"Label 	= 	{label}",
+            f"X{_NBSP}(m)	= 	{_format_fixed(meta['x'], 1, single=False)}",
+            f"Y{_NBSP}(m)	= 	{_format_fixed(meta['y'], 1, single=False)}",
+            f"H{_NBSP}(m)	= 	{_format_fixed(meta['h'], 1, single=False)}",
+            f"Mean{_NBSP}wind{_NBSP}speed{_NBSP}(m/s) = "
+            f"{_format_fixed(meta['mean_wind_speed'], 2)}",
         ]
         directions = range(self.nb_directions)
         speeds = range(1, self.nb_windspeeds)
 
-        header = "Dir (deg)".ljust(12)
+        header = f"Dir{_NBSP}(deg)".ljust(12)
         for direction in directions:
             header += (_format_number(direction * self.direction_step) + "\u00b0").ljust(12)
         lines.append(header)
 
-        speed_line = "Speed (m/s)".ljust(12)
+        speed_line = f"Speed{_NBSP}(m/s)".ljust(12)
         for direction in directions:
             value = self.values(DATA_SENSE["wind_speed"], direction * self.direction_step, -1.0)[index]
             speed_line += _format_fixed(float(value), 2).ljust(12)
         lines.append(speed_line)
 
-        freq_line = "Freq (%)".ljust(12)
+        freq_line = f"Freq{_NBSP}(%)".ljust(12)
         for direction in directions:
             value = self.values(DATA_SENSE["frequency"], direction * self.direction_step, -1.0)[index]
             freq_line += _format_fixed(float(value) * 100.0, 2).ljust(12)
@@ -1299,18 +1408,18 @@ class TurbulenceMatrix:
             line = str(speed_index + 1).ljust(12)
             for direction in range(self.direction_count):
                 line += self._value(block.values[direction][speed_index])
-            line += self._value(block.mean[speed_index], last_width)
+            line += self._value(block.mean[speed_index], 12)
             lines.append(line)
         lines.append("")
         return lines
 
     def render_block(self) -> str:
         lines: list[str] = [
-            f"Label = {self.label}",
-            f"X (m)= {_format_fixed(self.x, 1, single=False)}",
-            f"Y (m)= {_format_fixed(self.y, 1, single=False)}",
-            f"Z (m)= {_format_fixed(self.z, 1, single=False)}",
-            f"H (m)= {_format_fixed(self.h, 1, single=False)}",
+            f"Label 	= 	{self.label}",
+            f"X (m)	= 	{_format_fixed(self.x, 1, single=False)}",
+            f"Y (m)	= 	{_format_fixed(self.y, 1, single=False)}",
+            f"Z (m)	= 	{_format_fixed(self.z, 1, single=False)}",
+            f"H (m)	= 	{_format_fixed(self.h, 1, single=False)}",
             "Mean total turbulence for strong winds",
             " " * 12 + _format_fixed(self.mean_total_strong, 3).ljust(12),
             "",
@@ -1349,6 +1458,132 @@ class TurbulenceMatrix:
     def render_gui_text(self) -> str:
         return self.render_block() + "\n"
 
+
+
+@dataclass(frozen=True)
+class ProductionKind:
+    """One production data origin, mirroring the ResultMatrixProduction switch."""
+
+    key: str
+    sense: int
+    summary_prefix: str
+    column_label: str
+    header_width_factor: int
+
+
+PRODUCTION_KINDS: dict[str, ProductionKind] = {
+    "with_wake": ProductionKind(
+        "with_wake",
+        51,
+        "Annual energy production with wake effect (MWh/year) =",
+        "Prod_with_wake_effect_(MWh/year)",
+        3,
+    ),
+    "with_curtailment": ProductionKind(
+        "with_curtailment",
+        126,
+        "Annual energy production with curtailment (MWh/year) = ",
+        "Prod_with_curtailment_(MWh/year)",
+        3,
+    ),
+    "with_wake_and_curtailment": ProductionKind(
+        "with_wake_and_curtailment",
+        127,
+        "Annual energy production with wake effect and curtailment (MWh/year) = ",
+        "Prod_with_wake_effect_and_curtailment_(MWh/year)",
+        5,
+    ),
+    "without_wake_and_curtailment": ProductionKind(
+        "without_wake_and_curtailment",
+        31,
+        "Annual energy production without wake effect and curtailment (MWh/year) = ",
+        "Prod_without_wake_effect_and_curtailment_(MWh/year)",
+        5,
+    ),
+}
+
+
+@dataclass
+class ProductionMatrix:
+    """Annual energy production matrix, mirroring ResultMatrixProduction output."""
+
+    label: str
+    kind: ProductionKind
+    reference: str
+    x: float
+    y: float
+    h: float
+    mean_wind_speed: float
+    total: float
+    direction_production: list[float]
+    direction_speed: list[float]
+    direction_frequency: list[float]
+    speed_rows: list[tuple[int, list[float]]]
+    direction_count: int = DIRECTION_COUNT
+    speed_bin_count: int = SPEED_BIN_COUNT
+
+    @staticmethod
+    def _pad(text: str, width: int) -> str:
+        return text[:width].ljust(width)
+
+    def checksum(self) -> float:
+        """Sum of every per-direction speed cell, in MWh."""
+        return sum(sum(row) for _, row in self.speed_rows)
+
+    def render_block(self) -> str:
+        nbsp = _NBSP
+        head_width = 12 * self.kind.header_width_factor
+
+        summary = self._pad(f"Reference\t=\t{self.reference}\t", 24)
+        summary += f"Mean wind speed (m/s) = {_format_fixed(self.mean_wind_speed, 2)}\t"
+        summary += self.kind.summary_prefix + _format_fixed(self.total, 2)
+
+        lines: list[str] = [
+            f"Label \t= \t{self.label}",
+            f"X (m)\t= \t{_format_fixed(self.x, 1, single=False)}",
+            f"Y (m)\t= \t{_format_fixed(self.y, 1, single=False)}",
+            f"H (m)\t= \t{_format_fixed(self.h, 1, single=False)}",
+            summary,
+        ]
+
+        step = 360.0 / self.direction_count
+        dir_line = self._pad(f"Dir{nbsp}(deg)", head_width)
+        speed_line = self._pad(f"Speed{nbsp}(m/s)", head_width)
+        freq_line = self._pad(f"Freq{nbsp}(%)", head_width)
+        prod_line = self._pad(self.kind.column_label, head_width).replace("_", nbsp)
+        for direction in range(self.direction_count):
+            angle = direction * step
+            dir_line += self._pad(_format_number(angle) + "\u00b0", 12)
+            speed_line += self._pad(_format_fixed(self.direction_speed[direction], 2), 12)
+            freq_line += self._pad(
+                _format_fixed(self.direction_frequency[direction] * 100.0, 2), 12
+            )
+            prod_line += self._pad(_format_fixed(self.direction_production[direction], 2), 12)
+        lines.extend([dir_line, speed_line, freq_line, prod_line, ""])
+
+        detail = self._pad(f"Speed{nbsp}(m/s)", 24) + self._pad("%", 12)
+        for direction in range(self.direction_count):
+            detail += self._pad(_format_number(direction * step) + "\u00b0", 12)
+        lines.append(detail)
+
+        total = self.total
+        for speed, row in self.speed_rows:
+            line = self._pad(str(speed), 24)
+            row_sum = sum(row)
+            if total:
+                share = _round(row_sum * 100.0 / total, 2)
+                line += self._pad(_format_number(share), 12)
+            else:
+                line += self._pad("0", 12)
+            for value in row:
+                line += self._pad(_format_number(_round(value * 1000.0, 0)), 12)
+            lines.append(line)
+
+        lines.extend(["", "-" * 200, ""])
+        return "\n".join(lines)
+
+    def render_gui_text(self) -> str:
+        return self.render_block() + "\n"
 
 
 @dataclass

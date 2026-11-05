@@ -120,6 +120,73 @@ class ResolveIdentityTests(unittest.TestCase):
         self.assertEqual(ident.case_prefix, "DEMO")
 
 
+class DbInjectionBoundaryTests(unittest.TestCase):
+    """DB 注入边界（§5.5-b-5）：只在第 3 级调用、只调一次、只收 GUID、不泄漏异常。"""
+
+    def setUp(self):
+        self.calls = []
+
+    def _query(self, reply=DEMO_CASE):
+        def fn(label):
+            self.calls.append(label)
+            return reply
+        return fn
+
+    def test_guid_passthrough_never_touches_db(self):
+        ident = mci.resolve_case_identity(DEMO_CASE, query_case_id=self._query())
+        self.assertEqual(ident.source, mci.SOURCE_GUID)
+        self.assertEqual(self.calls, [], "已是 GUID 时不得再查 DB")
+
+    def test_mock_prefix_never_touches_db(self):
+        tmp = _fake_vault(tempfile.mkdtemp(), {"SYNTHESIS_FILES": ["DEMO_synthesis_1.wri"]})
+        ident = mci.resolve_case_identity("DEMO", vault_root=tmp,
+                                          query_case_id=self._query())
+        self.assertEqual(ident.source, mci.SOURCE_MOCK_PREFIX)
+        self.assertEqual(self.calls, [])
+
+    def test_empty_site_never_touches_db(self):
+        ident = mci.resolve_case_identity("", query_case_id=self._query())
+        self.assertEqual(ident.source, mci.SOURCE_EMPTY)
+        self.assertEqual(self.calls, [])
+
+    def test_db_called_exactly_once_with_human_label(self):
+        tmp = _fake_vault(tempfile.mkdtemp(), {"SYNTHESIS_FILES": []})
+        ident = mci.resolve_case_identity("DEMO", vault_root=tmp,
+                                          query_case_id=self._query())
+        self.assertEqual(ident.source, mci.SOURCE_DB)
+        self.assertEqual(self.calls, ["DEMO"], "只调一次，且入参是人类标签")
+
+    def test_non_guid_reply_is_rejected_not_coerced(self):
+        tmp = _fake_vault(tempfile.mkdtemp(),
+                          {"SYNTHESIS_FILES": ["%s_synthesis_2.wri" % OTHER_CASE]})
+        for bad in ("ERROR", None, "  ", "not-a-guid", DEMO_CASE + "\n" + OTHER_CASE):
+            ident = mci.resolve_case_identity("DEMO", vault_root=tmp,
+                                              query_case_id=self._query(bad))
+            self.assertNotEqual(ident.source, mci.SOURCE_DB, repr(bad))
+            self.assertEqual(ident.case_prefix, OTHER_CASE, repr(bad))
+
+    def test_query_exception_is_contained(self):
+        tmp = _fake_vault(tempfile.mkdtemp(),
+                          {"SYNTHESIS_FILES": ["%s_synthesis_2.wri" % DEMO_CASE]})
+
+        def boom(_label):
+            raise RuntimeError("LocalDB 不可用")
+
+        ident = mci.resolve_case_identity("DEMO", vault_root=tmp, query_case_id=boom)
+        self.assertEqual(ident.source, mci.SOURCE_VAULT_SINGLE_GUID)
+        self.assertEqual(ident.case_prefix, DEMO_CASE)
+
+    def test_injected_listdir_is_authoritative_on_virtual_root(self):
+        """注入的目录视图就是事实源：虚拟根（不存在于磁盘）也必须可用。"""
+        listing = {"SYNTHESIS_FILES": ["%s_synthesis_2.wri" % DEMO_CASE],
+                   "RESULT_FILES": []}
+        ident = mci.resolve_case_identity(
+            "DEMO", vault_root=r"X:\virtual_vault",
+            listdir=lambda path: listing.get(os.path.basename(path), ()))
+        self.assertEqual(ident.source, mci.SOURCE_VAULT_SINGLE_GUID)
+        self.assertEqual(ident.case_prefix, DEMO_CASE)
+
+
 def DEMO_FILES_NAMES():
     return [name for name, *_ in DEMO_FILES]
 

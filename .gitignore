@@ -163,3 +163,5 @@ terrain_import_out/
 turbine_import_out/
 site_import_out/
 weather_import_out/
+synthesis_import_out/
+_verify_cfd_synth_codex/

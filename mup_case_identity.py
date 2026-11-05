@@ -65,8 +65,12 @@ def _listdir(path):
 
 
 def _has_site_prefixed_files(site, vault_root, listdir):
-    """Vault 下是否有 `{site}_...` 文件（mock/旧口径 vault 的唯一判据）。"""
-    if not vault_root or not os.path.isdir(vault_root):
+    """Vault 下是否有 `{site}_...` 文件（mock/旧口径 vault 的唯一判据）。
+
+    只看 `listdir` 的结果：注入的目录视图就是唯一事实源，不再用 `os.path.isdir`
+    二次确认（那会让注入在虚拟根上静默失效，也让"真实 FS + 注入列表"混源）。
+    """
+    if not vault_root:
         return False
     needle = str(site).lower() + CASE_GUID_PREFIX
     for sub in (SYNTHESIS_DIR, RESULT_DIR):
@@ -79,7 +83,7 @@ def _has_site_prefixed_files(site, vault_root, listdir):
 def _vault_case_guids(vault_root, listdir):
     """收集 Vault 里出现过的 Case GUID 前缀集合（双 GUID 只取首段）。"""
     found = set()
-    if not vault_root or not os.path.isdir(vault_root):
+    if not vault_root:
         return found
     for sub in (SYNTHESIS_DIR, RESULT_DIR):
         for name in listdir(os.path.join(vault_root, sub)):
@@ -94,9 +98,19 @@ def resolve_case_identity(site, vault_root="", query_case_id=None, listdir=None)
 
     参数：
       site            —— 人类可读站点名（如 `DEMO`），或已是 GUID；
-      vault_root      —— Vault 根（空/不可用则该两步跳过，不失败）；
-      query_case_id   —— 可选注入：`callable(site) -> GUID 字符串或 ""`（LocalDB）；
-      listdir         —— 可选注入（测试用），默认 `os.listdir`，只读。
+      vault_root      —— Vault 根（空则该两步跳过，不失败）；
+      query_case_id   —— 可选注入：`callable(site_label:str) -> GUID 或 ""`（LocalDB）；
+      listdir         —— 可选注入：`callable(dir:str) -> Iterable[str]`，默认 `os.listdir`。
+
+    **注入边界（DB 只在第 3 级被调用，且只调一次）**：
+      · GUID 直通、`{site}_` mock、空站点名三路都**不会**触碰数据库；
+      · 入参永远是人类标签（不会把 GUID 或文件名喂进去），返回必须是标准 GUID 字符串，
+        其余（`""`/None/报错文本/多行）一律按"没查到"处理，由本模块降级到启发式；
+      · 异常不外泄：本模块捕获后按"没查到"继续（发送路径不得因 DB 面中断）；
+      · **超时与重试归注入方**（本模块不能 spawn、不能阻塞取消）；该调用位于
+        发送前路径上，注入方应自行限制在秒级；
+      · 诊断（DB 错误码、命中条数、多 Case 告警）由注入方在闭包里自行落账——
+        本模块只回 `source/candidates`，不吞也不编造错误信息。
     """
     label = str(site or "").strip()
     if not label:
@@ -125,15 +139,3 @@ def resolve_case_identity(site, vault_root="", query_case_id=None, listdir=None)
 
     # unresolved：保留原串（调用方 fail-closed 或告警），候选集只作诊断。
     return CaseIdentity(label, label, SOURCE_UNRESOLVED, tuple(sorted(guids)))
-
-
-def resolve_site_case_id(site, vault_root="", query_case_id=None, listdir=None):
-    """`resolve_case_identity` 的前缀投影（与 `mup_vault_export` 同名函数同义）。
-
-    仅供需要"只要一个字符串"的调用方；需要归因（source/candidates）时用
-    `resolve_case_identity`。注意：本函数**不执行** LocalDB 查询，除非注入
-    `query_case_id`——leaf 不得 spawn 子进程。
-    """
-    return resolve_case_identity(site, vault_root=vault_root,
-                                 query_case_id=query_case_id,
-                                 listdir=listdir).case_prefix

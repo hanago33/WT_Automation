@@ -1,0 +1,105 @@
+{
+  "version": "1.0",
+  "project": "WT_Automation",
+  "description": "离线导出计算结果：从 MUP Vault 的 .wrp 直接产出矩阵与 Excel/IEC 五件套，全程不启动 MUP、不点 GUI。原「导出综合计算结果」46 步流程保持不变，本流程与之并列。",
+  "lastUpdated": "2026-11-03",
+  "runtimeConfig": {
+    "mode": "offline",
+    "entry": "mup_offline_export.run_flow",
+    "requiresMup": false,
+    "requiresGui": false,
+    "requiresExcelCom": false,
+    "fallbackSection": "export_result"
+  },
+  "flowPackages": [],
+  "steps": [
+    {
+      "id": "offline_step_1",
+      "name": "定位-综合产物(.wrp)",
+      "stage": "offline",
+      "strategy": "offline",
+      "actionType": "offline",
+      "enabled": true,
+      "topLevel": true,
+      "description": "按 CaseGUID + 综合号在 Vault 的 SYNTHESIS_FILES 中定位 {CaseGUID}_synthesis_{n}.wrp；缺失即失败，不回退 GUI 猜数。",
+      "stepParams": {"role": "source", "source": "vault", "pattern": "{CaseGUID}_synthesis_{n}.wrp"}
+    },
+    {
+      "id": "offline_step_2",
+      "name": "门禁-身份/新鲜度/格式",
+      "stage": "offline",
+      "strategy": "offline",
+      "actionType": "offline",
+      "enabled": true,
+      "topLevel": true,
+      "description": "身份门（文件名 CaseGUID+n）、新鲜度门（mtime ≥ 发送时刻）、格式门（WRP 可解析 + 每机位自检）全部通过才继续。",
+      "stepParams": {"gate": ["identity", "freshness", "format"]}
+    },
+    {
+      "id": "offline_step_3",
+      "name": "生成-风频矩阵",
+      "stage": "offline",
+      "strategy": "offline",
+      "actionType": "offline",
+      "enabled": true,
+      "topLevel": true,
+      "description": "16 方向 × 59 风速仓，字节格式与 MUP 导出完全一致（UTF-8 BOM + LF + NBSP/TAB 表头）。",
+      "stepParams": {"role": "frequency", "suffix": "_WRA{n}_Frequency_Matrix.txt"}
+    },
+    {
+      "id": "offline_step_4",
+      "name": "生成-湍流强度矩阵",
+      "stage": "offline",
+      "strategy": "offline",
+      "actionType": "offline",
+      "enabled": true,
+      "topLevel": true,
+      "description": "Ambient/Added/Total/IEC 四块 × (16 方向 + Mean/Effective) × 59 仓，字节格式与 MUP 导出完全一致。",
+      "stepParams": {"role": "turbulence", "suffix": "_WRA{n}_TurbulenceIntensityTotal_Matrix.txt"}
+    },
+    {
+      "id": "offline_step_5",
+      "name": "生成-发电量矩阵",
+      "stage": "offline",
+      "strategy": "offline",
+      "actionType": "offline",
+      "enabled": true,
+      "topLevel": true,
+      "description": "按 ResultMatrixProduction 的 IL 布局输出：Reference/Mean/年度发电量摘要行 + Direction 汇总 + 风速×方向的发电量与占比明细。",
+      "stepParams": {"role": "production", "suffix": "_WRA{n}_Production_Matrix.txt", "productionKind": "with_wake"}
+    },
+    {
+      "id": "offline_step_6",
+      "name": "生成-综合总表(Excel)",
+      "stage": "offline",
+      "strategy": "offline",
+      "actionType": "offline",
+      "enabled": true,
+      "topLevel": true,
+      "description": "平均 + 16 方向共 17 个 sheet，sheet 名、行列位置、单元格类型与 MUP 导出一致。",
+      "stepParams": {"role": "synthesis", "suffix": "_S{n}.xlsx"}
+    },
+    {
+      "id": "offline_step_7",
+      "name": "生成-IEC总结(Excel)",
+      "stage": "offline",
+      "strategy": "offline",
+      "actionType": "offline",
+      "enabled": true,
+      "topLevel": true,
+      "description": "按 .wrp DataSense 10 分发 Ed.4 / Ed.3.1 两套表结构与列定义。",
+      "stepParams": {"role": "iec", "suffix": "_S{n}_IEC.xlsx"}
+    },
+    {
+      "id": "offline_step_8",
+      "name": "落盘-manifest(sha256)",
+      "stage": "offline",
+      "strategy": "offline",
+      "actionType": "offline",
+      "enabled": true,
+      "topLevel": true,
+      "description": "记录源 .wrp 与每个产物的 sha256/大小/门禁结论，供交付核对与复现。",
+      "stepParams": {"role": "manifest", "suffix": "_offline_manifest.json"}
+    }
+  ]
+}
